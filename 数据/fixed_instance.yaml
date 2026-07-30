@@ -1,0 +1,367 @@
+schema_version: "1.0.0"
+instance_id: "fatigue_aware_reconfigurable_assembly_fixed_15x4_v1"
+instance_type: "fixed_standard"
+description: "8台可重构机器、6名重构工人、15个订单和60道串行工序的固定标准算例"
+
+provenance:
+  normative_model_document: "参数定义.md"
+  graph_document: "异质动态图参数定义.md"
+  pdf_is_reference_only: true
+  numeric_source_of_truth: "fixed_instance.yaml"
+
+time:
+  unit: "minute"
+  resolution: 0.1
+  horizon: 240.0
+  worker_shift:
+    start: 0.0
+    end: 240.0
+  quantization: "ceil_to_resolution"
+  internal_representation: "integer_tick"
+
+sets:
+  modules: [A1, A2, A3]
+  no_module_state: A0
+  machines: [M1, M2, M3, M4, M5, M6, M7, M8]
+  workers: [H1, H2, H3, H4, H5, H6]
+  orders: [J1, J2, J3, J4, J5, J6, J7, J8, J9, J10, J11, J12, J13, J14, J15]
+  waves: [W1, W2, W3]
+
+assumptions:
+  module_inventory: "unlimited"
+  machine_equals_workstation: true
+  all_machines_initially_idle: true
+  no_module_state_compatible_with_all_machines: true
+  workers_only_participate_in_reconfiguration: true
+  ordinary_processing_requires_worker: false
+  order_precedence: "serial_by_operation_sequence"
+  worker_qualification_applies_to: [disassembly, installation]
+  worker_travel_time: 0.0
+  worker_handover_time: 0.0
+  worker_skill_affects_duration: false
+  installation_worker_reserved_at_disassembly_start: false
+
+fatigue:
+  initial_fatigue: 0.10
+  initial_reconfiguration_load: 0.0
+  maximum_safe_fatigue: 0.75
+  disassembly_time_coefficient: 0.12
+  installation_time_coefficient: 0.10
+  disassembly_accumulation_rate_per_minute: 0.035
+  installation_accumulation_rate_per_minute: 0.030
+  idle_recovery_rate_per_minute: 0.006
+
+modules:
+  A1:
+    fixed_disassembly_cost: 3.0
+    fixed_installation_cost: 5.0
+  A2:
+    fixed_disassembly_cost: 4.0
+    fixed_installation_cost: 6.0
+  A3:
+    fixed_disassembly_cost: 4.0
+    fixed_installation_cost: 7.0
+
+machines:
+  - id: M1
+    initial_module: A1
+    downtime_cost_per_minute: 4.0
+    module_parameters:
+      A1:
+        installation_base_time: 2.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 0.90
+      A2:
+        installation_base_time: 2.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 1.05
+
+  - id: M2
+    initial_module: A1
+    downtime_cost_per_minute: 4.5
+    module_parameters:
+      A1:
+        installation_base_time: 3.0
+        disassembly_base_time: 4.0
+        processing_speed_factor: 0.95
+      A3:
+        installation_base_time: 4.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 1.05
+
+  - id: M3
+    initial_module: A2
+    downtime_cost_per_minute: 4.0
+    module_parameters:
+      A2:
+        installation_base_time: 3.0
+        disassembly_base_time: 4.0
+        processing_speed_factor: 0.90
+      A3:
+        installation_base_time: 2.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 1.05
+
+  - id: M4
+    initial_module: A1
+    downtime_cost_per_minute: 4.5
+    module_parameters:
+      A1:
+        installation_base_time: 4.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 1.05
+      A2:
+        installation_base_time: 3.0
+        disassembly_base_time: 4.0
+        processing_speed_factor: 0.90
+
+  - id: M5
+    initial_module: A1
+    downtime_cost_per_minute: 4.2
+    module_parameters:
+      A1:
+        installation_base_time: 3.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 1.00
+      A3:
+        installation_base_time: 3.0
+        disassembly_base_time: 4.0
+        processing_speed_factor: 0.90
+
+  - id: M6
+    initial_module: A3
+    downtime_cost_per_minute: 4.3
+    module_parameters:
+      A2:
+        installation_base_time: 4.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 1.05
+      A3:
+        installation_base_time: 2.0
+        disassembly_base_time: 4.0
+        processing_speed_factor: 0.90
+
+  - id: M7
+    initial_module: A1
+    downtime_cost_per_minute: 4.1
+    module_parameters:
+      A1:
+        installation_base_time: 2.0
+        disassembly_base_time: 4.0
+        processing_speed_factor: 1.00
+      A2:
+        installation_base_time: 3.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 0.95
+
+  - id: M8
+    initial_module: A1
+    downtime_cost_per_minute: 4.4
+    module_parameters:
+      A1:
+        installation_base_time: 4.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 0.95
+      A3:
+        installation_base_time: 3.0
+        disassembly_base_time: 3.0
+        processing_speed_factor: 1.00
+
+workers:
+  - id: H1
+    qualified_modules: [A1, A2]
+    labor_cost_per_minute: 1.0
+    initial_fatigue: 0.10
+    initial_state: "IDLE"
+  - id: H2
+    qualified_modules: [A1]
+    labor_cost_per_minute: 1.0
+    initial_fatigue: 0.10
+    initial_state: "IDLE"
+  - id: H3
+    qualified_modules: [A1, A3]
+    labor_cost_per_minute: 1.0
+    initial_fatigue: 0.10
+    initial_state: "IDLE"
+  - id: H4
+    qualified_modules: [A2]
+    labor_cost_per_minute: 1.0
+    initial_fatigue: 0.10
+    initial_state: "IDLE"
+  - id: H5
+    qualified_modules: [A2, A3]
+    labor_cost_per_minute: 1.0
+    initial_fatigue: 0.10
+    initial_state: "IDLE"
+  - id: H6
+    qualified_modules: [A3]
+    labor_cost_per_minute: 1.0
+    initial_fatigue: 0.10
+    initial_state: "IDLE"
+
+waves:
+  W1:
+    order_ids: [J1, J2, J3, J4, J5]
+    release_interval: [0.0, 12.0]
+    dominant_module: A1
+  W2:
+    order_ids: [J6, J7, J8, J9, J10]
+    release_interval: [45.0, 57.0]
+    dominant_module: A2
+  W3:
+    order_ids: [J11, J12, J13, J14, J15]
+    release_interval: [90.0, 102.0]
+    dominant_module: A3
+
+orders:
+  - id: J1
+    wave: W1
+    release_time: 0.0
+    operations:
+      - {id: O_J1_1, sequence: 1, required_module: A1, base_processing_time: 11.0}
+      - {id: O_J1_2, sequence: 2, required_module: A1, base_processing_time: 10.0}
+      - {id: O_J1_3, sequence: 3, required_module: A2, base_processing_time: 12.0}
+      - {id: O_J1_4, sequence: 4, required_module: A1, base_processing_time: 9.0}
+
+  - id: J2
+    wave: W1
+    release_time: 3.0
+    operations:
+      - {id: O_J2_1, sequence: 1, required_module: A1, base_processing_time: 10.0}
+      - {id: O_J2_2, sequence: 2, required_module: A1, base_processing_time: 12.0}
+      - {id: O_J2_3, sequence: 3, required_module: A3, base_processing_time: 11.0}
+      - {id: O_J2_4, sequence: 4, required_module: A1, base_processing_time: 10.0}
+
+  - id: J3
+    wave: W1
+    release_time: 6.0
+    operations:
+      - {id: O_J3_1, sequence: 1, required_module: A1, base_processing_time: 12.0}
+      - {id: O_J3_2, sequence: 2, required_module: A2, base_processing_time: 11.0}
+      - {id: O_J3_3, sequence: 3, required_module: A1, base_processing_time: 10.0}
+      - {id: O_J3_4, sequence: 4, required_module: A1, base_processing_time: 9.0}
+
+  - id: J4
+    wave: W1
+    release_time: 9.0
+    operations:
+      - {id: O_J4_1, sequence: 1, required_module: A1, base_processing_time: 9.0}
+      - {id: O_J4_2, sequence: 2, required_module: A3, base_processing_time: 12.0}
+      - {id: O_J4_3, sequence: 3, required_module: A1, base_processing_time: 10.0}
+      - {id: O_J4_4, sequence: 4, required_module: A1, base_processing_time: 11.0}
+
+  - id: J5
+    wave: W1
+    release_time: 12.0
+    operations:
+      - {id: O_J5_1, sequence: 1, required_module: A1, base_processing_time: 11.0}
+      - {id: O_J5_2, sequence: 2, required_module: A1, base_processing_time: 9.0}
+      - {id: O_J5_3, sequence: 3, required_module: A2, base_processing_time: 12.0}
+      - {id: O_J5_4, sequence: 4, required_module: A1, base_processing_time: 10.0}
+
+  - id: J6
+    wave: W2
+    release_time: 45.0
+    operations:
+      - {id: O_J6_1, sequence: 1, required_module: A2, base_processing_time: 12.0}
+      - {id: O_J6_2, sequence: 2, required_module: A2, base_processing_time: 10.0}
+      - {id: O_J6_3, sequence: 3, required_module: A1, base_processing_time: 11.0}
+      - {id: O_J6_4, sequence: 4, required_module: A2, base_processing_time: 13.0}
+
+  - id: J7
+    wave: W2
+    release_time: 48.0
+    operations:
+      - {id: O_J7_1, sequence: 1, required_module: A2, base_processing_time: 11.0}
+      - {id: O_J7_2, sequence: 2, required_module: A2, base_processing_time: 13.0}
+      - {id: O_J7_3, sequence: 3, required_module: A3, base_processing_time: 10.0}
+      - {id: O_J7_4, sequence: 4, required_module: A2, base_processing_time: 12.0}
+
+  - id: J8
+    wave: W2
+    release_time: 51.0
+    operations:
+      - {id: O_J8_1, sequence: 1, required_module: A2, base_processing_time: 13.0}
+      - {id: O_J8_2, sequence: 2, required_module: A1, base_processing_time: 11.0}
+      - {id: O_J8_3, sequence: 3, required_module: A2, base_processing_time: 12.0}
+      - {id: O_J8_4, sequence: 4, required_module: A2, base_processing_time: 10.0}
+
+  - id: J9
+    wave: W2
+    release_time: 54.0
+    operations:
+      - {id: O_J9_1, sequence: 1, required_module: A2, base_processing_time: 10.0}
+      - {id: O_J9_2, sequence: 2, required_module: A3, base_processing_time: 12.0}
+      - {id: O_J9_3, sequence: 3, required_module: A2, base_processing_time: 13.0}
+      - {id: O_J9_4, sequence: 4, required_module: A2, base_processing_time: 11.0}
+
+  - id: J10
+    wave: W2
+    release_time: 57.0
+    operations:
+      - {id: O_J10_1, sequence: 1, required_module: A2, base_processing_time: 12.0}
+      - {id: O_J10_2, sequence: 2, required_module: A2, base_processing_time: 9.0}
+      - {id: O_J10_3, sequence: 3, required_module: A1, base_processing_time: 11.0}
+      - {id: O_J10_4, sequence: 4, required_module: A2, base_processing_time: 13.0}
+
+  - id: J11
+    wave: W3
+    release_time: 90.0
+    operations:
+      - {id: O_J11_1, sequence: 1, required_module: A3, base_processing_time: 12.0}
+      - {id: O_J11_2, sequence: 2, required_module: A3, base_processing_time: 11.0}
+      - {id: O_J11_3, sequence: 3, required_module: A1, base_processing_time: 10.0}
+      - {id: O_J11_4, sequence: 4, required_module: A3, base_processing_time: 13.0}
+
+  - id: J12
+    wave: W3
+    release_time: 93.0
+    operations:
+      - {id: O_J12_1, sequence: 1, required_module: A3, base_processing_time: 11.0}
+      - {id: O_J12_2, sequence: 2, required_module: A3, base_processing_time: 13.0}
+      - {id: O_J12_3, sequence: 3, required_module: A2, base_processing_time: 12.0}
+      - {id: O_J12_4, sequence: 4, required_module: A3, base_processing_time: 10.0}
+
+  - id: J13
+    wave: W3
+    release_time: 96.0
+    operations:
+      - {id: O_J13_1, sequence: 1, required_module: A3, base_processing_time: 13.0}
+      - {id: O_J13_2, sequence: 2, required_module: A1, base_processing_time: 10.0}
+      - {id: O_J13_3, sequence: 3, required_module: A3, base_processing_time: 11.0}
+      - {id: O_J13_4, sequence: 4, required_module: A3, base_processing_time: 12.0}
+
+  - id: J14
+    wave: W3
+    release_time: 99.0
+    operations:
+      - {id: O_J14_1, sequence: 1, required_module: A3, base_processing_time: 10.0}
+      - {id: O_J14_2, sequence: 2, required_module: A2, base_processing_time: 12.0}
+      - {id: O_J14_3, sequence: 3, required_module: A3, base_processing_time: 13.0}
+      - {id: O_J14_4, sequence: 4, required_module: A3, base_processing_time: 11.0}
+
+  - id: J15
+    wave: W3
+    release_time: 102.0
+    operations:
+      - {id: O_J15_1, sequence: 1, required_module: A3, base_processing_time: 12.0}
+      - {id: O_J15_2, sequence: 2, required_module: A3, base_processing_time: 10.0}
+      - {id: O_J15_3, sequence: 3, required_module: A1, base_processing_time: 9.0}
+      - {id: O_J15_4, sequence: 4, required_module: A3, base_processing_time: 13.0}
+
+objective:
+  type: "strict_lexicographic"
+  components:
+    - total_flow_time
+    - total_reconfiguration_cost
+    - worker_reconfiguration_load_variance
+  numerical_tolerances:
+    total_flow_time: 0.000001
+    total_reconfiguration_cost: 0.000001
+    worker_reconfiguration_load_variance: 0.000001
+
+truncation:
+  incomplete_solution_ranks_after_complete_solution: true
+  unfinished_order_penalty_per_order: 240.0
+  record_censored_flow_time: true
+  record_incurred_reconfiguration_cost: true
