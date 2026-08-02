@@ -73,6 +73,8 @@ class TypedActorCritic(nn.Module):
         return {
             "encoder_type": "typed_mlp",
             "hidden_dim": self.hidden_dim,
+            "observation_schema_version": 2,
+            "feature_dimensions": dict(self.feature_dimensions),
         }
 
     def forward(
@@ -421,6 +423,70 @@ def assert_network_config_matches_spec(
             "network configuration does not match checkpoint architecture: "
             f"configured={configured}, checkpoint={saved}"
         )
+    configured_features = config.get("feature_dimensions")
+    saved_features = checkpoint_spec.get("feature_dimensions")
+    configured_edges = config.get("edge_feature_dimensions")
+    saved_edges = checkpoint_spec.get("edge_feature_dimensions")
+    configured_schema = int(config.get("observation_schema_version", 1))
+    saved_schema = int(checkpoint_spec.get("observation_schema_version", 1))
+    if (
+        configured_schema != saved_schema
+        or configured_features != saved_features
+        or configured_edges != saved_edges
+    ):
+        raise ValueError(
+            "checkpoint observation schema is incompatible with the current "
+            "environment: "
+            f"configured_schema={configured_schema}, "
+            f"checkpoint_schema={saved_schema}, "
+            f"configured_features={configured_features}, "
+            f"checkpoint_features={saved_features}, "
+            f"configured_edges={configured_edges}, "
+            f"checkpoint_edges={saved_edges}"
+        )
+
+
+def _infer_observation_dimensions(
+    checkpoint: Mapping[str, Any],
+    encoder_type: str,
+) -> tuple[dict[str, int] | None, dict[EdgeType, int] | None]:
+    state = checkpoint.get("network")
+    if not isinstance(state, Mapping):
+        return None, None
+    if encoder_type == "typed_mlp":
+        prefixes = {
+            "operation": "operation_encoder.0.weight",
+            "machine": "machine_encoder.0.weight",
+            "worker": "worker_encoder.0.weight",
+            "global": "global_encoder.0.weight",
+        }
+    else:
+        prefixes = {
+            "operation": "node_projectors.operation.0.weight",
+            "machine": "node_projectors.machine.0.weight",
+            "worker": "node_projectors.worker.0.weight",
+            "global": "global_encoder.0.weight",
+        }
+    features: dict[str, int] = {}
+    for name, key in prefixes.items():
+        weight = state.get(key)
+        if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+            return None, None
+        features[name] = int(weight.shape[1])
+    if encoder_type != "hetero_gnn":
+        return features, None
+    hidden_dim = int(state["node_projectors.operation.0.weight"].shape[0])
+    edges: dict[EdgeType, int] = {}
+    for edge_type in ASSEMBLY_EDGE_TYPES:
+        key = (
+            "message_layers.0.relation_transforms."
+            f"{_relation_key(edge_type)}.weight"
+        )
+        weight = state.get(key)
+        if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+            return features, None
+        edges[edge_type] = int(weight.shape[1]) - hidden_dim
+    return features, edges
 
 
 def infer_checkpoint_network_spec(
@@ -431,7 +497,19 @@ def infer_checkpoint_network_spec(
         raw_spec = checkpoint["network_spec"]
         if not isinstance(raw_spec, Mapping):
             raise ValueError("checkpoint network_spec must be a mapping")
-        return normalize_network_config(raw_spec)
+        spec = dict(raw_spec)
+        architecture = normalize_network_config(spec)
+        features, edges = _infer_observation_dimensions(
+            checkpoint,
+            architecture["encoder_type"],
+        )
+        spec.update(architecture)
+        spec.setdefault("observation_schema_version", 1)
+        if features is not None:
+            spec.setdefault("feature_dimensions", features)
+        if edges is not None:
+            spec.setdefault("edge_feature_dimensions", edges)
+        return spec
     state = checkpoint.get("network")
     if not isinstance(state, Mapping):
         raise ValueError("checkpoint does not contain a network state")
@@ -444,10 +522,15 @@ def infer_checkpoint_network_spec(
             "checkpoint has no network_spec and is not a recognized "
             "legacy TypedActorCritic checkpoint"
         )
-    return {
+    spec = {
         "encoder_type": "typed_mlp",
         "hidden_dim": int(legacy_weight.shape[0]),
+        "observation_schema_version": 1,
     }
+    features, _ = _infer_observation_dimensions(checkpoint, "typed_mlp")
+    if features is not None:
+        spec["feature_dimensions"] = features
+    return spec
 
 
 def _head(
@@ -683,6 +766,9 @@ class HeteroGraphActorCritic(nn.Module):
             "hidden_dim": self.hidden_dim,
             "message_passing_layers": self.message_passing_layer_count,
             "dropout": self.dropout_probability,
+            "observation_schema_version": 2,
+            "feature_dimensions": dict(self.feature_dimensions),
+            "edge_feature_dimensions": dict(self.edge_feature_dimensions),
         }
 
     def forward(

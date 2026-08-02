@@ -4,6 +4,7 @@ from .dataset import (
     GeneratedInstanceRecord,
     InstanceDataset,
     OnlineInstanceDataset,
+    curriculum_weights_at,
     load_dataset_split,
 )
 from .models import (
@@ -30,6 +31,7 @@ __all__ = [
     "OnlineInstanceDataset",
     "OrderSpec",
     "WorkerSpec",
+    "curriculum_weights_at",
     "instance_to_dict",
     "load_instance_json",
     "load_dataset_split",

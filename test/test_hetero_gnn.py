@@ -70,6 +70,9 @@ def test_network_factory_defaults_and_validation(config, fixed_instance):
         "hidden_dim": 128,
         "message_passing_layers": 2,
         "dropout": 0.0,
+        "observation_schema_version": 2,
+        "feature_dimensions": observation.feature_dimensions,
+        "edge_feature_dimensions": observation.edge_feature_dimensions,
     }
     assert all(
         len(layer.relation_transforms) == len(ASSEMBLY_EDGE_TYPES)
@@ -81,6 +84,8 @@ def test_network_factory_defaults_and_validation(config, fixed_instance):
     assert legacy.network_spec() == {
         "encoder_type": "typed_mlp",
         "hidden_dim": 32,
+        "observation_schema_version": 2,
+        "feature_dimensions": observation.feature_dimensions,
     }
 
     with pytest.raises(ValueError, match="encoder_type"):
@@ -373,13 +378,37 @@ def test_new_and_legacy_checkpoint_compatibility(
     )
     gnn_checkpoint = tmp_path / "gnn.pt"
     gnn_agent.save(gnn_checkpoint, metadata={"kind": "gnn"})
-    assert read_checkpoint_network_spec(gnn_checkpoint) == gnn_config
+    assert read_checkpoint_network_spec(gnn_checkpoint) == {
+        **gnn_config,
+        "observation_schema_version": 2,
+        "feature_dimensions": observation.feature_dimensions,
+        "edge_feature_dimensions": observation.edge_feature_dimensions,
+    }
     gnn_clone = PPOAgent(
         build_actor_critic(observation, gnn_config),
         config["ppo"],
         device="cpu",
     )
     assert gnn_clone.load(gnn_checkpoint) == {"kind": "gnn"}
+
+    old_gnn_checkpoint = tmp_path / "old_gnn.pt"
+    old_gnn_payload = torch.load(
+        gnn_checkpoint,
+        map_location="cpu",
+        weights_only=False,
+    )
+    old_gnn_payload["network_spec"] = dict(gnn_config)
+    torch.save(old_gnn_payload, old_gnn_checkpoint)
+    inferred_old_gnn = read_checkpoint_network_spec(old_gnn_checkpoint)
+    assert inferred_old_gnn["observation_schema_version"] == 1
+    assert inferred_old_gnn["feature_dimensions"] == (
+        observation.feature_dimensions
+    )
+    assert inferred_old_gnn["edge_feature_dimensions"] == (
+        observation.edge_feature_dimensions
+    )
+    with pytest.raises(ValueError, match="observation schema is incompatible"):
+        gnn_clone.load(old_gnn_checkpoint)
 
     typed_network = TypedActorCritic(
         observation.feature_dimensions,
@@ -403,12 +432,15 @@ def test_new_and_legacy_checkpoint_compatibility(
     assert read_checkpoint_network_spec(legacy_checkpoint) == {
         "encoder_type": "typed_mlp",
         "hidden_dim": 16,
+        "observation_schema_version": 1,
+        "feature_dimensions": observation.feature_dimensions,
     }
     typed_clone = PPOAgent(
         TypedActorCritic(observation.feature_dimensions, 16),
         config["ppo"],
         device="cpu",
     )
-    assert typed_clone.load(legacy_checkpoint) == {"kind": "legacy"}
+    with pytest.raises(ValueError, match="observation schema is incompatible"):
+        typed_clone.load(legacy_checkpoint)
     with pytest.raises(ValueError, match="does not match"):
         gnn_clone.load(legacy_checkpoint)

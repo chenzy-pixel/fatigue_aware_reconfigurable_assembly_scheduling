@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
 
 from agent.ppo import PPOAgent, RolloutBuffer, build_actor_critic
 from agent.ppo.parallel import (
@@ -27,7 +30,11 @@ from eval import (
     evaluate_representative_diagnostic,
     load_configured_instance,
 )
-from result import create_run_directory, evaluation_selection_key
+from result import (
+    aggregate_evaluation_rows,
+    create_run_directory,
+    evaluation_selection_key,
+)
 from result.io import write_config, write_csv, write_json
 from result.visdom_dashboard import (
     create_training_dashboard,
@@ -43,11 +50,13 @@ class TrainingPhaseController:
     completion_target: float = 1.0
     consecutive_required: int = 3
     quality_completion_floor: float = 1.0
+    quality_checkpoint_promotion: str = "completion_only"
     phase: str = "legacy"
     consecutive_successes: int = 0
     phase_transition_episode: int | None = None
     accepted_quality_updates: int = 0
     rejected_quality_updates: int = 0
+    accepted_quality_score: tuple[float, float, float, float] | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> "TrainingPhaseController":
@@ -65,6 +74,9 @@ class TrainingPhaseController:
         target = float(settings["completion_target"])
         required = int(settings["consecutive_validations"])
         floor = float(settings["quality_completion_floor"])
+        promotion = str(
+            settings.get("quality_checkpoint_promotion", "completion_only")
+        ).strip().lower()
         if not 0.0 <= target <= 1.0:
             raise ValueError("two_stage.completion_target must be in [0, 1]")
         if required < 1:
@@ -74,6 +86,11 @@ class TrainingPhaseController:
         if not 0.0 <= floor <= 1.0:
             raise ValueError(
                 "two_stage.quality_completion_floor must be in [0, 1]"
+            )
+        if promotion not in {"completion_only", "score_improving"}:
+            raise ValueError(
+                "two_stage.quality_checkpoint_promotion must be "
+                "'completion_only' or 'score_improving'"
             )
         if not bool(settings["quality_validate_every_update"]):
             raise ValueError(
@@ -85,6 +102,7 @@ class TrainingPhaseController:
             completion_target=target,
             consecutive_required=required,
             quality_completion_floor=floor,
+            quality_checkpoint_promotion=promotion,
             phase="feasibility",
         )
 
@@ -96,6 +114,7 @@ class TrainingPhaseController:
         completion_rate: float,
         *,
         completed_episodes: int,
+        score: tuple[float, float, float, float] | None = None,
     ) -> str:
         rate = float(completion_rate)
         if not self.enabled:
@@ -108,10 +127,25 @@ class TrainingPhaseController:
             if self.consecutive_successes >= self.consecutive_required:
                 self.phase = "quality"
                 self.phase_transition_episode = int(completed_episodes)
+                self.accepted_quality_score = score
                 return "transition"
             return "feasibility"
         if rate >= self.quality_completion_floor:
+            if (
+                self.quality_checkpoint_promotion == "score_improving"
+                and (
+                    score is None
+                    or (
+                        self.accepted_quality_score is not None
+                        and score >= self.accepted_quality_score
+                    )
+                )
+            ):
+                self.rejected_quality_updates += 1
+                return "rejected"
             self.accepted_quality_updates += 1
+            if score is not None:
+                self.accepted_quality_score = score
             return "accepted"
         self.rejected_quality_updates += 1
         return "rejected"
@@ -132,10 +166,267 @@ class TrainingPhaseController:
             "consecutive_validations_required": self.consecutive_required,
             "consecutive_validation_successes": self.consecutive_successes,
             "quality_completion_floor": self.quality_completion_floor,
+            "quality_checkpoint_promotion": self.quality_checkpoint_promotion,
+            "accepted_quality_score": self.accepted_quality_score,
             "phase_transition_episode": self.phase_transition_episode,
             "accepted_quality_updates": self.accepted_quality_updates,
             "rejected_quality_updates": self.rejected_quality_updates,
             "formal_training_status": self.formal_training_status,
+        }
+
+
+@dataclass
+class ValidationStabilityController:
+    rollback_completion_drop: float
+    rollback_consecutive_required: int
+    rollback_cooldown_validations: int
+    plateau_patience: int
+    decay_factor: float
+    minimum_learning_rate: float
+    sampled_every: int
+    sampled_repeats: int
+    sampled_seed_offset: int
+    sampled_episode_milestones: tuple[int, ...] | None
+    current_learning_rate: float
+    best_score: tuple[float, float, float, float] | None = None
+    best_completion_rate: float | None = None
+    best_episode: int | None = None
+    validations_without_improvement: int = 0
+    feasibility_rollbacks: int = 0
+    learning_rate_decays: int = 0
+    validation_count: int = 0
+    sampled_validation_runs: int = 0
+    consecutive_degraded_validations: int = 0
+    rollback_cooldown_remaining: int = 0
+    rollback_cooldown_validation_count: int = 0
+    rollback_cooldown_blocked_count: int = 0
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ValidationStabilityController":
+        settings = config["training"]["validation_control"]
+        rollback_drop = float(
+            settings["feasibility_rollback"]["completion_drop"]
+        )
+        rollback_consecutive = int(
+            settings["feasibility_rollback"].get(
+                "consecutive_validations", 1
+            )
+        )
+        rollback_cooldown = int(
+            settings["feasibility_rollback"].get(
+                "cooldown_validations", 0
+            )
+        )
+        plateau = settings["learning_rate_plateau"]
+        patience = int(plateau["patience_validations"])
+        factor = float(plateau["factor"])
+        minimum = float(plateau["minimum"])
+        sampled = settings["sampled"]
+        sampled_every = int(sampled["every_validations"])
+        sampled_repeats = int(sampled["repeats"])
+        seed_offset = int(sampled["seed_offset"])
+        raw_milestones = sampled.get("episode_milestones")
+        milestones = (
+            None
+            if raw_milestones is None
+            else tuple(sorted({int(value) for value in raw_milestones}))
+        )
+        initial_learning_rate = float(config["ppo"]["learning_rate"])
+        if not 0.0 < rollback_drop <= 1.0:
+            raise ValueError(
+                "feasibility rollback completion_drop must be in (0, 1]"
+            )
+        if rollback_consecutive < 1 or rollback_cooldown < 0:
+            raise ValueError(
+                "rollback consecutive validations must be positive and "
+                "cooldown must be non-negative"
+            )
+        if patience < 1:
+            raise ValueError(
+                "learning-rate plateau patience must be positive"
+            )
+        if not 0.0 < factor < 1.0:
+            raise ValueError(
+                "learning-rate plateau factor must be in (0, 1)"
+            )
+        if minimum <= 0.0 or minimum > initial_learning_rate:
+            raise ValueError(
+                "minimum learning rate must be positive and no greater "
+                "than the initial learning rate"
+            )
+        if sampled_every < 1 or sampled_repeats < 1:
+            raise ValueError(
+                "sampled validation cadence and repeats must be positive"
+            )
+        if milestones is not None and any(value < 1 for value in milestones):
+            raise ValueError("sampled validation milestones must be positive")
+        return cls(
+            rollback_completion_drop=rollback_drop,
+            rollback_consecutive_required=rollback_consecutive,
+            rollback_cooldown_validations=rollback_cooldown,
+            plateau_patience=patience,
+            decay_factor=factor,
+            minimum_learning_rate=minimum,
+            sampled_every=sampled_every,
+            sampled_repeats=sampled_repeats,
+            sampled_seed_offset=seed_offset,
+            sampled_episode_milestones=milestones,
+            current_learning_rate=initial_learning_rate,
+        )
+
+    def observe_greedy(
+        self,
+        score: tuple[float, float, float, float],
+        completion_rate: float,
+        *,
+        completed_episodes: int,
+        feasibility_phase: bool,
+    ) -> dict[str, object]:
+        self.validation_count += 1
+        rate = float(completion_rate)
+        previous_best_rate = self.best_completion_rate
+        cooldown_active = self.rollback_cooldown_remaining > 0
+        if cooldown_active:
+            self.rollback_cooldown_validation_count += 1
+            self.rollback_cooldown_remaining -= 1
+        improved = self.best_score is None or score < self.best_score
+        if improved:
+            self.best_score = score
+            self.best_completion_rate = rate
+            self.best_episode = int(completed_episodes)
+            self.validations_without_improvement = 0
+            self.consecutive_degraded_validations = 0
+        else:
+            self.validations_without_improvement += 1
+        degraded = bool(
+            feasibility_phase
+            and not improved
+            and previous_best_rate is not None
+            and previous_best_rate - rate
+            >= self.rollback_completion_drop - 1e-12
+        )
+        if degraded:
+            self.consecutive_degraded_validations += 1
+        elif not improved:
+            self.consecutive_degraded_validations = 0
+        rollback_ready = bool(
+            degraded
+            and self.consecutive_degraded_validations
+            >= self.rollback_consecutive_required
+        )
+        if rollback_ready and cooldown_active:
+            self.rollback_cooldown_blocked_count += 1
+        rollback = rollback_ready and not cooldown_active
+        if rollback:
+            self.feasibility_rollbacks += 1
+            self.consecutive_degraded_validations = 0
+            self.rollback_cooldown_remaining = (
+                self.rollback_cooldown_validations
+            )
+            self.validations_without_improvement = 0
+        previous_learning_rate = self.current_learning_rate
+        decay_applied = False
+        if (
+            not improved
+            and not rollback
+            and self.validations_without_improvement
+            >= self.plateau_patience
+        ):
+            next_learning_rate = max(
+                self.minimum_learning_rate,
+                self.current_learning_rate * self.decay_factor,
+            )
+            if next_learning_rate < self.current_learning_rate - 1e-15:
+                self.current_learning_rate = next_learning_rate
+                self.learning_rate_decays += 1
+                decay_applied = True
+            self.validations_without_improvement = 0
+        return {
+            "improved": improved,
+            "rollback": rollback,
+            "degraded": degraded,
+            "consecutive_degraded_validations": (
+                self.consecutive_degraded_validations
+            ),
+            "rollback_cooldown_remaining": (
+                self.rollback_cooldown_remaining
+            ),
+            "rollback_cooldown_validation_count": (
+                self.rollback_cooldown_validation_count
+            ),
+            "rollback_cooldown_blocked_count": (
+                self.rollback_cooldown_blocked_count
+            ),
+            "best_completion_rate": self.best_completion_rate,
+            "best_episode": self.best_episode,
+            "validations_without_improvement": (
+                self.validations_without_improvement
+            ),
+            "learning_rate_before_validation": previous_learning_rate,
+            "learning_rate_after_validation": self.current_learning_rate,
+            "learning_rate_decay_applied": decay_applied,
+        }
+
+    def reset_plateau(self) -> None:
+        self.validations_without_improvement = 0
+        self.consecutive_degraded_validations = 0
+        self.rollback_cooldown_remaining = 0
+
+    def should_run_sampled(
+        self,
+        *,
+        final_validation: bool,
+        completed_episodes: int,
+    ) -> bool:
+        if final_validation:
+            return True
+        if self.sampled_episode_milestones is not None:
+            return int(completed_episodes) in self.sampled_episode_milestones
+        return self.validation_count % self.sampled_every == 0
+
+    def sampled_seeds(self, algorithm_seed: int) -> list[int]:
+        return [
+            int(algorithm_seed) + self.sampled_seed_offset + repeat
+            for repeat in range(self.sampled_repeats)
+        ]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "rollback_completion_drop": self.rollback_completion_drop,
+            "rollback_consecutive_validations": (
+                self.rollback_consecutive_required
+            ),
+            "rollback_cooldown_validations": (
+                self.rollback_cooldown_validations
+            ),
+            "rollback_cooldown_remaining": (
+                self.rollback_cooldown_remaining
+            ),
+            "rollback_cooldown_validation_count": (
+                self.rollback_cooldown_validation_count
+            ),
+            "rollback_cooldown_blocked_count": (
+                self.rollback_cooldown_blocked_count
+            ),
+            "consecutive_degraded_validations": (
+                self.consecutive_degraded_validations
+            ),
+            "plateau_patience_validations": self.plateau_patience,
+            "learning_rate_decay_factor": self.decay_factor,
+            "minimum_learning_rate": self.minimum_learning_rate,
+            "current_learning_rate": self.current_learning_rate,
+            "best_completion_rate": self.best_completion_rate,
+            "best_episode": self.best_episode,
+            "validations_without_improvement": (
+                self.validations_without_improvement
+            ),
+            "feasibility_rollbacks": self.feasibility_rollbacks,
+            "learning_rate_decays": self.learning_rate_decays,
+            "greedy_validation_runs": self.validation_count,
+            "sampled_validation_runs": self.sampled_validation_runs,
+            "sampled_every_validations": self.sampled_every,
+            "sampled_repeats": self.sampled_repeats,
+            "sampled_episode_milestones": self.sampled_episode_milestones,
         }
 
 
@@ -176,6 +467,9 @@ def _collect_serial_batch(
         "completion_progress": 0.0,
         "completion_bonus": 0.0,
         "quality": 0.0,
+        "truncation": 0.0,
+        "unfinished": 0.0,
+        "feasibility_shaping": 0.0,
     }
     inference_time = 0.0
     environment_step_time = 0.0
@@ -368,9 +662,17 @@ def _validation_log_row(
                 "safe_fatigue_limit",
                 "fatigue_masked_action_ratio",
                 "worker_competition_event_count",
+                "worker_matching_deficit_event_count",
+                "resource_admission_masked_action_count",
+                "resource_admission_masked_action_ratio",
+                "minimum_worker_alternatives",
+                "matching_preserving_worker_action_count",
+                "candidate_recovery_advance_count",
                 "machine_waiting_for_worker_time",
                 "completed_reconfigurations",
                 "worker_switch_ratio",
+                "unfinished_orders",
+                "feasibility_proxy_return",
             )
             for statistic in ("mean", "std")
         },
@@ -382,6 +684,92 @@ def _validation_log_row(
         ],
         "parallel_envs": validation.get("parallel_envs", 1),
     }
+
+
+def _evaluate_sampled_validation(
+    config: dict,
+    *,
+    dataset_name: str,
+    ppo_agent: PPOAgent,
+    instance_limit: int | None,
+    sampling_seeds: list[int],
+    runner: ParallelEpisodeRunner | None = None,
+    use_parallel: bool = False,
+) -> dict:
+    all_rows: list[dict] = []
+    reference: dict | None = None
+    for sampling_seed in sampling_seeds:
+        if use_parallel:
+            if runner is None:
+                raise ValueError("parallel sampled validation requires a runner")
+            rows, aggregate = evaluate_dataset_parallel(
+                config,
+                dataset_name=dataset_name,
+                ppo_agent=ppo_agent,
+                runner=runner,
+                instance_limit=instance_limit,
+                decode_mode="sampled",
+                sampling_seed=sampling_seed,
+            )
+        else:
+            rows, _, _, aggregate = evaluate_dataset(
+                config,
+                dataset_name=dataset_name,
+                policy_name="ppo",
+                ppo_agent=ppo_agent,
+                instance_limit=instance_limit,
+                decode_mode="sampled",
+                sampling_seed=sampling_seed,
+            )
+        all_rows.extend(rows)
+        reference = aggregate
+    if reference is None:
+        raise ValueError("sampled validation requires at least one seed")
+    combined = aggregate_evaluation_rows(
+        all_rows,
+        dataset=dataset_name,
+        policy="ppo",
+        manifest=str(reference["manifest"]),
+    )
+    combined["decode_mode"] = "sampled"
+    combined["parallel_envs"] = reference.get("parallel_envs", 1)
+    combined["repeat_count"] = len(sampling_seeds)
+    combined["unique_instance_count"] = (
+        combined["instance_count"] // len(sampling_seeds)
+    )
+    return combined
+
+
+def _attach_sampled_validation(
+    validation_row: dict,
+    sampled: dict,
+    *,
+    completed_episodes: int,
+) -> None:
+    sampled_row = _validation_log_row(
+        sampled,
+        completed_episodes=completed_episodes,
+    )
+    for key, value in sampled_row.items():
+        if key not in {"episode", "dataset"}:
+            validation_row[f"sampled_{key}"] = value
+    validation_row["sampled_repeat_count"] = sampled["repeat_count"]
+    validation_row["sampled_unique_instance_count"] = sampled[
+        "unique_instance_count"
+    ]
+    for name in (
+        "completion_rate",
+        "mean_unfinished_orders",
+        "mean_feasibility_proxy_return",
+        "mean_relative_heuristic_gap_percent",
+    ):
+        greedy_value = validation_row.get(name)
+        sampled_value = validation_row.get(f"sampled_{name}")
+        validation_row[f"sampled_minus_greedy_{name}"] = (
+            float(sampled_value) - float(greedy_value)
+            if sampled_value is not None and greedy_value is not None
+            else None
+        )
 
 
 def _training_effect_fields(metrics: dict) -> dict:
@@ -425,6 +813,24 @@ def _training_effect_fields(metrics: dict) -> dict:
         "worker_competition_event_count": metrics.get(
             "worker_competition_event_count"
         ),
+        "worker_matching_deficit_event_count": metrics.get(
+            "worker_matching_deficit_event_count"
+        ),
+        "resource_admission_masked_action_count": metrics.get(
+            "resource_admission_masked_action_count"
+        ),
+        "resource_admission_masked_action_ratio": metrics.get(
+            "resource_admission_masked_action_ratio"
+        ),
+        "minimum_worker_alternatives": metrics.get(
+            "minimum_worker_alternatives"
+        ),
+        "matching_preserving_worker_action_count": metrics.get(
+            "matching_preserving_worker_action_count"
+        ),
+        "candidate_recovery_advance_count": metrics.get(
+            "candidate_recovery_advance_count"
+        ),
         "machine_waiting_for_worker_time": metrics.get(
             "machine_waiting_for_worker_time"
         ),
@@ -438,6 +844,278 @@ def _training_effect_fields(metrics: dict) -> dict:
     }
 
 
+def _mean_finite(rows: list[dict], field: str) -> float | None:
+    values = [
+        float(row[field])
+        for row in rows
+        if row.get(field) is not None
+        and math.isfinite(float(row[field]))
+    ]
+    return float(np.mean(values)) if values else None
+
+
+def _late_training_diagnostics(
+    rows: list[dict],
+    *,
+    window: int = 500,
+) -> dict[str, object]:
+    selected = rows[-min(len(rows), int(window)) :]
+    fields = (
+        "completed_order_ratio",
+        "completed_operation_ratio",
+        "machine_waiting_for_worker_time",
+        "fatigue_masked_action_ratio",
+        "resource_admission_masked_action_count",
+        "resource_admission_masked_action_ratio",
+        "worker_matching_deficit_event_count",
+        "minimum_worker_alternatives",
+        "matching_preserving_worker_action_count",
+        "candidate_recovery_advance_count",
+        "reward_base",
+        "reward_shaping",
+        "reward_training",
+    )
+    pressure_profiles: dict[str, dict[str, object]] = {}
+    for pressure in sorted(
+        {
+            str(row.get("pressure_type"))
+            for row in selected
+            if row.get("pressure_type") is not None
+        }
+    ):
+        pressure_rows = [
+            row
+            for row in selected
+            if str(row.get("pressure_type")) == pressure
+        ]
+        pressure_profiles[pressure] = {
+            "sample_count": len(pressure_rows),
+            "completion_rate": _mean_finite(
+                [
+                    {
+                        "completed": float(
+                            bool(row.get("terminated"))
+                            and not bool(row.get("truncated"))
+                        )
+                    }
+                    for row in pressure_rows
+                ],
+                "completed",
+            ),
+            "mean_completed_order_ratio": _mean_finite(
+                pressure_rows,
+                "completed_order_ratio",
+            ),
+        }
+    return {
+        "requested_window_episodes": int(window),
+        "observed_episode_count": len(selected),
+        "completion_rate": _mean_finite(
+            [
+                {
+                    "completed": float(
+                        bool(row.get("terminated"))
+                        and not bool(row.get("truncated"))
+                    )
+                }
+                for row in selected
+            ],
+            "completed",
+        ),
+        "means": {field: _mean_finite(selected, field) for field in fields},
+        "by_pressure_type": pressure_profiles,
+    }
+
+
+def _ablation_gate_summary(
+    config: dict,
+    rows: list[dict],
+    validation_rows: list[dict],
+    stability_controller: ValidationStabilityController,
+    best_feasibility_instance_rows: list[dict],
+) -> dict[str, object] | None:
+    variant = config["training"].get("ablation_variant")
+    if variant is None:
+        return None
+    settings = config["training"].get("ablation_gate", {})
+    reconfiguration_window = int(
+        settings.get(
+            "training_window_instances",
+            settings.get("training_window_episodes", 200),
+        )
+    )
+    all_reconfiguration_rows = [
+        row
+        for row in rows
+        if row.get("pressure_type") == "reconfiguration_bottleneck"
+    ]
+    reconfiguration_rows = all_reconfiguration_rows[
+        -min(len(all_reconfiguration_rows), reconfiguration_window) :
+    ]
+    reconfiguration_completion_rate = _mean_finite(
+        [
+            {
+                "completed": float(
+                    bool(row.get("terminated"))
+                    and not bool(row.get("truncated"))
+                )
+            }
+            for row in reconfiguration_rows
+        ],
+        "completed",
+    )
+    failure_instance_id = str(
+        settings.get(
+            "failure_instance_id",
+            "validation_reconfiguration_bottleneck_2000009",
+        )
+    )
+    failure_row = next(
+        (
+            row
+            for row in best_feasibility_instance_rows
+            if str(row.get("instance_id")) == failure_instance_id
+        ),
+        None,
+    )
+    recent_validation = validation_rows[-10:]
+    recent_completion_rate = _mean_finite(
+        recent_validation,
+        "completion_rate",
+    )
+    rollback_rate = (
+        stability_controller.feasibility_rollbacks
+        / stability_controller.validation_count
+        if stability_controller.validation_count
+        else 0.0
+    )
+    identity_errors = [
+        abs(float(row["reward_identity_error"]))
+        for row in rows
+        if row.get("reward_identity_error") is not None
+        and math.isfinite(float(row["reward_identity_error"]))
+    ]
+    maximum_identity_error = max(identity_errors, default=0.0)
+    violation_count = sum(
+        int(row.get("schedule_violation_count", 0)) for row in rows
+    ) + sum(
+        int(row.get("schedule_violation_count", 0))
+        for row in validation_rows
+    )
+    checks = {
+        "reconfiguration_training_completion": bool(
+            reconfiguration_completion_rate is not None
+            and reconfiguration_completion_rate
+            >= float(settings.get("reconfiguration_completion_rate", 0.60))
+        ),
+        "failure_instance_completed": bool(
+            failure_row is not None
+            and bool(failure_row.get("terminated"))
+            and not bool(failure_row.get("truncated"))
+        ),
+        "failure_instance_worker_wait": bool(
+            failure_row is not None
+            and float(failure_row.get("machine_waiting_for_worker_time", math.inf))
+            < float(settings.get("failure_instance_max_worker_wait", 100.0))
+        ),
+        "validation_reached_full_completion": bool(
+            validation_rows
+            and max(float(row["completion_rate"]) for row in validation_rows)
+            >= 1.0 - 1e-12
+        ),
+        "recent_validation_completion": bool(
+            recent_completion_rate is not None
+            and recent_completion_rate
+            >= float(settings.get("last_ten_validation_completion_rate", 0.95))
+        ),
+        "rollback_rate": rollback_rate
+        < float(settings.get("maximum_rollback_rate", 0.20)),
+        "learning_rate_floor": (
+            stability_controller.current_learning_rate
+            >= float(settings.get("minimum_learning_rate", 2.5e-5))
+            - 1e-15
+        ),
+        "zero_constraint_violations": violation_count == 0,
+        "base_reward_identity": maximum_identity_error
+        <= float(settings.get("reward_identity_tolerance", 1e-8)),
+    }
+    return {
+        "variant": str(variant),
+        "passed": all(checks.values()),
+        "checks": checks,
+        "reconfiguration_training_requested_sample_count": (
+            reconfiguration_window
+        ),
+        "reconfiguration_training_available_sample_count": len(
+            all_reconfiguration_rows
+        ),
+        "reconfiguration_training_sample_count": len(reconfiguration_rows),
+        "reconfiguration_training_completion_rate": (
+            reconfiguration_completion_rate
+        ),
+        "failure_instance_id": failure_instance_id,
+        "failure_instance": failure_row,
+        "last_ten_validation_completion_rate": recent_completion_rate,
+        "rollback_rate": rollback_rate,
+        "current_learning_rate": stability_controller.current_learning_rate,
+        "constraint_violation_count": violation_count,
+        "maximum_base_reward_identity_error": maximum_identity_error,
+    }
+
+
+def _apply_ablation_variant(config: dict, variant: str | None) -> None:
+    if variant is None:
+        return
+    normalized = str(variant).upper()
+    if normalized == "E0":
+        raise ValueError(
+            "E0 reuses the existing seed-11 baseline and must not be retrained"
+        )
+    variants = {"E1", "E2", "E3", "R11", "S11", "L11", "Q11"}
+    if normalized not in variants:
+        raise ValueError(
+            "ablation variant must be E1, E2, E3, R11, S11, L11, or Q11"
+        )
+    config["training"]["ablation_variant"] = normalized
+    config["training"]["episodes"] = 600
+    config["training"]["validation_interval_episodes"] = 10
+    config["seed"] = 11
+    control = config["environment"]["worker_resource_control"]
+    control["mode"] = "matching_admission_v1"
+    config["reward"]["feasibility_shaping"]["enabled"] = normalized in {
+        "E2", "E3", "S11", "L11", "Q11"
+    }
+    config["training"]["two_stage"]["quality_checkpoint_promotion"] = (
+        "score_improving" if normalized == "Q11" else "completion_only"
+    )
+    sampled = config["training"]["validation_control"]["sampled"]
+    if normalized in {"R11", "S11", "L11", "Q11"}:
+        sampled["episode_milestones"] = [200, 400]
+    else:
+        sampled.pop("episode_milestones", None)
+    rollback = config["training"]["validation_control"][
+        "feasibility_rollback"
+    ]
+    plateau = config["training"]["validation_control"][
+        "learning_rate_plateau"
+    ]
+    if normalized in {"E1", "E2"}:
+        rollback["consecutive_validations"] = 1
+        rollback["cooldown_validations"] = 0
+        plateau["patience_validations"] = 10
+        plateau["minimum"] = 1e-5
+    elif normalized in {"R11", "S11"}:
+        rollback["consecutive_validations"] = 2
+        rollback["cooldown_validations"] = 3
+        plateau["patience_validations"] = 10
+        plateau["minimum"] = 1e-5
+    else:
+        rollback["consecutive_validations"] = 2
+        rollback["cooldown_validations"] = 3
+        plateau["patience_validations"] = 15
+        plateau["minimum"] = 2.5e-5
+
+
 def train(
     config: dict,
     *,
@@ -447,8 +1125,16 @@ def train(
     algorithm_seed: int | None = None,
     parallel_envs: int | None = None,
     visdom_enabled: bool | None = None,
+    ablation_variant: str | None = None,
 ) -> Path:
     config = deepcopy(config)
+    _apply_ablation_variant(config, ablation_variant)
+    if (
+        ablation_variant is not None
+        and algorithm_seed is not None
+        and int(algorithm_seed) != 11
+    ):
+        raise ValueError("screening ablations require algorithm seed 11")
     override_visdom_enabled(config, visdom_enabled)
     effective_algorithm_seed = validate_algorithm_seed(
         config,
@@ -600,11 +1286,18 @@ def train(
     validation_rows: list[dict] = []
     instance_ids: list[str] = []
     best_checkpoint = run_directory / "best_checkpoint.pt"
+    best_feasibility_checkpoint = (
+        run_directory / "best_feasibility_checkpoint.pt"
+    )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
     best_validation: dict | None = None
+    best_feasibility_validation: dict | None = None
+    best_feasibility_instance_rows: list[dict] = []
+    last_sampled_validation: dict | None = None
     best_score: tuple[float, float, float, float] | None = None
     phase_controller = TrainingPhaseController.from_config(config)
+    stability_controller = ValidationStabilityController.from_config(config)
     for episode in range(episodes):
         reward_phase = phase_controller.phase
         sampling_start = time.perf_counter()
@@ -638,6 +1331,9 @@ def train(
             "completion_progress": 0.0,
             "completion_bonus": 0.0,
             "quality": 0.0,
+            "truncation": 0.0,
+            "unfinished": 0.0,
+            "feasibility_shaping": 0.0,
         }
         inference_time = 0.0
         environment_step_time = 0.0
@@ -700,6 +1396,8 @@ def train(
             config["reward"],
             reward_phase,
         )
+        shaping_reward = reward_components["feasibility_shaping"]
+        base_reward = reward_sum - shaping_reward
         row = {
             "episode": episode,
             "update_id": episode + 1,
@@ -715,8 +1413,11 @@ def train(
             ),
             "steps": step_count,
             "reward": reward_sum,
+            "reward_base": base_reward,
+            "reward_shaping": shaping_reward,
+            "reward_training": reward_sum,
             "expected_reward": expected_reward,
-            "reward_identity_error": reward_sum - expected_reward,
+            "reward_identity_error": base_reward - expected_reward,
             "reward_phase": reward_phase,
             **{
                 f"reward_{name}": value
@@ -778,7 +1479,7 @@ def train(
             regular_validation_due
         )
         if should_validate:
-            _, _, _, validation = evaluate_dataset(
+            validation_instance_rows, _, _, validation = evaluate_dataset(
                 config,
                 dataset_name=validation_split,
                 policy_name="ppo",
@@ -789,9 +1490,37 @@ def train(
                 validation,
                 completed_episodes=completed_episodes,
             )
+            score = evaluation_selection_key(validation)
+            stability = stability_controller.observe_greedy(
+                score,
+                validation["completion_rate"],
+                completed_episodes=completed_episodes,
+                feasibility_phase=reward_phase == "feasibility",
+            )
+            if stability_controller.should_run_sampled(
+                final_validation=completed_episodes == episodes,
+                completed_episodes=completed_episodes,
+            ):
+                sampled_validation = _evaluate_sampled_validation(
+                    config,
+                    dataset_name=validation_split,
+                    ppo_agent=agent,
+                    instance_limit=validation_limit,
+                    sampling_seeds=stability_controller.sampled_seeds(
+                        int(config["seed"])
+                    ),
+                )
+                stability_controller.sampled_validation_runs += 1
+                last_sampled_validation = sampled_validation
+                _attach_sampled_validation(
+                    validation_row,
+                    sampled_validation,
+                    completed_episodes=completed_episodes,
+                )
             validation_event = phase_controller.observe_validation(
                 validation["completion_rate"],
                 completed_episodes=completed_episodes,
+                score=score,
             )
             validation_row["candidate_phase"] = reward_phase
             validation_row["validation_event"] = validation_event
@@ -801,7 +1530,40 @@ def train(
             validation_row["consecutive_completion_successes"] = (
                 phase_controller.consecutive_successes
             )
+            validation_row.update(stability)
+            validation_row["feasibility_rollback_applied"] = bool(
+                stability["rollback"]
+            )
             validation_rows.append(validation_row)
+            if bool(stability["improved"]) and reward_phase == "feasibility":
+                best_feasibility_validation = validation_row
+                best_feasibility_instance_rows = [
+                    dict(value) for value in validation_instance_rows
+                ]
+                agent.save(
+                    best_feasibility_checkpoint,
+                    metadata={
+                        "feature_dimensions": observation.feature_dimensions,
+                        "edge_feature_dimensions": (
+                            observation.edge_feature_dimensions
+                        ),
+                        "seed": config["seed"],
+                        "smoke": smoke,
+                        "online_instances": use_online_instances,
+                        "generator_version": (
+                            config["generator"]["version"]
+                            if use_online_instances
+                            else None
+                        ),
+                        "best_feasibility_episode": completed_episodes,
+                        "learning_rate": (
+                            stability_controller.current_learning_rate
+                        ),
+                        "validation": validation_row,
+                    },
+                )
+                row["candidate_status"] = "feasibility_best"
+                update_rows[-1]["candidate_status"] = "feasibility_best"
             if validation_event == "transition":
                 transition_metadata = {
                     "feature_dimensions": observation.feature_dimensions,
@@ -838,7 +1600,25 @@ def train(
                 update_rows[-1]["candidate_status"] = (
                     "rejected_rolled_back"
                 )
-            score = evaluation_selection_key(validation)
+            elif bool(stability["rollback"]):
+                if not best_feasibility_checkpoint.exists():
+                    raise RuntimeError(
+                        "feasibility rollback requested before a best "
+                        "checkpoint was established"
+                    )
+                agent.load(
+                    best_feasibility_checkpoint,
+                    load_optimizer=True,
+                )
+                row["candidate_status"] = "feasibility_rolled_back"
+                update_rows[-1]["candidate_status"] = (
+                    "feasibility_rolled_back"
+                )
+            agent.set_learning_rate(
+                stability_controller.current_learning_rate
+            )
+            if validation_event == "transition":
+                stability_controller.reset_plateau()
             checkpoint_eligible = (
                 not phase_controller.enabled
                 or validation_event in {"transition", "accepted"}
@@ -955,6 +1735,16 @@ def train(
                 str(best_checkpoint) if best_checkpoint.exists() else None
             ),
             "best_validation": best_validation,
+            "best_feasibility_checkpoint": (
+                str(best_feasibility_checkpoint)
+                if best_feasibility_checkpoint.exists()
+                else None
+            ),
+            "best_feasibility_validation": (
+                best_feasibility_validation
+            ),
+            "validation_stability": stability_controller.as_dict(),
+            "last_sampled_validation": last_sampled_validation,
             "formal_training_status": (
                 phase_controller.formal_training_status
             ),
@@ -997,6 +1787,25 @@ def train(
                 str(best_checkpoint) if best_checkpoint.exists() else None
             ),
             "best_validation": best_validation,
+            "best_feasibility_checkpoint": (
+                str(best_feasibility_checkpoint)
+                if best_feasibility_checkpoint.exists()
+                else None
+            ),
+            "best_feasibility_validation": (
+                best_feasibility_validation
+            ),
+            "best_feasibility_episode": (
+                best_feasibility_validation["episode"]
+                if best_feasibility_validation is not None
+                else None
+            ),
+            "feasibility_rollbacks": (
+                stability_controller.feasibility_rollbacks
+            ),
+            "learning_rate_decays": (
+                stability_controller.learning_rate_decays
+            ),
             "phase1_checkpoint": (
                 str(phase1_checkpoint)
                 if phase1_checkpoint.exists()
@@ -1006,7 +1815,22 @@ def train(
                 phase_controller.formal_training_status
             ),
             "training_phase": phase_controller.as_dict(),
+            "validation_stability": stability_controller.as_dict(),
             "validation_runs": len(validation_rows),
+            "sampled_validation_runs": (
+                stability_controller.sampled_validation_runs
+            ),
+            "last_sampled_validation": last_sampled_validation,
+            "late_500_episode_diagnostics": (
+                _late_training_diagnostics(rows)
+            ),
+            "ablation_gate": _ablation_gate_summary(
+                config,
+                rows,
+                validation_rows,
+                stability_controller,
+                best_feasibility_instance_rows,
+            ),
             "visdom": {
                 "enabled": bool(dashboard.enabled),
                 "connected": bool(dashboard.connected),
@@ -1088,11 +1912,18 @@ def _train_parallel(
     validation_rows: list[dict] = []
     instance_ids: list[str] = []
     best_checkpoint = run_directory / "best_checkpoint.pt"
+    best_feasibility_checkpoint = (
+        run_directory / "best_feasibility_checkpoint.pt"
+    )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
     best_validation: dict | None = None
+    best_feasibility_validation: dict | None = None
+    best_feasibility_instance_rows: list[dict] = []
+    last_sampled_validation: dict | None = None
     best_score: tuple[float, float, float, float] | None = None
     phase_controller = TrainingPhaseController.from_config(config)
+    stability_controller = ValidationStabilityController.from_config(config)
     total_transitions = 0
     total_sampling_time = 0.0
     total_inference_time = 0.0
@@ -1183,9 +2014,14 @@ def _train_parallel(
                     "cost_profile": episode.metadata["cost_profile"],
                     "steps": episode.step_count,
                     "reward": episode.reward_sum,
+                    "reward_base": episode.base_reward_sum,
+                    "reward_shaping": episode.reward_components.get(
+                        "feasibility_shaping", 0.0
+                    ),
+                    "reward_training": episode.reward_sum,
                     "expected_reward": episode.expected_reward,
                     "reward_identity_error": (
-                        episode.reward_sum - episode.expected_reward
+                        episode.base_reward_sum - episode.expected_reward
                     ),
                     "reward_phase": episode.reward_phase,
                     **{
@@ -1231,28 +2067,64 @@ def _train_parallel(
             )
             if should_validate:
                 if validation_parallel_envs > 1:
-                    _, validation = evaluate_dataset_parallel(
+                    validation_instance_rows, validation = (
+                        evaluate_dataset_parallel(
                         config,
                         dataset_name=validation_split,
                         ppo_agent=agent,
                         runner=runner,
                         instance_limit=validation_limit,
+                        )
                     )
                 else:
-                    _, _, _, validation = evaluate_dataset(
+                    validation_instance_rows, _, _, validation = (
+                        evaluate_dataset(
                         config,
                         dataset_name=validation_split,
                         policy_name="ppo",
                         ppo_agent=agent,
                         instance_limit=validation_limit,
+                        )
                     )
                 validation_row = _validation_log_row(
                     validation,
                     completed_episodes=completed_episodes,
                 )
+                score = evaluation_selection_key(validation)
+                stability = stability_controller.observe_greedy(
+                    score,
+                    validation["completion_rate"],
+                    completed_episodes=completed_episodes,
+                    feasibility_phase=reward_phase == "feasibility",
+                )
+                if stability_controller.should_run_sampled(
+                    final_validation=completed_episodes == episodes,
+                    completed_episodes=completed_episodes,
+                ):
+                    sampled_validation = _evaluate_sampled_validation(
+                        config,
+                        dataset_name=validation_split,
+                        ppo_agent=agent,
+                        instance_limit=validation_limit,
+                        sampling_seeds=(
+                            stability_controller.sampled_seeds(
+                                int(config["seed"])
+                            )
+                        ),
+                        runner=runner,
+                        use_parallel=validation_parallel_envs > 1,
+                    )
+                    stability_controller.sampled_validation_runs += 1
+                    last_sampled_validation = sampled_validation
+                    _attach_sampled_validation(
+                        validation_row,
+                        sampled_validation,
+                        completed_episodes=completed_episodes,
+                    )
                 validation_event = phase_controller.observe_validation(
                     validation["completion_rate"],
                     completed_episodes=completed_episodes,
+                    score=score,
                 )
                 validation_row["candidate_phase"] = reward_phase
                 validation_row["validation_event"] = validation_event
@@ -1262,7 +2134,48 @@ def _train_parallel(
                 validation_row["consecutive_completion_successes"] = (
                     phase_controller.consecutive_successes
                 )
+                validation_row.update(stability)
+                validation_row["feasibility_rollback_applied"] = bool(
+                    stability["rollback"]
+                )
                 validation_rows.append(validation_row)
+                if (
+                    bool(stability["improved"])
+                    and reward_phase == "feasibility"
+                ):
+                    best_feasibility_validation = validation_row
+                    best_feasibility_instance_rows = [
+                        dict(value) for value in validation_instance_rows
+                    ]
+                    agent.save(
+                        best_feasibility_checkpoint,
+                        metadata={
+                            "feature_dimensions": (
+                                bootstrap_observation.feature_dimensions
+                            ),
+                            "edge_feature_dimensions": (
+                                bootstrap_observation.edge_feature_dimensions
+                            ),
+                            "seed": config["seed"],
+                            "smoke": smoke,
+                            "online_instances": True,
+                            "generator_version": config["generator"][
+                                "version"
+                            ],
+                            "parallel_envs": parallel_envs,
+                            "update_id": update_id,
+                            "best_feasibility_episode": (
+                                completed_episodes
+                            ),
+                            "learning_rate": (
+                                stability_controller.current_learning_rate
+                            ),
+                            "validation": validation_row,
+                        },
+                    )
+                    update_row["candidate_status"] = "feasibility_best"
+                    for row in rows[-len(rollout.episodes) :]:
+                        row["candidate_status"] = "feasibility_best"
                 if validation_event == "transition":
                     transition_metadata = {
                         "feature_dimensions": (
@@ -1314,7 +2227,28 @@ def _train_parallel(
                         row["candidate_status"] = (
                             "rejected_rolled_back"
                         )
-                score = evaluation_selection_key(validation)
+                elif bool(stability["rollback"]):
+                    if not best_feasibility_checkpoint.exists():
+                        raise RuntimeError(
+                            "feasibility rollback requested before a best "
+                            "checkpoint was established"
+                        )
+                    agent.load(
+                        best_feasibility_checkpoint,
+                        load_optimizer=True,
+                    )
+                    update_row["candidate_status"] = (
+                        "feasibility_rolled_back"
+                    )
+                    for row in rows[-len(rollout.episodes) :]:
+                        row["candidate_status"] = (
+                            "feasibility_rolled_back"
+                        )
+                agent.set_learning_rate(
+                    stability_controller.current_learning_rate
+                )
+                if validation_event == "transition":
+                    stability_controller.reset_plateau()
                 checkpoint_eligible = (
                     not phase_controller.enabled
                     or validation_event in {"transition", "accepted"}
@@ -1435,6 +2369,16 @@ def _train_parallel(
                 str(best_checkpoint) if best_checkpoint.exists() else None
             ),
             "best_validation": best_validation,
+            "best_feasibility_checkpoint": (
+                str(best_feasibility_checkpoint)
+                if best_feasibility_checkpoint.exists()
+                else None
+            ),
+            "best_feasibility_validation": (
+                best_feasibility_validation
+            ),
+            "validation_stability": stability_controller.as_dict(),
+            "last_sampled_validation": last_sampled_validation,
             "formal_training_status": (
                 phase_controller.formal_training_status
             ),
@@ -1487,6 +2431,25 @@ def _train_parallel(
                 str(best_checkpoint) if best_checkpoint.exists() else None
             ),
             "best_validation": best_validation,
+            "best_feasibility_checkpoint": (
+                str(best_feasibility_checkpoint)
+                if best_feasibility_checkpoint.exists()
+                else None
+            ),
+            "best_feasibility_validation": (
+                best_feasibility_validation
+            ),
+            "best_feasibility_episode": (
+                best_feasibility_validation["episode"]
+                if best_feasibility_validation is not None
+                else None
+            ),
+            "feasibility_rollbacks": (
+                stability_controller.feasibility_rollbacks
+            ),
+            "learning_rate_decays": (
+                stability_controller.learning_rate_decays
+            ),
             "phase1_checkpoint": (
                 str(phase1_checkpoint)
                 if phase1_checkpoint.exists()
@@ -1496,7 +2459,22 @@ def _train_parallel(
                 phase_controller.formal_training_status
             ),
             "training_phase": phase_controller.as_dict(),
+            "validation_stability": stability_controller.as_dict(),
             "validation_runs": len(validation_rows),
+            "sampled_validation_runs": (
+                stability_controller.sampled_validation_runs
+            ),
+            "last_sampled_validation": last_sampled_validation,
+            "late_500_episode_diagnostics": (
+                _late_training_diagnostics(rows)
+            ),
+            "ablation_gate": _ablation_gate_summary(
+                config,
+                rows,
+                validation_rows,
+                stability_controller,
+                best_feasibility_instance_rows,
+            ),
             "visdom": {
                 "enabled": bool(dashboard.enabled),
                 "connected": bool(dashboard.connected),
@@ -1537,6 +2515,16 @@ def main() -> None:
     parser.set_defaults(online_instances=None)
     parser.add_argument("--algorithm-seed", type=int)
     parser.add_argument("--parallel-envs", type=int)
+    parser.add_argument(
+        "--ablation",
+        choices=(
+            "E1", "E2", "E3", "R11", "S11", "L11", "Q11",
+            "e1", "e2", "e3", "r11", "s11", "l11", "q11",
+        ),
+        help=(
+            "run a 600-episode seed-11 screening configuration"
+        ),
+    )
     visdom_group = parser.add_mutually_exclusive_group()
     visdom_group.add_argument(
         "--visdom",
@@ -1559,6 +2547,7 @@ def main() -> None:
         algorithm_seed=args.algorithm_seed,
         parallel_envs=args.parallel_envs,
         visdom_enabled=args.visdom_enabled,
+        ablation_variant=args.ablation,
     )
     print(f"training artifacts: {run_directory}")
 

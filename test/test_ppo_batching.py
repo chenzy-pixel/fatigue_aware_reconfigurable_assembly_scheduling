@@ -99,6 +99,39 @@ def test_mixed_variable_size_batch_matches_individual_forward(
     assert not hasattr(compact, "relations")
 
 
+def test_sampled_batch_uses_independent_reproducible_generator(
+    config,
+    fixed_instance,
+):
+    environment = AssemblySchedulingEnv(config)
+    observation = environment.reset(fixed_instance)
+    mask = environment.get_action_mask()
+    network = TypedActorCritic(
+        observation.feature_dimensions,
+        int(config["network"]["hidden_dim"]),
+    )
+    agent = PPOAgent(network, config["ppo"], device="cpu")
+    observations = [observation] * 32
+    masks = [mask] * 32
+    global_state = torch.random.get_rng_state().clone()
+    first_generator = torch.Generator(device="cpu").manual_seed(12345)
+    second_generator = torch.Generator(device="cpu").manual_seed(12345)
+
+    first = agent.act_batch(
+        observations,
+        masks,
+        generator=first_generator,
+    )
+    second = agent.act_batch(
+        observations,
+        masks,
+        generator=second_generator,
+    )
+
+    assert first == second
+    assert torch.equal(torch.random.get_rng_state(), global_state)
+
+
 def test_ppo_update_uses_one_batched_forward_per_minibatch(
     config,
     fixed_instance,

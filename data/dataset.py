@@ -408,6 +408,92 @@ class InstanceDataset(Sequence[GeneratedInstanceRecord]):
             yield self[index]
 
 
+def _normalized_curriculum_weights(
+    weights: dict[str, Any],
+) -> dict[str, float]:
+    if not weights:
+        raise ValueError("curriculum weights cannot be empty")
+    normalized = {str(name): float(value) for name, value in weights.items()}
+    if any(not math.isfinite(value) or value < 0.0 for value in normalized.values()):
+        raise ValueError("curriculum weights must be finite and non-negative")
+    total = sum(normalized.values())
+    if total <= 0.0:
+        raise ValueError("curriculum weights must have a positive total")
+    return {name: value / total for name, value in normalized.items()}
+
+
+def curriculum_weights_at(
+    curriculum: Any,
+    progress: float,
+) -> dict[str, float]:
+    """Return deterministic pressure weights at training progress in [0, 1]."""
+    fraction = float(progress)
+    if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+        raise ValueError("curriculum progress must be in [0, 1]")
+    if isinstance(curriculum, list):
+        previous_until = 0.0
+        for stage in curriculum:
+            until = float(stage["until_fraction"])
+            if (
+                not math.isfinite(until)
+                or until <= previous_until
+                or until > 1.0
+            ):
+                raise ValueError(
+                    "legacy curriculum until_fraction values must be "
+                    "strictly increasing within (0, 1]"
+                )
+            previous_until = until
+            if fraction < until + 1e-12:
+                return _normalized_curriculum_weights(stage["weights"])
+        raise ValueError("curriculum does not cover the full training run")
+    if not isinstance(curriculum, dict):
+        raise ValueError("curriculum must be a legacy list or a mapping")
+    if str(curriculum.get("mode")) != "linear":
+        raise ValueError("curriculum mapping mode must be 'linear'")
+    anchors = curriculum.get("anchors")
+    if not isinstance(anchors, list) or len(anchors) < 2:
+        raise ValueError("linear curriculum requires at least two anchors")
+    parsed: list[tuple[float, dict[str, float]]] = []
+    labels: set[str] | None = None
+    previous_at = -1.0
+    for anchor in anchors:
+        at = float(anchor["at_fraction"])
+        if (
+            not math.isfinite(at)
+            or not 0.0 <= at <= 1.0
+            or at <= previous_at
+        ):
+            raise ValueError(
+                "curriculum anchor fractions must be strictly increasing "
+                "within [0, 1]"
+            )
+        weights = _normalized_curriculum_weights(anchor["weights"])
+        current_labels = set(weights)
+        if labels is None:
+            labels = current_labels
+        elif current_labels != labels:
+            raise ValueError(
+                "all curriculum anchors must define the same pressure labels"
+            )
+        parsed.append((at, weights))
+        previous_at = at
+    if parsed[0][0] != 0.0 or parsed[-1][0] != 1.0:
+        raise ValueError("linear curriculum must start at 0 and end at 1")
+    for index in range(1, len(parsed)):
+        right_at, right_weights = parsed[index]
+        if fraction <= right_at + 1e-12:
+            left_at, left_weights = parsed[index - 1]
+            span = right_at - left_at
+            alpha = min(1.0, max(0.0, (fraction - left_at) / span))
+            return {
+                name: (1.0 - alpha) * left_weights[name]
+                + alpha * right_weights[name]
+                for name in left_weights
+            }
+    return dict(parsed[-1][1])
+
+
 class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
     """Deterministic, stateless training-instance stream.
 
@@ -451,17 +537,10 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             raise IndexError(index)
         seed = self.seed_start + index
         progress = index / max(1, self.episode_count)
-        stage = next(
-            (
-                value
-                for value in self.config["generator"]["curriculum"]
-                if progress < float(value["until_fraction"]) + 1e-12
-            ),
-            None,
+        weights = curriculum_weights_at(
+            self.config["generator"]["curriculum"],
+            progress,
         )
-        if stage is None:
-            raise ValueError("curriculum does not cover the full training run")
-        weights = stage["weights"]
         chooser = random.Random(seed)
         pressure_type = chooser.choices(
             list(weights),

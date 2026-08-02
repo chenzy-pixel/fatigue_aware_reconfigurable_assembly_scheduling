@@ -135,6 +135,24 @@ def aggregate_evaluation_rows(
         "worker_competition_event_count": summarize_values(
             row.get("worker_competition_event_count") for row in rows
         ),
+        "worker_matching_deficit_event_count": summarize_values(
+            row.get("worker_matching_deficit_event_count") for row in rows
+        ),
+        "resource_admission_masked_action_count": summarize_values(
+            row.get("resource_admission_masked_action_count") for row in rows
+        ),
+        "resource_admission_masked_action_ratio": summarize_values(
+            row.get("resource_admission_masked_action_ratio") for row in rows
+        ),
+        "minimum_worker_alternatives": summarize_values(
+            row.get("minimum_worker_alternatives") for row in rows
+        ),
+        "matching_preserving_worker_action_count": summarize_values(
+            row.get("matching_preserving_worker_action_count") for row in rows
+        ),
+        "candidate_recovery_advance_count": summarize_values(
+            row.get("candidate_recovery_advance_count") for row in rows
+        ),
         "machine_waiting_for_worker_time": summarize_values(
             row.get("machine_waiting_for_worker_time") for row in rows
         ),
@@ -143,6 +161,12 @@ def aggregate_evaluation_rows(
         ),
         "worker_switch_ratio": summarize_values(
             row.get("worker_switch_ratio") for row in rows
+        ),
+        "unfinished_orders": summarize_values(
+            row.get("unfinished_orders") for row in rows
+        ),
+        "feasibility_proxy_return": summarize_values(
+            row.get("feasibility_proxy_return") for row in rows
         ),
     }
     gap_metrics = {

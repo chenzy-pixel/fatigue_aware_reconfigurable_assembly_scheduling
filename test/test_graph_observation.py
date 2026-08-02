@@ -108,6 +108,22 @@ def test_graph_observation_static_contract(config, fixed_instance):
     assert observation.operations.shape[0] == 60
     assert observation.machines.shape[0] == 8
     assert observation.workers.shape[0] == 6
+    assert observation.global_feature_names == (
+        "current_time_norm",
+        "active_order_ratio",
+        "ready_operation_ratio",
+        "pending_reconfiguration_ratio",
+        "completed_operation_ratio",
+        "production_decision",
+        "worker_decision",
+        "safe_idle_worker_ratio",
+        "worker_matching_deficit_norm",
+        "minimum_worker_alternative_ratio",
+        "minimum_candidate_horizon_slack",
+    )
+    assert observation.global_features.shape == (
+        len(observation.global_feature_names),
+    )
     assert set(observation.relations) == set(ASSEMBLY_EDGE_TYPES)
 
     precedence = observation.relations[PRECEDES_EDGE]
@@ -124,6 +140,33 @@ def test_graph_observation_static_contract(config, fixed_instance):
     capability = observation.relations[CAPABLE_EDGE]
     assert capability.bidirectional
     assert set(map(tuple, capability.edge_index.T)) == expected_capability
+    assert capability.feature_names == (
+        "processing_time_norm",
+        "configuration_match",
+        "earliest_start_time_norm",
+        "resource_ready_time_norm",
+        "predicted_finish_time_norm",
+        "safe_disassembly_worker_ratio",
+        "safe_installation_worker_ratio",
+        "matching_deficit_after_commit_norm",
+        "horizon_slack_norm",
+    )
+    assert np.all(capability.edge_features[:, [0, 2, 3, 4]] >= 0.0)
+    assert np.all(capability.edge_features[:, [0, 2, 3, 4]] <= 2.0)
+    assert np.all(capability.edge_features[:, [5, 6, 7]] >= 0.0)
+    assert np.all(capability.edge_features[:, [5, 6, 7]] <= 1.0)
+    assert np.all(capability.edge_features[:, 8] >= -1.0)
+    assert np.all(capability.edge_features[:, 8] <= 1.0)
+
+    repeated = environment.observe()
+    assert np.array_equal(
+        repeated.global_features,
+        observation.global_features,
+    )
+    assert np.array_equal(
+        repeated.relations[CAPABLE_EDGE].edge_features,
+        capability.edge_features,
+    )
 
     expected_installation = {
         (worker_index, operation_index)

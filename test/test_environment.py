@@ -188,7 +188,7 @@ def test_decision_limit_truncates_at_current_time(
     limited_config["environment"]["max_decisions"] = (
         environment._decision_count + 1
     )
-    environment.step(worker_action)
+    _, reward, _, _, _ = environment.step(worker_action)
 
     metrics = environment.metrics()
     record = environment.reconfiguration_log[-1]
@@ -200,6 +200,10 @@ def test_decision_limit_truncates_at_current_time(
     assert record["duration"] == 0.0
     assert record["planned_end"] > record["end"]
     assert record["truncated"]
+    assert reward.truncation == pytest.approx(-1.0)
+    assert reward.unfinished == pytest.approx(
+        -metrics["unfinished_orders"] / metrics["total_orders"]
+    )
 
 
 def test_horizon_truncation_settles_partial_worker_task(
@@ -224,7 +228,7 @@ def test_horizon_truncation_settles_partial_worker_task(
         reconfiguration.disassembly_start_tick + partial_ticks
     )
     expected_duration = partial_ticks * environment.resolution
-    environment.step(environment.advance_action)
+    _, reward, _, _, _ = environment.step(environment.advance_action)
 
     metrics = environment.metrics()
     record = environment.reconfiguration_log[-1]
@@ -249,3 +253,239 @@ def test_horizon_truncation_settles_partial_worker_task(
     assert rewards["variance"] == pytest.approx(
         -metrics["worker_load_variance"]
     )
+    assert reward.truncation == pytest.approx(-1.0)
+    assert reward.unfinished == pytest.approx(
+        -metrics["unfinished_orders"] / metrics["total_orders"]
+    )
+
+
+def test_matching_admission_masks_second_lock_for_single_worker(
+    config,
+    fixed_instance,
+):
+    orders = (
+        replace(fixed_instance.orders[5], release_time=0.0),
+        replace(fixed_instance.orders[10], release_time=0.0),
+    )
+    worker = replace(
+        fixed_instance.workers[0],
+        qualified_modules=fixed_instance.modules,
+        initial_fatigue=0.1,
+    )
+    instance = replace(
+        fixed_instance,
+        instance_id="matching_admission_single_worker",
+        orders=orders,
+        workers=(worker,),
+    )
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance)
+    first = environment.encode_production_action(0, 0)
+    second = environment.encode_production_action(4, 1)
+
+    assert not environment.get_action_mask()[first]
+    assert not environment.get_action_mask()[second]
+    environment.step(first)
+
+    assert environment.get_action_mask()[second]
+    assert environment.metrics()[
+        "resource_admission_masked_action_count"
+    ] > 0
+
+    legacy_config = deepcopy(config)
+    legacy_config["environment"]["worker_resource_control"]["mode"] = (
+        "legacy_postcheck"
+    )
+    legacy = AssemblySchedulingEnv(legacy_config)
+    legacy.reset(instance)
+    legacy.step(first)
+    assert not legacy.get_action_mask()[second]
+
+
+def test_worker_action_must_preserve_remaining_full_matching(
+    config,
+    fixed_instance,
+):
+    orders = (
+        replace(fixed_instance.orders[0], release_time=0.0),
+        replace(fixed_instance.orders[10], release_time=0.0),
+    )
+    machines = list(fixed_instance.machines[:2])
+    machines[0] = replace(machines[0], initial_module="A2")
+    specialist = replace(
+        fixed_instance.workers[1],
+        qualified_modules=("A1",),
+        initial_fatigue=0.1,
+    )
+    flexible = replace(
+        fixed_instance.workers[0],
+        qualified_modules=fixed_instance.modules,
+        initial_fatigue=0.1,
+    )
+    instance = replace(
+        fixed_instance,
+        instance_id="matching_preserving_worker_dispatch",
+        orders=orders,
+        machines=tuple(machines),
+        workers=(specialist, flexible),
+    )
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance)
+    environment.step(environment.encode_production_action(0, 0))
+    environment.step(environment.encode_production_action(4, 1))
+    environment.step(environment.advance_action)
+    mask = environment.get_action_mask()
+
+    specialist_on_a1 = environment.encode_worker_action(1, 0)
+    flexible_on_a1 = environment.encode_worker_action(1, 1)
+    flexible_on_a2 = environment.encode_worker_action(0, 1)
+    assert not mask[specialist_on_a1]
+    assert mask[flexible_on_a1]
+    assert not mask[flexible_on_a2]
+    assert mask[-1]
+
+
+def test_direct_processing_does_not_require_worker_guarantee(
+    config,
+    fixed_instance,
+):
+    order = replace(fixed_instance.orders[0], release_time=0.0)
+    unqualified_worker = replace(
+        fixed_instance.workers[3],
+        qualified_modules=fixed_instance.modules,
+        initial_fatigue=0.74,
+    )
+    instance = replace(
+        fixed_instance,
+        instance_id="direct_processing_without_worker_guarantee",
+        orders=(order,),
+        machines=(fixed_instance.machines[0],),
+        workers=(unqualified_worker,),
+    )
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance)
+    direct = environment.encode_production_action(0, 0)
+
+    assert not environment.get_action_mask()[direct]
+
+
+def test_candidate_recovery_advance_without_pending_task(
+    config,
+    fixed_instance,
+):
+    order = replace(fixed_instance.orders[5], release_time=0.0)
+    recovering_worker = replace(
+        fixed_instance.workers[0],
+        qualified_modules=fixed_instance.modules,
+        initial_fatigue=0.74,
+    )
+    instance = replace(
+        fixed_instance,
+        instance_id="candidate_recovery_without_pending_task",
+        orders=(order,),
+        machines=(fixed_instance.machines[0],),
+        workers=(recovering_worker,),
+    )
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance)
+    candidate = environment.encode_production_action(0, 0)
+    recovery_tick = environment._production_candidate_profile(
+        0,
+        0,
+    ).resource_ready_tick
+
+    assert environment.get_action_mask()[candidate]
+    assert not environment.get_action_mask()[-1]
+    environment.step(environment.advance_action)
+    assert environment.decision_type == DecisionType.WORKER
+    assert not environment.get_action_mask()[-1]
+    environment.step(environment.advance_action)
+
+    assert environment.current_tick == recovery_tick
+    assert not environment.truncated
+    assert not environment.get_action_mask()[candidate]
+    assert environment.metrics()["candidate_recovery_advance_count"] == 1
+
+
+def test_wait_installation_and_new_disassembly_share_matching(
+    config,
+    fixed_instance,
+):
+    orders = (
+        replace(fixed_instance.orders[5], release_time=0.0),
+        replace(fixed_instance.orders[10], release_time=0.0),
+    )
+    specialist = replace(
+        fixed_instance.workers[1],
+        qualified_modules=("A1",),
+        initial_fatigue=0.1,
+    )
+    flexible = replace(
+        fixed_instance.workers[0],
+        qualified_modules=fixed_instance.modules,
+        initial_fatigue=0.1,
+    )
+    instance = replace(
+        fixed_instance,
+        instance_id="wait_installation_matching_priority",
+        orders=orders,
+        machines=fixed_instance.machines[:2],
+        workers=(specialist, flexible),
+    )
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance)
+    environment.step(environment.encode_production_action(0, 0))
+    environment.step(environment.advance_action)
+    environment.step(environment.encode_worker_action(0, 0))
+    environment.step(environment.advance_action)
+
+    second_lock = environment.encode_production_action(4, 1)
+    assert not environment.get_action_mask()[second_lock]
+    environment.step(second_lock)
+    environment.step(environment.advance_action)
+    mask = environment.get_action_mask()
+
+    install_a2_with_flexible = environment.encode_worker_action(0, 1)
+    disassemble_a1_with_specialist = environment.encode_worker_action(1, 0)
+    disassemble_a1_with_flexible = environment.encode_worker_action(1, 1)
+    assert not mask[install_a2_with_flexible]
+    assert not mask[disassemble_a1_with_specialist]
+    assert mask[disassemble_a1_with_flexible]
+
+
+def test_deadlock_terminal_penalty_is_applied_once(
+    config,
+    fixed_instance,
+    monkeypatch,
+):
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(fixed_instance)
+    action = HeuristicPolicy().select_action(environment)
+    original_get_action_mask = environment.get_action_mask
+    calls = 0
+
+    def force_deadlock_after_action():
+        nonlocal calls
+        calls += 1
+        original = original_get_action_mask()
+        if calls == 1:
+            return original
+        return np.ones_like(original, dtype=np.bool_)
+
+    monkeypatch.setattr(
+        environment,
+        "get_action_mask",
+        force_deadlock_after_action,
+    )
+    _, reward, terminated, truncated, _ = environment.step(action)
+    metrics = environment.metrics()
+
+    assert not terminated
+    assert truncated
+    assert metrics["terminal_reason"] == "deadlock"
+    assert reward.truncation == pytest.approx(-1.0)
+    assert reward.unfinished == pytest.approx(
+        -metrics["unfinished_orders"] / metrics["total_orders"]
+    )
+    with pytest.raises(RuntimeError, match="terminal environment"):
+        environment.step(action)

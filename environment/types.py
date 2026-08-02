@@ -80,12 +80,36 @@ class RewardVector:
     completion_progress: float = 0.0
     completion_bonus: float = 0.0
     quality: float = 0.0
+    truncation: float = 0.0
+    unfinished: float = 0.0
+    feasibility_shaping: float = 0.0
 
     def scalarize(self, config: dict, phase: str | None = None) -> float:
+        base = self.base_scalarize(config, phase)
+        mode = str(config.get("mode", "legacy_weighted_sum"))
+        if mode == "hierarchical_constrained_v1":
+            return base + self.feasibility_shaping
+        return base
+
+    def base_scalarize(self, config: dict, phase: str | None = None) -> float:
+        """Return the formal objective reward without training-only shaping."""
         mode = str(config.get("mode", "legacy_weighted_sum"))
         if mode == "hierarchical_constrained_v1":
             effective_phase = "feasibility" if phase is None else str(phase)
-            base = self.completion_progress + self.completion_bonus
+            truncation_weight = float(config.get("truncation_penalty", 0.0))
+            unfinished_weight = float(
+                config.get("unfinished_order_penalty", 0.0)
+            )
+            if truncation_weight < 0.0 or unfinished_weight < 0.0:
+                raise ValueError(
+                    "hierarchical terminal penalty weights must be non-negative"
+                )
+            base = (
+                self.completion_progress
+                + self.completion_bonus
+                + truncation_weight * self.truncation
+                + unfinished_weight * self.unfinished
+            )
             if effective_phase == "feasibility":
                 return base
             if effective_phase == "quality":
@@ -112,6 +136,9 @@ class RewardVector:
             "completion_progress": self.completion_progress,
             "completion_bonus": self.completion_bonus,
             "quality": self.quality,
+            "truncation": self.truncation,
+            "unfinished": self.unfinished,
+            "feasibility_shaping": self.feasibility_shaping,
         }
 
 
@@ -185,8 +212,27 @@ def proxy_return_from_metrics(
     completion_bonus = float(
         bool(metrics["terminated"]) and not bool(metrics["truncated"])
     )
+    truncated = float(bool(metrics["truncated"]))
+    unfinished_fraction = (
+        float(metrics["unfinished_orders"]) / total_orders
+        if bool(metrics["truncated"])
+        else 0.0
+    )
+    truncation_weight = float(config.get("truncation_penalty", 0.0))
+    unfinished_weight = float(
+        config.get("unfinished_order_penalty", 0.0)
+    )
+    if truncation_weight < 0.0 or unfinished_weight < 0.0:
+        raise ValueError(
+            "hierarchical terminal penalty weights must be non-negative"
+        )
     effective_phase = "feasibility" if phase is None else str(phase)
-    result = completion_progress + completion_bonus
+    result = (
+        completion_progress
+        + completion_bonus
+        - truncation_weight * truncated
+        - unfinished_weight * unfinished_fraction
+    )
     if effective_phase == "feasibility":
         return result
     if effective_phase != "quality":
@@ -251,6 +297,7 @@ class HeterogeneousGraphObservation:
     workers: np.ndarray
     global_features: np.ndarray
     decision_type: DecisionType
+    global_feature_names: tuple[str, ...] = field(default_factory=tuple)
     node_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
     relations: dict[EdgeType, EdgeStore] = field(default_factory=dict)
 
@@ -261,6 +308,7 @@ class HeterogeneousGraphObservation:
             workers=self.workers.copy(),
             global_features=self.global_features.copy(),
             decision_type=self.decision_type,
+            global_feature_names=tuple(self.global_feature_names),
             node_ids={
                 node_type: tuple(identifiers)
                 for node_type, identifiers in self.node_ids.items()
@@ -297,6 +345,15 @@ class HeterogeneousGraphObservation:
 
     def validate(self) -> None:
         node_features = self.node_features
+        if self.global_features.ndim != 1:
+            raise ValueError("global features must have shape (F,)")
+        if (
+            self.global_feature_names
+            and len(self.global_feature_names) != self.global_features.shape[0]
+        ):
+            raise ValueError(
+                "global feature width must match the number of feature names"
+            )
         expected_node_types = set(node_features)
         if self.node_ids and set(self.node_ids) != expected_node_types:
             raise ValueError(
@@ -345,6 +402,7 @@ class PolicyObservation:
     workers: np.ndarray
     global_features: np.ndarray
     decision_type: DecisionType
+    global_feature_names: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_observation(
@@ -359,6 +417,7 @@ class PolicyObservation:
             workers=observation.workers.copy(),
             global_features=observation.global_features.copy(),
             decision_type=observation.decision_type,
+            global_feature_names=tuple(observation.global_feature_names),
         )
 
     def copy(self) -> "PolicyObservation":
@@ -368,6 +427,7 @@ class PolicyObservation:
             workers=self.workers.copy(),
             global_features=self.global_features.copy(),
             decision_type=self.decision_type,
+            global_feature_names=tuple(self.global_feature_names),
         )
 
     @property

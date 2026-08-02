@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time
 from copy import deepcopy
 
 import numpy as np
@@ -12,9 +13,10 @@ from agent.ppo.parallel import (
     ParallelEpisodeRunner,
     ParallelWorkerError,
 )
-from data.dataset import load_dataset_split
+from data.dataset import OnlineInstanceDataset, load_dataset_split
 from environment import AssemblySchedulingEnv
 from eval import evaluate_dataset, evaluate_dataset_parallel
+from train import _collect_serial_batch
 
 
 def _agent(config, instance):
@@ -61,7 +63,7 @@ def test_parallel_training_seeds_and_cleanup(
             for value in rollout.episodes
         )
         assert all(
-            value.reward_sum == pytest.approx(value.expected_reward)
+            value.base_reward_sum == pytest.approx(value.expected_reward)
             for value in rollout.episodes
         )
         assert all(
@@ -73,6 +75,9 @@ def test_parallel_training_seeds_and_cleanup(
                 "completion_progress",
                 "completion_bonus",
                 "quality",
+                "truncation",
+                "unfinished",
+                "feasibility_shaping",
             }
             for value in rollout.episodes
         )
@@ -153,6 +158,61 @@ def test_parallel_validation_matches_serial_and_preserves_rng(
         assert parallel["truncated_count"] == serial["truncated_count"]
         assert dataset.manifest_path.exists()
     assert all(not process.is_alive() for process in processes)
+
+
+def test_serial_and_parallel_shaping_are_identical(
+    config,
+    fixed_instance,
+):
+    effective_config = deepcopy(config)
+    effective_config["training"]["worker_timeout_seconds"] = 120
+    agent = _agent(effective_config, fixed_instance)
+    dataset = OnlineInstanceDataset(
+        config=effective_config,
+        template=fixed_instance,
+        episode_count=1,
+    )
+    record = dataset[0]
+    serial_environment = AssemblySchedulingEnv(effective_config)
+
+    with ParallelEpisodeRunner(
+        config=effective_config,
+        template=fixed_instance,
+        episode_count=1,
+        worker_count=2,
+    ) as runner:
+        torch.manual_seed(12345)
+        serial = _collect_serial_batch(
+            config=effective_config,
+            agent=agent,
+            environment=serial_environment,
+            episode_index=0,
+            instance=record.instance,
+            record=record,
+            sampling_start=time.perf_counter(),
+            generation_time_seconds=0.0,
+            reward_phase="feasibility",
+            step_limit=20,
+        ).episodes[0]
+        torch.manual_seed(12345)
+        parallel = runner.collect_training_batch(
+            agent,
+            [0],
+            gamma=float(effective_config["ppo"]["gamma"]),
+            gae_lambda=float(effective_config["ppo"]["gae_lambda"]),
+            reward_phase="feasibility",
+            step_limit=20,
+        ).episodes[0]
+
+    assert serial.reward_components == pytest.approx(
+        parallel.reward_components,
+        abs=1e-10,
+    )
+    assert serial.reward_sum == pytest.approx(parallel.reward_sum, abs=1e-10)
+    assert serial.base_reward_sum == pytest.approx(
+        parallel.base_reward_sum,
+        abs=1e-10,
+    )
 
 
 def test_parallel_worker_error_is_reported_and_all_workers_exit(

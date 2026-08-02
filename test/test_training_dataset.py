@@ -4,6 +4,7 @@ import csv
 import json
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -56,6 +57,80 @@ def _validation_aggregate(flow_objective: float) -> dict:
     }
 
 
+def test_ablation_gate_windows_after_filtering_reconfiguration_rows(config):
+    effective_config = deepcopy(config)
+    effective_config["training"]["ablation_variant"] = "E3"
+    gate_config = effective_config["training"]["ablation_gate"]
+    gate_config.pop("training_window_episodes", None)
+    gate_config["training_window_instances"] = 2
+
+    def training_row(pressure_type: str, completed: bool) -> dict:
+        return {
+            "pressure_type": pressure_type,
+            "terminated": completed,
+            "truncated": not completed,
+            "reward_identity_error": 0.0,
+            "schedule_violation_count": 0,
+        }
+
+    rows = [
+        training_row("reconfiguration_bottleneck", True),
+        training_row("reconfiguration_bottleneck", False),
+        *[training_row("balanced", True) for _ in range(10)],
+        training_row("reconfiguration_bottleneck", True),
+        training_row("balanced", True),
+    ]
+    validation_rows = [
+        {"completion_rate": 1.0, "schedule_violation_count": 0}
+    ]
+    failure_instance_rows = [
+        {
+            "instance_id": gate_config["failure_instance_id"],
+            "terminated": True,
+            "truncated": False,
+            "machine_waiting_for_worker_time": 0.0,
+        }
+    ]
+    stability_controller = SimpleNamespace(
+        feasibility_rollbacks=0,
+        validation_count=1,
+        current_learning_rate=1e-4,
+    )
+
+    summary = training_module._ablation_gate_summary(
+        effective_config,
+        rows,
+        validation_rows,
+        stability_controller,
+        failure_instance_rows,
+    )
+
+    assert summary is not None
+    assert summary["reconfiguration_training_requested_sample_count"] == 2
+    assert summary["reconfiguration_training_available_sample_count"] == 3
+    assert summary["reconfiguration_training_sample_count"] == 2
+    assert summary["reconfiguration_training_completion_rate"] == pytest.approx(
+        0.5
+    )
+    assert not summary["checks"]["reconfiguration_training_completion"]
+
+    gate_config["training_window_episodes"] = gate_config.pop(
+        "training_window_instances"
+    )
+    legacy_summary = training_module._ablation_gate_summary(
+        effective_config,
+        rows,
+        validation_rows,
+        stability_controller,
+        failure_instance_rows,
+    )
+    assert legacy_summary is not None
+    assert legacy_summary["reconfiguration_training_sample_count"] == 2
+    assert legacy_summary[
+        "reconfiguration_training_completion_rate"
+    ] == pytest.approx(0.5)
+
+
 def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     config,
     fixed_instance,
@@ -96,6 +171,7 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
         FakeOnlineDataset,
     )
     validation_calls = []
+    sampled_validation_calls = []
 
     def fake_evaluate_dataset(
         config,
@@ -110,6 +186,9 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
         assert policy_name == "ppo"
         assert ppo_agent is not None
         assert instance_limit == 2
+        if kwargs.get("decode_mode", "greedy") == "sampled":
+            sampled_validation_calls.append(kwargs["sampling_seed"])
+            return [], [], [], _validation_aggregate(15.0)
         validation_calls.append(len(validation_calls))
         objective = 10.0 if len(validation_calls) == 1 else 20.0
         return [], [], [], _validation_aggregate(objective)
@@ -129,8 +208,18 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     )
 
     assert len(validation_calls) == 2
+    sampled_settings = effective_config["training"][
+        "validation_control"
+    ]["sampled"]
+    assert sampled_validation_calls == [
+        int(effective_config["seed"])
+        + int(sampled_settings["seed_offset"])
+        + repeat
+        for repeat in range(int(sampled_settings["repeats"]))
+    ]
     assert (run_directory / "checkpoint.pt").exists()
     assert (run_directory / "best_checkpoint.pt").exists()
+    assert (run_directory / "best_feasibility_checkpoint.pt").exists()
     assert (run_directory / "train_log.csv").exists()
     assert (run_directory / "validation_log.csv").exists()
     summary = json.loads(
@@ -157,6 +246,9 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     ) as handle:
         validation_rows = list(csv.DictReader(handle))
     assert [int(row["episode"]) for row in validation_rows] == [10, 11]
+    assert validation_rows[0]["sampled_completion_rate"] == ""
+    assert validation_rows[1]["sampled_completion_rate"] != ""
+    assert summary["sampled_validation_runs"] == 1
 
     best = torch.load(
         run_directory / "best_checkpoint.pt",
@@ -311,11 +403,14 @@ def test_parallel_training_batches_updates_and_writes_update_log(
         ppo_agent,
         runner,
         instance_limit,
+        **kwargs,
     ):
         assert dataset_name == "validation"
         assert ppo_agent is not None
         assert runner.worker_count == 2
         assert instance_limit == 2
+        if kwargs.get("decode_mode", "greedy") == "sampled":
+            return [], _validation_aggregate(15.0)
         validation_calls.append(1)
         objective = 10.0 if len(validation_calls) == 1 else 20.0
         return [], _validation_aggregate(objective)
@@ -366,6 +461,7 @@ def test_parallel_training_batches_updates_and_writes_update_log(
     assert summary["validation_runs"] == 2
     assert (run_directory / "checkpoint.pt").exists()
     assert (run_directory / "best_checkpoint.pt").exists()
+    assert (run_directory / "best_feasibility_checkpoint.pt").exists()
     repeat_directory = training_module.train(
         effective_config,
         smoke=True,
@@ -454,6 +550,8 @@ def test_quality_candidate_failure_rolls_back_network_and_optimizer(
     completion_rates = iter((1.0, 1.0, 1.0, 0.5))
 
     def fake_evaluate_dataset(*args, **kwargs):
+        if kwargs.get("decode_mode", "greedy") == "sampled":
+            return [], [], [], _validation_aggregate(10.0)
         completion_rate = next(completion_rates)
         aggregate = _validation_aggregate(10.0)
         aggregate["completion_rate"] = completion_rate
@@ -554,10 +652,109 @@ def test_unreached_feasibility_gate_writes_only_provisional_checkpoint(
     )
     assert not (run_directory / "checkpoint.pt").exists()
     assert not (run_directory / "best_checkpoint.pt").exists()
+    assert (run_directory / "best_feasibility_checkpoint.pt").exists()
     assert (run_directory / "last_candidate_checkpoint.pt").exists()
     summary = json.loads(
         (run_directory / "summary.json").read_text(encoding="utf-8")
     )
     assert summary["checkpoint"] is None
     assert summary["best_checkpoint"] is None
+    assert summary["best_feasibility_checkpoint"] is not None
     assert summary["formal_training_status"] == "feasibility_not_reached"
+
+
+def test_feasibility_regression_rolls_back_optimizer_and_keeps_decayed_lr(
+    config,
+    fixed_instance,
+    tmp_path,
+    monkeypatch,
+):
+    effective_config = deepcopy(config)
+    effective_config["paths"]["result_root"] = str(tmp_path)
+    effective_config["training"]["smoke_episodes"] = 3
+    effective_config["training"]["smoke_rollout_steps"] = 1
+    effective_config["training"]["validation_interval_episodes"] = 1
+    effective_config["training"]["smoke_validation_instance_limit"] = 2
+    effective_config["training"]["validation_control"][
+        "learning_rate_plateau"
+    ]["patience_validations"] = 1
+
+    class FakeOnlineDataset:
+        def __init__(self, **kwargs):
+            pass
+
+        def __getitem__(self, index):
+            return GeneratedInstanceRecord(
+                instance=replace(
+                    fixed_instance,
+                    instance_id=f"feasibility_rollback_{index}",
+                ),
+                metadata={
+                    "seed": 1_000_000 + index,
+                    "pressure_type": "balanced",
+                    "cost_profile": "balanced_cost",
+                },
+            )
+
+    monkeypatch.setattr(
+        training_module,
+        "OnlineInstanceDataset",
+        FakeOnlineDataset,
+    )
+    greedy_rates = iter((1.0, 0.9, 0.9))
+
+    def fake_evaluate_dataset(*args, **kwargs):
+        aggregate = _validation_aggregate(10.0)
+        if kwargs.get("decode_mode", "greedy") == "sampled":
+            return [], [], [], aggregate
+        completion_rate = next(greedy_rates)
+        aggregate["completion_rate"] = completion_rate
+        aggregate["completed_count"] = int(2 * completion_rate)
+        aggregate["truncated_count"] = 2 - aggregate["completed_count"]
+        return [], [], [], aggregate
+
+    monkeypatch.setattr(
+        training_module,
+        "evaluate_dataset",
+        fake_evaluate_dataset,
+    )
+    run_directory = training_module.train(
+        effective_config,
+        smoke=True,
+        online_instances=True,
+        run_name="feasibility_rollback_test",
+        parallel_envs=1,
+    )
+
+    best = torch.load(
+        run_directory / "best_feasibility_checkpoint.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    final = torch.load(
+        run_directory / "last_candidate_checkpoint.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    _assert_nested_equal(best["network"], final["network"])
+    _assert_nested_equal(
+        best["optimizer"]["state"],
+        final["optimizer"]["state"],
+    )
+    best_groups = deepcopy(best["optimizer"]["param_groups"])
+    final_groups = deepcopy(final["optimizer"]["param_groups"])
+    best_learning_rates = [group.pop("lr") for group in best_groups]
+    final_learning_rates = [group.pop("lr") for group in final_groups]
+    _assert_nested_equal(best_groups, final_groups)
+    assert best_learning_rates == pytest.approx([1e-4])
+    assert final_learning_rates == pytest.approx([5e-5])
+
+    summary = json.loads(
+        (run_directory / "summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["best_feasibility_validation"]["episode"] == 1
+    assert summary["feasibility_rollbacks"] == 1
+    assert summary["learning_rate_decays"] == 1
+    assert summary["last_update"]["candidate_status"] == (
+        "feasibility_rolled_back"
+    )

@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 result/runs/
+result/run_logs/
+result/analysis/
+result/*.log
 data/instances/*.pkl
 data/instances/.build/
 data/manifests/.build/

@@ -57,11 +57,13 @@ class PPOAgent:
         action_mask: np.ndarray,
         *,
         deterministic: bool = False,
+        generator: torch.Generator | None = None,
     ) -> tuple[int, float, float]:
         actions, log_probabilities, values = self.act_batch(
             [observation],
             [action_mask],
             deterministic=deterministic,
+            generator=generator,
         )
         return actions[0], log_probabilities[0], values[0]
 
@@ -72,6 +74,7 @@ class PPOAgent:
         action_masks: Sequence[np.ndarray],
         *,
         deterministic: bool = False,
+        generator: torch.Generator | None = None,
     ) -> tuple[list[int], list[float], list[float]]:
         logits, values = self.network.forward_batch(
             observations,
@@ -79,11 +82,16 @@ class PPOAgent:
             device=self.device,
         )
         distribution = Categorical(logits=logits)
-        actions = (
-            torch.argmax(logits, dim=-1)
-            if deterministic
-            else distribution.sample()
-        )
+        if deterministic:
+            actions = torch.argmax(logits, dim=-1)
+        elif generator is None:
+            actions = distribution.sample()
+        else:
+            actions = torch.multinomial(
+                distribution.probs,
+                num_samples=1,
+                generator=generator,
+            ).squeeze(-1)
         log_probabilities = distribution.log_prob(actions)
         return (
             [int(value) for value in actions.cpu().tolist()],
@@ -298,6 +306,17 @@ class PPOAgent:
         if not all(math.isfinite(value) for value in result.values()):
             raise FloatingPointError("PPO returned non-finite metrics")
         return result
+
+    @property
+    def learning_rate(self) -> float:
+        return float(self.optimizer.param_groups[0]["lr"])
+
+    def set_learning_rate(self, value: float) -> None:
+        learning_rate = float(value)
+        if not math.isfinite(learning_rate) or learning_rate <= 0.0:
+            raise ValueError("learning rate must be finite and positive")
+        for group in self.optimizer.param_groups:
+            group["lr"] = learning_rate
 
     def save(self, path: str | Path, metadata: dict[str, Any] | None = None) -> None:
         output = Path(path)

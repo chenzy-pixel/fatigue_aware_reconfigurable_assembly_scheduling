@@ -33,6 +33,201 @@ DEFAULT_VISDOM_SETTINGS: dict[str, Any] = {
 }
 
 
+# Stable internal keys remain English in CSV/JSON logs.  This mapping is only
+# for the human-facing Visdom panel, so that neither experiment schemas nor
+# replay compatibility depend on the display language.
+DISPLAY_LABELS: dict[str, str] = {
+    "feasibility_shaping": "Feasibility shaping",
+    "worker_matching_deficit_event_count": "Matching deficit events",
+    "resource_admission_masked_action_ratio": "Admission mask ratio",
+    "minimum_worker_alternatives": "Minimum worker alternatives",
+    "matching_preserving_worker_action_count": "Matching-preserving actions",
+    "candidate_recovery_advance_count": "Candidate recovery advances",
+    "mean_worker_matching_deficit_event_count": "Mean matching deficit events",
+    "mean_resource_admission_masked_action_ratio": "Mean admission mask ratio",
+    "mean_minimum_worker_alternatives": "Mean minimum worker alternatives",
+    "reward_mean": "平均回报",
+    "reward_std": "回报标准差",
+    "reward_rolling_mean": "回报滚动均值",
+    "quality_score": "质量得分",
+    "completed_order_ratio": "订单完成率",
+    "completed_operation_ratio": "工序完成率",
+    "terminated_rate": "正常终止比例",
+    "truncated_rate": "截断比例",
+    "flow": "流经时间",
+    "cost": "重构成本",
+    "variance": "工人负荷方差",
+    "completion_progress": "完成进度奖励",
+    "completion_bonus": "完成奖励",
+    "quality": "质量奖励",
+    "truncation": "截断惩罚",
+    "unfinished": "未完成惩罚",
+    "flow_time_objective": "流经时间目标",
+    "reconfiguration_cost": "重构成本",
+    "worker_load_variance": "工人负荷方差",
+    "policy_loss": "策略损失",
+    "value_loss": "价值损失",
+    "loss": "总损失",
+    "entropy": "策略熵",
+    "approx_kl": "近似 KL 散度",
+    "clip_fraction": "裁剪比例",
+    "ratio_mean": "概率比均值",
+    "learning_rate": "学习率",
+    "gradient_norm": "平均梯度范数",
+    "gradient_norm_max": "最大梯度范数",
+    "gradient_clipped_fraction": "梯度裁剪比例",
+    "pre_update_explained_variance": "更新前解释方差",
+    "return_mean": "回报均值",
+    "return_std": "回报标准差",
+    "advantage_mean": "原始优势均值",
+    "advantage_std": "原始优势标准差",
+    "value_prediction_mean": "价值预测均值",
+    "value_prediction_std": "价值预测标准差",
+    "maximum_worker_fatigue": "最大工人疲劳",
+    "mean_peak_worker_fatigue": "平均峰值疲劳",
+    "fatigue_masked_action_ratio": "疲劳屏蔽动作比例",
+    "safe_fatigue_limit": "疲劳安全阈值",
+    "completed_reconfigurations": "完成重构次数",
+    "worker_switch_ratio": "拆装工人切换比例",
+    "worker_competition_event_count": "工人竞争事件数",
+    "machine_waiting_for_worker_time": "机器等待工人时间",
+    "transitions_per_second": "每秒状态转移数",
+    "transition_count": "状态转移数",
+    "sampling_wall_time_seconds": "采样耗时（秒）",
+    "policy_inference_time_seconds": "策略推理耗时（秒）",
+    "ppo_update_time_seconds": "PPO 更新耗时（秒）",
+    "generation_time_seconds": "实例生成耗时（秒）",
+    "environment_step_time_seconds": "环境推进耗时（秒）",
+    "greedy_completion_rate": "贪心完成率",
+    "sampled_completion_rate": "采样完成率",
+    "greedy_truncated_count": "贪心截断数",
+    "sampled_truncated_count": "采样截断数",
+    "greedy_mean_unfinished_orders": "贪心平均未完成订单数",
+    "sampled_mean_unfinished_orders": "采样平均未完成订单数",
+    "schedule_violation_count": "调度违规数",
+    "mean_makespan": "当前平均完工期",
+    "mean_total_flow_time": "当前平均总流经时间",
+    "mean_flow_time_objective": "当前平均惩罚后流经目标",
+    "best_makespan": "最佳平均完工期",
+    "best_total_flow_time": "最佳平均总流经时间",
+    "best_flow_time_objective": "最佳平均惩罚后流经目标",
+    "mean_reconfiguration_cost": "当前平均重构成本",
+    "mean_worker_load_variance": "当前平均负荷方差",
+    "best_reconfiguration_cost": "最佳平均重构成本",
+    "best_worker_load_variance": "最佳平均负荷方差",
+    "flow_gap": "流经时间差距",
+    "sampled_flow_gap": "采样流经时间差距",
+    "makespan_gap": "完工期差距",
+    "reconfiguration_cost_gap": "重构成本差距",
+    "worker_load_variance_gap": "负荷方差差距",
+    "greedy": "贪心策略",
+    "sampled": "采样策略",
+    "mean_maximum_worker_fatigue": "平均最大工人疲劳",
+    "mean_mean_peak_worker_fatigue": "平均峰值疲劳",
+    "mean_safe_fatigue_limit": "平均疲劳安全阈值",
+    "mean_fatigue_masked_action_ratio": "平均疲劳屏蔽动作比例",
+    "mean_worker_competition_event_count": "平均工人竞争事件数",
+    "mean_machine_waiting_for_worker_time": "平均机器等待工人时间",
+    "mean_completed_reconfigurations": "平均完成重构次数",
+    "mean_worker_switch_ratio": "平均拆装工人切换比例",
+}
+
+PRESSURE_PROFILE_LABELS: dict[str, str] = {
+    "easy": "低压力场景",
+    "balanced": "均衡压力场景",
+    "bottleneck": "瓶颈压力场景",
+    "machine_bottleneck": "机器瓶颈场景",
+    "worker_bottleneck": "工人瓶颈场景",
+    "mixed_bottleneck": "混合瓶颈场景",
+}
+
+PHASE_STATE_LABELS: dict[str, str] = {
+    "enabled": "两阶段训练已启用",
+    "phase": "当前阶段",
+    "completion_target": "完成率目标",
+    "consecutive_validations_required": "要求连续验证次数",
+    "consecutive_validation_successes": "连续验证成功次数",
+    "quality_completion_floor": "质量阶段完成率下限",
+    "phase_transition_episode": "阶段切换回合",
+    "accepted_quality_updates": "已接受质量更新数",
+    "rejected_quality_updates": "已拒绝/回滚质量更新数",
+    "formal_training_status": "正式训练状态",
+}
+
+STATE_VALUE_LABELS: dict[str, str] = {
+    "feasibility": "可行性阶段",
+    "quality": "质量优化阶段",
+    "legacy": "传统加权模式",
+    "feasibility_not_reached": "尚未达到可行性阈值",
+    "quality_constrained": "质量约束训练",
+    "legacy_weighted_sum": "传统加权求和",
+    "transition": "切换至质量阶段",
+    "accepted": "候选模型已接受",
+    "rejected": "候选模型已拒绝/回滚",
+}
+
+
+def _display_label(name: Any) -> str:
+    """Return a Chinese label while retaining unmapped IDs for diagnosis."""
+    key = str(name)
+    if key in DISPLAY_LABELS:
+        return DISPLAY_LABELS[key]
+    if key in PRESSURE_PROFILE_LABELS:
+        return PRESSURE_PROFILE_LABELS[key]
+    return f"指标（{key}）"
+
+
+def _localized_state_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, str):
+        return STATE_VALUE_LABELS.get(value, value)
+    return value
+
+
+def _localized_phase_state(
+    phase_state: Mapping[str, Any],
+    *,
+    completed_episodes: int,
+    total_episodes: int,
+) -> dict[str, Any]:
+    localized = {
+        "已完成训练回合": int(completed_episodes),
+        "训练总回合数": int(total_episodes),
+    }
+    for key, value in phase_state.items():
+        localized[PHASE_STATE_LABELS.get(key, _display_label(key))] = (
+            _localized_state_value(value)
+        )
+    return localized
+
+
+def _localized_event_message(message: str) -> str:
+    """Translate known training events without changing the training API."""
+    text = str(message)
+    direct = {
+        "dashboard connected": "仪表盘已连接",
+        "dashboard is in offline replay mode": "仪表盘处于离线回放模式",
+    }
+    if text in direct:
+        return direct[text]
+    if match := re.fullmatch(r"episode (\d+): validation event=(.+)", text):
+        return f"回合 {match.group(1)}：验证事件为{_localized_state_value(match.group(2))}"
+    if match := re.fullmatch(r"episode (\d+): new best checkpoint", text):
+        return f"回合 {match.group(1)}：产生新的最佳检查点"
+    if match := re.fullmatch(
+        r"representative diagnostic failed at episode (\d+): (.+)",
+        text,
+    ):
+        return f"回合 {match.group(1)}：代表性诊断失败：{match.group(2)}"
+    if match := re.fullmatch(
+        r"training completed with status=(.+)",
+        text,
+    ):
+        return f"训练完成，状态：{_localized_state_value(match.group(1))}"
+    return text
+
+
 def resolve_visdom_settings(config: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve the nested configuration and the legacy enabled flag."""
     settings = dict(DEFAULT_VISDOM_SETTINGS)
@@ -296,54 +491,63 @@ class TrainingDashboard:
         network = self.config["network"]
         reward = self.config["reward"]
         training = self.config["training"]
+        quality_weights = reward.get("quality_weights")
+        localized_weights = (
+            {
+                _display_label(key): value
+                for key, value in quality_weights.items()
+            }
+            if isinstance(quality_weights, Mapping)
+            else quality_weights
+        )
         summary = {
-            "run_directory": str(self.run_directory),
-            "environment": self.environment,
-            "seed": self.config["seed"],
-            "device": self.config["device"],
-            "encoder_type": network.get("encoder_type", "typed_mlp"),
-            "hidden_dim": network["hidden_dim"],
-            "message_passing_layers": network.get(
-                "message_passing_layers"
+            "运行目录": str(self.run_directory),
+            "Visdom 环境": self.environment,
+            "随机种子": self.config["seed"],
+            "计算设备": self.config["device"],
+            "编码器类型": network.get("encoder_type", "typed_mlp"),
+            "隐藏层维度": network["hidden_dim"],
+            "消息传递层数": network.get("message_passing_layers"),
+            "学习率": ppo["learning_rate"],
+            "折扣因子（gamma）": ppo["gamma"],
+            "GAE 系数（lambda）": ppo["gae_lambda"],
+            "裁剪阈值（epsilon）": ppo["clip_epsilon"],
+            "PPO 更新轮数": ppo["epochs"],
+            "小批量大小": ppo["batch_size"],
+            "熵系数": ppo["entropy_coefficient"],
+            "价值损失系数": ppo["value_coefficient"],
+            "最大梯度范数": ppo["max_grad_norm"],
+            "奖励模式": _localized_state_value(
+                reward.get("mode", "legacy_weighted_sum")
             ),
-            "learning_rate": ppo["learning_rate"],
-            "gamma": ppo["gamma"],
-            "gae_lambda": ppo["gae_lambda"],
-            "clip_epsilon": ppo["clip_epsilon"],
-            "ppo_epochs": ppo["epochs"],
-            "batch_size": ppo["batch_size"],
-            "entropy_coefficient": ppo["entropy_coefficient"],
-            "value_coefficient": ppo["value_coefficient"],
-            "max_grad_norm": ppo["max_grad_norm"],
-            "reward_mode": reward.get("mode", "legacy_weighted_sum"),
-            "quality_weights": reward.get("quality_weights"),
-            "quality_budget": reward.get("quality_budget"),
-            "parallel_envs": training.get("parallel_envs"),
-            "validation_split": training.get("validation_split"),
-            "validation_interval_episodes": training.get(
+            "质量权重": localized_weights,
+            "质量预算": reward.get("quality_budget"),
+            "并行环境数": training.get("parallel_envs"),
+            "验证集划分": training.get("validation_split"),
+            "验证间隔（回合）": training.get(
                 "validation_interval_episodes"
             ),
         }
         metadata_html = (
-            "<h3>Run metadata</h3><pre>"
+            "<h3>运行信息</h3><pre>"
             + html.escape(
                 json.dumps(summary, ensure_ascii=False, indent=2)
             )
             + "</pre>"
-            + "<h3>Read-only tuning map</h3>"
+            + "<h3>只读调参指引</h3>"
             + "<ul>"
-            + "<li>KL / clip fraction → learning rate, clip epsilon, epochs</li>"
-            + "<li>Entropy → entropy coefficient</li>"
-            + "<li>Value loss / explained variance → critic and value coefficient</li>"
-            + "<li>Gradient clipping → learning rate, batch size, reward scale</li>"
-            + "<li>Fatigue / reconfiguration → curriculum, quality weights, policy structure</li>"
+            + "<li>近似 KL / 裁剪比例 → 学习率、裁剪阈值、训练轮数</li>"
+            + "<li>策略熵 → 熵系数</li>"
+            + "<li>价值损失 / 解释方差 → 价值网络和价值损失系数</li>"
+            + "<li>梯度裁剪 → 学习率、批量大小、奖励尺度</li>"
+            + "<li>疲劳 / 重构 → 课程分布、质量权重、策略结构</li>"
             + "</ul>"
         )
         self._invoke(
             "text",
             metadata_html,
             win="00_run_metadata",
-            opts={"title": "00 Run metadata and tuning map"},
+            opts={"title": "00 运行信息与调参指引"},
         )
 
     def _line(
@@ -353,7 +557,7 @@ class TrainingDashboard:
         title: str,
         x: int | float,
         series: Mapping[str, Any],
-        xlabel: str = "Completed episodes",
+        xlabel: str = "已完成训练回合数",
         ylabel: str | None = None,
     ) -> None:
         finite_series = [
@@ -371,7 +575,7 @@ class TrainingDashboard:
                 options = {
                     "title": title,
                     "xlabel": xlabel,
-                    "ylabel": ylabel or title,
+                    "ylabel": ylabel or "指标值",
                     "showlegend": True,
                 }
             self._invoke(
@@ -379,7 +583,7 @@ class TrainingDashboard:
                 X=np.asarray([float(x)], dtype=np.float64),
                 Y=np.asarray([value], dtype=np.float64),
                 win=win,
-                name=name,
+                name=_display_label(name),
                 update=update,
                 opts=options,
             )
@@ -391,18 +595,18 @@ class TrainingDashboard:
         *,
         completed_episodes: int,
     ) -> None:
-        status = {
-            "completed_episodes": int(completed_episodes),
-            "total_episodes": self.total_episodes,
-            **dict(phase_state),
-        }
+        status = _localized_phase_state(
+            phase_state,
+            completed_episodes=completed_episodes,
+            total_episodes=self.total_episodes,
+        )
         self._invoke(
             "text",
-            "<h3>Current training state</h3><pre>"
+            "<h3>当前训练状态</h3><pre>"
             + html.escape(json.dumps(status, ensure_ascii=False, indent=2))
             + "</pre>",
             win="01_training_state",
-            opts={"title": "01 Current training state"},
+            opts={"title": "01 当前训练状态"},
         )
 
     def log_update(
@@ -429,7 +633,7 @@ class TrainingDashboard:
         )
         self._line(
             win="10_training_effect",
-            title="10 Training reward and quality",
+            title="10 训练回报与质量",
             x=completed_episodes,
             series={
                 "reward_mean": reward_mean,
@@ -440,7 +644,7 @@ class TrainingDashboard:
         )
         self._line(
             win="11_training_completion",
-            title="11 Training completion",
+            title="11 训练完成情况",
             x=completed_episodes,
             series={
                 "completed_order_ratio": _mean(
@@ -455,7 +659,7 @@ class TrainingDashboard:
         )
         self._line(
             win="12_reward_components",
-            title="12 Reward components",
+            title="12 奖励分量",
             x=completed_episodes,
             series={
                 name: _mean(episode_rows, f"reward_{name}")
@@ -466,12 +670,15 @@ class TrainingDashboard:
                     "completion_progress",
                     "completion_bonus",
                     "quality",
+                    "truncation",
+                    "unfinished",
+                    "feasibility_shaping",
                 )
             },
         )
         self._line(
             win="13_training_objectives",
-            title="13 Training objectives",
+            title="13 训练目标值",
             x=completed_episodes,
             series={
                 "flow_time_objective": _mean(
@@ -487,7 +694,7 @@ class TrainingDashboard:
         )
         self._line(
             win="20_ppo_losses",
-            title="20 PPO losses",
+            title="20 PPO 损失",
             x=completed_episodes,
             series={
                 name: update_row.get(name)
@@ -501,7 +708,7 @@ class TrainingDashboard:
         )
         self._line(
             win="21_ppo_policy_health",
-            title="21 PPO policy update health",
+            title="21 PPO 策略更新健康度",
             x=completed_episodes,
             series={
                 name: update_row.get(name)
@@ -515,7 +722,7 @@ class TrainingDashboard:
         )
         self._line(
             win="22_ppo_gradient_health",
-            title="22 PPO gradient and critic health",
+            title="22 PPO 梯度与价值网络健康度",
             x=completed_episodes,
             series={
                 name: update_row.get(name)
@@ -529,7 +736,7 @@ class TrainingDashboard:
         )
         self._line(
             win="23_ppo_value_scales",
-            title="23 PPO return, advantage and value scales",
+            title="23 PPO 回报、优势与价值尺度",
             x=completed_episodes,
             series={
                 name: update_row.get(name)
@@ -545,7 +752,7 @@ class TrainingDashboard:
         )
         self._line(
             win="30_fatigue_training",
-            title="30 Training fatigue",
+            title="30 训练疲劳指标",
             x=completed_episodes,
             series={
                 "maximum_worker_fatigue": _mean(
@@ -564,7 +771,7 @@ class TrainingDashboard:
         )
         self._line(
             win="31_reconfiguration_training",
-            title="31 Training reconfiguration and worker pressure",
+            title="31 训练重构与工人压力",
             x=completed_episodes,
             series={
                 "completed_reconfigurations": _mean(
@@ -576,6 +783,26 @@ class TrainingDashboard:
                 "worker_competition_event_count": _mean(
                     episode_rows, "worker_competition_event_count"
                 ),
+                "worker_matching_deficit_event_count": _mean(
+                    episode_rows,
+                    "worker_matching_deficit_event_count",
+                ),
+                "resource_admission_masked_action_ratio": _mean(
+                    episode_rows,
+                    "resource_admission_masked_action_ratio",
+                ),
+                "minimum_worker_alternatives": _mean(
+                    episode_rows,
+                    "minimum_worker_alternatives",
+                ),
+                "matching_preserving_worker_action_count": _mean(
+                    episode_rows,
+                    "matching_preserving_worker_action_count",
+                ),
+                "candidate_recovery_advance_count": _mean(
+                    episode_rows,
+                    "candidate_recovery_advance_count",
+                ),
                 "machine_waiting_for_worker_time": _mean(
                     episode_rows, "machine_waiting_for_worker_time"
                 ),
@@ -583,7 +810,7 @@ class TrainingDashboard:
         )
         self._line(
             win="40_training_throughput",
-            title="40 Training throughput",
+            title="40 训练吞吐量",
             x=completed_episodes,
             series={
                 "transitions_per_second": update_row.get(
@@ -594,7 +821,7 @@ class TrainingDashboard:
         )
         self._line(
             win="41_training_times",
-            title="41 Training wall-clock components",
+            title="41 训练耗时分解",
             x=completed_episodes,
             series={
                 name: update_row.get(name)
@@ -616,7 +843,7 @@ class TrainingDashboard:
         )
         self._line(
             win="50_pressure_completion",
-            title="50 Completion by pressure profile",
+            title="50 各压力场景的完成率",
             x=completed_episodes,
             series={
                 profile: _mean(
@@ -632,7 +859,7 @@ class TrainingDashboard:
         )
         self._line(
             win="51_pressure_quality",
-            title="51 Quality by pressure profile",
+            title="51 各压力场景的质量得分",
             x=completed_episodes,
             series={
                 profile: _mean(
@@ -662,11 +889,27 @@ class TrainingDashboard:
         )
         self._line(
             win="60_validation_feasibility",
-            title="60 Validation feasibility",
+            title="60 验证集可行性",
             x=completed_episodes,
             series={
-                "completion_rate": validation_row.get("completion_rate"),
-                "truncated_count": validation_row.get("truncated_count"),
+                "greedy_completion_rate": validation_row.get(
+                    "completion_rate"
+                ),
+                "sampled_completion_rate": validation_row.get(
+                    "sampled_completion_rate"
+                ),
+                "greedy_truncated_count": validation_row.get(
+                    "truncated_count"
+                ),
+                "sampled_truncated_count": validation_row.get(
+                    "sampled_truncated_count"
+                ),
+                "greedy_mean_unfinished_orders": validation_row.get(
+                    "mean_unfinished_orders"
+                ),
+                "sampled_mean_unfinished_orders": validation_row.get(
+                    "sampled_mean_unfinished_orders"
+                ),
                 "schedule_violation_count": validation_row.get(
                     "schedule_violation_count"
                 ),
@@ -674,7 +917,7 @@ class TrainingDashboard:
         )
         self._line(
             win="61_validation_flow",
-            title="61 Validation flow objectives",
+            title="61 验证集流经时间目标",
             x=completed_episodes,
             series={
                 "mean_makespan": validation_row.get("mean_makespan"),
@@ -703,7 +946,7 @@ class TrainingDashboard:
         )
         self._line(
             win="62_validation_quality_components",
-            title="62 Validation quality components",
+            title="62 验证集质量分量",
             x=completed_episodes,
             series={
                 "mean_reconfiguration_cost": validation_row.get(
@@ -726,11 +969,14 @@ class TrainingDashboard:
         )
         self._line(
             win="63_validation_gaps",
-            title="63 Validation gaps to heuristic (%)",
+            title="63 验证集相对启发式差距（%）",
             x=completed_episodes,
             series={
                 "flow_gap": validation_row.get(
                     "mean_relative_heuristic_gap_percent"
+                ),
+                "sampled_flow_gap": validation_row.get(
+                    "sampled_mean_relative_heuristic_gap_percent"
                 ),
                 "makespan_gap": validation_row.get(
                     "mean_makespan_heuristic_gap_percent"
@@ -742,39 +988,75 @@ class TrainingDashboard:
                     "mean_worker_load_variance_heuristic_gap_percent"
                 ),
             },
-            ylabel="Gap to heuristic (%)",
+            ylabel="相对启发式差距（%）",
+        )
+        self._line(
+            win="66_validation_proxy_return",
+            title="66 验证集可行性代理回报",
+            x=completed_episodes,
+            series={
+                "greedy": validation_row.get(
+                    "mean_feasibility_proxy_return"
+                ),
+                "sampled": validation_row.get(
+                    "sampled_mean_feasibility_proxy_return"
+                ),
+            },
         )
         self._line(
             win="64_validation_fatigue",
-            title="64 Validation fatigue",
+            title="64 验证集疲劳指标",
             x=completed_episodes,
             series={
-                name: validation_row.get(f"mean_{name}")
-                for name in (
-                    "maximum_worker_fatigue",
-                    "mean_peak_worker_fatigue",
-                    "safe_fatigue_limit",
-                    "fatigue_masked_action_ratio",
-                )
+                "mean_maximum_worker_fatigue": validation_row.get(
+                    "mean_maximum_worker_fatigue"
+                ),
+                "mean_mean_peak_worker_fatigue": validation_row.get(
+                    "mean_mean_peak_worker_fatigue"
+                ),
+                "mean_safe_fatigue_limit": validation_row.get(
+                    "mean_safe_fatigue_limit"
+                ),
+                "mean_fatigue_masked_action_ratio": validation_row.get(
+                    "mean_fatigue_masked_action_ratio"
+                ),
             },
         )
         self._line(
             win="65_validation_reconfiguration",
-            title="65 Validation reconfiguration and worker pressure",
+            title="65 验证集重构与工人压力",
             x=completed_episodes,
             series={
-                name: validation_row.get(f"mean_{name}")
-                for name in (
-                    "worker_competition_event_count",
-                    "machine_waiting_for_worker_time",
-                    "completed_reconfigurations",
-                    "worker_switch_ratio",
-                )
+                "mean_worker_competition_event_count": validation_row.get(
+                    "mean_worker_competition_event_count"
+                ),
+                "mean_worker_matching_deficit_event_count": (
+                    validation_row.get(
+                        "mean_worker_matching_deficit_event_count"
+                    )
+                ),
+                "mean_resource_admission_masked_action_ratio": (
+                    validation_row.get(
+                        "mean_resource_admission_masked_action_ratio"
+                    )
+                ),
+                "mean_minimum_worker_alternatives": validation_row.get(
+                    "mean_minimum_worker_alternatives"
+                ),
+                "mean_machine_waiting_for_worker_time": validation_row.get(
+                    "mean_machine_waiting_for_worker_time"
+                ),
+                "mean_completed_reconfigurations": validation_row.get(
+                    "mean_completed_reconfigurations"
+                ),
+                "mean_worker_switch_ratio": validation_row.get(
+                    "mean_worker_switch_ratio"
+                ),
             },
         )
 
     def log_event(self, message: str) -> None:
-        self._event_messages.append(str(message))
+        self._event_messages.append(_localized_event_message(str(message)))
         rendered = "<br>".join(
             html.escape(value) for value in self._event_messages[-200:]
         )
@@ -782,7 +1064,7 @@ class TrainingDashboard:
             "text",
             rendered,
             win="02_training_events",
-            opts={"title": "02 Training events"},
+            opts={"title": "02 训练事件"},
         )
 
     def should_capture_diagnostic(
@@ -818,7 +1100,7 @@ class TrainingDashboard:
             "svg",
             svg,
             win="70_representative_schedule",
-            opts={"title": "70 Representative schedule"},
+            opts={"title": "70 代表性实例调度甘特图"},
         )
         fatigue_trace = trace.get("fatigue_trace", [])
         worker_names = list(trace.get("worker_ids", []))
@@ -838,16 +1120,16 @@ class TrainingDashboard:
             values = np.column_stack(
                 [values, np.full(len(times), limit, dtype=np.float64)]
             )
-            names = [*worker_names, "safe_limit"]
+            names = [*worker_names, "疲劳安全阈值"]
             self._invoke(
                 "line",
                 X=np.tile(times[:, None], (1, len(names))),
                 Y=values,
                 win="71_representative_fatigue_trace",
                 opts={
-                    "title": "71 Representative worker fatigue trace",
-                    "xlabel": "Schedule time (minutes)",
-                    "ylabel": "Fatigue",
+                    "title": "71 代表性实例的工人疲劳曲线",
+                    "xlabel": "调度时间（分钟）",
+                    "ylabel": "疲劳值",
                     "legend": names,
                     "showlegend": True,
                 },
@@ -868,14 +1150,14 @@ class TrainingDashboard:
                 X=np.asarray(values, dtype=np.float64),
                 win="72_representative_peak_fatigue",
                 opts={
-                    "title": "72 Representative peak worker fatigue",
+                    "title": "72 代表性实例的工人峰值疲劳",
                     "rownames": names,
-                    "ylabel": "Peak fatigue",
+                    "ylabel": "峰值疲劳",
                 },
             )
         self.log_event(
-            "representative diagnostic saved at episode "
-            f"{completed_episodes}: {output.name}"
+            "代表性诊断已保存（回合 "
+            f"{completed_episodes}）：{output.name}"
         )
 
     def close(self) -> None:
@@ -983,10 +1265,11 @@ def build_schedule_gantt_svg(trace: Mapping[str, Any]) -> str:
         '<rect width="100%" height="100%" fill="white"/>',
         '<text x="20" y="28" font-size="18" font-weight="bold">'
         + html.escape(
-            f"Representative schedule: {trace.get('instance_id', '')}"
+            f"代表性调度：{trace.get('instance_id', '')}"
         )
         + "</text>",
     ]
+    resource_labels = {"machine": "机器", "worker": "工人"}
     for index, (kind, identifier) in enumerate(rows):
         y = top + index * row_height
         fill = "#F7F7F7" if index % 2 == 0 else "#FFFFFF"
@@ -996,7 +1279,7 @@ def build_schedule_gantt_svg(trace: Mapping[str, Any]) -> str:
         )
         content.append(
             f'<text x="8" y="{y + 20}" font-size="12">'
-            f"{html.escape(kind)}:{html.escape(identifier)}</text>"
+            f"{resource_labels[kind]}：{html.escape(identifier)}</text>"
         )
     for row in schedule:
         module = str(row.get("required_module", ""))
@@ -1006,14 +1289,15 @@ def build_schedule_gantt_svg(trace: Mapping[str, Any]) -> str:
                 start=row["start"],
                 end=row["end"],
                 color=module_color.get(module, "#4C78A8"),
-                label=f"{row['operation_id']} ({module})",
+                label=f"工序 {row['operation_id']}（模块 {module}）",
             )
         )
     stage_colors = {"DIS": "#B279A2", "INS": "#FF9DA7"}
+    stage_labels = {"DIS": "拆卸（DIS）", "INS": "安装（INS）"}
     for row in reconfigurations:
         stage = str(row["stage"])
         color = stage_colors.get(stage, "#9D755D")
-        label = f"{stage}:{row['operation_id']}"
+        label = f"{stage_labels.get(stage, stage)}：工序 {row['operation_id']}"
         content.append(
             rect(
                 row_key=("machine", str(row["machine_id"])),
@@ -1052,12 +1336,14 @@ def build_schedule_gantt_svg(trace: Mapping[str, Any]) -> str:
         )
     content.append(
         f'<text x="{left + plot_width / 2:.2f}" y="{axis_y + 42}" '
-        'font-size="12" text-anchor="middle">Time (minutes)</text>'
+        'font-size="12" text-anchor="middle">时间（分钟）</text>'
     )
     legend_x = 540
-    for index, (label, color) in enumerate(
-        [*(module_color.items()), *stage_colors.items()]
-    ):
+    legend_entries = [
+        *((f"模块 {label}", color) for label, color in module_color.items()),
+        *((stage_labels.get(label, label), color) for label, color in stage_colors.items()),
+    ]
+    for index, (label, color) in enumerate(legend_entries):
         x = legend_x + index * 105
         content.append(
             f'<rect x="{x}" y="15" width="14" height="14" fill="{color}"/>'

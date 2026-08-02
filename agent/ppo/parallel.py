@@ -64,6 +64,12 @@ class EpisodeRollout:
     reward_components: dict[str, float] = field(default_factory=dict)
     expected_reward: float = 0.0
 
+    @property
+    def base_reward_sum(self) -> float:
+        return self.reward_sum - float(
+            self.reward_components.get("feasibility_shaping", 0.0)
+        )
+
 
 @dataclass
 class TrainingRolloutBatch:
@@ -428,6 +434,9 @@ class ParallelEpisodeRunner:
                     "completion_progress": 0.0,
                     "completion_bonus": 0.0,
                     "quality": 0.0,
+                    "truncation": 0.0,
+                    "unfinished": 0.0,
+                    "feasibility_shaping": 0.0,
                 },
                 "step_count": 0,
                 "generation_time_seconds": (
@@ -602,6 +611,8 @@ class ParallelEpisodeRunner:
         records: Sequence[GeneratedInstanceRecord],
         *,
         max_parallelism: int | None = None,
+        deterministic: bool = True,
+        generator: torch.Generator | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -638,7 +649,8 @@ class ParallelEpisodeRunner:
                 actions, _, _ = agent.act_batch(
                     observations,
                     masks,
-                    deterministic=True,
+                    deterministic=deterministic,
+                    generator=generator,
                 )
                 elapsed = time.perf_counter() - inference_start
                 share = elapsed / len(lanes)

@@ -16,6 +16,7 @@ from data.dataset import (
     InstanceDataset,
     build_dataset_split,
     canonical_json_bytes,
+    curriculum_weights_at,
     sha256_bytes,
     split_seed_range,
 )
@@ -35,6 +36,67 @@ def _build_validation(config, fixed_instance, tmp_path, **kwargs):
         **kwargs,
     )
     return manifest, instances_root
+
+
+def test_linear_curriculum_interpolates_and_normalizes(config):
+    curriculum = config["generator"]["curriculum"]
+    expected = {
+        0.0: {
+            "easy": 0.30,
+            "balanced": 0.50,
+            "machine_bottleneck": 0.04,
+            "reconfiguration_bottleneck": 0.04,
+            "worker_bottleneck": 0.04,
+            "fatigue_bottleneck": 0.04,
+            "high_arrival_pressure": 0.04,
+        },
+        0.375: {
+            "easy": 0.20,
+            "balanced": 0.45,
+            "machine_bottleneck": 0.07,
+            "reconfiguration_bottleneck": 0.07,
+            "worker_bottleneck": 0.07,
+            "fatigue_bottleneck": 0.07,
+            "high_arrival_pressure": 0.07,
+        },
+        0.8: {
+            "easy": 0.05,
+            "balanced": 0.35,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.10,
+            "fatigue_bottleneck": 0.10,
+            "high_arrival_pressure": 0.10,
+        },
+    }
+    for progress, expected_weights in expected.items():
+        actual = curriculum_weights_at(curriculum, progress)
+        assert sum(actual.values()) == pytest.approx(1.0)
+        assert actual.keys() == expected_weights.keys()
+        for name, value in expected_weights.items():
+            assert actual[name] == pytest.approx(value)
+    final = curriculum_weights_at(curriculum, 1.0)
+    for name, value in expected[0.8].items():
+        assert final[name] == pytest.approx(value)
+
+
+def test_legacy_step_curriculum_remains_supported():
+    legacy = [
+        {
+            "until_fraction": 0.5,
+            "weights": {"easy": 3.0, "balanced": 1.0},
+        },
+        {
+            "until_fraction": 1.0,
+            "weights": {"easy": 1.0, "balanced": 3.0},
+        },
+    ]
+    first = curriculum_weights_at(legacy, 0.5)
+    second = curriculum_weights_at(legacy, 0.5001)
+    assert first["easy"] == pytest.approx(0.75)
+    assert first["balanced"] == pytest.approx(0.25)
+    assert second["easy"] == pytest.approx(0.25)
+    assert second["balanced"] == pytest.approx(0.75)
 
 
 def test_manifest_build_is_reproducible_and_loader_verifies_hash(

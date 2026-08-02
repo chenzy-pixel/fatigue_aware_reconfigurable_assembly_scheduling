@@ -240,6 +240,9 @@ def test_dashboard_creates_then_appends_stable_windows(config, tmp_path):
     ]
     assert reward_calls
     assert reward_calls[0][2]["update"] is None
+    assert reward_calls[0][2]["name"] == "平均回报"
+    assert reward_calls[0][2]["opts"]["title"] == "10 训练回报与质量"
+    assert reward_calls[0][2]["opts"]["xlabel"] == "已完成训练回合数"
     assert any(call[2]["update"] == "append" for call in reward_calls[1:])
     assert client.kwargs["env"] == dashboard.environment
     assert client.kwargs["log_to_filename"].endswith(
@@ -299,12 +302,12 @@ def test_gantt_and_diagnostic_include_resources_and_fatigue(
     tmp_path,
 ):
     svg = build_schedule_gantt_svg(_trace())
-    assert "machine:M1" in svg
-    assert "worker:W1" in svg
-    assert "DIS:OP2" in svg
-    assert "INS:OP2" in svg
+    assert "机器：M1" in svg
+    assert "工人：W1" in svg
+    assert "拆卸（DIS）：工序 OP2" in svg
+    assert "安装（INS）：工序 OP2" in svg
     assert "OP&lt;&amp;&gt;" in svg
-    assert "Time (minutes)" in svg
+    assert "时间（分钟）" in svg
 
     FakeVisdom.instances.clear()
     FakeVisdom.connected = True
@@ -332,3 +335,43 @@ def test_gantt_and_diagnostic_include_resources_and_fatigue(
     assert fatigue_calls
     values = fatigue_calls[-1][2]["Y"]
     assert np.all(values[:, -1] == pytest.approx(0.9))
+    assert fatigue_calls[-1][2]["opts"]["xlabel"] == "调度时间（分钟）"
+    assert fatigue_calls[-1][2]["opts"]["legend"][-1] == "疲劳安全阈值"
+
+
+def test_dashboard_uses_chinese_text_and_known_event_labels(config, tmp_path):
+    FakeVisdom.instances.clear()
+    FakeVisdom.connected = True
+    dashboard = TrainingDashboard(
+        config=_enabled_config(config),
+        run_directory=tmp_path,
+        total_episodes=2,
+        visdom_class=FakeVisdom,
+    )
+    dashboard.log_event("episode 1: validation event=accepted")
+    dashboard.log_validation(
+        {"episode": 1, "mean_maximum_worker_fatigue": 0.7},
+        best_validation=None,
+        phase_state=_phase_state(),
+    )
+    client = FakeVisdom.instances[-1]
+    metadata_call = next(
+        call
+        for call in client.calls
+        if call[0] == "text" and call[2].get("win") == "00_run_metadata"
+    )
+    assert metadata_call[2]["opts"]["title"] == "00 运行信息与调参指引"
+    assert "运行信息" in metadata_call[1][0]
+    event_call = [
+        call
+        for call in client.calls
+        if call[0] == "text" and call[2].get("win") == "02_training_events"
+    ][-1]
+    assert "候选模型已接受" in event_call[1][0]
+    validation_fatigue_call = next(
+        call
+        for call in client.calls
+        if call[0] == "line"
+        and call[2].get("win") == "64_validation_fatigue"
+    )
+    assert validation_fatigue_call[2]["name"] == "平均最大工人疲劳"
