@@ -17,6 +17,17 @@ CAN_DISASSEMBLE_EDGE: EdgeType = (
     "can_disassemble",
     "machine",
 )
+OPERATION_ORDER_EDGE: EdgeType = ("operation", "belongs_to", "order")
+ORDER_WAVE_EDGE: EdgeType = ("order", "belongs_to", "wave")
+REQUIRES_MODULE_EDGE: EdgeType = ("operation", "requires", "module")
+MACHINE_MODULE_EDGE: EdgeType = ("machine", "supports", "module")
+WORKER_MODULE_EDGE: EdgeType = ("worker", "qualified_for", "module")
+WAVE_MODULE_EDGE: EdgeType = ("wave", "demands", "module")
+SERVICE_CANDIDATE_EDGE: EdgeType = (
+    "machine",
+    "service_candidate",
+    "worker",
+)
 
 ASSEMBLY_EDGE_TYPES: tuple[EdgeType, ...] = (
     PRECEDES_EDGE,
@@ -24,6 +35,22 @@ ASSEMBLY_EDGE_TYPES: tuple[EdgeType, ...] = (
     LOCKED_EDGE,
     CAN_INSTALL_EDGE,
     CAN_DISASSEMBLE_EDGE,
+    OPERATION_ORDER_EDGE,
+    ORDER_WAVE_EDGE,
+    REQUIRES_MODULE_EDGE,
+    MACHINE_MODULE_EDGE,
+    WORKER_MODULE_EDGE,
+    WAVE_MODULE_EDGE,
+    SERVICE_CANDIDATE_EDGE,
+)
+
+ASSEMBLY_NODE_TYPES: tuple[str, ...] = (
+    "operation",
+    "machine",
+    "worker",
+    "order",
+    "module",
+    "wave",
 )
 
 
@@ -292,22 +319,70 @@ class EdgeStore:
 
 @dataclass(frozen=True)
 class HeterogeneousGraphObservation:
-    operations: np.ndarray
-    machines: np.ndarray
-    workers: np.ndarray
+    node_features: dict[str, np.ndarray]
     global_features: np.ndarray
     decision_type: DecisionType
+    node_feature_names: dict[str, tuple[str, ...]] = field(default_factory=dict)
     global_feature_names: tuple[str, ...] = field(default_factory=tuple)
     node_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
     relations: dict[EdgeType, EdgeStore] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        normalized_features = {
+            str(node_type): np.asarray(features, dtype=np.float32)
+            for node_type, features in self.node_features.items()
+        }
+        object.__setattr__(self, "node_features", normalized_features)
+        object.__setattr__(
+            self,
+            "global_features",
+            np.asarray(self.global_features, dtype=np.float32),
+        )
+        object.__setattr__(
+            self,
+            "node_feature_names",
+            {
+                str(node_type): tuple(names)
+                for node_type, names in self.node_feature_names.items()
+            },
+        )
+
+    @property
+    def operations(self) -> np.ndarray:
+        return self.node_features["operation"]
+
+    @property
+    def machines(self) -> np.ndarray:
+        return self.node_features["machine"]
+
+    @property
+    def workers(self) -> np.ndarray:
+        return self.node_features["worker"]
+
+    @property
+    def orders(self) -> np.ndarray:
+        return self.node_features["order"]
+
+    @property
+    def modules(self) -> np.ndarray:
+        return self.node_features["module"]
+
+    @property
+    def waves(self) -> np.ndarray:
+        return self.node_features["wave"]
+
     def copy(self) -> "HeterogeneousGraphObservation":
         return HeterogeneousGraphObservation(
-            operations=self.operations.copy(),
-            machines=self.machines.copy(),
-            workers=self.workers.copy(),
+            node_features={
+                node_type: features.copy()
+                for node_type, features in self.node_features.items()
+            },
             global_features=self.global_features.copy(),
             decision_type=self.decision_type,
+            node_feature_names={
+                node_type: tuple(names)
+                for node_type, names in self.node_feature_names.items()
+            },
             global_feature_names=tuple(self.global_feature_names),
             node_ids={
                 node_type: tuple(identifiers)
@@ -320,21 +395,13 @@ class HeterogeneousGraphObservation:
         )
 
     @property
-    def node_features(self) -> dict[str, np.ndarray]:
-        return {
-            "operation": self.operations,
-            "machine": self.machines,
-            "worker": self.workers,
-        }
-
-    @property
     def feature_dimensions(self) -> dict[str, int]:
-        return {
-            "operation": int(self.operations.shape[-1]),
-            "machine": int(self.machines.shape[-1]),
-            "worker": int(self.workers.shape[-1]),
-            "global": int(self.global_features.shape[-1]),
+        dimensions = {
+            node_type: int(features.shape[-1])
+            for node_type, features in self.node_features.items()
         }
+        dimensions["global"] = int(self.global_features.shape[-1])
+        return dimensions
 
     @property
     def edge_feature_dimensions(self) -> dict[EdgeType, int]:
@@ -354,10 +421,20 @@ class HeterogeneousGraphObservation:
             raise ValueError(
                 "global feature width must match the number of feature names"
             )
-        expected_node_types = set(node_features)
+        expected_node_types = set(ASSEMBLY_NODE_TYPES)
+        if set(node_features) != expected_node_types:
+            raise ValueError(
+                "node_features must contain exactly the six M1 node types"
+            )
+        if self.node_feature_names and (
+            set(self.node_feature_names) != expected_node_types
+        ):
+            raise ValueError(
+                "node_feature_names must contain exactly the six M1 node types"
+            )
         if self.node_ids and set(self.node_ids) != expected_node_types:
             raise ValueError(
-                "node_ids must contain operation, machine, and worker entries"
+                "node_ids must contain exactly the six M1 node types"
             )
         for node_type, features in node_features.items():
             if features.ndim != 2:
@@ -370,8 +447,17 @@ class HeterogeneousGraphObservation:
                     )
                 if len(set(identifiers)) != len(identifiers):
                     raise ValueError(f"{node_type} node ids must be unique")
+            names = self.node_feature_names.get(node_type)
+            if names is not None and len(names) != features.shape[1]:
+                raise ValueError(
+                    f"{node_type} feature width does not match feature names"
+                )
+            if not np.all(np.isfinite(features)):
+                raise ValueError(f"{node_type} features must be finite")
         if self.relations and set(self.relations) != set(ASSEMBLY_EDGE_TYPES):
-            raise ValueError("relations must contain exactly the five graph edge types")
+            raise ValueError(
+                "relations must contain exactly the M1 graph edge types"
+            )
         for edge_type, edge_store in self.relations.items():
             source_type, _, target_type = edge_type
             if source_type not in node_features or target_type not in node_features:

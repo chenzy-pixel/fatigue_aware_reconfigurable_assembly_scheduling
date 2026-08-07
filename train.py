@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import shutil
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +25,10 @@ from data.dataset import (
     validate_algorithm_seed,
 )
 from data.models import load_instance_yaml
-from environment import AssemblySchedulingEnv, proxy_return_from_metrics
+from environment import (
+    AssemblySchedulingEnv,
+    proxy_return_from_metrics,
+)
 from eval import (
     evaluate_dataset,
     evaluate_dataset_parallel,
@@ -56,7 +61,12 @@ class TrainingPhaseController:
     phase_transition_episode: int | None = None
     accepted_quality_updates: int = 0
     rejected_quality_updates: int = 0
+    not_promoted_quality_updates: int = 0
     accepted_quality_score: tuple[float, float, float, float] | None = None
+    accepted_normalized_quality_score: float | None = None
+    accepted_quality_episode: int | None = None
+    quality_promotion_constraints: dict[str, float] = field(default_factory=dict)
+    last_promotion_diagnostics: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: dict) -> "TrainingPhaseController":
@@ -87,11 +97,45 @@ class TrainingPhaseController:
             raise ValueError(
                 "two_stage.quality_completion_floor must be in [0, 1]"
             )
-        if promotion not in {"completion_only", "score_improving"}:
+        if promotion not in {
+            "completion_only",
+            "score_improving",
+            "constrained_weighted",
+            "aligned_quality",
+        }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
-                "'completion_only' or 'score_improving'"
+                "'completion_only', 'score_improving', or "
+                "'constrained_weighted', or 'aligned_quality'"
             )
+        constraints: dict[str, float] = {}
+        if promotion == "constrained_weighted":
+            configured_constraints = settings.get(
+                "quality_promotion_constraints"
+            )
+            if not isinstance(configured_constraints, dict):
+                raise ValueError(
+                    "two_stage.quality_promotion_constraints must be an object"
+                )
+            required_constraints = (
+                "flow_relative_tolerance",
+                "cost_relative_tolerance",
+                "variance_relative_tolerance",
+                "minimum_normalized_score_improvement",
+            )
+            for name in required_constraints:
+                if name not in configured_constraints:
+                    raise ValueError(
+                        "two_stage.quality_promotion_constraints is missing "
+                        f"{name}"
+                    )
+                value = float(configured_constraints[name])
+                if not math.isfinite(value) or value < 0.0:
+                    raise ValueError(
+                        "two_stage.quality_promotion_constraints."
+                        f"{name} must be finite and non-negative"
+                    )
+                constraints[name] = value
         if not bool(settings["quality_validate_every_update"]):
             raise ValueError(
                 "hierarchical constrained training requires validation "
@@ -103,6 +147,7 @@ class TrainingPhaseController:
             consecutive_required=required,
             quality_completion_floor=floor,
             quality_checkpoint_promotion=promotion,
+            quality_promotion_constraints=constraints,
             phase="feasibility",
         )
 
@@ -115,8 +160,10 @@ class TrainingPhaseController:
         *,
         completed_episodes: int,
         score: tuple[float, float, float, float] | None = None,
+        normalized_quality_score: float | None = None,
     ) -> str:
         rate = float(completion_rate)
+        self.last_promotion_diagnostics = {}
         if not self.enabled:
             return "legacy"
         if self.phase == "feasibility":
@@ -128,8 +175,73 @@ class TrainingPhaseController:
                 self.phase = "quality"
                 self.phase_transition_episode = int(completed_episodes)
                 self.accepted_quality_score = score
+                self.accepted_normalized_quality_score = (
+                    normalized_quality_score
+                )
+                self.accepted_quality_episode = int(completed_episodes)
+                self._record_constrained_promotion_diagnostics(
+                    completion_rate=rate,
+                    score=score,
+                    normalized_quality_score=normalized_quality_score,
+                    event="transition",
+                    reason="transition_anchor",
+                    anchor_score=None,
+                    anchor_normalized_quality_score=None,
+                    anchor_episode=None,
+                )
                 return "transition"
             return "feasibility"
+        if self.quality_checkpoint_promotion == "aligned_quality":
+            anchor = self.accepted_normalized_quality_score
+            anchor_episode = self.accepted_quality_episode
+            eligible = (
+                rate >= self.quality_completion_floor
+                and normalized_quality_score is not None
+                and math.isfinite(float(normalized_quality_score))
+            )
+            improved = bool(
+                eligible
+                and (
+                    anchor is None
+                    or float(normalized_quality_score) < float(anchor) - 1e-12
+                )
+            )
+            event = "promoted" if improved else "not_promoted"
+            reason = (
+                "quality_improved"
+                if improved
+                else (
+                    "completion_below_floor"
+                    if rate < self.quality_completion_floor
+                    else "quality_not_improved"
+                )
+            )
+            if improved:
+                self.accepted_quality_updates += 1
+                self.accepted_quality_score = score
+                self.accepted_normalized_quality_score = float(
+                    normalized_quality_score
+                )
+                self.accepted_quality_episode = int(completed_episodes)
+            else:
+                self.not_promoted_quality_updates += 1
+            self.last_promotion_diagnostics = {
+                "promotion_mode": "aligned_quality",
+                "promotion_event": event,
+                "promotion_decision_reason": reason,
+                "promotion_candidate_normalized_quality_score": (
+                    float(normalized_quality_score)
+                    if normalized_quality_score is not None
+                    and math.isfinite(float(normalized_quality_score))
+                    else None
+                ),
+                "promotion_anchor_normalized_quality_score": anchor,
+                "promotion_anchor_episode": anchor_episode,
+                "promotion_completion_constraint_pass": (
+                    rate >= self.quality_completion_floor
+                ),
+            }
+            return event
         if rate >= self.quality_completion_floor:
             if (
                 self.quality_checkpoint_promotion == "score_improving"
@@ -143,12 +255,206 @@ class TrainingPhaseController:
             ):
                 self.rejected_quality_updates += 1
                 return "rejected"
+            if self.quality_checkpoint_promotion == "constrained_weighted":
+                event, reason = self._observe_constrained_candidate(
+                    completion_rate=rate,
+                    completed_episodes=completed_episodes,
+                    score=score,
+                    normalized_quality_score=normalized_quality_score,
+                )
+                if event == "rejected":
+                    self.rejected_quality_updates += 1
+                    return event
+                self.accepted_quality_updates += 1
+                return event
             self.accepted_quality_updates += 1
             if score is not None:
                 self.accepted_quality_score = score
+                self.accepted_quality_episode = int(completed_episodes)
             return "accepted"
         self.rejected_quality_updates += 1
+        self._record_constrained_promotion_diagnostics(
+            completion_rate=rate,
+            score=score,
+            normalized_quality_score=normalized_quality_score,
+            event="rejected",
+            reason="completion_below_floor",
+            anchor_score=self.accepted_quality_score,
+            anchor_normalized_quality_score=(
+                self.accepted_normalized_quality_score
+            ),
+            anchor_episode=self.accepted_quality_episode,
+        )
         return "rejected"
+
+    def _observe_constrained_candidate(
+        self,
+        *,
+        completion_rate: float,
+        completed_episodes: int,
+        score: tuple[float, float, float, float] | None,
+        normalized_quality_score: float | None,
+    ) -> tuple[str, str]:
+        anchor_score = self.accepted_quality_score
+        anchor_normalized = self.accepted_normalized_quality_score
+        anchor_episode = self.accepted_quality_episode
+        values = (
+            *(() if score is None else score),
+            normalized_quality_score,
+        )
+        if (
+            score is None
+            or len(score) != 4
+            or normalized_quality_score is None
+            or anchor_score is None
+            or len(anchor_score) != 4
+            or anchor_normalized is None
+            or not all(
+                value is not None and math.isfinite(float(value))
+                for value in values
+            )
+            or not all(math.isfinite(float(value)) for value in anchor_score)
+            or not math.isfinite(float(anchor_normalized))
+        ):
+            reason = "missing_or_non_finite_promotion_metric"
+            self._record_constrained_promotion_diagnostics(
+                completion_rate=completion_rate,
+                score=score,
+                normalized_quality_score=normalized_quality_score,
+                event="rejected",
+                reason=reason,
+                anchor_score=anchor_score,
+                anchor_normalized_quality_score=anchor_normalized,
+                anchor_episode=anchor_episode,
+            )
+            return "rejected", reason
+
+        candidate_flow = float(score[1])
+        candidate_cost = float(score[2])
+        candidate_variance = float(score[3])
+        anchor_flow = float(anchor_score[1])
+        anchor_cost = float(anchor_score[2])
+        anchor_variance = float(anchor_score[3])
+        constraints = self.quality_promotion_constraints
+        flow_limit = anchor_flow * (
+            1.0 + constraints["flow_relative_tolerance"]
+        )
+        cost_limit = anchor_cost * (
+            1.0 + constraints["cost_relative_tolerance"]
+        )
+        variance_limit = anchor_variance * (
+            1.0 + constraints["variance_relative_tolerance"]
+        )
+        flow_pass = candidate_flow <= flow_limit or math.isclose(
+            candidate_flow, flow_limit, rel_tol=1e-12, abs_tol=1e-12
+        )
+        cost_pass = candidate_cost <= cost_limit or math.isclose(
+            candidate_cost, cost_limit, rel_tol=1e-12, abs_tol=1e-12
+        )
+        variance_pass = candidate_variance <= variance_limit or math.isclose(
+            candidate_variance,
+            variance_limit,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+        normalized_pass = float(normalized_quality_score) < (
+            float(anchor_normalized)
+            - constraints["minimum_normalized_score_improvement"]
+        )
+        checks = (
+            (flow_pass, "flow_tolerance_exceeded"),
+            (cost_pass, "cost_regressed"),
+            (variance_pass, "variance_regressed"),
+            (normalized_pass, "normalized_quality_not_improved"),
+        )
+        reason = next(
+            (failure_reason for passed, failure_reason in checks if not passed),
+            "accepted",
+        )
+        event = "accepted" if reason == "accepted" else "rejected"
+        self._record_constrained_promotion_diagnostics(
+            completion_rate=completion_rate,
+            score=score,
+            normalized_quality_score=normalized_quality_score,
+            event=event,
+            reason=reason,
+            anchor_score=anchor_score,
+            anchor_normalized_quality_score=anchor_normalized,
+            anchor_episode=anchor_episode,
+            flow_pass=flow_pass,
+            cost_pass=cost_pass,
+            variance_pass=variance_pass,
+            normalized_pass=normalized_pass,
+        )
+        if event == "accepted":
+            self.accepted_quality_score = score
+            self.accepted_normalized_quality_score = float(
+                normalized_quality_score
+            )
+            self.accepted_quality_episode = int(completed_episodes)
+        return event, reason
+
+    def _record_constrained_promotion_diagnostics(
+        self,
+        *,
+        completion_rate: float,
+        score: tuple[float, float, float, float] | None,
+        normalized_quality_score: float | None,
+        event: str,
+        reason: str,
+        anchor_score: tuple[float, float, float, float] | None,
+        anchor_normalized_quality_score: float | None,
+        anchor_episode: int | None,
+        flow_pass: bool | None = None,
+        cost_pass: bool | None = None,
+        variance_pass: bool | None = None,
+        normalized_pass: bool | None = None,
+    ) -> None:
+        if self.quality_checkpoint_promotion != "constrained_weighted":
+            return
+
+        def objective(
+            value: tuple[float, float, float, float] | None,
+            index: int,
+        ) -> float | None:
+            if value is None or len(value) != 4:
+                return None
+            result = float(value[index])
+            return result if math.isfinite(result) else None
+
+        completion_pass = (
+            math.isfinite(float(completion_rate))
+            and float(completion_rate) >= self.quality_completion_floor
+        )
+        self.last_promotion_diagnostics = {
+            "promotion_mode": self.quality_checkpoint_promotion,
+            "promotion_event": event,
+            "promotion_decision_reason": reason,
+            "promotion_candidate_normalized_quality_score": (
+                float(normalized_quality_score)
+                if normalized_quality_score is not None
+                and math.isfinite(float(normalized_quality_score))
+                else None
+            ),
+            "promotion_anchor_normalized_quality_score": (
+                float(anchor_normalized_quality_score)
+                if anchor_normalized_quality_score is not None
+                and math.isfinite(float(anchor_normalized_quality_score))
+                else None
+            ),
+            "promotion_anchor_episode": anchor_episode,
+            "promotion_candidate_flow_time_objective": objective(score, 1),
+            "promotion_candidate_reconfiguration_cost": objective(score, 2),
+            "promotion_candidate_worker_load_variance": objective(score, 3),
+            "promotion_anchor_flow_time_objective": objective(anchor_score, 1),
+            "promotion_anchor_reconfiguration_cost": objective(anchor_score, 2),
+            "promotion_anchor_worker_load_variance": objective(anchor_score, 3),
+            "promotion_completion_constraint_pass": completion_pass,
+            "promotion_flow_constraint_pass": flow_pass,
+            "promotion_cost_constraint_pass": cost_pass,
+            "promotion_variance_constraint_pass": variance_pass,
+            "promotion_normalized_quality_constraint_pass": normalized_pass,
+        }
 
     @property
     def formal_training_status(self) -> str:
@@ -159,7 +465,7 @@ class TrainingPhaseController:
         return "quality_constrained"
 
     def as_dict(self) -> dict:
-        return {
+        result = {
             "enabled": self.enabled,
             "phase": self.phase,
             "completion_target": self.completion_target,
@@ -171,8 +477,30 @@ class TrainingPhaseController:
             "phase_transition_episode": self.phase_transition_episode,
             "accepted_quality_updates": self.accepted_quality_updates,
             "rejected_quality_updates": self.rejected_quality_updates,
+            "not_promoted_quality_updates": (
+                self.not_promoted_quality_updates
+            ),
             "formal_training_status": self.formal_training_status,
         }
+        if self.quality_checkpoint_promotion in {
+            "constrained_weighted",
+            "aligned_quality",
+        }:
+            result.update(
+                {
+                    "accepted_normalized_quality_score": (
+                        self.accepted_normalized_quality_score
+                    ),
+                    "accepted_quality_episode": self.accepted_quality_episode,
+                    "quality_promotion_constraints": dict(
+                        self.quality_promotion_constraints
+                    ),
+                    "last_promotion_diagnostics": dict(
+                        self.last_promotion_diagnostics
+                    ),
+                }
+            )
+        return result
 
 
 @dataclass
@@ -284,7 +612,6 @@ class ValidationStabilityController:
     ) -> dict[str, object]:
         self.validation_count += 1
         rate = float(completion_rate)
-        previous_best_rate = self.best_completion_rate
         cooldown_active = self.rollback_cooldown_remaining > 0
         if cooldown_active:
             self.rollback_cooldown_validation_count += 1
@@ -299,11 +626,9 @@ class ValidationStabilityController:
         else:
             self.validations_without_improvement += 1
         degraded = bool(
-            feasibility_phase
-            and not improved
-            and previous_best_rate is not None
-            and previous_best_rate - rate
-            >= self.rollback_completion_drop - 1e-12
+            not improved
+            and rate
+            <= 1.0 - self.rollback_completion_drop + 1e-12
         )
         if degraded:
             self.consecutive_degraded_validations += 1
@@ -614,6 +939,18 @@ def _validation_log_row(
         "std_worker_load_variance": all_summary[
             "worker_load_variance"
         ]["std"],
+        "mean_quality_score": summary_value(
+            all_summary, "quality_score", "mean"
+        ),
+        "std_quality_score": summary_value(
+            all_summary, "quality_score", "std"
+        ),
+        "mean_heuristic_quality_score": summary_value(
+            all_summary, "heuristic_quality_score", "mean"
+        ),
+        "std_heuristic_quality_score": summary_value(
+            all_summary, "heuristic_quality_score", "std"
+        ),
         "mean_relative_heuristic_gap_percent": gap_summary[
             "relative_heuristic_gap_percent"
         ]["mean"],
@@ -738,6 +1075,139 @@ def _evaluate_sampled_validation(
         combined["instance_count"] // len(sampling_seeds)
     )
     return combined
+
+
+def _normalized_validation_quality_score(
+    score: tuple[float, float, float, float],
+    reward_config: dict,
+) -> float | None:
+    del reward_config
+    if len(score) != 4:
+        return None
+    result = float(score[1])
+    return result if math.isfinite(result) and result >= 0.0 else None
+
+
+def _official_evaluation_sampling_seeds(config: dict) -> list[int]:
+    seeds = [
+        int(value)
+        for value in config["training"].get(
+            "final_evaluation_sampling_seeds",
+            (100011, 100012, 100013),
+        )
+    ]
+    if seeds != [100011, 100012, 100013]:
+        raise ValueError(
+            "M1 final evaluation sampling seeds must be "
+            "100011/100012/100013"
+        )
+    return seeds
+
+
+def _checkpoint_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _reevaluate_checkpoint_from_disk(
+    config: dict,
+    *,
+    checkpoint: Path,
+    bootstrap_observation,
+    dataset_name: str,
+    instance_limit: int | None,
+    sampling_seeds: list[int],
+) -> dict[str, object]:
+    """Load an isolated agent and produce the only final reported metrics."""
+    evaluation_agent = PPOAgent(
+        build_actor_critic(bootstrap_observation, config["network"]),
+        config["ppo"],
+        device=config["device"],
+    )
+    metadata = evaluation_agent.load(checkpoint, load_optimizer=False)
+    _, _, _, greedy = evaluate_dataset(
+        config,
+        dataset_name=dataset_name,
+        policy_name="ppo",
+        ppo_agent=evaluation_agent,
+        instance_limit=instance_limit,
+        decode_mode="greedy",
+    )
+    sampled = _evaluate_sampled_validation(
+        config,
+        dataset_name=dataset_name,
+        ppo_agent=evaluation_agent,
+        instance_limit=instance_limit,
+        sampling_seeds=sampling_seeds,
+    )
+    return {
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": _checkpoint_sha256(checkpoint),
+        "checkpoint_metadata": metadata,
+        "evaluation_config": {
+            "dataset": dataset_name,
+            "instance_limit": instance_limit,
+            "greedy": True,
+            "sampling_seeds": list(sampling_seeds),
+        },
+        "greedy": greedy,
+        "sampled": sampled,
+    }
+
+
+def _can_reuse_final_sampled_validation(
+    *,
+    final_episode: int,
+    sampled_episode: int | None,
+    validation_event: str | None,
+    sampled_validation: dict | None,
+) -> bool:
+    return bool(
+        sampled_validation is not None
+        and sampled_episode == final_episode
+        and validation_event in {"transition", "accepted"}
+    )
+
+
+def _resolve_final_accepted_sampled_validation(
+    config: dict,
+    *,
+    dataset_name: str,
+    ppo_agent: PPOAgent,
+    instance_limit: int | None,
+    sampling_seeds: list[int],
+    final_episode: int,
+    sampled_episode: int | None,
+    validation_event: str | None,
+    sampled_validation: dict | None,
+    runner: ParallelEpisodeRunner | None = None,
+    use_parallel: bool = False,
+) -> tuple[dict, str, bool]:
+    if _can_reuse_final_sampled_validation(
+        final_episode=final_episode,
+        sampled_episode=sampled_episode,
+        validation_event=validation_event,
+        sampled_validation=sampled_validation,
+    ):
+        return (
+            sampled_validation,
+            "reused_final_accepted_candidate",
+            False,
+        )
+    resolved = _evaluate_sampled_validation(
+        config,
+        dataset_name=dataset_name,
+        ppo_agent=ppo_agent,
+        instance_limit=instance_limit,
+        sampling_seeds=sampling_seeds,
+        runner=runner,
+        use_parallel=use_parallel,
+    )
+    event_label = validation_event or "missing_final_validation_event"
+    return resolved, f"rerun_after_{event_label}", True
 
 
 def _attach_sampled_validation(
@@ -1071,10 +1541,13 @@ def _apply_ablation_variant(config: dict, variant: str | None) -> None:
         raise ValueError(
             "E0 reuses the existing seed-11 baseline and must not be retrained"
         )
-    variants = {"E1", "E2", "E3", "R11", "S11", "L11", "Q11"}
+    variants = {
+        "E1", "E2", "E3", "R11", "S11", "L11", "Q11", "Q12", "Q13"
+    }
     if normalized not in variants:
         raise ValueError(
-            "ablation variant must be E1, E2, E3, R11, S11, L11, or Q11"
+            "ablation variant must be E1, E2, E3, R11, S11, L11, Q11, "
+            "Q12, or Q13"
         )
     config["training"]["ablation_variant"] = normalized
     config["training"]["episodes"] = 600
@@ -1083,16 +1556,39 @@ def _apply_ablation_variant(config: dict, variant: str | None) -> None:
     control = config["environment"]["worker_resource_control"]
     control["mode"] = "matching_admission_v1"
     config["reward"]["feasibility_shaping"]["enabled"] = normalized in {
-        "E2", "E3", "S11", "L11", "Q11"
+        "E2", "E3", "S11", "L11", "Q11", "Q12", "Q13"
     }
-    config["training"]["two_stage"]["quality_checkpoint_promotion"] = (
-        "score_improving" if normalized == "Q11" else "completion_only"
-    )
+    two_stage = config["training"]["two_stage"]
+    if normalized == "Q13":
+        two_stage["quality_checkpoint_promotion"] = "constrained_weighted"
+        two_stage["quality_promotion_constraints"] = {
+            "flow_relative_tolerance": 0.005,
+            "cost_relative_tolerance": 0.0,
+            "variance_relative_tolerance": 0.0,
+            "minimum_normalized_score_improvement": 1e-12,
+        }
+    else:
+        two_stage["quality_checkpoint_promotion"] = (
+            "score_improving"
+            if normalized in {"Q11", "Q12"}
+            else "completion_only"
+        )
+        two_stage.pop("quality_promotion_constraints", None)
     sampled = config["training"]["validation_control"]["sampled"]
-    if normalized in {"R11", "S11", "L11", "Q11"}:
+    if normalized in {"R11", "S11", "L11", "Q11", "Q12", "Q13"}:
         sampled["episode_milestones"] = [200, 400]
     else:
         sampled.pop("episode_milestones", None)
+    if normalized == "Q12":
+        reward = config["reward"]
+        reward["flow_scale"] = 1200.0
+        reward["cost_scale"] = 1000.0
+        reward["variance_scale"] = 50.0
+        reward["quality_weights"] = {
+            "flow": 0.5,
+            "cost": 0.3,
+            "variance": 0.2,
+        }
     rollback = config["training"]["validation_control"][
         "feasibility_rollback"
     ]
@@ -1126,6 +1622,7 @@ def train(
     parallel_envs: int | None = None,
     visdom_enabled: bool | None = None,
     ablation_variant: str | None = None,
+    initial_checkpoint: str | Path | None = None,
 ) -> Path:
     config = deepcopy(config)
     _apply_ablation_variant(config, ablation_variant)
@@ -1141,6 +1638,10 @@ def train(
         int(config["seed"]) if algorithm_seed is None else algorithm_seed,
     )
     config["seed"] = effective_algorithm_seed
+    if initial_checkpoint is not None:
+        config["training"]["initial_checkpoint"] = str(
+            Path(initial_checkpoint).resolve()
+        )
     set_seed(effective_algorithm_seed)
     use_online_instances = (
         bool(config["training"]["online_instances"])
@@ -1220,6 +1721,7 @@ def train(
             episodes=episodes,
             parallel_envs=min(effective_parallel_envs, episodes),
             validation_parallel_envs=validation_parallel_envs,
+            initial_checkpoint=initial_checkpoint,
         )
     serial_parallel_key = (
         "smoke_parallel_envs" if smoke else "parallel_envs"
@@ -1248,8 +1750,11 @@ def train(
     )
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(instance)
+    bootstrap_observation = observation.copy()
     network = build_actor_critic(observation, config["network"])
     agent = PPOAgent(network, config["ppo"], device=config["device"])
+    if initial_checkpoint is not None:
+        agent.load(initial_checkpoint, load_optimizer=True)
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label="train_smoke" if smoke else "train",
@@ -1291,10 +1796,16 @@ def train(
     )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
+    safe_checkpoint = run_directory / "safe_checkpoint.pt"
+    last_checkpoint = run_directory / "last_checkpoint.pt"
     best_validation: dict | None = None
     best_feasibility_validation: dict | None = None
     best_feasibility_instance_rows: list[dict] = []
     last_sampled_validation: dict | None = None
+    last_sampled_validation_episode: int | None = None
+    last_validation_event: str | None = None
+    final_accepted_sampled_validation: dict | None = None
+    final_accepted_sampled_validation_source: str | None = None
     best_score: tuple[float, float, float, float] | None = None
     phase_controller = TrainingPhaseController.from_config(config)
     stability_controller = ValidationStabilityController.from_config(config)
@@ -1491,6 +2002,15 @@ def train(
                 completed_episodes=completed_episodes,
             )
             score = evaluation_selection_key(validation)
+            normalized_quality_score = (
+                _normalized_validation_quality_score(
+                    score,
+                    config["reward"],
+                )
+                if phase_controller.quality_checkpoint_promotion
+                in {"constrained_weighted", "aligned_quality"}
+                else None
+            )
             stability = stability_controller.observe_greedy(
                 score,
                 validation["completion_rate"],
@@ -1512,6 +2032,7 @@ def train(
                 )
                 stability_controller.sampled_validation_runs += 1
                 last_sampled_validation = sampled_validation
+                last_sampled_validation_episode = completed_episodes
                 _attach_sampled_validation(
                     validation_row,
                     sampled_validation,
@@ -1521,9 +2042,14 @@ def train(
                 validation["completion_rate"],
                 completed_episodes=completed_episodes,
                 score=score,
+                normalized_quality_score=normalized_quality_score,
             )
+            last_validation_event = validation_event
             validation_row["candidate_phase"] = reward_phase
             validation_row["validation_event"] = validation_event
+            validation_row.update(
+                phase_controller.last_promotion_diagnostics
+            )
             validation_row["phase_after_validation"] = (
                 phase_controller.phase
             )
@@ -1535,6 +2061,15 @@ def train(
                 stability["rollback"]
             )
             validation_rows.append(validation_row)
+            if validation["completion_rate"] >= 1.0 - 1e-12:
+                agent.save(
+                    safe_checkpoint,
+                    metadata={
+                        "checkpoint_role": "latest_safe",
+                        "safe_episode": completed_episodes,
+                        "validation": validation_row,
+                    },
+                )
             if bool(stability["improved"]) and reward_phase == "feasibility":
                 best_feasibility_validation = validation_row
                 best_feasibility_instance_rows = [
@@ -1564,6 +2099,7 @@ def train(
                 )
                 row["candidate_status"] = "feasibility_best"
                 update_rows[-1]["candidate_status"] = "feasibility_best"
+            is_new_best = False
             if validation_event == "transition":
                 transition_metadata = {
                     "feature_dimensions": observation.feature_dimensions,
@@ -1575,62 +2111,56 @@ def train(
                     "validation": validation_row,
                 }
                 agent.save(phase1_checkpoint, metadata=transition_metadata)
-                agent.save(accepted_checkpoint, metadata=transition_metadata)
                 row["candidate_status"] = "phase_transition"
                 update_rows[-1]["candidate_status"] = "phase_transition"
-            elif validation_event == "accepted":
+            if validation_event in {"transition", "promoted", "accepted"}:
+                accepted_metadata = {
+                    "checkpoint_role": "shadow_best",
+                    "seed": config["seed"],
+                    "accepted_episode": completed_episodes,
+                    "quality_score": normalized_quality_score,
+                    "validation": validation_row,
+                }
                 agent.save(
                     accepted_checkpoint,
-                    metadata={
-                        "seed": config["seed"],
-                        "accepted_episode": completed_episodes,
-                        "validation": validation_row,
-                    },
+                    metadata=accepted_metadata,
                 )
-                row["candidate_status"] = "accepted"
-                update_rows[-1]["candidate_status"] = "accepted"
-            elif validation_event == "rejected":
-                if not accepted_checkpoint.exists():
+                shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                best_score = score
+                best_validation = validation_row
+                is_new_best = True
+                if validation_event != "transition":
+                    row["candidate_status"] = "promoted"
+                    update_rows[-1]["candidate_status"] = "promoted"
+            elif validation_event in {"not_promoted", "rejected"}:
+                row["candidate_status"] = "not_promoted"
+                update_rows[-1]["candidate_status"] = "not_promoted"
+            if bool(stability["rollback"]):
+                if not safe_checkpoint.exists():
                     raise RuntimeError(
-                        "quality candidate rejected before an accepted "
-                        "checkpoint was established"
-                    )
-                agent.load(accepted_checkpoint, load_optimizer=True)
-                row["candidate_status"] = "rejected_rolled_back"
-                update_rows[-1]["candidate_status"] = (
-                    "rejected_rolled_back"
-                )
-            elif bool(stability["rollback"]):
-                if not best_feasibility_checkpoint.exists():
-                    raise RuntimeError(
-                        "feasibility rollback requested before a best "
+                        "catastrophic rollback requested before a safe "
                         "checkpoint was established"
                     )
                 agent.load(
-                    best_feasibility_checkpoint,
+                    safe_checkpoint,
                     load_optimizer=True,
                 )
-                row["candidate_status"] = "feasibility_rolled_back"
+                row["candidate_status"] = "catastrophic_rolled_back"
                 update_rows[-1]["candidate_status"] = (
-                    "feasibility_rolled_back"
+                    "catastrophic_rolled_back"
                 )
             agent.set_learning_rate(
                 stability_controller.current_learning_rate
             )
             if validation_event == "transition":
                 stability_controller.reset_plateau()
-            checkpoint_eligible = (
-                not phase_controller.enabled
-                or validation_event in {"transition", "accepted"}
-            )
-            is_new_best = checkpoint_eligible and (
+            if not phase_controller.enabled and (
                 best_score is None or score < best_score
-            )
-            if is_new_best:
+            ):
                 best_score = score
                 best_validation = validation_row
                 agent.save(
-                    best_checkpoint,
+                    accepted_checkpoint,
                     metadata={
                         "feature_dimensions": (
                             observation.feature_dimensions
@@ -1650,6 +2180,8 @@ def train(
                         "validation": validation_row,
                     },
                 )
+                shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                is_new_best = True
             dashboard.log_validation(
                 validation_row,
                 best_validation=best_validation,
@@ -1657,6 +2189,8 @@ def train(
             )
             if validation_event in {
                 "transition",
+                "promoted",
+                "not_promoted",
                 "accepted",
                 "rejected",
             }:
@@ -1706,6 +2240,27 @@ def train(
             phase_controller.as_dict(),
         )
         print(json.dumps(row, ensure_ascii=False))
+    if (
+        config["training"].get("ablation_variant") == "Q13"
+        and phase_controller.phase_transition_episode is not None
+    ):
+        (
+            final_accepted_sampled_validation,
+            final_accepted_sampled_validation_source,
+            reran_final_sampled_validation,
+        ) = _resolve_final_accepted_sampled_validation(
+            config,
+            dataset_name=validation_split,
+            ppo_agent=agent,
+            instance_limit=validation_limit,
+            sampling_seeds=_official_evaluation_sampling_seeds(config),
+            final_episode=episodes,
+            sampled_episode=last_sampled_validation_episode,
+            validation_event=last_validation_event,
+            sampled_validation=last_sampled_validation,
+        )
+        if reran_final_sampled_validation:
+            stability_controller.sampled_validation_runs += 1
     formal_eligible = (
         not phase_controller.enabled
         or phase_controller.phase_transition_episode is not None
@@ -1718,6 +2273,21 @@ def train(
         raise RuntimeError("invalid hierarchical training state")
     if formal_eligible and (best_validation is None or best_score is None):
         raise RuntimeError("training completed without validation")
+    q13_final_sampled_metadata = (
+        {
+            "final_accepted_sampled_validation": (
+                final_accepted_sampled_validation
+            ),
+            "final_accepted_sampled_validation_source": (
+                final_accepted_sampled_validation_source
+            ),
+            "final_accepted_checkpoint_episode": (
+                phase_controller.accepted_quality_episode
+            ),
+        }
+        if config["training"].get("ablation_variant") == "Q13"
+        else {}
+    )
     final_metadata = {
             "feature_dimensions": observation.feature_dimensions,
             "edge_feature_dimensions": (
@@ -1750,19 +2320,47 @@ def train(
             ),
             "training_phase": phase_controller.as_dict(),
             "formal_eligible": formal_eligible,
+            **q13_final_sampled_metadata,
         }
     checkpoint: Path | None
     last_candidate_checkpoint: Path | None
+    agent.save(
+        last_checkpoint,
+        metadata={**final_metadata, "checkpoint_role": "last_online"},
+    )
     if formal_eligible:
+        if not accepted_checkpoint.exists():
+            raise RuntimeError(
+                "formal training completed without a shadow-best checkpoint"
+            )
         checkpoint = run_directory / "checkpoint.pt"
         last_candidate_checkpoint = None
-        agent.save(checkpoint, metadata=final_metadata)
+        shutil.copyfile(accepted_checkpoint, checkpoint)
+        shutil.copyfile(accepted_checkpoint, best_checkpoint)
     else:
         checkpoint = None
         last_candidate_checkpoint = (
             run_directory / "last_candidate_checkpoint.pt"
         )
-        agent.save(last_candidate_checkpoint, metadata=final_metadata)
+        shutil.copyfile(last_checkpoint, last_candidate_checkpoint)
+    final_checkpoint_evaluation = None
+    checkpoint_sha256 = None
+    if checkpoint is not None:
+        checkpoint_sha256 = _checkpoint_sha256(checkpoint)
+        accepted_sha256 = _checkpoint_sha256(accepted_checkpoint)
+        best_sha256 = _checkpoint_sha256(best_checkpoint)
+        if len({checkpoint_sha256, accepted_sha256, best_sha256}) != 1:
+            raise RuntimeError(
+                "official, accepted, and best checkpoint hashes diverged"
+            )
+        final_checkpoint_evaluation = _reevaluate_checkpoint_from_disk(
+            config,
+            checkpoint=checkpoint,
+            bootstrap_observation=bootstrap_observation,
+            dataset_name=validation_split,
+            instance_limit=validation_limit,
+            sampling_seeds=_official_evaluation_sampling_seeds(config),
+        )
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
@@ -1778,6 +2376,17 @@ def train(
             ),
             "unique_instance_count": len(set(instance_ids)),
             "checkpoint": str(checkpoint) if checkpoint is not None else None,
+            "checkpoint_sha256": checkpoint_sha256,
+            "final_checkpoint_evaluation": final_checkpoint_evaluation,
+            "accepted_checkpoint": (
+                str(accepted_checkpoint)
+                if accepted_checkpoint.exists()
+                else None
+            ),
+            "last_checkpoint": str(last_checkpoint),
+            "safe_checkpoint": (
+                str(safe_checkpoint) if safe_checkpoint.exists() else None
+            ),
             "last_candidate_checkpoint": (
                 str(last_candidate_checkpoint)
                 if last_candidate_checkpoint is not None
@@ -1821,6 +2430,7 @@ def train(
                 stability_controller.sampled_validation_runs
             ),
             "last_sampled_validation": last_sampled_validation,
+            **q13_final_sampled_metadata,
             "late_500_episode_diagnostics": (
                 _late_training_diagnostics(rows)
             ),
@@ -1861,6 +2471,7 @@ def _train_parallel(
     episodes: int,
     parallel_envs: int,
     validation_parallel_envs: int,
+    initial_checkpoint: str | Path | None = None,
 ) -> Path:
     template = load_instance_yaml(
         project_path(config["paths"]["fixed_instance"])
@@ -1872,6 +2483,8 @@ def _train_parallel(
         config["network"],
     )
     agent = PPOAgent(network, config["ppo"], device=config["device"])
+    if initial_checkpoint is not None:
+        agent.load(initial_checkpoint, load_optimizer=True)
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label="train_smoke_parallel" if smoke else "train_parallel",
@@ -1917,10 +2530,16 @@ def _train_parallel(
     )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
+    safe_checkpoint = run_directory / "safe_checkpoint.pt"
+    last_checkpoint = run_directory / "last_checkpoint.pt"
     best_validation: dict | None = None
     best_feasibility_validation: dict | None = None
     best_feasibility_instance_rows: list[dict] = []
     last_sampled_validation: dict | None = None
+    last_sampled_validation_episode: int | None = None
+    last_validation_event: str | None = None
+    final_accepted_sampled_validation: dict | None = None
+    final_accepted_sampled_validation_source: str | None = None
     best_score: tuple[float, float, float, float] | None = None
     phase_controller = TrainingPhaseController.from_config(config)
     stability_controller = ValidationStabilityController.from_config(config)
@@ -2091,6 +2710,15 @@ def _train_parallel(
                     completed_episodes=completed_episodes,
                 )
                 score = evaluation_selection_key(validation)
+                normalized_quality_score = (
+                    _normalized_validation_quality_score(
+                        score,
+                        config["reward"],
+                    )
+                    if phase_controller.quality_checkpoint_promotion
+                    in {"constrained_weighted", "aligned_quality"}
+                    else None
+                )
                 stability = stability_controller.observe_greedy(
                     score,
                     validation["completion_rate"],
@@ -2116,6 +2744,7 @@ def _train_parallel(
                     )
                     stability_controller.sampled_validation_runs += 1
                     last_sampled_validation = sampled_validation
+                    last_sampled_validation_episode = completed_episodes
                     _attach_sampled_validation(
                         validation_row,
                         sampled_validation,
@@ -2125,9 +2754,14 @@ def _train_parallel(
                     validation["completion_rate"],
                     completed_episodes=completed_episodes,
                     score=score,
+                    normalized_quality_score=normalized_quality_score,
                 )
+                last_validation_event = validation_event
                 validation_row["candidate_phase"] = reward_phase
                 validation_row["validation_event"] = validation_event
+                validation_row.update(
+                    phase_controller.last_promotion_diagnostics
+                )
                 validation_row["phase_after_validation"] = (
                     phase_controller.phase
                 )
@@ -2139,6 +2773,15 @@ def _train_parallel(
                     stability["rollback"]
                 )
                 validation_rows.append(validation_row)
+                if validation["completion_rate"] >= 1.0 - 1e-12:
+                    agent.save(
+                        safe_checkpoint,
+                        metadata={
+                            "checkpoint_role": "latest_safe",
+                            "safe_episode": completed_episodes,
+                            "validation": validation_row,
+                        },
+                    )
                 if (
                     bool(stability["improved"])
                     and reward_phase == "feasibility"
@@ -2176,6 +2819,7 @@ def _train_parallel(
                     update_row["candidate_status"] = "feasibility_best"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "feasibility_best"
+                is_new_best = False
                 if validation_event == "transition":
                     transition_metadata = {
                         "feature_dimensions": (
@@ -2193,74 +2837,66 @@ def _train_parallel(
                         phase1_checkpoint,
                         metadata=transition_metadata,
                     )
-                    agent.save(
-                        accepted_checkpoint,
-                        metadata=transition_metadata,
-                    )
                     update_row["candidate_status"] = "phase_transition"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "phase_transition"
-                elif validation_event == "accepted":
+                if validation_event in {
+                    "transition",
+                    "promoted",
+                    "accepted",
+                }:
                     agent.save(
                         accepted_checkpoint,
                         metadata={
+                            "checkpoint_role": "shadow_best",
                             "seed": config["seed"],
                             "parallel_envs": parallel_envs,
                             "accepted_episode": completed_episodes,
+                            "quality_score": normalized_quality_score,
                             "validation": validation_row,
                         },
                     )
-                    update_row["candidate_status"] = "accepted"
+                    shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                    best_score = score
+                    best_validation = validation_row
+                    is_new_best = True
+                    if validation_event != "transition":
+                        update_row["candidate_status"] = "promoted"
+                        for row in rows[-len(rollout.episodes) :]:
+                            row["candidate_status"] = "promoted"
+                elif validation_event in {"not_promoted", "rejected"}:
+                    update_row["candidate_status"] = "not_promoted"
                     for row in rows[-len(rollout.episodes) :]:
-                        row["candidate_status"] = "accepted"
-                elif validation_event == "rejected":
-                    if not accepted_checkpoint.exists():
+                        row["candidate_status"] = "not_promoted"
+                if bool(stability["rollback"]):
+                    if not safe_checkpoint.exists():
                         raise RuntimeError(
-                            "quality candidate rejected before an accepted "
-                            "checkpoint was established"
-                        )
-                    agent.load(accepted_checkpoint, load_optimizer=True)
-                    update_row["candidate_status"] = (
-                        "rejected_rolled_back"
-                    )
-                    for row in rows[-len(rollout.episodes) :]:
-                        row["candidate_status"] = (
-                            "rejected_rolled_back"
-                        )
-                elif bool(stability["rollback"]):
-                    if not best_feasibility_checkpoint.exists():
-                        raise RuntimeError(
-                            "feasibility rollback requested before a best "
+                            "catastrophic rollback requested before a safe "
                             "checkpoint was established"
                         )
                     agent.load(
-                        best_feasibility_checkpoint,
+                        safe_checkpoint,
                         load_optimizer=True,
                     )
                     update_row["candidate_status"] = (
-                        "feasibility_rolled_back"
+                        "catastrophic_rolled_back"
                     )
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = (
-                            "feasibility_rolled_back"
+                            "catastrophic_rolled_back"
                         )
                 agent.set_learning_rate(
                     stability_controller.current_learning_rate
                 )
                 if validation_event == "transition":
                     stability_controller.reset_plateau()
-                checkpoint_eligible = (
-                    not phase_controller.enabled
-                    or validation_event in {"transition", "accepted"}
-                )
-                is_new_best = checkpoint_eligible and (
+                if not phase_controller.enabled and (
                     best_score is None or score < best_score
-                )
-                if is_new_best:
+                ):
                     best_score = score
                     best_validation = validation_row
                     agent.save(
-                        best_checkpoint,
+                        accepted_checkpoint,
                         metadata={
                             "feature_dimensions": (
                                 bootstrap_observation.feature_dimensions
@@ -2280,6 +2916,8 @@ def _train_parallel(
                             "validation": validation_row,
                         },
                     )
+                    shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                    is_new_best = True
                 dashboard.log_validation(
                     validation_row,
                     best_validation=best_validation,
@@ -2287,6 +2925,8 @@ def _train_parallel(
                 )
                 if validation_event in {
                     "transition",
+                    "promoted",
+                    "not_promoted",
                     "accepted",
                     "rejected",
                 }:
@@ -2339,6 +2979,31 @@ def _train_parallel(
             )
             for row in batch_rows:
                 print(json.dumps(row, ensure_ascii=False))
+        if (
+            config["training"].get("ablation_variant") == "Q13"
+            and phase_controller.phase_transition_episode is not None
+        ):
+            (
+                final_accepted_sampled_validation,
+                final_accepted_sampled_validation_source,
+                reran_final_sampled_validation,
+            ) = _resolve_final_accepted_sampled_validation(
+                config,
+                dataset_name=validation_split,
+                ppo_agent=agent,
+                instance_limit=validation_limit,
+                sampling_seeds=stability_controller.sampled_seeds(
+                    int(config["seed"])
+                ),
+                final_episode=episodes,
+                sampled_episode=last_sampled_validation_episode,
+                validation_event=last_validation_event,
+                sampled_validation=last_sampled_validation,
+                runner=runner,
+                use_parallel=validation_parallel_envs > 1,
+            )
+            if reran_final_sampled_validation:
+                stability_controller.sampled_validation_runs += 1
     formal_eligible = (
         not phase_controller.enabled
         or phase_controller.phase_transition_episode is not None
@@ -2351,6 +3016,21 @@ def _train_parallel(
         raise RuntimeError("invalid hierarchical training state")
     if formal_eligible and (best_validation is None or best_score is None):
         raise RuntimeError("training completed without validation")
+    q13_final_sampled_metadata = (
+        {
+            "final_accepted_sampled_validation": (
+                final_accepted_sampled_validation
+            ),
+            "final_accepted_sampled_validation_source": (
+                final_accepted_sampled_validation_source
+            ),
+            "final_accepted_checkpoint_episode": (
+                phase_controller.accepted_quality_episode
+            ),
+        }
+        if config["training"].get("ablation_variant") == "Q13"
+        else {}
+    )
     final_metadata = {
             "feature_dimensions": (
                 bootstrap_observation.feature_dimensions
@@ -2384,19 +3064,47 @@ def _train_parallel(
             ),
             "training_phase": phase_controller.as_dict(),
             "formal_eligible": formal_eligible,
+            **q13_final_sampled_metadata,
         }
     checkpoint: Path | None
     last_candidate_checkpoint: Path | None
+    agent.save(
+        last_checkpoint,
+        metadata={**final_metadata, "checkpoint_role": "last_online"},
+    )
     if formal_eligible:
+        if not accepted_checkpoint.exists():
+            raise RuntimeError(
+                "formal training completed without a shadow-best checkpoint"
+            )
         checkpoint = run_directory / "checkpoint.pt"
         last_candidate_checkpoint = None
-        agent.save(checkpoint, metadata=final_metadata)
+        shutil.copyfile(accepted_checkpoint, checkpoint)
+        shutil.copyfile(accepted_checkpoint, best_checkpoint)
     else:
         checkpoint = None
         last_candidate_checkpoint = (
             run_directory / "last_candidate_checkpoint.pt"
         )
-        agent.save(last_candidate_checkpoint, metadata=final_metadata)
+        shutil.copyfile(last_checkpoint, last_candidate_checkpoint)
+    final_checkpoint_evaluation = None
+    checkpoint_sha256 = None
+    if checkpoint is not None:
+        checkpoint_sha256 = _checkpoint_sha256(checkpoint)
+        accepted_sha256 = _checkpoint_sha256(accepted_checkpoint)
+        best_sha256 = _checkpoint_sha256(best_checkpoint)
+        if len({checkpoint_sha256, accepted_sha256, best_sha256}) != 1:
+            raise RuntimeError(
+                "official, accepted, and best checkpoint hashes diverged"
+            )
+        final_checkpoint_evaluation = _reevaluate_checkpoint_from_disk(
+            config,
+            checkpoint=checkpoint,
+            bootstrap_observation=bootstrap_observation,
+            dataset_name=validation_split,
+            instance_limit=validation_limit,
+            sampling_seeds=_official_evaluation_sampling_seeds(config),
+        )
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
@@ -2422,6 +3130,17 @@ def _train_parallel(
                 else 0.0
             ),
             "checkpoint": str(checkpoint) if checkpoint is not None else None,
+            "checkpoint_sha256": checkpoint_sha256,
+            "final_checkpoint_evaluation": final_checkpoint_evaluation,
+            "accepted_checkpoint": (
+                str(accepted_checkpoint)
+                if accepted_checkpoint.exists()
+                else None
+            ),
+            "last_checkpoint": str(last_checkpoint),
+            "safe_checkpoint": (
+                str(safe_checkpoint) if safe_checkpoint.exists() else None
+            ),
             "last_candidate_checkpoint": (
                 str(last_candidate_checkpoint)
                 if last_candidate_checkpoint is not None
@@ -2465,6 +3184,7 @@ def _train_parallel(
                 stability_controller.sampled_validation_runs
             ),
             "last_sampled_validation": last_sampled_validation,
+            **q13_final_sampled_metadata,
             "late_500_episode_diagnostics": (
                 _late_training_diagnostics(rows)
             ),
@@ -2501,6 +3221,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the lightweight PPO policy")
     parser.add_argument("--config", default="configs/default.json")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        help="override training.episodes for this run",
+    )
+    parser.add_argument(
+        "--initial-checkpoint",
+        help=(
+            "initialize policy and optimizer from a compatible checkpoint"
+        ),
+    )
     instance_group = parser.add_mutually_exclusive_group()
     instance_group.add_argument(
         "--online-instances",
@@ -2518,8 +3249,9 @@ def main() -> None:
     parser.add_argument(
         "--ablation",
         choices=(
-            "E1", "E2", "E3", "R11", "S11", "L11", "Q11",
-            "e1", "e2", "e3", "r11", "s11", "l11", "q11",
+            "E1", "E2", "E3", "R11", "S11", "L11", "Q11", "Q12",
+            "Q13", "e1", "e2", "e3", "r11", "s11", "l11", "q11",
+            "q12", "q13",
         ),
         help=(
             "run a 600-episode seed-11 screening configuration"
@@ -2539,8 +3271,13 @@ def main() -> None:
     parser.set_defaults(visdom_enabled=None)
     parser.add_argument("--run-name")
     args = parser.parse_args()
+    config = load_config(args.config)
+    if args.episodes is not None:
+        if args.episodes <= 0:
+            parser.error("--episodes must be positive")
+        config["training"]["episodes"] = args.episodes
     run_directory = train(
-        load_config(args.config),
+        config,
         smoke=args.smoke,
         run_name=args.run_name,
         online_instances=args.online_instances,
@@ -2548,6 +3285,7 @@ def main() -> None:
         parallel_envs=args.parallel_envs,
         visdom_enabled=args.visdom_enabled,
         ablation_variant=args.ablation,
+        initial_checkpoint=args.initial_checkpoint,
     )
     print(f"training artifacts: {run_directory}")
 

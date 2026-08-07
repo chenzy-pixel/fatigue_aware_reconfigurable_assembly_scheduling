@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from copy import deepcopy
 from dataclasses import replace
@@ -23,8 +24,13 @@ def _validation_aggregate(flow_objective: float) -> dict:
     def metric(mean: float):
         return {"count": 2, "mean": mean, "std": 0.0}
 
+    quality_score = (
+        0.5 * flow_objective / (1200.0 + flow_objective)
+        + 0.3 * 10.0 / 1010.0
+        + 0.2 * 2.0 / 52.0
+    )
     return {
-        "evaluation_schema_version": "2.1.0",
+        "evaluation_schema_version": "3.0.0",
         "dataset": "validation",
         "manifest": "fixed-manifest.json",
         "policy": "ppo",
@@ -41,6 +47,7 @@ def _validation_aggregate(flow_objective: float) -> dict:
             "total_flow_time": metric(flow_objective),
         },
         "all_instance_metrics": {
+            "quality_score": metric(quality_score),
             "flow_time_objective": metric(flow_objective),
             "reconfiguration_cost": metric(10.0),
             "worker_load_variance": metric(2.0),
@@ -207,16 +214,19 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
         parallel_envs=1,
     )
 
-    assert len(validation_calls) == 2
+    assert len(validation_calls) == 3
     sampled_settings = effective_config["training"][
         "validation_control"
     ]["sampled"]
-    assert sampled_validation_calls == [
+    expected_sampled_seeds = [
         int(effective_config["seed"])
         + int(sampled_settings["seed_offset"])
         + repeat
         for repeat in range(int(sampled_settings["repeats"]))
     ]
+    assert sampled_validation_calls == (
+        expected_sampled_seeds + [100011, 100012, 100013]
+    )
     assert (run_directory / "checkpoint.pt").exists()
     assert (run_directory / "best_checkpoint.pt").exists()
     assert (run_directory / "best_feasibility_checkpoint.pt").exists()
@@ -229,6 +239,19 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     assert summary["unique_instance_count"] == 11
     assert summary["validation_runs"] == 2
     assert summary["best_validation"]["episode"] == 10
+    checkpoint_hash = hashlib.sha256(
+        (run_directory / "checkpoint.pt").read_bytes()
+    ).hexdigest()
+    assert checkpoint_hash == summary["checkpoint_sha256"]
+    assert checkpoint_hash == summary["final_checkpoint_evaluation"][
+        "checkpoint_sha256"
+    ]
+    assert (run_directory / "checkpoint.pt").read_bytes() == (
+        run_directory / "accepted_checkpoint.pt"
+    ).read_bytes()
+    assert (run_directory / "checkpoint.pt").read_bytes() == (
+        run_directory / "best_checkpoint.pt"
+    ).read_bytes()
 
     with (run_directory / "train_log.csv").open(
         "r",
@@ -255,7 +278,8 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
         map_location="cpu",
         weights_only=False,
     )
-    assert best["metadata"]["best_episode"] == 10
+    assert best["metadata"]["accepted_episode"] == 10
+    assert best["metadata"]["checkpoint_role"] == "shadow_best"
 
 
 def test_non_smoke_fixed_instance_training_is_rejected(
@@ -420,6 +444,11 @@ def test_parallel_training_batches_updates_and_writes_update_log(
         "evaluate_dataset_parallel",
         fake_parallel_validation,
     )
+    monkeypatch.setattr(
+        training_module,
+        "_reevaluate_checkpoint_from_disk",
+        lambda *args, **kwargs: {"source": "isolated_disk_reload"},
+    )
     run_directory = training_module.train(
         effective_config,
         smoke=True,
@@ -511,13 +540,107 @@ def _assert_nested_equal(first, second):
     assert first == second
 
 
-def test_quality_candidate_failure_rolls_back_network_and_optimizer(
+def test_three_not_promoted_updates_keep_network_and_optimizer_advancing(
     config,
     fixed_instance,
     tmp_path,
     monkeypatch,
 ):
     effective_config = deepcopy(config)
+    effective_config["paths"]["result_root"] = str(tmp_path)
+    effective_config["training"]["smoke_episodes"] = 4
+    effective_config["training"]["smoke_rollout_steps"] = 1
+    effective_config["training"]["validation_interval_episodes"] = 1
+    effective_config["training"]["smoke_validation_instance_limit"] = 2
+    effective_config["training"]["two_stage"][
+        "consecutive_validations"
+    ] = 1
+
+    class FakeOnlineDataset:
+        def __init__(self, **kwargs):
+            pass
+
+        def __getitem__(self, index):
+            return GeneratedInstanceRecord(
+                instance=replace(
+                    fixed_instance,
+                    instance_id=f"continuous_{index}",
+                ),
+                metadata={
+                    "seed": 1_000_000 + index,
+                    "pressure_type": "balanced",
+                    "cost_profile": "balanced_cost",
+                },
+            )
+
+    monkeypatch.setattr(
+        training_module, "OnlineInstanceDataset", FakeOnlineDataset
+    )
+    greedy_calls = 0
+
+    def fake_evaluate_dataset(*args, **kwargs):
+        nonlocal greedy_calls
+        if kwargs.get("decode_mode", "greedy") == "sampled":
+            return [], [], [], _validation_aggregate(20.0)
+        greedy_calls += 1
+        return [], [], [], _validation_aggregate(
+            10.0 if greedy_calls == 1 else 20.0
+        )
+
+    monkeypatch.setattr(
+        training_module, "evaluate_dataset", fake_evaluate_dataset
+    )
+    monkeypatch.setattr(
+        training_module,
+        "_reevaluate_checkpoint_from_disk",
+        lambda *args, **kwargs: {"source": "isolated_disk_reload"},
+    )
+    run_directory = training_module.train(
+        effective_config,
+        smoke=True,
+        online_instances=True,
+        run_name="continuous_not_promoted_test",
+        parallel_envs=1,
+    )
+    accepted = torch.load(
+        run_directory / "accepted_checkpoint.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    last = torch.load(
+        run_directory / "last_checkpoint.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert any(
+        not torch.equal(accepted["network"][name], last["network"][name])
+        for name in accepted["network"]
+    )
+
+    def maximum_optimizer_step(payload):
+        return max(
+            int(value["step"].item())
+            for value in payload["optimizer"]["state"].values()
+            if "step" in value
+        )
+
+    assert maximum_optimizer_step(last) > maximum_optimizer_step(accepted)
+    summary = json.loads(
+        (run_directory / "summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["training_phase"]["not_promoted_quality_updates"] == 3
+    assert summary["training_phase"]["accepted_quality_updates"] == 0
+    assert summary["feasibility_rollbacks"] == 0
+
+
+def test_quality_nonpromotion_keeps_online_network_and_shadow_best(
+    config,
+    fixed_instance,
+    tmp_path,
+    monkeypatch,
+):
+    effective_config = deepcopy(config)
+    training_module._apply_ablation_variant(effective_config, "Q13")
     effective_config["paths"]["result_root"] = str(tmp_path)
     effective_config["training"]["smoke_episodes"] = 4
     effective_config["training"]["smoke_rollout_steps"] = 1
@@ -547,7 +670,7 @@ def test_quality_candidate_failure_rolls_back_network_and_optimizer(
         "OnlineInstanceDataset",
         FakeOnlineDataset,
     )
-    completion_rates = iter((1.0, 1.0, 1.0, 0.5))
+    completion_rates = iter((1.0, 1.0, 1.0, 0.5, 1.0))
 
     def fake_evaluate_dataset(*args, **kwargs):
         if kwargs.get("decode_mode", "greedy") == "sampled":
@@ -563,6 +686,23 @@ def test_quality_candidate_failure_rolls_back_network_and_optimizer(
         training_module,
         "evaluate_dataset",
         fake_evaluate_dataset,
+    )
+    sampled_results = []
+    for flow in (99.0, 10.0, 10.0):
+        sampled = _validation_aggregate(flow)
+        sampled["decode_mode"] = "sampled"
+        sampled["repeat_count"] = 3
+        sampled["unique_instance_count"] = 2
+        sampled_results.append(sampled)
+    sampled_calls = iter(sampled_results)
+
+    def fake_sampled_validation(*args, **kwargs):
+        return next(sampled_calls)
+
+    monkeypatch.setattr(
+        training_module,
+        "_evaluate_sampled_validation",
+        fake_sampled_validation,
     )
     run_directory = training_module.train(
         effective_config,
@@ -583,6 +723,15 @@ def test_quality_candidate_failure_rolls_back_network_and_optimizer(
     )
     _assert_nested_equal(phase1["network"], final["network"])
     _assert_nested_equal(phase1["optimizer"], final["optimizer"])
+    last = torch.load(
+        run_directory / "last_checkpoint.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert any(
+        not torch.equal(phase1["network"][name], last["network"][name])
+        for name in phase1["network"]
+    )
     summary = json.loads(
         (run_directory / "summary.json").read_text(encoding="utf-8")
     )
@@ -590,9 +739,17 @@ def test_quality_candidate_failure_rolls_back_network_and_optimizer(
     assert summary["training_phase"]["phase_transition_episode"] == 3
     assert summary["training_phase"]["accepted_quality_updates"] == 0
     assert summary["training_phase"]["rejected_quality_updates"] == 1
-    assert summary["last_update"]["candidate_status"] == (
-        "rejected_rolled_back"
+    assert summary["last_update"]["candidate_status"] == "not_promoted"
+    assert summary["last_sampled_validation"]["all_instance_metrics"][
+        "flow_time_objective"
+    ]["mean"] == pytest.approx(99.0)
+    assert summary["final_accepted_sampled_validation"][
+        "all_instance_metrics"
+    ]["flow_time_objective"]["mean"] == pytest.approx(10.0)
+    assert summary["final_accepted_sampled_validation_source"] == (
+        "rerun_after_rejected"
     )
+    assert summary["final_accepted_checkpoint_episode"] == 3
 
 
 def test_unreached_feasibility_gate_writes_only_provisional_checkpoint(
@@ -663,7 +820,7 @@ def test_unreached_feasibility_gate_writes_only_provisional_checkpoint(
     assert summary["formal_training_status"] == "feasibility_not_reached"
 
 
-def test_feasibility_regression_rolls_back_optimizer_and_keeps_decayed_lr(
+def test_catastrophic_regression_rolls_back_safe_and_keeps_decayed_lr(
     config,
     fixed_instance,
     tmp_path,
@@ -756,5 +913,5 @@ def test_feasibility_regression_rolls_back_optimizer_and_keeps_decayed_lr(
     assert summary["feasibility_rollbacks"] == 1
     assert summary["learning_rate_decays"] == 1
     assert summary["last_update"]["candidate_status"] == (
-        "feasibility_rolled_back"
+        "catastrophic_rolled_back"
     )

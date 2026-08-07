@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from dataclasses import replace
 
@@ -16,6 +17,9 @@ from train import (
     TrainingPhaseController,
     ValidationStabilityController,
     _apply_ablation_variant,
+    _can_reuse_final_sampled_validation,
+    _normalized_validation_quality_score,
+    _validation_log_row,
 )
 from result import evaluation_selection_key
 
@@ -72,6 +76,60 @@ def test_bounded_quality_score_uses_configured_weights(config):
         1e12,
         reward_config,
     ) < 1.0
+
+
+def test_worker_load_variance_reward_is_emitted_at_assignment(
+    config,
+    fixed_instance,
+):
+    environment = AssemblySchedulingEnv(config)
+    observation = environment.reset(fixed_instance)
+    policy = HeuristicPolicy()
+    assignment_reward = None
+    completion_advance_reward = None
+    committed_task = None
+    for _ in range(500):
+        decision_type = observation.decision_type
+        action = policy.select_action(environment)
+        is_worker_pair = (
+            decision_type.value == "WORKER"
+            and action != environment.advance_action
+        )
+        is_worker_advance = (
+            decision_type.value == "WORKER"
+            and action == environment.advance_action
+        )
+        before_time = environment.current_time
+        observation, reward, terminated, truncated, _ = environment.step(
+            action
+        )
+        if is_worker_pair and assignment_reward is None:
+            assignment_reward = reward.variance
+            committed_task = next(
+                iter(environment._active_committed_worker_tasks)
+            )
+        if (
+            committed_task is not None
+            and committed_task
+            not in environment._active_committed_worker_tasks
+        ):
+            assert is_worker_advance
+            assert environment.current_time > before_time
+            completion_advance_reward = reward.variance
+            break
+        if terminated or truncated:
+            break
+    assert assignment_reward is not None
+    assert not math.isclose(assignment_reward, 0.0, abs_tol=1e-12)
+    assert completion_advance_reward == pytest.approx(0.0)
+    metrics = environment.metrics()
+    assert metrics["worker_assignment_count"] >= 1
+    assert metrics[
+        "worker_assignment_nonzero_variance_reward_count"
+    ] >= 1
+    assert metrics[
+        "worker_assignment_variance_reward_abs_sum"
+    ] >= abs(float(assignment_reward))
 
 
 @pytest.mark.parametrize("phase", ["feasibility", "quality"])
@@ -148,8 +206,14 @@ def test_proxy_reward_telescopes_for_horizon_truncation(
 
 
 def test_legacy_reward_configuration_remains_supported(config):
-    legacy = deepcopy(config["reward"])
-    legacy.pop("mode")
+    legacy = {
+        "flow_weight": 1.0,
+        "flow_scale": 3600.0,
+        "cost_weight": 1.0,
+        "cost_scale": 1000.0,
+        "variance_weight": 1.0,
+        "variance_scale": 100.0,
+    }
     vector = RewardVector(
         flow=-3600.0,
         cost=-1000.0,
@@ -187,6 +251,53 @@ def test_checkpoint_selection_keeps_completion_as_highest_priority():
     )
 
 
+def test_validation_log_promotion_key_and_q12_score_are_identical():
+    def metric(value):
+        return {"count": 2, "mean": value, "std": 0.0}
+
+    quality = (
+        0.5 * 1200.0 / 2400.0
+        + 0.3 * 1000.0 / 2000.0
+        + 0.2 * 50.0 / 100.0
+    )
+    aggregate = {
+        "dataset": "validation",
+        "instance_count": 2,
+        "completed_count": 2,
+        "completion_rate": 1.0,
+        "truncated_count": 0,
+        "schedule_violation_count": 0,
+        "completed_metrics": {
+            "makespan": metric(1.0),
+            "total_flow_time": metric(1200.0),
+        },
+        "all_instance_metrics": {
+            "quality_score": metric(quality),
+            "flow_time_objective": metric(1200.0),
+            "reconfiguration_cost": metric(1000.0),
+            "worker_load_variance": metric(50.0),
+        },
+        "gap_metrics": {
+            name: metric(0.0)
+            for name in (
+                "relative_heuristic_gap_percent",
+                "makespan_heuristic_gap_percent",
+                "reconfiguration_cost_heuristic_gap_percent",
+                "worker_load_variance_heuristic_gap_percent",
+            )
+        },
+        "total_inference_time_seconds": 0.0,
+        "total_solve_time_seconds": 0.0,
+    }
+    key = evaluation_selection_key(aggregate)
+    row = _validation_log_row(aggregate, completed_episodes=10)
+    assert key[1] == pytest.approx(quality)
+    assert row["mean_quality_score"] == pytest.approx(quality)
+    assert _normalized_validation_quality_score(key, {}) == pytest.approx(
+        quality
+    )
+
+
 def test_training_phase_requires_three_consecutive_successes(config):
     controller = TrainingPhaseController.from_config(config)
     assert controller.phase == "feasibility"
@@ -211,15 +322,25 @@ def test_training_phase_requires_three_consecutive_successes(config):
     assert controller.phase_transition_episode == 50
     assert controller.should_validate(False)
     assert (
-        controller.observe_validation(1.0, completed_episodes=60)
-        == "accepted"
+        controller.observe_validation(
+            1.0,
+            completed_episodes=60,
+            score=(-1.0, 0.4, 0.0, 0.0),
+            normalized_quality_score=0.4,
+        )
+        == "promoted"
     )
     assert (
-        controller.observe_validation(0.95, completed_episodes=70)
-        == "rejected"
+        controller.observe_validation(
+            0.95,
+            completed_episodes=70,
+            score=(-0.95, 0.3, 0.0, 0.0),
+            normalized_quality_score=0.3,
+        )
+        == "not_promoted"
     )
     assert controller.accepted_quality_updates == 1
-    assert controller.rejected_quality_updates == 1
+    assert controller.not_promoted_quality_updates == 1
 
 
 def test_validation_stability_rollback_thresholds(config):
@@ -283,8 +404,8 @@ def test_validation_plateau_decay_and_minimum_learning_rate(config):
     )
     for validation in range(2, 17):
         result = controller.observe_greedy(
-            (-0.9, 20.0, 10.0, 2.0),
-            0.9,
+            (-0.95, 20.0, 10.0, 2.0),
+            0.95,
             completed_episodes=validation,
             feasibility_phase=False,
         )
@@ -294,8 +415,8 @@ def test_validation_plateau_decay_and_minimum_learning_rate(config):
     for cycle in range(3):
         for offset in range(15):
             controller.observe_greedy(
-                (-0.9, 20.0, 10.0, 2.0),
-                0.9,
+                (-0.95, 20.0, 10.0, 2.0),
+                0.95,
                 completed_episodes=20 + cycle * 15 + offset,
                 feasibility_phase=False,
             )
@@ -320,6 +441,8 @@ def test_problem_unfinished_order_penalty_is_unchanged(fixed_instance):
         ("S11", True, 2, 3, 10, 1e-5, "completion_only"),
         ("L11", True, 2, 3, 15, 2.5e-5, "completion_only"),
         ("Q11", True, 2, 3, 15, 2.5e-5, "score_improving"),
+        ("Q12", True, 2, 3, 15, 2.5e-5, "score_improving"),
+        ("Q13", True, 2, 3, 15, 2.5e-5, "constrained_weighted"),
     ),
 )
 def test_ablation_variants_are_fixed_600_episode_seed11_runs(
@@ -356,7 +479,199 @@ def test_ablation_variants_are_fixed_600_episode_seed11_runs(
         "episode_milestones"
     )
     assert milestones == (
-        [200, 400] if variant in {"R11", "S11", "L11", "Q11"} else None
+        [200, 400]
+        if variant in {"R11", "S11", "L11", "Q11", "Q12", "Q13"}
+        else None
+    )
+
+
+def test_q12_only_changes_q11_quality_scales_and_weights(config):
+    original = deepcopy(config)
+    q11 = deepcopy(config)
+    q12 = deepcopy(config)
+    _apply_ablation_variant(q11, "Q11")
+    _apply_ablation_variant(q12, "Q12")
+
+    expected = deepcopy(q11)
+    expected["training"]["ablation_variant"] = "Q12"
+    expected["reward"]["flow_scale"] = 1200.0
+    expected["reward"]["cost_scale"] = 1000.0
+    expected["reward"]["variance_scale"] = 50.0
+    expected["reward"]["quality_weights"] = {
+        "flow": 0.5,
+        "cost": 0.3,
+        "variance": 0.2,
+    }
+
+    assert q12 == expected
+    assert config == original
+
+
+def test_q13_only_changes_q11_promotion_constraints(config):
+    original = deepcopy(config)
+    q11 = deepcopy(config)
+    q13 = deepcopy(config)
+    _apply_ablation_variant(q11, "Q11")
+    _apply_ablation_variant(q13, "Q13")
+
+    expected = deepcopy(q11)
+    expected["training"]["ablation_variant"] = "Q13"
+    expected["training"]["two_stage"][
+        "quality_checkpoint_promotion"
+    ] = "constrained_weighted"
+    expected["training"]["two_stage"][
+        "quality_promotion_constraints"
+    ] = {
+        "flow_relative_tolerance": 0.005,
+        "cost_relative_tolerance": 0.0,
+        "variance_relative_tolerance": 0.0,
+        "minimum_normalized_score_improvement": 1e-12,
+    }
+
+    assert q13 == expected
+    assert q13["reward"] == q11["reward"]
+    assert config == original
+
+
+def _q13_controller(config) -> TrainingPhaseController:
+    effective = deepcopy(config)
+    _apply_ablation_variant(effective, "Q13")
+    effective["training"]["two_stage"]["consecutive_validations"] = 1
+    return TrainingPhaseController.from_config(effective)
+
+
+def _transition_q13_controller(config) -> TrainingPhaseController:
+    controller = _q13_controller(config)
+    assert (
+        controller.observe_validation(
+            1.0,
+            completed_episodes=10,
+            score=(-1.0, 100.0, 100.0, 10.0),
+            normalized_quality_score=0.3,
+        )
+        == "transition"
+    )
+    return controller
+
+
+def test_constrained_weighted_promotion_accepts_boundary_and_updates_anchor(
+    config,
+):
+    controller = _transition_q13_controller(config)
+    candidate = (-1.0, 100.5, 99.0, 9.0)
+    assert (
+        controller.observe_validation(
+            1.0,
+            completed_episodes=20,
+            score=candidate,
+            normalized_quality_score=0.29,
+        )
+        == "accepted"
+    )
+    assert controller.accepted_quality_score == candidate
+    assert controller.accepted_normalized_quality_score == pytest.approx(0.29)
+    assert controller.accepted_quality_episode == 20
+    assert controller.last_promotion_diagnostics[
+        "promotion_decision_reason"
+    ] == "accepted"
+    assert controller.last_promotion_diagnostics[
+        "promotion_flow_constraint_pass"
+    ] is True
+
+
+@pytest.mark.parametrize(
+    ("completion", "score", "quality_score", "reason"),
+    (
+        (
+            0.95,
+            (-0.95, 99.0, 99.0, 9.0),
+            0.29,
+            "completion_below_floor",
+        ),
+        (
+            1.0,
+            (-1.0, 100.5000001, 99.0, 9.0),
+            0.29,
+            "flow_tolerance_exceeded",
+        ),
+        (1.0, (-1.0, 99.0, 100.0000001, 9.0), 0.29, "cost_regressed"),
+        (
+            1.0,
+            (-1.0, 99.0, 99.0, 10.0000001),
+            0.29,
+            "variance_regressed",
+        ),
+        (
+            1.0,
+            (-1.0, 99.0, 99.0, 9.0),
+            0.3,
+            "normalized_quality_not_improved",
+        ),
+        (
+            1.0,
+            (-1.0, math.inf, 99.0, 9.0),
+            None,
+            "missing_or_non_finite_promotion_metric",
+        ),
+    ),
+)
+def test_constrained_weighted_promotion_rejects_each_failed_guard_without_anchor_update(
+    config,
+    completion,
+    score,
+    quality_score,
+    reason,
+):
+    controller = _transition_q13_controller(config)
+    anchor = controller.accepted_quality_score
+    anchor_quality = controller.accepted_normalized_quality_score
+    assert (
+        controller.observe_validation(
+            completion,
+            completed_episodes=20,
+            score=score,
+            normalized_quality_score=quality_score,
+        )
+        == "rejected"
+    )
+    assert controller.accepted_quality_score == anchor
+    assert controller.accepted_normalized_quality_score == anchor_quality
+    assert controller.accepted_quality_episode == 10
+    assert controller.last_promotion_diagnostics[
+        "promotion_decision_reason"
+    ] == reason
+
+
+def test_validation_quality_score_is_the_aligned_selection_metric(config):
+    expected = bounded_quality_score(1200.0, 800.0, 40.0, config["reward"])
+    score = (-1.0, expected, 0.0, 0.0)
+    assert _normalized_validation_quality_score(
+        score, config["reward"]
+    ) == pytest.approx(expected)
+    assert _normalized_validation_quality_score(
+        (-1.0, math.inf, 1.0, 1.0), config["reward"]
+    ) is None
+
+
+def test_final_sampled_validation_is_reused_only_for_final_accepted_candidate():
+    sampled = {"completion_rate": 1.0}
+    assert _can_reuse_final_sampled_validation(
+        final_episode=600,
+        sampled_episode=600,
+        validation_event="accepted",
+        sampled_validation=sampled,
+    )
+    assert not _can_reuse_final_sampled_validation(
+        final_episode=600,
+        sampled_episode=600,
+        validation_event="rejected",
+        sampled_validation=sampled,
+    )
+    assert not _can_reuse_final_sampled_validation(
+        final_episode=600,
+        sampled_episode=400,
+        validation_event="accepted",
+        sampled_validation=sampled,
     )
 
 

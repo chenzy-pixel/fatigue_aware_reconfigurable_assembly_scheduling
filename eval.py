@@ -23,7 +23,11 @@ from data import (
     save_instance_pickle,
 )
 from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
-from environment import AssemblySchedulingEnv, proxy_return_from_metrics
+from environment import (
+    AssemblySchedulingEnv,
+    bounded_quality_score,
+    proxy_return_from_metrics,
+)
 from result import (
     aggregate_evaluation_rows,
     create_run_directory,
@@ -301,7 +305,11 @@ def evaluate_representative_diagnostic(
     }
 
 
-def _evaluation_row(record, metrics: dict[str, Any]) -> dict[str, Any]:
+def _evaluation_row(
+    record,
+    metrics: dict[str, Any],
+    reward_config: dict[str, Any],
+) -> dict[str, Any]:
     heuristic = record.metadata["heuristic_metrics"]
     pressure = record.metadata["pressure_metrics"]
     heuristic_flow_time = heuristic.get("heuristic_flow_time")
@@ -332,6 +340,18 @@ def _evaluation_row(record, metrics: dict[str, Any]) -> dict[str, Any]:
         "flow_time_objective": metrics["flow_time_objective"],
         "reconfiguration_cost": metrics["reconfiguration_cost"],
         "worker_load_variance": metrics["worker_load_variance"],
+        "quality_score": bounded_quality_score(
+            metrics["flow_time_objective"],
+            metrics["reconfiguration_cost"],
+            metrics["worker_load_variance"],
+            reward_config,
+        ),
+        "heuristic_quality_score": bounded_quality_score(
+            heuristic_flow_time,
+            heuristic_cost,
+            heuristic_variance,
+            reward_config,
+        ),
         "inference_time_seconds": metrics[
             "inference_time_seconds"
         ],
@@ -479,7 +499,7 @@ def evaluate_dataset(
                 prepared_policy=runner,
                 decode_mode=decode_mode,
             )
-            row = _evaluation_row(record, metrics)
+            row = _evaluation_row(record, metrics, config["reward"])
             rows.append(row)
             schedules.extend(
                 {"instance_id": record.instance.instance_id, **value}
@@ -572,7 +592,9 @@ def evaluate_dataset_parallel(
             "feasibility",
         )
         rows.append(
-            _evaluation_row(records[rollout.record_index], metrics)
+            _evaluation_row(
+                records[rollout.record_index], metrics, config["reward"]
+            )
         )
     aggregate = aggregate_evaluation_rows(
         rows,

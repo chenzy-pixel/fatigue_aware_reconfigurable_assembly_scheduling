@@ -12,8 +12,16 @@ from torch.nn import functional as functional
 
 from environment import (
     ASSEMBLY_EDGE_TYPES,
+    ASSEMBLY_NODE_TYPES,
     CAPABLE_EDGE,
     LOCKED_EDGE,
+    MACHINE_MODULE_EDGE,
+    OPERATION_ORDER_EDGE,
+    ORDER_WAVE_EDGE,
+    REQUIRES_MODULE_EDGE,
+    SERVICE_CANDIDATE_EDGE,
+    WAVE_MODULE_EDGE,
+    WORKER_MODULE_EDGE,
     DecisionType,
     EdgeType,
     HeterogeneousGraphObservation,
@@ -42,15 +50,22 @@ class TypedActorCritic(nn.Module):
     def __init__(self, feature_dimensions: dict[str, int], hidden_dim: int):
         super().__init__()
         self.feature_dimensions = {
-            key: int(value) for key, value in feature_dimensions.items()
+            key: int(feature_dimensions[key])
+            for key in ("operation", "machine", "worker", "global")
         }
         self.hidden_dim = int(hidden_dim)
         self.operation_encoder = _mlp(
-            feature_dimensions["operation"], hidden_dim
+            self.feature_dimensions["operation"], hidden_dim
         )
-        self.machine_encoder = _mlp(feature_dimensions["machine"], hidden_dim)
-        self.worker_encoder = _mlp(feature_dimensions["worker"], hidden_dim)
-        self.global_encoder = _mlp(feature_dimensions["global"], hidden_dim)
+        self.machine_encoder = _mlp(
+            self.feature_dimensions["machine"], hidden_dim
+        )
+        self.worker_encoder = _mlp(
+            self.feature_dimensions["worker"], hidden_dim
+        )
+        self.global_encoder = _mlp(
+            self.feature_dimensions["global"], hidden_dim
+        )
         self.production_scorer = nn.Sequential(
             nn.Linear(hidden_dim * 3, hidden_dim),
             nn.Tanh(),
@@ -73,7 +88,7 @@ class TypedActorCritic(nn.Module):
         return {
             "encoder_type": "typed_mlp",
             "hidden_dim": self.hidden_dim,
-            "observation_schema_version": 2,
+            "observation_schema_version": 3,
             "feature_dimensions": dict(self.feature_dimensions),
         }
 
@@ -358,9 +373,19 @@ class TypedActorCritic(nn.Module):
         return (embeddings * weights).sum(dim=1) / counts
 
 
-NODE_TYPES: tuple[str, ...] = ("operation", "machine", "worker")
+NODE_TYPES: tuple[str, ...] = ASSEMBLY_NODE_TYPES
 BIDIRECTIONAL_EDGE_TYPES: frozenset[EdgeType] = frozenset(
-    (CAPABLE_EDGE, LOCKED_EDGE)
+    (
+        CAPABLE_EDGE,
+        LOCKED_EDGE,
+        OPERATION_ORDER_EDGE,
+        ORDER_WAVE_EDGE,
+        REQUIRES_MODULE_EDGE,
+        MACHINE_MODULE_EDGE,
+        WORKER_MODULE_EDGE,
+        WAVE_MODULE_EDGE,
+        SERVICE_CANDIDATE_EDGE,
+    )
 )
 
 
@@ -401,6 +426,20 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
             {
                 "message_passing_layers": message_passing_layers,
                 "dropout": dropout,
+                "production_action_edge_features": bool(
+                    config.get("production_action_edge_features", False)
+                ),
+                "worker_action_edge_features": bool(
+                    config.get("worker_action_edge_features", False)
+                ),
+                "production_candidate_relative_features": bool(
+                    config.get(
+                        "production_candidate_relative_features", False
+                    )
+                ),
+                "worker_candidate_relative_features": bool(
+                    config.get("worker_candidate_relative_features", False)
+                ),
             }
         )
     return normalized
@@ -423,6 +462,65 @@ def assert_network_config_matches_spec(
             "network configuration does not match checkpoint architecture: "
             f"configured={configured}, checkpoint={saved}"
         )
+    if configured["encoder_type"] == "hetero_gnn":
+        configured_policy_head = int(config.get("policy_head_version", 4))
+        saved_policy_head = int(
+            checkpoint_spec.get("policy_head_version", 3)
+        )
+        if configured_policy_head != saved_policy_head:
+            raise ValueError(
+                "checkpoint policy head version is incompatible with the "
+                "current network: "
+                f"configured={configured_policy_head}, "
+                f"checkpoint={saved_policy_head}"
+            )
+        for field in (
+            "production_relative_feature_names",
+            "worker_relative_feature_names",
+        ):
+            configured_names = tuple(config.get(field, ()))
+            saved_names = tuple(checkpoint_spec.get(field, ()))
+            if configured_names != saved_names:
+                raise ValueError(
+                    f"checkpoint {field} is incompatible with the current "
+                    f"network: configured={configured_names}, "
+                    f"checkpoint={saved_names}"
+                )
+        configured_context_mode = str(
+            config.get("candidate_context_mode", "per_candidate_v3")
+        )
+        saved_context_mode = str(
+            checkpoint_spec.get(
+                "candidate_context_mode",
+                "per_candidate_v3",
+            )
+        )
+        if configured_context_mode != saved_context_mode:
+            raise ValueError(
+                "checkpoint candidate_context_mode is incompatible with "
+                "the current network: "
+                f"configured={configured_context_mode}, "
+                f"checkpoint={saved_context_mode}"
+            )
+        configured_worker_sharing = str(
+            config.get(
+                "worker_relative_weight_sharing",
+                "independent_v3",
+            )
+        )
+        saved_worker_sharing = str(
+            checkpoint_spec.get(
+                "worker_relative_weight_sharing",
+                "independent_v3",
+            )
+        )
+        if configured_worker_sharing != saved_worker_sharing:
+            raise ValueError(
+                "checkpoint worker_relative_weight_sharing is "
+                "incompatible with the current network: "
+                f"configured={configured_worker_sharing}, "
+                f"checkpoint={saved_worker_sharing}"
+            )
     configured_features = config.get("feature_dimensions")
     saved_features = checkpoint_spec.get("feature_dimensions")
     configured_edges = config.get("edge_feature_dimensions")
@@ -461,12 +559,16 @@ def _infer_observation_dimensions(
             "global": "global_encoder.0.weight",
         }
     else:
+        checkpoint_node_types = (
+            NODE_TYPES
+            if "node_projectors.order.0.weight" in state
+            else ("operation", "machine", "worker")
+        )
         prefixes = {
-            "operation": "node_projectors.operation.0.weight",
-            "machine": "node_projectors.machine.0.weight",
-            "worker": "node_projectors.worker.0.weight",
-            "global": "global_encoder.0.weight",
+            node_type: f"node_projectors.{node_type}.0.weight"
+            for node_type in checkpoint_node_types
         }
+        prefixes["global"] = "global_encoder.0.weight"
     features: dict[str, int] = {}
     for name, key in prefixes.items():
         weight = state.get(key)
@@ -592,17 +694,22 @@ class HeterogeneousMessagePassingLayer(nn.Module):
         relations: Mapping[EdgeType, RelationBatch],
     ) -> dict[str, torch.Tensor]:
         aggregated = {
-            node_type: torch.zeros_like(node_embeddings[node_type])
-            for node_type in NODE_TYPES
+            node_type: torch.zeros_like(embedding)
+            for node_type, embedding in node_embeddings.items()
         }
         degrees = {
-            node_type: node_embeddings[node_type].new_zeros(
-                (node_embeddings[node_type].shape[0], 1)
+            node_type: embedding.new_zeros(
+                (embedding.shape[0], 1)
             )
-            for node_type in NODE_TYPES
+            for node_type, embedding in node_embeddings.items()
         }
         for edge_type in ASSEMBLY_EDGE_TYPES:
             source_type, _, target_type = edge_type
+            if (
+                source_type not in node_embeddings
+                or target_type not in node_embeddings
+            ):
+                continue
             edge_index, edge_features, bidirectional = relations[edge_type]
             if edge_index.shape[1] == 0:
                 continue
@@ -657,7 +764,7 @@ class HeterogeneousMessagePassingLayer(nn.Module):
                     ),
                 )
         updated = {}
-        for node_type in NODE_TYPES:
+        for node_type in node_embeddings:
             mean_messages = aggregated[node_type] / degrees[
                 node_type
             ].clamp_min(1.0)
@@ -680,6 +787,10 @@ class HeteroGraphActorCritic(nn.Module):
         hidden_dim: int,
         message_passing_layers: int,
         dropout: float,
+        production_action_edge_features: bool = False,
+        worker_action_edge_features: bool = False,
+        production_candidate_relative_features: bool = False,
+        worker_candidate_relative_features: bool = False,
     ):
         super().__init__()
         self.feature_dimensions = {
@@ -689,14 +800,29 @@ class HeteroGraphActorCritic(nn.Module):
             edge_type: int(width)
             for edge_type, width in edge_feature_dimensions.items()
         }
+        if set(self.feature_dimensions) != set((*NODE_TYPES, "global")):
+            raise ValueError(
+                "feature_dimensions must contain the six M1 node types and global"
+            )
         if set(self.edge_feature_dimensions) != set(ASSEMBLY_EDGE_TYPES):
             raise ValueError(
-                "edge_feature_dimensions must contain exactly the five "
-                "assembly relations"
+                "edge_feature_dimensions must contain exactly the M1 relations"
             )
         self.hidden_dim = int(hidden_dim)
         self.message_passing_layer_count = int(message_passing_layers)
         self.dropout_probability = float(dropout)
+        self.use_production_action_edge_features = bool(
+            production_action_edge_features
+        )
+        self.use_worker_action_edge_features = bool(
+            worker_action_edge_features
+        )
+        self.use_production_candidate_relative_features = bool(
+            production_candidate_relative_features
+        )
+        self.use_worker_candidate_relative_features = bool(
+            worker_candidate_relative_features
+        )
         if self.hidden_dim < 1:
             raise ValueError("hidden_dim must be positive")
         if self.message_passing_layer_count < 1:
@@ -733,17 +859,50 @@ class HeteroGraphActorCritic(nn.Module):
                 for _ in range(self.message_passing_layer_count)
             ]
         )
-        self.production_scorer = _head(
-            self.hidden_dim * 3,
-            self.hidden_dim,
-            self.dropout_probability,
+        self.production_action_edge_encoder = nn.Sequential(
+            nn.Linear(
+                self.edge_feature_dimensions[CAPABLE_EDGE], self.hidden_dim
+            ),
+            nn.ReLU(),
         )
-        self.worker_scorer = _head(
+        self.worker_action_edge_encoder = nn.Sequential(
+            nn.Linear(
+                self.edge_feature_dimensions[SERVICE_CANDIDATE_EDGE],
+                self.hidden_dim,
+            ),
+            nn.ReLU(),
+        )
+        self.production_scorer = _head(
             self.hidden_dim * 4,
             self.hidden_dim,
             self.dropout_probability,
         )
-        context_dim = self.hidden_dim * 4
+        self.worker_scorer = _head(
+            self.hidden_dim * 5,
+            self.hidden_dim,
+            self.dropout_probability,
+        )
+        if self.use_production_candidate_relative_features:
+            self.production_relative_ranker = nn.Linear(1, 1, bias=False)
+            self._initialize_monotone_ranker(
+                self.production_relative_ranker
+            )
+            self._initialize_zero_context_output(self.production_scorer)
+            self.production_context_gate = nn.Parameter(
+                torch.full((), -4.0)
+            )
+        else:
+            self.production_relative_ranker = None
+            self.register_parameter("production_context_gate", None)
+        if self.use_worker_candidate_relative_features:
+            self.worker_relative_ranker = nn.Linear(2, 1, bias=False)
+            self._initialize_monotone_ranker(self.worker_relative_ranker)
+            self._initialize_zero_context_output(self.worker_scorer)
+            self.worker_context_gate = nn.Parameter(torch.full((), -4.0))
+        else:
+            self.worker_relative_ranker = None
+            self.register_parameter("worker_context_gate", None)
+        context_dim = self.hidden_dim * (len(NODE_TYPES) + 1)
         self.production_advance = _head(
             context_dim,
             self.hidden_dim,
@@ -766,7 +925,33 @@ class HeteroGraphActorCritic(nn.Module):
             "hidden_dim": self.hidden_dim,
             "message_passing_layers": self.message_passing_layer_count,
             "dropout": self.dropout_probability,
-            "observation_schema_version": 2,
+            "production_action_edge_features": (
+                self.use_production_action_edge_features
+            ),
+            "worker_action_edge_features": self.use_worker_action_edge_features,
+            "production_candidate_relative_features": (
+                self.use_production_candidate_relative_features
+            ),
+            "worker_candidate_relative_features": (
+                self.use_worker_candidate_relative_features
+            ),
+            "policy_head_version": 4,
+            "production_relative_feature_names": (
+                ("processing_plus_reconfiguration_time_norm",)
+                if self.use_production_candidate_relative_features
+                else ()
+            ),
+            "worker_relative_feature_names": (
+                (
+                    "projected_fatigue_ratio",
+                    "incremental_load_variance_norm",
+                )
+                if self.use_worker_candidate_relative_features
+                else ()
+            ),
+            "candidate_context_mode": "common_offset_v4",
+            "worker_relative_weight_sharing": "shared_mean_v4",
+            "observation_schema_version": 3,
             "feature_dimensions": dict(self.feature_dimensions),
             "edge_feature_dimensions": dict(self.edge_feature_dimensions),
         }
@@ -836,12 +1021,8 @@ class HeteroGraphActorCritic(nn.Module):
             for node_type in NODE_TYPES
         }
         context = torch.cat(
-            (
-                pooled["operation"],
-                pooled["machine"],
-                pooled["worker"],
-                global_embeddings,
-            ),
+            tuple(pooled[node_type] for node_type in NODE_TYPES)
+            + (global_embeddings,),
             dim=-1,
         )
         values = self.critic(context).squeeze(-1)
@@ -872,9 +1053,12 @@ class HeteroGraphActorCritic(nn.Module):
             )
             if observation.decision_type == DecisionType.PRODUCTION:
                 pair_logits = self._production_logits(
+                    observation,
                     operation_embeddings,
                     machine_embeddings,
                     global_embeddings[batch_index],
+                    masks[batch_index],
+                    device=device,
                 )
                 advance_logit = self.production_advance(
                     context[batch_index]
@@ -958,7 +1142,7 @@ class HeteroGraphActorCritic(nn.Module):
             for batch_index, observation in enumerate(observations):
                 if set(observation.relations) != set(ASSEMBLY_EDGE_TYPES):
                     raise ValueError(
-                        "graph observation must contain exactly the five "
+                        "graph observation must contain exactly the M1 "
                         "assembly relations"
                     )
                 edge_store = observation.relations[edge_type]
@@ -1017,9 +1201,13 @@ class HeteroGraphActorCritic(nn.Module):
 
     def _production_logits(
         self,
+        observation: HeterogeneousGraphObservation,
         operation_embeddings: torch.Tensor,
         machine_embeddings: torch.Tensor,
         global_embedding: torch.Tensor,
+        action_mask: torch.Tensor,
+        *,
+        device: torch.device | str,
     ) -> torch.Tensor:
         operation_count = operation_embeddings.shape[0]
         machine_count = machine_embeddings.shape[0]
@@ -1038,12 +1226,82 @@ class HeteroGraphActorCritic(nn.Module):
             machine_count,
             -1,
         )
-        return self.production_scorer(
+        pair_count = operation_count * machine_count
+        if action_mask.shape[0] != pair_count + 1:
+            raise ValueError(
+                "production action mask does not match entity counts"
+            )
+        capable = observation.relations[CAPABLE_EDGE]
+        dense_features = operation_pairs.new_zeros(
+            (
+                pair_count,
+                self.edge_feature_dimensions[CAPABLE_EDGE],
+            )
+        )
+        if capable.num_edges:
+            edge_index = torch.as_tensor(
+                capable.edge_index,
+                dtype=torch.long,
+                device=device,
+            )
+            action_indices = edge_index[0] * machine_count + edge_index[1]
+            edge_features = torch.as_tensor(
+                capable.edge_features,
+                dtype=torch.float32,
+                device=device,
+            )
+            dense_features = dense_features.index_copy(
+                0, action_indices, edge_features
+            )
+        edge_embedding = operation_pairs.new_zeros(
+            (pair_count, self.hidden_dim)
+        )
+        if self.use_production_action_edge_features:
+            edge_embedding = self.production_action_edge_encoder(
+                dense_features
+            )
+        edge_pairs = edge_embedding.reshape(
+            operation_count, machine_count, self.hidden_dim
+        )
+        contextual_logits = self.production_scorer(
             torch.cat(
-                (operation_pairs, machine_pairs, global_pairs),
+                (
+                    operation_pairs,
+                    machine_pairs,
+                    global_pairs,
+                    edge_pairs,
+                ),
                 dim=-1,
             )
         ).reshape(-1)
+        if not self.use_production_candidate_relative_features:
+            return contextual_logits
+        if self.production_relative_ranker is None:
+            raise RuntimeError("production relative ranker is not initialized")
+        edge_names = capable.feature_names
+        processing = dense_features[
+            :, edge_names.index("processing_time_norm")
+        ]
+        reconfiguration = dense_features[
+            :, edge_names.index("reconfiguration_time_norm")
+        ]
+        relative_features = self._standardize_candidate_features(
+            (processing + reconfiguration).unsqueeze(-1),
+            ~action_mask[:pair_count],
+        )
+        relative_logits = functional.linear(
+            relative_features,
+            -functional.softplus(
+                self.production_relative_ranker.weight
+            ),
+        ).reshape(-1)
+        common_context = self._common_candidate_context(
+            contextual_logits,
+            ~action_mask[:pair_count],
+        )
+        return relative_logits + torch.sigmoid(
+            self.production_context_gate
+        ) * common_context
 
     def _worker_logits(
         self,
@@ -1135,17 +1393,150 @@ class HeteroGraphActorCritic(nn.Module):
             worker_count,
             -1,
         )
-        return self.worker_scorer(
+        service = observation.relations[SERVICE_CANDIDATE_EDGE]
+        dense_features = operation_pairs.new_zeros(
+            (
+                pair_count,
+                self.edge_feature_dimensions[SERVICE_CANDIDATE_EDGE],
+            )
+        )
+        if service.num_edges:
+            edge_index = torch.as_tensor(
+                service.edge_index,
+                dtype=torch.long,
+                device=device,
+            )
+            action_indices = edge_index[0] * worker_count + edge_index[1]
+            edge_features = torch.as_tensor(
+                service.edge_features,
+                dtype=torch.float32,
+                device=device,
+            )
+            dense_features = dense_features.index_copy(
+                0, action_indices, edge_features
+            )
+        action_edge_embedding = operation_pairs.new_zeros(
+            (pair_count, self.hidden_dim)
+        )
+        if self.use_worker_action_edge_features:
+            action_edge_embedding = self.worker_action_edge_encoder(
+                dense_features
+            )
+        action_edge_pairs = action_edge_embedding.reshape(
+            machine_count, worker_count, self.hidden_dim
+        )
+        contextual_logits = self.worker_scorer(
             torch.cat(
                 (
                     operation_pairs,
                     machine_pairs,
                     worker_pairs,
                     global_pairs,
+                    action_edge_pairs,
                 ),
                 dim=-1,
             )
         ).reshape(-1)
+        if not self.use_worker_candidate_relative_features:
+            return contextual_logits
+        if self.worker_relative_ranker is None:
+            raise RuntimeError("worker relative ranker is not initialized")
+        edge_names = service.feature_names
+        projected_fatigue = dense_features[
+            :, edge_names.index("projected_fatigue_ratio")
+        ]
+        incremental_variance = dense_features[
+            :, edge_names.index("incremental_load_variance_norm")
+        ]
+        relative_features = self._standardize_candidate_features(
+            torch.stack(
+                (projected_fatigue, incremental_variance),
+                dim=-1,
+            ),
+            ~action_mask[:pair_count],
+        )
+        shared_raw_weight = self.worker_relative_ranker.weight.mean()
+        shared_effective_weight = -functional.softplus(shared_raw_weight)
+        relative_logits = (
+            relative_features.sum(dim=-1) * shared_effective_weight
+        )
+        common_context = self._common_candidate_context(
+            contextual_logits,
+            ~action_mask[:pair_count],
+        )
+        return relative_logits + torch.sigmoid(
+            self.worker_context_gate
+        ) * common_context
+
+    @staticmethod
+    def _initialize_monotone_ranker(ranker: nn.Linear) -> None:
+        effective_magnitude = torch.tensor(1.0)
+        raw_value = torch.log(torch.expm1(effective_magnitude)).item()
+        nn.init.constant_(ranker.weight, raw_value)
+
+    @staticmethod
+    def _initialize_zero_context_output(scorer: nn.Sequential) -> None:
+        output = scorer[-1]
+        if not isinstance(output, nn.Linear):
+            raise TypeError("candidate context scorer must end in nn.Linear")
+        nn.init.zeros_(output.weight)
+        nn.init.zeros_(output.bias)
+
+    @staticmethod
+    def _common_candidate_context(
+        contextual_logits: torch.Tensor,
+        feasible: torch.Tensor,
+    ) -> torch.Tensor:
+        if bool(torch.any(feasible)):
+            common = contextual_logits[feasible].mean()
+        else:
+            common = contextual_logits.new_zeros(())
+        return common.expand_as(contextual_logits)
+
+    def effective_relative_cost_weights(
+        self,
+    ) -> dict[str, tuple[float, ...]]:
+        result: dict[str, tuple[float, ...]] = {}
+        if self.production_relative_ranker is not None:
+            result["production"] = tuple(
+                float(value)
+                for value in (
+                    -functional.softplus(
+                        self.production_relative_ranker.weight.detach()
+                    )
+                )
+                .reshape(-1)
+                .cpu()
+            )
+        if self.worker_relative_ranker is not None:
+            shared = float(
+                -functional.softplus(
+                    self.worker_relative_ranker.weight.detach().mean()
+                )
+                .reshape(())
+                .cpu()
+            )
+            result["worker"] = (shared, shared)
+        return result
+
+    @staticmethod
+    def _standardize_candidate_features(
+        features: torch.Tensor,
+        feasible: torch.Tensor,
+    ) -> torch.Tensor:
+        """Scale raw candidate features within one legal action set."""
+        if features.ndim != 2 or feasible.ndim != 1:
+            raise ValueError("candidate features and feasibility have bad rank")
+        if features.shape[0] != feasible.shape[0]:
+            raise ValueError("candidate features and feasibility do not align")
+        selected = features[feasible]
+        if selected.shape[0] < 2:
+            return torch.zeros_like(features)
+        mean = selected.mean(dim=0, keepdim=True)
+        scale = selected.std(dim=0, unbiased=False, keepdim=True)
+        normalized = (features - mean) / scale.clamp_min(1e-6)
+        varying = scale > 1e-6
+        return torch.where(varying, normalized, torch.zeros_like(normalized))
 
     @staticmethod
     def _pool_slices(
@@ -1203,7 +1594,10 @@ def build_actor_critic(
     config = normalize_network_config(network_config)
     if config["encoder_type"] == "typed_mlp":
         return TypedActorCritic(
-            observation.feature_dimensions,
+            {
+                name: observation.feature_dimensions[name]
+                for name in ("operation", "machine", "worker", "global")
+            },
             config["hidden_dim"],
         )
     return HeteroGraphActorCritic(
@@ -1212,4 +1606,8 @@ def build_actor_critic(
         config["hidden_dim"],
         config["message_passing_layers"],
         config["dropout"],
+        config["production_action_edge_features"],
+        config["worker_action_edge_features"],
+        config["production_candidate_relative_features"],
+        config["worker_candidate_relative_features"],
     )

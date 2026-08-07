@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "2.1.0"
+EVALUATION_SCHEMA_VERSION = "3.0.0"
 
 
 def compare_lexicographic(
@@ -102,6 +102,12 @@ def aggregate_evaluation_rows(
         ),
     }
     all_instance_metrics = {
+        "quality_score": summarize_values(
+            row.get("quality_score") for row in rows
+        ),
+        "heuristic_quality_score": summarize_values(
+            row.get("heuristic_quality_score") for row in rows
+        ),
         "flow_time_objective": summarize_values(
             row["flow_time_objective"] for row in rows
         ),
@@ -184,6 +190,12 @@ def aggregate_evaluation_rows(
             row["worker_load_variance_heuristic_gap_percent"]
             for row in rows
         ),
+        "quality_score_heuristic_gap_percent": summarize_values(
+            relative_gap_percent(
+                row.get("quality_score"), row.get("heuristic_quality_score")
+            )
+            for row in rows
+        ),
     }
     return {
         "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
@@ -215,15 +227,32 @@ def aggregate_evaluation_rows(
 def evaluation_selection_key(
     aggregate: dict[str, Any],
 ) -> tuple[float, float, float, float]:
+    """Return the M1 completion-constrained aligned-quality key.
+
+    The four-field shape is retained for log/checkpoint compatibility.  Only
+    completion and the mean per-instance Q12 score participate in selection.
+    """
     metrics = aggregate["all_instance_metrics"]
 
     def mean(name: str) -> float:
-        value = metrics[name]["mean"]
+        value = metrics.get(name, {}).get("mean")
         return math.inf if value is None else float(value)
+
+    quality = mean("quality_score")
+    if not math.isfinite(quality):
+        flow = mean("flow_time_objective")
+        cost = mean("reconfiguration_cost")
+        variance = mean("worker_load_variance")
+        if all(math.isfinite(value) for value in (flow, cost, variance)):
+            quality = (
+                0.5 * flow / (1200.0 + flow)
+                + 0.3 * cost / (1000.0 + cost)
+                + 0.2 * variance / (50.0 + variance)
+            )
 
     return (
         -float(aggregate["completion_rate"]),
-        mean("flow_time_objective"),
-        mean("reconfiguration_cost"),
-        mean("worker_load_variance"),
+        quality,
+        0.0,
+        0.0,
     )

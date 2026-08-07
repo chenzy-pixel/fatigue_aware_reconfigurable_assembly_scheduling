@@ -215,7 +215,7 @@ def test_horizon_truncation_settles_partial_worker_task(
     )
     worker = environment.workers[worker_index]
     fatigue_before = worker.fatigue
-    environment.step(worker_action)
+    _, assignment_reward, _, _, _ = environment.step(worker_action)
     reconfiguration = environment._active_reconfiguration(
         environment.machines[machine_index].spec.id
     )
@@ -239,6 +239,10 @@ def test_horizon_truncation_settles_partial_worker_task(
     assert metrics["truncated"]
     assert metrics["terminal_reason"] == "horizon"
     assert worker.load == pytest.approx(expected_duration)
+    assert assignment_reward.variance != pytest.approx(0.0)
+    assert environment._committed_worker_loads.tolist() == pytest.approx(
+        [value.load for value in environment.workers]
+    )
     assert worker.fatigue == pytest.approx(expected_fatigue)
     assert record["end"] == pytest.approx(environment.current_time)
     assert record["duration"] == pytest.approx(expected_duration)

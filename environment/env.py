@@ -18,7 +18,14 @@ from environment.types import (
     CAN_DISASSEMBLE_EDGE,
     CAN_INSTALL_EDGE,
     LOCKED_EDGE,
+    MACHINE_MODULE_EDGE,
+    OPERATION_ORDER_EDGE,
+    ORDER_WAVE_EDGE,
     PRECEDES_EDGE,
+    REQUIRES_MODULE_EDGE,
+    SERVICE_CANDIDATE_EDGE,
+    WAVE_MODULE_EDGE,
+    WORKER_MODULE_EDGE,
     DecisionType,
     EdgeStore,
     EdgeType,
@@ -171,6 +178,14 @@ class AssemblySchedulingEnv:
         self.operations: list[OperationRuntime] = []
         self.machines: list[MachineRuntime] = []
         self.workers: list[WorkerRuntime] = []
+        self._committed_worker_loads = np.empty(0, dtype=np.float64)
+        self._active_committed_worker_tasks: dict[
+            tuple[str, str], tuple[int, float]
+        ] = {}
+        self._worker_assignment_count = 0
+        self._worker_assignment_variance_reward_sum = 0.0
+        self._worker_assignment_variance_reward_abs_sum = 0.0
+        self._worker_assignment_nonzero_variance_reward_count = 0
         self.reconfigurations: dict[str, ReconfigurationRuntime] = {}
         self._machine_reconfiguration: dict[str, str] = {}
         self._static_edge_indices: dict[EdgeType, np.ndarray] = {}
@@ -286,6 +301,14 @@ class AssemblySchedulingEnv:
             )
             for worker in instance.workers
         ]
+        self._committed_worker_loads = np.zeros(
+            len(self.workers), dtype=np.float64
+        )
+        self._active_committed_worker_tasks = {}
+        self._worker_assignment_count = 0
+        self._worker_assignment_variance_reward_sum = 0.0
+        self._worker_assignment_variance_reward_abs_sum = 0.0
+        self._worker_assignment_nonzero_variance_reward_count = 0
         self.reconfigurations = {}
         self._machine_reconfiguration = {}
         self._static_edge_indices = self._build_static_edge_indices()
@@ -328,10 +351,35 @@ class AssemblySchedulingEnv:
 
     def observe(self) -> Observation:
         self._require_instance()
+        horizon = float(self.instance.horizon)
+        total_operations = max(1, len(self.operations))
+        total_machines = max(1, len(self.machines))
+        total_orders = max(1, len(self.instance.orders))
+        reward_config = self.config["reward"]
+        cost_scale = float(reward_config["cost_scale"])
+        variance_scale = float(reward_config["variance_scale"])
+        safe_fatigue = float(self.instance.fatigue.maximum_safe_fatigue)
         module_values = (self.instance.no_module_state, *self.instance.modules)
         operation_states = tuple(OperationState)
         machine_states = tuple(MachineState)
         worker_states = tuple(WorkerState)
+        runtime_by_id = {
+            operation.spec.id: operation for operation in self.operations
+        }
+        maximum_order_operations = max(
+            1, max(len(order.operations) for order in self.instance.orders)
+        )
+
+        operation_feature_names = (
+            tuple(f"required_module_{module}" for module in self.instance.modules)
+            + tuple(f"state_{state.value}" for state in operation_states)
+            + (
+                "order_release_time_norm",
+                "base_processing_time_norm",
+                "sequence_norm",
+                "is_last_operation",
+            )
+        )
         operation_features = []
         for operation in self.operations:
             module_one_hot = [
@@ -347,10 +395,21 @@ class AssemblySchedulingEnv:
                 + state_one_hot
                 + [
                     order.release_time / self.instance.horizon,
-                    operation.spec.base_processing_time / 14.0,
-                    operation.spec.sequence / 5.0,
+                    operation.spec.base_processing_time / horizon,
+                    operation.spec.sequence / maximum_order_operations,
+                    float(operation.spec.sequence == len(order.operations)),
                 ]
             )
+
+        machine_feature_names = (
+            tuple(f"current_module_{module}" for module in module_values)
+            + tuple(f"state_{state.value}" for state in machine_states)
+            + tuple(f"target_module_{module}" for module in module_values)
+            + ("remaining_busy_time_norm", "downtime_cost_rate_norm")
+            + tuple(
+                f"supports_module_{module}" for module in self.instance.modules
+            )
+        )
         machine_features = []
         for machine in self.machines:
             current_one_hot = [
@@ -369,13 +428,24 @@ class AssemblySchedulingEnv:
                 + [
                     ticks_to_minutes(remaining, self.resolution)
                     / self.instance.horizon,
-                    machine.spec.downtime_cost_per_minute / 5.0,
+                    machine.spec.downtime_cost_per_minute * horizon
+                    / cost_scale,
                 ]
                 + [
                     float(module in machine.spec.module_parameters)
                     for module in self.instance.modules
                 ]
             )
+
+        worker_feature_names = (
+            ("fatigue_ratio",)
+            + tuple(f"state_{state.value}" for state in worker_states)
+            + ("remaining_busy_time_norm",)
+            + tuple(
+                f"qualified_module_{module}" for module in self.instance.modules
+            )
+            + ("load_norm", "labor_cost_rate_norm")
+        )
         worker_features = []
         for worker in self.workers:
             state_one_hot = [
@@ -383,7 +453,7 @@ class AssemblySchedulingEnv:
             ]
             remaining = max(0, (worker.busy_until_tick or self.current_tick) - self.current_tick)
             worker_features.append(
-                [worker.fatigue]
+                [worker.fatigue / safe_fatigue]
                 + state_one_hot
                 + [
                     ticks_to_minutes(remaining, self.resolution)
@@ -395,7 +465,176 @@ class AssemblySchedulingEnv:
                 ]
                 + [
                     worker.load / self.instance.horizon,
-                    worker.spec.labor_cost_per_minute,
+                    worker.spec.labor_cost_per_minute * horizon / cost_scale,
+                ]
+            )
+
+        order_feature_names = (
+            "released",
+            "completed",
+            "age_norm",
+            "completion_ratio",
+            "remaining_operation_ratio",
+            "remaining_workload_norm",
+        )
+        order_features = []
+        for order in self.instance.orders:
+            released = self._order_released[order.id]
+            completed = order.id in self._order_completion_tick
+            done_count = sum(
+                runtime_by_id[operation.id].state == OperationState.DONE
+                for operation in order.operations
+            )
+            remaining_operations = [
+                operation
+                for operation in order.operations
+                if runtime_by_id[operation.id].state != OperationState.DONE
+            ]
+            age = (
+                max(0.0, self.current_time - order.release_time)
+                if released
+                else 0.0
+            )
+            order_features.append(
+                [
+                    float(released),
+                    float(completed),
+                    age / horizon,
+                    done_count / max(1, len(order.operations)),
+                    len(remaining_operations) / total_operations,
+                    sum(
+                        operation.base_processing_time
+                        for operation in remaining_operations
+                    )
+                    / horizon,
+                ]
+            )
+
+        module_feature_names = (
+            "fixed_disassembly_cost_norm",
+            "fixed_installation_cost_norm",
+            "released_remaining_operation_ratio",
+            "released_remaining_workload_norm",
+            "future_remaining_operation_ratio",
+            "future_remaining_workload_norm",
+            "ready_operation_ratio",
+            "installed_machine_ratio",
+            "target_machine_ratio",
+        )
+        module_features = []
+        for module in self.instance.modules:
+            remaining = [
+                operation
+                for operation in self.operations
+                if operation.spec.required_module == module
+                and operation.state != OperationState.DONE
+            ]
+            released_remaining = [
+                operation
+                for operation in remaining
+                if self._order_released[operation.spec.order_id]
+            ]
+            future_remaining = [
+                operation
+                for operation in remaining
+                if not self._order_released[operation.spec.order_id]
+            ]
+            ready = [
+                operation
+                for operation in remaining
+                if operation.state == OperationState.READY
+            ]
+            costs = self.instance.module_costs[module]
+            module_features.append(
+                [
+                    costs.fixed_disassembly_cost / cost_scale,
+                    costs.fixed_installation_cost / cost_scale,
+                    len(released_remaining) / total_operations,
+                    sum(
+                        operation.spec.base_processing_time
+                        for operation in released_remaining
+                    )
+                    / horizon,
+                    len(future_remaining) / total_operations,
+                    sum(
+                        operation.spec.base_processing_time
+                        for operation in future_remaining
+                    )
+                    / horizon,
+                    len(ready) / total_operations,
+                    sum(
+                        machine.current_module == module
+                        for machine in self.machines
+                    )
+                    / total_machines,
+                    sum(
+                        (machine.target_module or machine.current_module) == module
+                        for machine in self.machines
+                    )
+                    / total_machines,
+                ]
+            )
+
+        wave_ids = tuple(self.instance.waves)
+        wave_feature_names = (
+            "release_start_norm",
+            "release_end_norm",
+            "time_until_release_norm",
+            "released_order_ratio",
+            "active_order_ratio",
+            "completed_order_ratio",
+            "remaining_operation_ratio",
+            "remaining_workload_norm",
+        )
+        wave_features = []
+        for wave_id in wave_ids:
+            wave_orders = [
+                order for order in self.instance.orders if order.wave == wave_id
+            ]
+            release_interval = self.instance.waves[wave_id].get(
+                "release_interval"
+            )
+            if release_interval is None:
+                release_interval = (
+                    [
+                        min(order.release_time for order in wave_orders),
+                        max(order.release_time for order in wave_orders),
+                    ]
+                    if wave_orders
+                    else [0.0, 0.0]
+                )
+            released_count = sum(
+                self._order_released[order.id] for order in wave_orders
+            )
+            completed_count = sum(
+                order.id in self._order_completion_tick for order in wave_orders
+            )
+            active_count = sum(
+                self._order_released[order.id]
+                and order.id not in self._order_completion_tick
+                for order in wave_orders
+            )
+            remaining_specs = [
+                operation
+                for order in wave_orders
+                for operation in order.operations
+                if runtime_by_id[operation.id].state != OperationState.DONE
+            ]
+            wave_features.append(
+                [
+                    float(release_interval[0]) / horizon,
+                    float(release_interval[1]) / horizon,
+                    max(0.0, float(release_interval[0]) - self.current_time)
+                    / horizon,
+                    released_count / max(1, len(wave_orders)),
+                    active_count / max(1, len(wave_orders)),
+                    completed_count / max(1, len(wave_orders)),
+                    len(remaining_specs) / total_operations,
+                    sum(
+                        operation.base_processing_time
+                        for operation in remaining_specs
+                    )
+                    / horizon,
                 ]
             )
         active_orders = sum(
@@ -471,11 +710,24 @@ class AssemblySchedulingEnv:
         )
         relations = self._build_graph_relations()
         return Observation(
-            operations=np.asarray(operation_features, dtype=np.float32),
-            machines=np.asarray(machine_features, dtype=np.float32),
-            workers=np.asarray(worker_features, dtype=np.float32),
+            node_features={
+                "operation": np.asarray(operation_features, dtype=np.float32),
+                "machine": np.asarray(machine_features, dtype=np.float32),
+                "worker": np.asarray(worker_features, dtype=np.float32),
+                "order": np.asarray(order_features, dtype=np.float32),
+                "module": np.asarray(module_features, dtype=np.float32),
+                "wave": np.asarray(wave_features, dtype=np.float32),
+            },
             global_features=global_features,
             decision_type=self.decision_type,
+            node_feature_names={
+                "operation": operation_feature_names,
+                "machine": machine_feature_names,
+                "worker": worker_feature_names,
+                "order": order_feature_names,
+                "module": module_feature_names,
+                "wave": wave_feature_names,
+            },
             global_feature_names=(
                 "current_time_norm",
                 "active_order_ratio",
@@ -495,6 +747,9 @@ class AssemblySchedulingEnv:
                 ),
                 "machine": tuple(machine.spec.id for machine in self.machines),
                 "worker": tuple(worker.spec.id for worker in self.workers),
+                "order": tuple(order.id for order in self.instance.orders),
+                "module": tuple(self.instance.modules),
+                "wave": wave_ids,
             },
             relations=relations,
         )
@@ -502,6 +757,15 @@ class AssemblySchedulingEnv:
     def _build_static_edge_indices(self) -> dict[EdgeType, np.ndarray]:
         self._require_instance()
         operation_index = self.instance.operation_index
+        order_index = {
+            order.id: index for index, order in enumerate(self.instance.orders)
+        }
+        module_index = {
+            module: index for index, module in enumerate(self.instance.modules)
+        }
+        wave_index = {
+            wave: index for index, wave in enumerate(self.instance.waves)
+        }
         precedence_pairs: list[tuple[int, int]] = []
         for order in self.instance.orders:
             for predecessor, successor in zip(
@@ -525,10 +789,49 @@ class AssemblySchedulingEnv:
             for operation_index_value, operation in enumerate(self.operations)
             if operation.spec.required_module in worker.spec.qualified_modules
         ]
+        operation_order_pairs = [
+            (operation_index[operation.id], order_index[order.id])
+            for order in self.instance.orders
+            for operation in order.operations
+        ]
+        order_wave_pairs = [
+            (order_index[order.id], wave_index[order.wave])
+            for order in self.instance.orders
+        ]
+        operation_module_pairs = [
+            (
+                operation_index[operation.id],
+                module_index[operation.required_module],
+            )
+            for operation in self.instance.operations
+        ]
+        machine_module_pairs = [
+            (machine_index, module_index[module])
+            for machine_index, machine in enumerate(self.machines)
+            for module in self.instance.modules
+            if module in machine.spec.module_parameters
+        ]
+        worker_module_pairs = [
+            (worker_index, module_index[module])
+            for worker_index, worker in enumerate(self.workers)
+            for module in self.instance.modules
+            if module in worker.spec.qualified_modules
+        ]
+        wave_module_pairs = [
+            (wave_index[wave], module_index[module])
+            for wave in self.instance.waves
+            for module in self.instance.modules
+        ]
         return {
             PRECEDES_EDGE: _as_edge_index(precedence_pairs),
             CAPABLE_EDGE: _as_edge_index(capability_pairs),
             CAN_INSTALL_EDGE: _as_edge_index(installation_pairs),
+            OPERATION_ORDER_EDGE: _as_edge_index(operation_order_pairs),
+            ORDER_WAVE_EDGE: _as_edge_index(order_wave_pairs),
+            REQUIRES_MODULE_EDGE: _as_edge_index(operation_module_pairs),
+            MACHINE_MODULE_EDGE: _as_edge_index(machine_module_pairs),
+            WORKER_MODULE_EDGE: _as_edge_index(worker_module_pairs),
+            WAVE_MODULE_EDGE: _as_edge_index(wave_module_pairs),
         }
 
     def _build_graph_relations(self) -> dict[EdgeType, EdgeStore]:
@@ -544,11 +847,36 @@ class AssemblySchedulingEnv:
 
         capability_index = self._static_edge_indices[CAPABLE_EDGE]
         capability_features = []
+        cost_scale = float(self.config["reward"]["cost_scale"])
         for operation_index, machine_index in capability_index.T:
             operation = self.operations[int(operation_index)]
             machine = self.machines[int(machine_index)]
             profile = self._production_candidate_profile(
                 int(operation_index), int(machine_index)
+            )
+            configuration_match = (
+                machine.current_module == operation.spec.required_module
+            )
+            source_cost = self.instance.module_costs.get(
+                machine.current_module
+            )
+            fixed_disassembly_cost = (
+                0.0
+                if configuration_match or source_cost is None
+                else source_cost.fixed_disassembly_cost
+            )
+            fixed_installation_cost = (
+                0.0
+                if configuration_match
+                else self.instance.module_costs[
+                    operation.spec.required_module
+                ].fixed_installation_cost
+            )
+            labor_cost, downtime_cost = (
+                self._estimate_candidate_reconfiguration_costs(
+                    machine,
+                    operation.spec.required_module,
+                )
             )
             capability_features.append(
                 [
@@ -595,13 +923,21 @@ class AssemblySchedulingEnv:
                             profile.horizon_slack_ticks / max(1, self.horizon_tick),
                         ),
                     ),
+                    self.estimate_reconfiguration_ticks(
+                        int(operation_index), int(machine_index)
+                    )
+                    / self.horizon_tick,
+                    fixed_disassembly_cost / cost_scale,
+                    fixed_installation_cost / cost_scale,
+                    labor_cost / cost_scale,
+                    downtime_cost / cost_scale,
                 ]
             )
         capability = EdgeStore(
             edge_index=capability_index.copy(),
             edge_features=np.asarray(
                 capability_features, dtype=np.float32
-            ).reshape(-1, 9),
+            ).reshape(-1, 14),
             feature_names=(
                 "processing_time_norm",
                 "configuration_match",
@@ -612,6 +948,11 @@ class AssemblySchedulingEnv:
                 "safe_installation_worker_ratio",
                 "matching_deficit_after_commit_norm",
                 "horizon_slack_norm",
+                "reconfiguration_time_norm",
+                "fixed_disassembly_cost_norm",
+                "fixed_installation_cost_norm",
+                "estimated_labor_cost_norm",
+                "estimated_downtime_cost_norm",
             ),
             bidirectional=True,
         )
@@ -653,12 +994,201 @@ class AssemblySchedulingEnv:
             feature_names=("qualified", "disassembly_time_norm"),
         )
 
+        def unit_relation(edge_type: EdgeType, name: str) -> EdgeStore:
+            edge_index = self._static_edge_indices[edge_type]
+            return EdgeStore(
+                edge_index=edge_index.copy(),
+                edge_features=np.ones(
+                    (edge_index.shape[1], 1), dtype=np.float32
+                ),
+                feature_names=(name,),
+                bidirectional=True,
+            )
+
+        operation_order = unit_relation(
+            OPERATION_ORDER_EDGE, "belongs_to_order"
+        )
+        order_wave = unit_relation(ORDER_WAVE_EDGE, "belongs_to_wave")
+        requires_module = unit_relation(
+            REQUIRES_MODULE_EDGE, "requires_module"
+        )
+
+        machine_module_index = self._static_edge_indices[MACHINE_MODULE_EDGE]
+        machine_module_features: list[list[float]] = []
+        for machine_index, module_index in machine_module_index.T:
+            machine = self.machines[int(machine_index)]
+            module = self.instance.modules[int(module_index)]
+            parameters = machine.spec.module_parameters[module]
+            target_module = machine.target_module or machine.current_module
+            machine_module_features.append(
+                [
+                    float(machine.current_module == module),
+                    float(target_module == module),
+                    parameters.installation_base_time / self.instance.horizon,
+                    parameters.disassembly_base_time / self.instance.horizon,
+                    parameters.processing_speed_factor,
+                ]
+            )
+        machine_module = EdgeStore(
+            edge_index=machine_module_index.copy(),
+            edge_features=np.asarray(
+                machine_module_features, dtype=np.float32
+            ).reshape(-1, 5),
+            feature_names=(
+                "currently_installed",
+                "target_installed",
+                "installation_base_time_norm",
+                "disassembly_base_time_norm",
+                "processing_speed_factor",
+            ),
+            bidirectional=True,
+        )
+
+        worker_module = unit_relation(
+            WORKER_MODULE_EDGE, "qualified_for_module"
+        )
+
+        wave_module_index = self._static_edge_indices[WAVE_MODULE_EDGE]
+        wave_ids = tuple(self.instance.waves)
+        runtime_by_id = {
+            operation.spec.id: operation for operation in self.operations
+        }
+        wave_module_features: list[list[float]] = []
+        total_operations = max(1, len(self.operations))
+        for wave_index, module_index in wave_module_index.T:
+            wave = wave_ids[int(wave_index)]
+            module = self.instance.modules[int(module_index)]
+            matching = [
+                operation
+                for order in self.instance.orders
+                if order.wave == wave
+                for operation in order.operations
+                if operation.required_module == module
+                and runtime_by_id[operation.id].state != OperationState.DONE
+            ]
+            released = [
+                operation
+                for operation in matching
+                if self._order_released[operation.order_id]
+            ]
+            future = [
+                operation
+                for operation in matching
+                if not self._order_released[operation.order_id]
+            ]
+            wave_module_features.append(
+                [
+                    len(matching) / total_operations,
+                    sum(value.base_processing_time for value in matching)
+                    / self.instance.horizon,
+                    len(released) / total_operations,
+                    len(future) / total_operations,
+                ]
+            )
+        wave_module = EdgeStore(
+            edge_index=wave_module_index.copy(),
+            edge_features=np.asarray(
+                wave_module_features, dtype=np.float32
+            ).reshape(-1, 4),
+            feature_names=(
+                "remaining_operation_ratio",
+                "remaining_workload_norm",
+                "released_operation_ratio",
+                "future_operation_ratio",
+            ),
+            bidirectional=True,
+        )
+
+        service_pairs: list[tuple[int, int]] = []
+        service_features: list[list[float]] = []
+        variance_scale = float(self.config["reward"]["variance_scale"])
+        safe_fatigue = float(self.instance.fatigue.maximum_safe_fatigue)
+        current_load_variance = self._committed_load_variance()
+        for machine_index, machine in enumerate(self.machines):
+            reconfiguration = self._pending_reconfiguration(machine.spec.id)
+            if reconfiguration is None:
+                continue
+            module = (
+                reconfiguration.source_module
+                if reconfiguration.stage == ReconfigurationStage.WAIT_DIS
+                else reconfiguration.target_module
+            )
+            for worker_index, worker in enumerate(self.workers):
+                if module not in worker.spec.qualified_modules:
+                    continue
+                duration_ticks = self._stage_duration_ticks(
+                    reconfiguration, worker
+                )
+                duration = ticks_to_minutes(duration_ticks, self.resolution)
+                projected_fatigue = worker.fatigue + (
+                    self._stage_accumulation_rate(reconfiguration) * duration
+                )
+                fixed_cost = (
+                    self.instance.module_costs[
+                        reconfiguration.source_module
+                    ].fixed_disassembly_cost
+                    if reconfiguration.stage == ReconfigurationStage.WAIT_DIS
+                    else self.instance.module_costs[
+                        reconfiguration.target_module
+                    ].fixed_installation_cost
+                )
+                projected_variance = self.projected_worker_load_variance(
+                    machine_index,
+                    worker_index,
+                )
+                service_pairs.append((machine_index, worker_index))
+                service_features.append(
+                    [
+                        float(
+                            reconfiguration.stage
+                            == ReconfigurationStage.WAIT_DIS
+                        ),
+                        float(
+                            reconfiguration.stage
+                            == ReconfigurationStage.WAIT_INS
+                        ),
+                        duration / self.instance.horizon,
+                        projected_fatigue / safe_fatigue,
+                        fixed_cost / cost_scale,
+                        duration * worker.spec.labor_cost_per_minute
+                        / cost_scale,
+                        duration * machine.spec.downtime_cost_per_minute
+                        / cost_scale,
+                        (projected_variance - current_load_variance)
+                        / variance_scale,
+                    ]
+                )
+        service_candidate = EdgeStore(
+            edge_index=_as_edge_index(service_pairs),
+            edge_features=np.asarray(
+                service_features, dtype=np.float32
+            ).reshape(-1, 8),
+            feature_names=(
+                "stage_dis",
+                "stage_ins",
+                "stage_duration_norm",
+                "projected_fatigue_ratio",
+                "fixed_cost_norm",
+                "incremental_labor_cost_norm",
+                "incremental_downtime_cost_norm",
+                "incremental_load_variance_norm",
+            ),
+            bidirectional=True,
+        )
+
         return {
             PRECEDES_EDGE: precedence,
             CAPABLE_EDGE: capability,
             LOCKED_EDGE: locked,
             CAN_INSTALL_EDGE: installation,
             CAN_DISASSEMBLE_EDGE: disassembly,
+            OPERATION_ORDER_EDGE: operation_order,
+            ORDER_WAVE_EDGE: order_wave,
+            REQUIRES_MODULE_EDGE: requires_module,
+            MACHINE_MODULE_EDGE: machine_module,
+            WORKER_MODULE_EDGE: worker_module,
+            WAVE_MODULE_EDGE: wave_module,
+            SERVICE_CANDIDATE_EDGE: service_candidate,
         }
 
     def _build_locked_edges(self) -> EdgeStore:
@@ -903,6 +1433,19 @@ class AssemblySchedulingEnv:
             ),
             feasibility_shaping=feasibility_shaping,
         )
+        if (
+            phase == DecisionType.WORKER
+            and action != self.worker_action_size - 1
+        ):
+            self._worker_assignment_count += 1
+            self._worker_assignment_variance_reward_sum += reward.variance
+            self._worker_assignment_variance_reward_abs_sum += abs(
+                reward.variance
+            )
+            if not math.isclose(
+                reward.variance, 0.0, rel_tol=0.0, abs_tol=1e-12
+            ):
+                self._worker_assignment_nonzero_variance_reward_count += 1
         self._cumulative_reward += np.asarray(
             [reward.flow, reward.cost, reward.variance], dtype=np.float64
         )
@@ -965,6 +1508,62 @@ class AssemblySchedulingEnv:
             machine,
             machine.current_module,
             operation.spec.required_module,
+        )
+
+    def _estimate_candidate_reconfiguration_costs(
+        self,
+        machine: MachineRuntime,
+        target_module: str,
+    ) -> tuple[float, float]:
+        """Return optimistic labor and downtime costs for an action edge."""
+        if machine.current_module == target_module:
+            return 0.0, 0.0
+
+        stage_specs = []
+        if machine.current_module in machine.spec.module_parameters:
+            stage_specs.append(
+                (
+                    machine.current_module,
+                    machine.spec.module_parameters[
+                        machine.current_module
+                    ].disassembly_base_time,
+                    self.instance.fatigue.disassembly_time_coefficient,
+                )
+            )
+        stage_specs.append(
+            (
+                target_module,
+                machine.spec.module_parameters[
+                    target_module
+                ].installation_base_time,
+                self.instance.fatigue.installation_time_coefficient,
+            )
+        )
+        labor_cost = 0.0
+        downtime_minutes = 0.0
+        for module, base_time, coefficient in stage_specs:
+            candidates: list[tuple[float, float]] = []
+            for worker in self.workers:
+                if module not in worker.spec.qualified_modules:
+                    continue
+                duration_ticks = max(
+                    1,
+                    quantize_to_ticks(
+                        base_time * (1.0 + coefficient * worker.fatigue),
+                        self.resolution,
+                    ),
+                )
+                duration = ticks_to_minutes(duration_ticks, self.resolution)
+                candidates.append(
+                    (duration, duration * worker.spec.labor_cost_per_minute)
+                )
+            if not candidates:
+                continue
+            downtime_minutes += min(value[0] for value in candidates)
+            labor_cost += min(value[1] for value in candidates)
+        return (
+            labor_cost,
+            downtime_minutes * machine.spec.downtime_cost_per_minute,
         )
 
     def _machine_committed_release(
@@ -1130,6 +1729,22 @@ class AssemblySchedulingEnv:
             duration_ticks, self.resolution
         )
 
+    def projected_worker_load_variance(
+        self, machine_index: int, worker_index: int
+    ) -> float:
+        machine = self.machines[machine_index]
+        reconfiguration = self._pending_reconfiguration(machine.spec.id)
+        if reconfiguration is None:
+            return math.inf
+        worker = self.workers[worker_index]
+        duration_ticks = self._stage_duration_ticks(reconfiguration, worker)
+        projected_loads = self._committed_worker_loads.copy()
+        projected_loads[worker_index] += ticks_to_minutes(
+            duration_ticks,
+            self.resolution,
+        )
+        return float(np.var(projected_loads))
+
     def metrics(self) -> dict[str, Any]:
         self._require_instance()
         completed_orders = len(self._order_completion_tick)
@@ -1218,6 +1833,16 @@ class AssemblySchedulingEnv:
             ),
             "matching_preserving_worker_action_count": len(
                 self._matching_preserving_worker_actions
+            ),
+            "worker_assignment_count": self._worker_assignment_count,
+            "worker_assignment_variance_reward_sum": (
+                self._worker_assignment_variance_reward_sum
+            ),
+            "worker_assignment_variance_reward_abs_sum": (
+                self._worker_assignment_variance_reward_abs_sum
+            ),
+            "worker_assignment_nonzero_variance_reward_count": (
+                self._worker_assignment_nonzero_variance_reward_count
             ),
             "candidate_recovery_advance_count": (
                 self._candidate_recovery_advance_count
@@ -1414,6 +2039,17 @@ class AssemblySchedulingEnv:
             stage_name = "INS"
         worker.busy_until_tick = end_tick
         machine.busy_until_tick = end_tick
+        duration = ticks_to_minutes(duration_ticks, self.resolution)
+        committed_key = (reconfiguration.id, stage_name)
+        if committed_key in self._active_committed_worker_tasks:
+            raise RuntimeError(
+                f"duplicate committed worker task {committed_key}"
+            )
+        self._committed_worker_loads[worker_index] += duration
+        self._active_committed_worker_tasks[committed_key] = (
+            worker_index,
+            duration,
+        )
         self._reconfiguration_cost += fixed_cost
         self._push_event(
             end_tick,
@@ -1434,7 +2070,7 @@ class AssemblySchedulingEnv:
                 "target_module": reconfiguration.target_module,
                 "start": self.current_time,
                 "end": ticks_to_minutes(end_tick, self.resolution),
-                "duration": ticks_to_minutes(duration_ticks, self.resolution),
+                "duration": duration,
                 "fixed_cost": fixed_cost,
             }
         )
@@ -1606,6 +2242,12 @@ class AssemblySchedulingEnv:
             self._maximum_fatigue_seen, worker.fatigue
         )
         worker.load += duration
+        self._finish_committed_worker_task(
+            reconfiguration.id,
+            "DIS",
+            worker.spec.id,
+            duration,
+        )
         worker.state = WorkerState.IDLE
         worker.busy_until_tick = None
         machine.current_module = self.instance.no_module_state
@@ -1635,6 +2277,12 @@ class AssemblySchedulingEnv:
             self._maximum_fatigue_seen, worker.fatigue
         )
         worker.load += duration
+        self._finish_committed_worker_task(
+            reconfiguration.id,
+            "INS",
+            worker.spec.id,
+            duration,
+        )
         worker.state = WorkerState.IDLE
         worker.busy_until_tick = None
         machine.current_module = reconfiguration.target_module
@@ -2319,6 +2967,17 @@ class AssemblySchedulingEnv:
             duration = ticks_to_minutes(worked_ticks, self.resolution)
             worker = self._worker_by_id(worker_id)
             worker.load += duration
+            stage_name = (
+                "DIS"
+                if reconfiguration.stage == ReconfigurationStage.DIS
+                else "INS"
+            )
+            self._settle_committed_worker_task(
+                reconfiguration.id,
+                stage_name,
+                worker.spec.id,
+                duration,
+            )
             worker.fatigue = min(
                 1.0, worker.fatigue + accumulation_rate * duration
             )
@@ -2341,12 +3000,61 @@ class AssemblySchedulingEnv:
         return (
             self._flow_integral + self._flow_penalty,
             self._reconfiguration_cost,
-            self._load_variance(),
+            self._committed_load_variance(),
         )
 
     def _load_variance(self) -> float:
         loads = np.asarray([worker.load for worker in self.workers], dtype=np.float64)
         return float(np.var(loads)) if len(loads) else 0.0
+
+    def _committed_load_variance(self) -> float:
+        return (
+            float(np.var(self._committed_worker_loads))
+            if len(self._committed_worker_loads)
+            else 0.0
+        )
+
+    def _finish_committed_worker_task(
+        self,
+        reconfiguration_id: str,
+        stage_name: str,
+        worker_id: str,
+        duration: float,
+    ) -> None:
+        key = (reconfiguration_id, stage_name)
+        committed = self._active_committed_worker_tasks.pop(key, None)
+        if committed is None:
+            raise RuntimeError(f"missing committed worker task {key}")
+        worker_index, planned_duration = committed
+        if self.workers[worker_index].spec.id != worker_id:
+            raise RuntimeError(f"committed worker mismatch for {key}")
+        if not math.isclose(
+            planned_duration,
+            duration,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            raise RuntimeError(f"committed duration mismatch for {key}")
+
+    def _settle_committed_worker_task(
+        self,
+        reconfiguration_id: str,
+        stage_name: str,
+        worker_id: str,
+        worked_duration: float,
+    ) -> None:
+        key = (reconfiguration_id, stage_name)
+        committed = self._active_committed_worker_tasks.pop(key, None)
+        if committed is None:
+            raise RuntimeError(f"missing committed worker task {key}")
+        worker_index, planned_duration = committed
+        if self.workers[worker_index].spec.id != worker_id:
+            raise RuntimeError(f"committed worker mismatch for {key}")
+        if worked_duration < -1e-12 or worked_duration > planned_duration + 1e-9:
+            raise RuntimeError(f"invalid worked duration for {key}")
+        self._committed_worker_loads[worker_index] -= (
+            planned_duration - worked_duration
+        )
 
     def _push_event(
         self,

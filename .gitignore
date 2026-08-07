@@ -5,7 +5,11 @@ __pycache__/
 result/runs/
 result/run_logs/
 result/analysis/
+result/audits/
+result/m1/
 result/*.log
+result/*_report.html
+result/*_report_artifact.json
 data/instances/*.pkl
 data/instances/.build/
 data/manifests/.build/

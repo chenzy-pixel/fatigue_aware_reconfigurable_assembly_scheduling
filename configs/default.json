@@ -1,5 +1,6 @@
 {
   "experiment_name": "fatigue_aware_reconfigurable_assembly_mvp",
+  "method_version": "M1_candidate_graph_v4",
   "seed": 11,
   "algorithm_seeds": [11, 23, 37, 53, 71],
   "device": "cpu",
@@ -230,16 +231,16 @@
   },
   "reward": {
     "mode": "hierarchical_constrained_v1",
-    "flow_scale": 3600.0,
+    "flow_scale": 1200.0,
     "cost_scale": 1000.0,
-    "variance_scale": 100.0,
+    "variance_scale": 50.0,
     "flow_weight": 1.0,
     "cost_weight": 1.0,
     "variance_weight": 1.0,
     "quality_weights": {
-      "flow": 1.0,
-      "cost": 0.1,
-      "variance": 0.01
+      "flow": 0.5,
+      "cost": 0.3,
+      "variance": 0.2
     },
     "quality_budget": 0.5,
     "truncation_penalty": 0.5,
@@ -258,7 +259,21 @@
     "encoder_type": "hetero_gnn",
     "hidden_dim": 128,
     "message_passing_layers": 2,
-    "dropout": 0.0
+    "dropout": 0.0,
+    "production_action_edge_features": true,
+    "worker_action_edge_features": true,
+    "production_candidate_relative_features": true,
+    "worker_candidate_relative_features": true,
+    "policy_head_version": 4,
+    "production_relative_feature_names": [
+      "processing_plus_reconfiguration_time_norm"
+    ],
+    "worker_relative_feature_names": [
+      "projected_fatigue_ratio",
+      "incremental_load_variance_norm"
+    ],
+    "candidate_context_mode": "common_offset_v4",
+    "worker_relative_weight_sharing": "shared_mean_v4"
   },
   "ppo": {
     "learning_rate": 0.0001,
@@ -283,11 +298,12 @@
     "parallel_envs": 10,
     "smoke_parallel_envs": 2,
     "validation_parallel_envs": 10,
+    "final_evaluation_sampling_seeds": [100011, 100012, 100013],
     "two_stage": {
       "completion_target": 1.0,
       "consecutive_validations": 3,
       "quality_completion_floor": 1.0,
-      "quality_checkpoint_promotion": "completion_only",
+      "quality_checkpoint_promotion": "aligned_quality",
       "quality_validate_every_update": true
     },
     "validation_control": {
@@ -320,6 +336,38 @@
     "worker_timeout_seconds": 600,
     "multiprocessing_start_method": "spawn",
     "torch_num_threads": 4
+  },
+  "m1_gates": {
+    "diagnostic_seed_start": 1900000,
+    "diagnostic_instance_count": 20,
+    "bc_train_instance_count": 15,
+    "bc": {
+      "algorithm_seed": 190,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.00001,
+      "batch_size": 256,
+      "maximum_epochs": 200,
+      "patience_epochs": 20,
+      "maximum_ranking_pairs_per_state": 64,
+      "select_context_pruned_diagnostic": true
+    },
+    "thresholds": {
+      "minimum_production_spearman": 0.8,
+      "minimum_worker_spearman": 0.8,
+      "maximum_production_regret_percent": 5.0,
+      "maximum_worker_fatigue_regret": 0.02,
+      "maximum_worker_variance_regret_percent": 5.0,
+      "maximum_flow_gap_percent": 5.0,
+      "maximum_cost_gap_percent": 5.0,
+      "maximum_variance_gap_percent": 5.0,
+      "maximum_quality_gap_percent": 0.0
+    },
+    "overfit": {
+      "instance_stages": [5, 10, 20],
+      "maximum_updates_per_stage": 100,
+      "consecutive_passes": 3,
+      "algorithm_seed": 101
+    }
   },
   "logging": {
     "visdom": {
