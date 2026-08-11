@@ -472,6 +472,15 @@ def test_parallel_training_batches_updates_and_writes_update_log(
         2,
         1,
     ]
+    assert [int(row["environment_step_count"]) for row in updates] == [
+        2,
+        2,
+        2,
+        2,
+        2,
+        1,
+    ]
+    assert all(int(row["forced_action_count"]) == 0 for row in updates)
     with (run_directory / "train_log.csv").open(
         "r",
         encoding="utf-8-sig",
@@ -481,12 +490,17 @@ def test_parallel_training_batches_updates_and_writes_update_log(
     assert [int(row["instance_seed"]) for row in training_rows] == list(
         range(1_000_000, 1_000_011)
     )
+    assert all(int(row["policy_steps"]) == 1 for row in training_rows)
+    assert all(int(row["forced_actions"]) == 0 for row in training_rows)
     summary = json.loads(
         (run_directory / "summary.json").read_text(encoding="utf-8")
     )
     assert summary["parallel_envs"] == 2
     assert summary["updates"] == 6
     assert summary["transitions"] == 11
+    assert summary["environment_steps"] == 11
+    assert summary["forced_actions"] == 0
+    assert summary["forced_action_ratio"] == 0.0
     assert summary["validation_runs"] == 2
     assert (run_directory / "checkpoint.pt").exists()
     assert (run_directory / "best_checkpoint.pt").exists()

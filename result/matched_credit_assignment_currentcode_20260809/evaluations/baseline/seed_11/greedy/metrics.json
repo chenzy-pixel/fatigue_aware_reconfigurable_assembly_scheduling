@@ -1,0 +1,181 @@
+{
+  "algorithm_seed": 11,
+  "all_instance_metrics": {
+    "candidate_recovery_advance_count": {
+      "count": 20,
+      "mean": 0.1,
+      "std": 0.30779350562554625
+    },
+    "completed_reconfigurations": {
+      "count": 20,
+      "mean": 13.2,
+      "std": 4.311551192344877
+    },
+    "fatigue_masked_action_ratio": {
+      "count": 20,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "feasibility_proxy_return": {
+      "count": 20,
+      "mean": 2.0,
+      "std": 0.0
+    },
+    "flow_time_objective": {
+      "count": 20,
+      "mean": 1100.555,
+      "std": 362.9801132366113
+    },
+    "heuristic_quality_score": {
+      "count": 20,
+      "mean": 0.3749986504813031,
+      "std": 0.08502501693209875
+    },
+    "inference_time_per_decision_ms": {
+      "count": 20,
+      "mean": 5.831305148346944,
+      "std": 0.324503622881205
+    },
+    "inference_time_seconds": {
+      "count": 20,
+      "mean": 1.8509166750023716,
+      "std": 0.4007120939597316
+    },
+    "machine_waiting_for_worker_time": {
+      "count": 20,
+      "mean": 0.045,
+      "std": 0.20124611797498107
+    },
+    "matching_preserving_worker_action_count": {
+      "count": 20,
+      "mean": 70.35,
+      "std": 21.825323292957318
+    },
+    "maximum_worker_fatigue": {
+      "count": 20,
+      "mean": 0.265650504145,
+      "std": 0.12046039719859672
+    },
+    "mean_peak_worker_fatigue": {
+      "count": 20,
+      "mean": 0.21243269418333335,
+      "std": 0.09517678592599929
+    },
+    "minimum_worker_alternatives": {
+      "count": 20,
+      "mean": 1.55,
+      "std": 0.6863327411532597
+    },
+    "quality_score": {
+      "count": 20,
+      "mean": 0.35578618207748675,
+      "std": 0.07310535781268583
+    },
+    "reconfiguration_cost": {
+      "count": 20,
+      "mean": 621.3615830011041,
+      "std": 282.85893642905404
+    },
+    "resource_admission_masked_action_count": {
+      "count": 20,
+      "mean": 0.2,
+      "std": 0.6958523739384593
+    },
+    "resource_admission_masked_action_ratio": {
+      "count": 20,
+      "mean": 0.0007641939773435002,
+      "std": 0.0025227629645959942
+    },
+    "safe_fatigue_limit": {
+      "count": 20,
+      "mean": 0.75,
+      "std": 0.0
+    },
+    "solve_time_seconds": {
+      "count": 20,
+      "mean": 36.030065949999695,
+      "std": 4.811198241022638
+    },
+    "unfinished_orders": {
+      "count": 20,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "worker_competition_event_count": {
+      "count": 20,
+      "mean": 0.05,
+      "std": 0.22360679774997896
+    },
+    "worker_load_variance": {
+      "count": 20,
+      "mean": 3.7776805555555555,
+      "std": 3.069877500179158
+    },
+    "worker_matching_deficit_event_count": {
+      "count": 20,
+      "mean": 0.05,
+      "std": 0.22360679774997896
+    },
+    "worker_switch_ratio": {
+      "count": 20,
+      "mean": 0.9812129588677576,
+      "std": 0.05004713555702279
+    }
+  },
+  "arm": "baseline",
+  "checkpoint_sha256": "6c6e4e189cd623e6ddb4c58f0b4318ad4de16b8b4b91db883543a06557bb0ade",
+  "completed_count": 20,
+  "completed_metrics": {
+    "makespan": {
+      "count": 20,
+      "mean": 180.78000000000003,
+      "std": 27.62170389957487
+    },
+    "total_flow_time": {
+      "count": 20,
+      "mean": 1100.555,
+      "std": 362.9801132366113
+    }
+  },
+  "completion_rate": 1.0,
+  "dataset": "test",
+  "decision_count": 6306,
+  "decode_mode": "greedy",
+  "evaluation_schema_version": "3.0.0",
+  "gap_metrics": {
+    "makespan_heuristic_gap_percent": {
+      "count": 20,
+      "mean": -0.0800440134716854,
+      "std": 5.450389419532819
+    },
+    "quality_score_heuristic_gap_percent": {
+      "count": 20,
+      "mean": -4.538055337039136,
+      "std": 6.335641277581304
+    },
+    "reconfiguration_cost_heuristic_gap_percent": {
+      "count": 20,
+      "mean": -24.781936500140425,
+      "std": 17.436767399806598
+    },
+    "relative_heuristic_gap_percent": {
+      "count": 20,
+      "mean": 2.1557841133650166,
+      "std": 6.282592745124578
+    },
+    "worker_load_variance_heuristic_gap_percent": {
+      "count": 20,
+      "mean": 98.74710639193154,
+      "std": 218.59754431276028
+    }
+  },
+  "instance_count": 20,
+  "manifest": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\data\\manifests\\test\\manifest.json",
+  "parallel_envs": 20,
+  "policy": "ppo",
+  "schedule_violation_count": 0,
+  "source_sha256": "4eb46186031af56ca31851fef7b943d4a186f60f90e1d291d03aa3efd7b45842",
+  "total_inference_time_seconds": 37.01833350004743,
+  "total_solve_time_seconds": 720.601318999994,
+  "truncated_count": 0
+}

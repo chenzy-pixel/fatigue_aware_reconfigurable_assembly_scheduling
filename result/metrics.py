@@ -191,6 +191,33 @@ def aggregate_evaluation_rows(
         "feasibility_proxy_return": summarize_values(
             row.get("feasibility_proxy_return") for row in rows
         ),
+        **{
+            name: summarize_values(row.get(name) for row in rows)
+            for name in (
+                "forced_action_state_count",
+                "forced_production_count",
+                "forced_worker_count",
+                "forced_pair_count",
+                "forced_advance_count",
+                "forced_production_pair_count",
+                "forced_production_advance_count",
+                "forced_worker_pair_count",
+                "forced_worker_advance_count",
+                "forced_pair_advance_blocked_non_delay_count",
+                "forced_worker_pair_non_delay_count",
+                "forced_pair_advance_physically_unavailable_count",
+                "forced_advance_pair_physically_unavailable_count",
+                "forced_wait_dis_count",
+                "forced_wait_ins_count",
+                "forced_mixed_wait_stage_count",
+                "forced_phase_handoff_count",
+                "forced_recovery_advance_count",
+                "forced_future_event_advance_count",
+                "forced_action_chain_count",
+                "longest_forced_action_chain",
+                "mean_forced_action_chain_length",
+            )
+        },
     }
     gap_metrics = {
         "relative_heuristic_gap_percent": summarize_values(

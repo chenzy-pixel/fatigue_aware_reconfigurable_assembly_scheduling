@@ -70,10 +70,25 @@ def test_online_dataset_uses_episode_seeds_independent_of_algorithm_seed(
     fixed_instance,
     monkeypatch,
 ):
-    calls: list[tuple[int, str, str]] = []
+    calls: list[tuple[int, str, str, bool]] = []
 
-    def fake_generate(self, *, seed, split, pressure_type, ood_factor=None):
-        calls.append((seed, split, pressure_type))
+    def fake_generate(
+        self,
+        *,
+        seed,
+        split,
+        pressure_type,
+        ood_factor=None,
+        classify_reconfiguration_value=True,
+    ):
+        calls.append(
+            (
+                seed,
+                split,
+                pressure_type,
+                classify_reconfiguration_value,
+            )
+        )
         return GeneratedInstanceRecord(
             instance=fixed_instance,
             metadata={
@@ -110,4 +125,7 @@ def test_online_dataset_uses_episode_seeds_independent_of_algorithm_seed(
     ] == [
         record.metadata["pressure_type"] for record in second_records
     ]
-    assert all(split == "train" for _, split, _ in calls)
+    assert all(
+        split == "train" and classify_reconfiguration_value is False
+        for _, split, _, classify_reconfiguration_value in calls
+    )

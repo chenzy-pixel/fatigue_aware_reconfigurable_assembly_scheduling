@@ -1,0 +1,78 @@
+{
+  "non_delay_off": {
+    "evaluation": {
+      "available": false
+    },
+    "training": {
+      "completion_rate": 0.0,
+      "environment_steps": 1280,
+      "episode_count": 20,
+      "forced_action_chain_count": 439,
+      "forced_action_ratio": 0.63671875,
+      "forced_action_state_count": 815,
+      "forced_advance_count": 815,
+      "forced_advance_pair_physically_unavailable_count": 815,
+      "forced_future_event_advance_count": 815,
+      "forced_mixed_wait_stage_count": 8,
+      "forced_pair_advance_blocked_non_delay_count": 0,
+      "forced_pair_advance_physically_unavailable_count": 0,
+      "forced_pair_count": 0,
+      "forced_phase_handoff_count": 404,
+      "forced_production_advance_count": 404,
+      "forced_production_count": 404,
+      "forced_production_pair_count": 0,
+      "forced_recovery_advance_count": 0,
+      "forced_wait_dis_count": 97,
+      "forced_wait_ins_count": 118,
+      "forced_worker_advance_count": 411,
+      "forced_worker_count": 411,
+      "forced_worker_pair_count": 0,
+      "forced_worker_pair_non_delay_count": 0,
+      "maximum_forced_action_chain": 35,
+      "mean_episode_longest_forced_action_chain": 6.25,
+      "mean_flow_time_objective": 129.715,
+      "mean_reconfiguration_cost": 175.69027159075398,
+      "mean_worker_load_variance": 2.907791666666667,
+      "non_delay_forced_share": 0.0,
+      "p95_episode_longest_forced_action_chain": 8.40000000000002
+    }
+  },
+  "non_delay_on": {
+    "evaluation": {
+      "available": false
+    },
+    "training": {
+      "completion_rate": 0.0,
+      "environment_steps": 1280,
+      "episode_count": 20,
+      "forced_action_chain_count": 426,
+      "forced_action_ratio": 0.6453125,
+      "forced_action_state_count": 826,
+      "forced_advance_count": 805,
+      "forced_advance_pair_physically_unavailable_count": 805,
+      "forced_future_event_advance_count": 805,
+      "forced_mixed_wait_stage_count": 5,
+      "forced_pair_advance_blocked_non_delay_count": 21,
+      "forced_pair_advance_physically_unavailable_count": 0,
+      "forced_pair_count": 21,
+      "forced_phase_handoff_count": 383,
+      "forced_production_advance_count": 383,
+      "forced_production_count": 383,
+      "forced_production_pair_count": 0,
+      "forced_recovery_advance_count": 1,
+      "forced_wait_dis_count": 94,
+      "forced_wait_ins_count": 84,
+      "forced_worker_advance_count": 422,
+      "forced_worker_count": 443,
+      "forced_worker_pair_count": 21,
+      "forced_worker_pair_non_delay_count": 21,
+      "maximum_forced_action_chain": 11,
+      "mean_episode_longest_forced_action_chain": 6.4,
+      "mean_flow_time_objective": 139.025,
+      "mean_reconfiguration_cost": 188.090323269561,
+      "mean_worker_load_variance": 3.8330416666666673,
+      "non_delay_forced_share": 0.025423728813559324,
+      "p95_episode_longest_forced_action_chain": 10.05
+    }
+  }
+}

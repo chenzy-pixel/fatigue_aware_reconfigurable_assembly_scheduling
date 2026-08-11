@@ -1,0 +1,56 @@
+{
+  "flow_time_objective": {
+    "count": 20,
+    "off_mean": 129.715,
+    "off_minus_on_mean": -9.310000000000008,
+    "off_minus_on_median": -10.049999999999997,
+    "on_mean": 139.02500000000003,
+    "wilcoxon_p_value_two_sided": 0.040026462903150935,
+    "wilcoxon_statistic": 50.0
+  },
+  "forced_action_ratio": {
+    "count": 20,
+    "off_mean": 0.63671875,
+    "off_minus_on_mean": -0.00859375,
+    "off_minus_on_median": -0.015625,
+    "on_mean": 0.6453125,
+    "wilcoxon_p_value_two_sided": 0.21561568846047774,
+    "wilcoxon_statistic": 50.5
+  },
+  "forced_worker_pair_non_delay_count": {
+    "count": 20,
+    "off_mean": 0.0,
+    "off_minus_on_mean": -1.05,
+    "off_minus_on_median": 0.0,
+    "on_mean": 1.05,
+    "wilcoxon_p_value_two_sided": 0.0070583320485281004,
+    "wilcoxon_statistic": 0.0
+  },
+  "longest_forced_action_chain": {
+    "count": 20,
+    "off_mean": 6.25,
+    "off_minus_on_mean": -0.15,
+    "off_minus_on_median": -1.5,
+    "on_mean": 6.4,
+    "wilcoxon_p_value_two_sided": 0.05080798199236367,
+    "wilcoxon_statistic": 41.0
+  },
+  "reconfiguration_cost": {
+    "count": 20,
+    "off_mean": 175.69027159075398,
+    "off_minus_on_mean": -12.400051678807,
+    "off_minus_on_median": -7.263316230825012,
+    "on_mean": 188.090323269561,
+    "wilcoxon_p_value_two_sided": 0.20244979858398438,
+    "wilcoxon_statistic": 70.0
+  },
+  "worker_load_variance": {
+    "count": 20,
+    "off_mean": 2.9077916666666668,
+    "off_minus_on_mean": -0.9252500000000001,
+    "off_minus_on_median": -0.6644444444444443,
+    "on_mean": 3.8330416666666673,
+    "wilcoxon_p_value_two_sided": 0.15364646911621094,
+    "wilcoxon_statistic": 66.0
+  }
+}

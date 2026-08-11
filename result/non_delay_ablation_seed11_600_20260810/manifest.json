@@ -1,0 +1,57 @@
+{
+  "algorithm_seed": 11,
+  "allowed_arm_differences": [
+    "environment.worker_resource_control.non_delay_worker_dispatch",
+    "experiment_name"
+  ],
+  "arms": {
+    "non_delay_off": false,
+    "non_delay_on": true
+  },
+  "base_config": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\configs\\credit_assignment_lambda0995_forced_epu20_seed11.json",
+  "created_at_utc": "2026-08-10T07:38:02.093002+00:00",
+  "episodes_per_arm": 600,
+  "fixed_instance_sequence": true,
+  "git_head": "2ebe9e25fdf11944f5c44082a71e3c9f19897a8b",
+  "git_status": [
+    "M agent/ppo/parallel.py",
+    " M configs/default.json",
+    " M data/dataset.py",
+    " M data/generate_orders.py",
+    " M environment/env.py",
+    " M eval.py",
+    " M requirements.txt",
+    " M result/metrics.py",
+    " M test/test_dataset_splits.py",
+    " M test/test_environment.py",
+    " M test/test_parallel_rollout.py",
+    " M test/test_training_dataset.py",
+    " M train.py",
+    "?? configs/credit_assignment_lambda0995_forced_epu20_seed11.json",
+    "?? configs/credit_assignment_matched_baseline.json",
+    "?? configs/credit_assignment_matched_treatment.json",
+    "?? matched_credit_assignment.py",
+    "?? non_delay_ablation.py",
+    "?? result/compare_credit_assignment.py",
+    "?? result/matched_credit_assignment_currentcode_20260809/",
+    "?? result/non_delay_ablation_seed11_600_20260810/",
+    "?? result/non_delay_ablation_seed11_smoke_20260810_final/",
+    "?? result/non_delay_ablation_seed11_smoke_20260810_retry/",
+    "?? test/test_forced_action_compression.py",
+    "?? test/test_matched_credit_assignment.py",
+    "?? test/test_non_delay_ablation.py",
+    "?? test/test_performance_optimizations.py"
+  ],
+  "parallel_envs": 20,
+  "primary_metrics": [
+    "completion_rate",
+    "flow_time_objective",
+    "reconfiguration_cost",
+    "worker_load_variance",
+    "forced_action_ratio",
+    "longest_forced_action_chain"
+  ],
+  "schema_version": "1.0.0",
+  "source_sha256": "1ac10aac1c4b669d559ae9ae230f62c1ec0ce64b91713c294826ae14260b3472",
+  "study": "forced_action_classification_and_non_delay_ablation"
+}

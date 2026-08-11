@@ -103,7 +103,7 @@ def _rollout_metrics(
     from environment.types import MachineState, OperationState
 
     environment = AssemblySchedulingEnv(config)
-    environment.reset(instance)
+    environment.reset(instance, build_observation=False)
     policy = HeuristicPolicy()
     seen_ready: set[str] = set()
     ready_count = 0
@@ -125,7 +125,7 @@ def _rollout_metrics(
                 )
                 ready_mismatch_count += int(not matching_idle)
         action = policy.select_action(environment)
-        environment.step(action)
+        environment.step(action, build_observation=False)
     base_metrics = environment.metrics()
     wave_overlap_values = _wave_overlap_values(instance, environment.schedule_log)
     completed_reconfigurations = int(base_metrics["completed_reconfigurations"])
@@ -283,6 +283,7 @@ class InstanceGenerator:
         split: str,
         pressure_type: str,
         ood_factor: str | None = None,
+        classify_reconfiguration_value: bool = True,
     ) -> GeneratedInstanceRecord:
         if pressure_type not in PRESSURE_TYPES:
             raise ValueError(f"unknown pressure_type {pressure_type}")
@@ -365,9 +366,12 @@ class InstanceGenerator:
                     failure_reasons.update(dynamic_reasons)
                     last_metrics = metrics
                     continue
-                value_class, counterfactual_count = (
-                    self._classify_reconfiguration_value(instance)
-                )
+                if classify_reconfiguration_value:
+                    value_class, counterfactual_count = (
+                        self._classify_reconfiguration_value(instance)
+                    )
+                else:
+                    value_class, counterfactual_count = None, 0
                 metadata = {
                     "generator_version": self.version,
                     "template_instance": self.template_instance,
@@ -913,7 +917,7 @@ class InstanceGenerator:
         from environment import AssemblySchedulingEnv, DecisionType
 
         environment = AssemblySchedulingEnv(self.config)
-        environment.reset(instance)
+        environment.reset(instance, build_observation=False)
         policy = HeuristicPolicy()
         values: list[float] = []
         maximum = int(self.settings.get("max_counterfactual_candidates", 6))
@@ -945,8 +949,11 @@ class InstanceGenerator:
                 ):
                     switch_environment = copy.deepcopy(environment)
                     wait_environment = copy.deepcopy(environment)
-                    switch_environment.step(action)
-                    wait_environment.step(wait_environment.advance_action)
+                    switch_environment.step(action, build_observation=False)
+                    wait_environment.step(
+                        wait_environment.advance_action,
+                        build_observation=False,
+                    )
                     switch_valid = self._finish_counterfactual(
                         switch_environment,
                         policy,
@@ -969,7 +976,7 @@ class InstanceGenerator:
                                 switch_metrics["reconfiguration_cost"]
                             )
                         values.append(delta)
-            environment.step(action)
+            environment.step(action, build_observation=False)
         if not values:
             return "mixed", 0
         positive_share = sum(value > 0 for value in values) / len(values)
@@ -1001,7 +1008,7 @@ class InstanceGenerator:
                     return False
             else:
                 action = policy.select_action(environment)
-            environment.step(action)
+            environment.step(action, build_observation=False)
         return bool(environment.terminated)
 
     @staticmethod

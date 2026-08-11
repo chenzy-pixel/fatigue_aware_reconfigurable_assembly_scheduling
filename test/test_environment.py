@@ -373,6 +373,102 @@ def test_direct_processing_does_not_require_worker_guarantee(
     assert not environment.get_action_mask()[direct]
 
 
+def _single_worker_reconfiguration_environment(
+    config,
+    fixed_instance,
+    *,
+    non_delay: bool,
+):
+    effective = deepcopy(config)
+    effective["environment"]["worker_resource_control"][
+        "non_delay_worker_dispatch"
+    ] = non_delay
+    effective["environment"]["production_defer"] = {
+        "allow_recovery_improvement": False,
+    }
+    order = replace(fixed_instance.orders[0], release_time=0.0)
+    required_module = order.operations[0].required_module
+    machine = next(
+        machine
+        for machine in fixed_instance.machines
+        if required_module in machine.module_parameters
+        and any(module != required_module for module in machine.module_parameters)
+    )
+    source_module = next(
+        module for module in machine.module_parameters if module != required_module
+    )
+    machine = replace(machine, initial_module=source_module)
+    worker = replace(
+        fixed_instance.workers[0],
+        qualified_modules=fixed_instance.modules,
+        initial_fatigue=0.1,
+    )
+    instance = replace(
+        fixed_instance,
+        instance_id=f"forced_diagnostic_non_delay_{int(non_delay)}",
+        orders=(order,),
+        machines=(machine,),
+        workers=(worker,),
+    )
+    environment = AssemblySchedulingEnv(effective)
+    environment.reset(instance)
+    return environment
+
+
+def test_forced_action_diagnostic_separates_non_delay_from_physical_masking(
+    config,
+    fixed_instance,
+):
+    environment = _single_worker_reconfiguration_environment(
+        config,
+        fixed_instance,
+        non_delay=True,
+    )
+
+    production = environment.forced_action_diagnostic()
+    assert production is not None
+    assert production["phase"] == "PRODUCTION"
+    assert production["action_kind"] == "pair"
+    assert production["advance_physically_unavailable"]
+    environment.step(production["action"])
+
+    handoff = environment.forced_action_diagnostic()
+    assert handoff is not None
+    assert handoff["action_kind"] == "advance"
+    assert handoff["phase_handoff"]
+    assert handoff["stage_tags"] == ("WAIT_DIS",)
+    environment.step(handoff["action"])
+
+    worker = environment.forced_action_diagnostic()
+    assert worker is not None
+    assert worker["phase"] == "WORKER"
+    assert worker["action_kind"] == "pair"
+    assert worker["non_delay_blocked_advance"]
+    assert not worker["advance_physically_unavailable"]
+    environment.step(worker["action"])
+
+    metrics = environment.metrics()
+    assert metrics["forced_action_state_count"] == 3
+    assert metrics["forced_production_pair_count"] == 1
+    assert metrics["forced_production_advance_count"] == 1
+    assert metrics["forced_worker_pair_count"] == 1
+    assert metrics["forced_worker_pair_non_delay_count"] == 1
+    assert metrics["forced_phase_handoff_count"] == 1
+    assert metrics["forced_wait_dis_count"] == 2
+    assert metrics["longest_forced_action_chain"] == 3
+
+    delay_allowed = _single_worker_reconfiguration_environment(
+        config,
+        fixed_instance,
+        non_delay=False,
+    )
+    delay_allowed.step(delay_allowed.forced_action_diagnostic()["action"])
+    delay_allowed.step(delay_allowed.forced_action_diagnostic()["action"])
+    worker_mask = delay_allowed.get_action_mask()
+    assert np.count_nonzero(~worker_mask) == 2
+    assert delay_allowed.forced_action_diagnostic(worker_mask) is None
+
+
 def test_candidate_recovery_advance_without_pending_task(
     config,
     fixed_instance,

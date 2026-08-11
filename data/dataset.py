@@ -551,6 +551,7 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             seed=seed,
             split="train",
             pressure_type=pressure_type,
+            classify_reconfiguration_value=False,
         )
 
 

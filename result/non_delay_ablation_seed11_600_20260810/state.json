@@ -1,0 +1,18 @@
+{
+  "runs": {
+    "non_delay_off": {
+      "completed_at_utc": "2026-08-10T09:56:43.276290+00:00",
+      "run_directory": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\non_delay_ablation_non_delay_off_seed11_600_20260810",
+      "run_name": "non_delay_ablation_non_delay_off_seed11_600_20260810",
+      "status": "complete"
+    },
+    "non_delay_on": {
+      "completed_at_utc": "2026-08-10T08:36:55.310526+00:00",
+      "run_directory": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\non_delay_ablation_non_delay_on_seed11_600_20260810",
+      "run_name": "non_delay_ablation_non_delay_on_seed11_600_20260810",
+      "status": "complete"
+    }
+  },
+  "schema_version": "1.0.0",
+  "updated_at_utc": "2026-08-10T09:56:43.276794+00:00"
+}

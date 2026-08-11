@@ -8,8 +8,12 @@ result/analysis/
 result/audits/
 result/m1/
 result/*.log
+result/**/*.log
 result/*_report.html
 result/*_report_artifact.json
+result/**/provenance/source_snapshot.zip
+result/**/provenance/workspace.patch
+result/non_delay_ablation_*_retry/
 data/instances/*.pkl
 data/instances/.build/
 data/manifests/.build/

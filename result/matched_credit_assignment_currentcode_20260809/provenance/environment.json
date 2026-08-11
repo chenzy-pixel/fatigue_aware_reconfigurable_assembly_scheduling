@@ -1,0 +1,10 @@
+{
+  "executable": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\.venv\\Scripts\\python.exe",
+  "numpy": "2.3.1",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+  "python": "3.12.13 (main, Mar  3 2026, 15:01:35) [MSC v.1944 64 bit (AMD64)]",
+  "scipy": "1.18.0",
+  "torch": "2.7.1+cpu",
+  "torch_num_threads": 16
+}

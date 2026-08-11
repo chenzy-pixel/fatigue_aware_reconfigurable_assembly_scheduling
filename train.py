@@ -17,6 +17,7 @@ from agent.ppo.parallel import (
     EpisodeRollout,
     ParallelEpisodeRunner,
     TrainingRolloutBatch,
+    forced_action_from_mask,
 )
 from configs import load_config, project_path
 from data.dataset import (
@@ -768,6 +769,14 @@ def _collect_serial_batch(
     step_limit: int | None,
     reward_phase: str | None = None,
 ) -> TrainingRolloutBatch:
+    forced_action_compression = bool(
+        config["training"].get("forced_action_compression", False)
+    )
+    gamma = float(config["ppo"]["gamma"])
+    if forced_action_compression and gamma != 1.0:
+        raise ValueError(
+            "forced action compression requires ppo.gamma = 1.0"
+        )
     effective_reward_phase = (
         "feasibility"
         if reward_phase is None
@@ -798,14 +807,55 @@ def _collect_serial_batch(
     }
     inference_time = 0.0
     environment_step_time = 0.0
+    forced_action_count = 0
+    policy_step_count = 0
+    pending_transition: dict | None = None
+    unattributed_forced_reward = 0.0
+
+    def commit_pending(*, done: bool) -> None:
+        nonlocal pending_transition
+        if pending_transition is None:
+            return
+        buffer.add(
+            pending_transition["observation"],
+            pending_transition["action_mask"],
+            pending_transition["action"],
+            pending_transition["log_probability"],
+            pending_transition["value"],
+            pending_transition["reward"],
+            done,
+        )
+        pending_transition = None
+
     while not (environment.terminated or environment.truncated):
         action_mask = environment.get_action_mask()
-        inference_start = time.perf_counter()
-        action, log_probability, value = agent.act(
-            observation,
-            action_mask,
+        forced_action = (
+            forced_action_from_mask(action_mask)
+            if forced_action_compression
+            else None
         )
-        inference_time += time.perf_counter() - inference_start
+        sampled_policy_action = forced_action is None
+        if sampled_policy_action:
+            commit_pending(done=False)
+            inference_start = time.perf_counter()
+            action, log_probability, value = agent.act(
+                observation,
+                action_mask,
+            )
+            inference_time += time.perf_counter() - inference_start
+            policy_step_count += 1
+            pending_transition = {
+                "observation": observation,
+                "action_mask": action_mask,
+                "action": action,
+                "log_probability": log_probability,
+                "value": value,
+                "reward": unattributed_forced_reward,
+            }
+            unattributed_forced_reward = 0.0
+        else:
+            action = forced_action
+            forced_action_count += 1
         step_start = time.perf_counter()
         next_observation, reward_vector, terminated, truncated, _ = (
             environment.step(action)
@@ -815,24 +865,26 @@ def _collect_serial_batch(
             config["reward"],
             effective_reward_phase,
         )
-        buffer.add(
-            observation,
-            action_mask,
-            action,
-            log_probability,
-            value,
-            scalar_reward,
-            terminated or truncated,
-        )
+        if pending_transition is not None:
+            pending_transition["reward"] += scalar_reward
+        else:
+            unattributed_forced_reward += scalar_reward
         observation = next_observation
         reward_sum += scalar_reward
         for name, value in reward_vector.as_dict().items():
             reward_components[name] += float(value)
         step_count += 1
+        if terminated or truncated:
+            commit_pending(done=True)
         if step_limit is not None and step_count >= step_limit:
+            if not (terminated or truncated):
+                commit_pending(done=False)
             break
     last_value = 0.0
-    if not (environment.terminated or environment.truncated):
+    if (
+        len(buffer) > 0
+        and not (environment.terminated or environment.truncated)
+    ):
         inference_start = time.perf_counter()
         last_value = agent.value(
             observation,
@@ -841,9 +893,26 @@ def _collect_serial_batch(
         inference_time += time.perf_counter() - inference_start
     buffer.compute_gae(
         last_value=last_value,
-        gamma=float(config["ppo"]["gamma"]),
+        gamma=gamma,
         gae_lambda=float(config["ppo"]["gae_lambda"]),
     )
+    if pending_transition is not None:
+        raise RuntimeError("episode ended with an uncommitted transition")
+    if step_count != policy_step_count + forced_action_count:
+        raise RuntimeError("compressed rollout step accounting diverged")
+    if len(buffer) != policy_step_count:
+        raise RuntimeError("compressed rollout buffer accounting diverged")
+    attributed_reward = sum(
+        transition.reward for transition in buffer.transitions
+    )
+    reward_attribution_error = (
+        attributed_reward + unattributed_forced_reward - reward_sum
+    )
+    if abs(reward_attribution_error) > 1e-8:
+        raise RuntimeError(
+            "compressed rollout reward attribution diverged by "
+            f"{reward_attribution_error}"
+        )
     metrics = environment.metrics()
     metrics["schedule_violations"] = environment.validate_schedule()
     metadata = (
@@ -875,7 +944,19 @@ def _collect_serial_batch(
             config["reward"],
             effective_reward_phase,
         ),
+        unattributed_forced_reward=unattributed_forced_reward,
     )
+    reward_identity_tolerance = float(
+        config["training"]
+        .get("ablation_gate", {})
+        .get("reward_identity_tolerance", 1e-8)
+    )
+    reward_identity_error = episode.base_reward_sum - episode.expected_reward
+    if abs(reward_identity_error) > reward_identity_tolerance:
+        raise RuntimeError(
+            "trajectory reward identity diverged by "
+            f"{reward_identity_error}"
+        )
     return TrainingRolloutBatch(
         episodes=[episode],
         buffer=buffer,
@@ -1242,6 +1323,49 @@ def _attach_sampled_validation(
         )
 
 
+ACTION_TYPE_COUNT_FIELDS = (
+    "direct_process_action_count",
+    "commit_reconfig_action_count",
+    "defer_production_action_count",
+    "worker_assign_action_count",
+    "advance_event_action_count",
+)
+
+
+FORCED_ACTION_COUNT_FIELDS = (
+    "forced_action_state_count",
+    "forced_production_count",
+    "forced_worker_count",
+    "forced_pair_count",
+    "forced_advance_count",
+    "forced_production_pair_count",
+    "forced_production_advance_count",
+    "forced_worker_pair_count",
+    "forced_worker_advance_count",
+    "forced_pair_advance_blocked_non_delay_count",
+    "forced_worker_pair_non_delay_count",
+    "forced_pair_advance_physically_unavailable_count",
+    "forced_advance_pair_physically_unavailable_count",
+    "forced_wait_dis_count",
+    "forced_wait_ins_count",
+    "forced_mixed_wait_stage_count",
+    "forced_phase_handoff_count",
+    "forced_recovery_advance_count",
+    "forced_future_event_advance_count",
+    "forced_direct_process_count",
+    "forced_commit_reconfig_count",
+    "forced_defer_production_count",
+    "forced_worker_assign_count",
+    "forced_advance_event_count",
+    "forced_action_chain_count",
+)
+
+FORCED_ACTION_VALUE_FIELDS = (
+    "longest_forced_action_chain",
+    "mean_forced_action_chain_length",
+)
+
+
 def _training_effect_fields(metrics: dict) -> dict:
     total_orders = int(metrics.get("total_orders", 0))
     total_operations = int(metrics.get("total_operations", 0))
@@ -1310,16 +1434,6 @@ def _training_effect_fields(metrics: dict) -> dict:
         "production_defer_wait_time": metrics.get(
             "production_defer_wait_time"
         ),
-        **{
-            name: metrics.get(name, 0)
-            for name in (
-                "direct_process_action_count",
-                "commit_reconfig_action_count",
-                "defer_production_action_count",
-                "worker_assign_action_count",
-                "advance_event_action_count",
-            )
-        },
         "machine_waiting_for_worker_time": metrics.get(
             "machine_waiting_for_worker_time"
         ),
@@ -1327,9 +1441,43 @@ def _training_effect_fields(metrics: dict) -> dict:
             "completed_reconfigurations"
         ),
         "worker_switch_ratio": metrics.get("worker_switch_ratio"),
+        **{
+            name: metrics.get(name, 0)
+            for name in (
+                *ACTION_TYPE_COUNT_FIELDS,
+                *FORCED_ACTION_COUNT_FIELDS,
+                *FORCED_ACTION_VALUE_FIELDS,
+            )
+        },
         "schedule_violation_count": len(
             metrics.get("schedule_violations", [])
         ),
+    }
+
+
+def _forced_action_summary(rows: list[dict]) -> dict[str, object]:
+    counts = {
+        name: sum(int(row.get(name, 0) or 0) for row in rows)
+        for name in FORCED_ACTION_COUNT_FIELDS
+    }
+    longest = [
+        int(row.get("longest_forced_action_chain", 0) or 0)
+        for row in rows
+    ]
+    total_chains = counts["forced_action_chain_count"]
+    total_states = counts["forced_action_state_count"]
+    return {
+        **counts,
+        "mean_forced_action_chain_length": (
+            total_states / total_chains if total_chains else 0.0
+        ),
+        "mean_episode_longest_forced_action_chain": (
+            float(np.mean(longest)) if longest else 0.0
+        ),
+        "p95_episode_longest_forced_action_chain": (
+            float(np.percentile(longest, 95)) if longest else 0.0
+        ),
+        "maximum_forced_action_chain": max(longest, default=0),
     }
 
 
@@ -1654,6 +1802,25 @@ def train(
     ):
         raise ValueError("screening ablations require algorithm seed 11")
     override_visdom_enabled(config, visdom_enabled)
+    forced_action_compression = config["training"].get(
+        "forced_action_compression", False
+    )
+    if not isinstance(forced_action_compression, bool):
+        raise ValueError(
+            "training.forced_action_compression must be boolean"
+        )
+    if forced_action_compression and float(config["ppo"]["gamma"]) != 1.0:
+        raise ValueError(
+            "forced action compression requires ppo.gamma = 1.0"
+        )
+    worker_local_physical_forced_actions = config["training"].get(
+        "worker_local_physical_forced_actions",
+        True,
+    )
+    if not isinstance(worker_local_physical_forced_actions, bool):
+        raise ValueError(
+            "training.worker_local_physical_forced_actions must be boolean"
+        )
     effective_algorithm_seed = validate_algorithm_seed(
         config,
         int(config["seed"]) if algorithm_seed is None else algorithm_seed,
@@ -1850,84 +2017,38 @@ def train(
             else fixed_instance
         )
         instance_ids.append(instance.instance_id)
-        observation = environment.reset(instance)
-        buffer = RolloutBuffer(
-            preserve_graph=agent.requires_graph_observation
+        rollout = _collect_serial_batch(
+            config=config,
+            agent=agent,
+            environment=environment,
+            instance=instance,
+            record=record,
+            episode_index=episode,
+            sampling_start=sampling_start,
+            generation_time_seconds=generation_time,
+            step_limit=smoke_limit if smoke else None,
+            reward_phase=reward_phase,
         )
-        step_count = 0
-        reward_sum = 0.0
-        reward_components = {
-            "flow": 0.0,
-            "cost": 0.0,
-            "variance": 0.0,
-            "completion_progress": 0.0,
-            "completion_bonus": 0.0,
-            "quality": 0.0,
-            "truncation": 0.0,
-            "unfinished": 0.0,
-            "feasibility_shaping": 0.0,
-        }
-        inference_time = 0.0
-        environment_step_time = 0.0
-        while not (environment.terminated or environment.truncated):
-            action_mask = environment.get_action_mask()
-            inference_start = time.perf_counter()
-            action, log_probability, value = agent.act(
-                observation, action_mask
-            )
-            inference_time += time.perf_counter() - inference_start
-            environment_step_start = time.perf_counter()
-            next_observation, reward_vector, terminated, truncated, _ = (
-                environment.step(action)
-            )
-            environment_step_time += (
-                time.perf_counter() - environment_step_start
-            )
-            scalar_reward = reward_vector.scalarize(
-                config["reward"],
-                reward_phase,
-            )
-            buffer.add(
-                observation,
-                action_mask,
-                action,
-                log_probability,
-                value,
-                scalar_reward,
-                terminated or truncated,
-            )
-            observation = next_observation
-            reward_sum += scalar_reward
-            for name, value in reward_vector.as_dict().items():
-                reward_components[name] += float(value)
-            step_count += 1
-            if smoke and step_count >= smoke_limit:
-                break
-        last_value = 0.0
-        if not (environment.terminated or environment.truncated):
-            inference_start = time.perf_counter()
-            last_value = agent.value(
-                observation, environment.get_action_mask()
-            )
-            inference_time += time.perf_counter() - inference_start
-        buffer.compute_gae(
-            last_value=last_value,
-            gamma=float(config["ppo"]["gamma"]),
-            gae_lambda=float(config["ppo"]["gae_lambda"]),
+        episode_rollout = rollout.episodes[0]
+        buffer = rollout.buffer
+        step_count = episode_rollout.step_count
+        reward_sum = episode_rollout.reward_sum
+        reward_components = episode_rollout.reward_components
+        inference_time = rollout.policy_inference_time_seconds
+        environment_step_time = (
+            episode_rollout.environment_step_time_seconds
         )
-        sampling_time = time.perf_counter() - sampling_start
+        sampling_time = rollout.sampling_wall_time_seconds
         update_start = time.perf_counter()
+        if len(buffer) == 0:
+            raise RuntimeError(
+                "training batch contains no policy transitions after "
+                "forced action compression"
+            )
         losses = agent.update(buffer)
         update_time = time.perf_counter() - update_start
-        metrics = environment.metrics()
-        metrics["schedule_violations"] = (
-            environment.validate_schedule()
-        )
-        expected_reward = proxy_return_from_metrics(
-            metrics,
-            config["reward"],
-            reward_phase,
-        )
+        metrics = episode_rollout.metrics
+        expected_reward = episode_rollout.expected_reward
         shaping_reward = reward_components["feasibility_shaping"]
         base_reward = reward_sum - shaping_reward
         row = {
@@ -1944,6 +2065,16 @@ def train(
                 record.metadata["cost_profile"] if record is not None else "fixed"
             ),
             "steps": step_count,
+            "policy_steps": len(buffer),
+            "forced_actions": step_count - len(buffer),
+            "forced_action_ratio": (
+                (step_count - len(buffer)) / step_count
+                if step_count > 0
+                else 0.0
+            ),
+            "unattributed_forced_reward": (
+                episode_rollout.unattributed_forced_reward
+            ),
             "reward": reward_sum,
             "reward_base": base_reward,
             "reward_shaping": shaping_reward,
@@ -1981,6 +2112,13 @@ def train(
                 "episode_count": 1,
                 "parallel_envs": 1,
                 "transition_count": len(buffer),
+                "environment_step_count": step_count,
+                "forced_action_count": step_count - len(buffer),
+                "forced_action_ratio": (
+                    (step_count - len(buffer)) / step_count
+                    if step_count > 0
+                    else 0.0
+                ),
                 "sampling_wall_time_seconds": sampling_time,
                 "policy_inference_time_seconds": inference_time,
                 "generation_time_seconds": generation_time,
@@ -2395,6 +2533,24 @@ def train(
             "transitions": sum(
                 int(row["transition_count"]) for row in update_rows
             ),
+            "environment_steps": sum(
+                int(row["steps"]) for row in rows
+            ),
+            "forced_actions": sum(
+                int(row["forced_actions"]) for row in rows
+            ),
+            "forced_action_ratio": (
+                sum(int(row["forced_actions"]) for row in rows)
+                / sum(int(row["steps"]) for row in rows)
+                if sum(int(row["steps"]) for row in rows) > 0
+                else 0.0
+            ),
+            "forced_action_diagnostics": _forced_action_summary(rows),
+            "mean_policy_steps_per_episode": (
+                float(np.mean([row["policy_steps"] for row in rows]))
+                if rows
+                else 0.0
+            ),
             "unique_instance_count": len(set(instance_ids)),
             "checkpoint": str(checkpoint) if checkpoint is not None else None,
             "checkpoint_sha256": checkpoint_sha256,
@@ -2565,6 +2721,10 @@ def _train_parallel(
     phase_controller = TrainingPhaseController.from_config(config)
     stability_controller = ValidationStabilityController.from_config(config)
     total_transitions = 0
+    total_environment_steps = 0
+    total_forced_actions = 0
+    total_worker_step_commands = 0
+    total_worker_local_physical_forced_actions = 0
     total_sampling_time = 0.0
     total_inference_time = 0.0
     total_update_time = 0.0
@@ -2592,11 +2752,24 @@ def _train_parallel(
                 reward_phase=reward_phase,
             )
             update_start = time.perf_counter()
+            if rollout.transition_count == 0:
+                raise RuntimeError(
+                    "training batch contains no policy transitions after "
+                    "forced action compression"
+                )
             losses = agent.update(rollout.buffer)
             update_time = time.perf_counter() - update_start
             update_id += 1
             transition_count = rollout.transition_count
             total_transitions += transition_count
+            total_environment_steps += rollout.environment_step_count
+            total_forced_actions += rollout.forced_action_count
+            total_worker_step_commands += (
+                rollout.worker_step_command_count
+            )
+            total_worker_local_physical_forced_actions += (
+                rollout.worker_local_physical_forced_action_count
+            )
             total_sampling_time += rollout.sampling_wall_time_seconds
             total_inference_time += (
                 rollout.policy_inference_time_seconds
@@ -2612,6 +2785,23 @@ def _train_parallel(
                 "episode_count": len(episode_indices),
                 "parallel_envs": len(episode_indices),
                 "transition_count": transition_count,
+                "environment_step_count": (
+                    rollout.environment_step_count
+                ),
+                "forced_action_count": rollout.forced_action_count,
+                "forced_action_ratio": rollout.forced_action_ratio,
+                "worker_step_command_count": (
+                    rollout.worker_step_command_count
+                ),
+                "worker_local_physical_forced_action_count": (
+                    rollout.worker_local_physical_forced_action_count
+                ),
+                "worker_local_physical_forced_share": (
+                    rollout.worker_local_physical_forced_share
+                ),
+                "estimated_worker_step_round_trips_avoided": (
+                    rollout.worker_local_physical_forced_action_count
+                ),
                 "sampling_wall_time_seconds": (
                     rollout.sampling_wall_time_seconds
                 ),
@@ -2653,6 +2843,24 @@ def _train_parallel(
                     ],
                     "cost_profile": episode.metadata["cost_profile"],
                     "steps": episode.step_count,
+                    "policy_steps": episode.policy_step_count,
+                    "forced_actions": episode.forced_action_count,
+                    "forced_action_ratio": episode.forced_action_ratio,
+                    "worker_step_command_count": (
+                        episode.worker_step_command_count
+                    ),
+                    "worker_local_physical_forced_action_count": (
+                        episode.worker_local_physical_forced_action_count
+                    ),
+                    "worker_local_physical_forced_share": (
+                        episode.worker_local_physical_forced_share
+                    ),
+                    "estimated_worker_step_round_trips_avoided": (
+                        episode.worker_local_physical_forced_action_count
+                    ),
+                    "unattributed_forced_reward": (
+                        episode.unattributed_forced_reward
+                    ),
                     "reward": episode.reward_sum,
                     "reward_base": episode.base_reward_sum,
                     "reward_shaping": episode.reward_components.get(
@@ -3066,6 +3274,30 @@ def _train_parallel(
             "parallel_envs": parallel_envs,
             "updates": update_id,
             "transitions": total_transitions,
+            "environment_steps": total_environment_steps,
+            "forced_actions": total_forced_actions,
+            "forced_action_ratio": (
+                total_forced_actions / total_environment_steps
+                if total_environment_steps > 0
+                else 0.0
+            ),
+            "worker_step_command_count": total_worker_step_commands,
+            "worker_local_physical_forced_action_count": (
+                total_worker_local_physical_forced_actions
+            ),
+            "worker_local_physical_forced_share": (
+                total_worker_local_physical_forced_actions
+                / total_forced_actions
+                if total_forced_actions > 0
+                else 0.0
+            ),
+            "estimated_worker_step_round_trips_avoided": (
+                total_worker_local_physical_forced_actions
+            ),
+            "forced_action_diagnostics": _forced_action_summary(rows),
+            "mean_policy_steps_per_episode": (
+                total_transitions / episodes if episodes > 0 else 0.0
+            ),
             "best_checkpoint": (
                 str(best_checkpoint) if best_checkpoint.exists() else None
             ),
@@ -3139,6 +3371,30 @@ def _train_parallel(
             "validation_parallel_envs": validation_parallel_envs,
             "updates": update_id,
             "transitions": total_transitions,
+            "environment_steps": total_environment_steps,
+            "forced_actions": total_forced_actions,
+            "forced_action_ratio": (
+                total_forced_actions / total_environment_steps
+                if total_environment_steps > 0
+                else 0.0
+            ),
+            "worker_step_command_count": total_worker_step_commands,
+            "worker_local_physical_forced_action_count": (
+                total_worker_local_physical_forced_actions
+            ),
+            "worker_local_physical_forced_share": (
+                total_worker_local_physical_forced_actions
+                / total_forced_actions
+                if total_forced_actions > 0
+                else 0.0
+            ),
+            "estimated_worker_step_round_trips_avoided": (
+                total_worker_local_physical_forced_actions
+            ),
+            "forced_action_diagnostics": _forced_action_summary(rows),
+            "mean_policy_steps_per_episode": (
+                total_transitions / episodes if episodes > 0 else 0.0
+            ),
             "unique_instance_count": len(set(instance_ids)),
             "total_sampling_time_seconds": total_sampling_time,
             "total_policy_inference_time_seconds": (

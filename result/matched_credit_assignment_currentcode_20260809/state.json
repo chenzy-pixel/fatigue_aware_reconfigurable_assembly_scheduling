@@ -1,0 +1,82 @@
+{
+  "created_at_utc": "2026-08-09T05:56:39.517559+00:00",
+  "runs": {
+    "formal:baseline:seed11": {
+      "arm": "baseline",
+      "attempt": 1,
+      "audit": {
+        "arm": "baseline",
+        "checkpoint_sha256": "6c6e4e189cd623e6ddb4c58f0b4318ad4de16b8b4b91db883543a06557bb0ade",
+        "environment_steps": 340364,
+        "episodes": 1000,
+        "errors": [],
+        "forced_action_ratio": 0.0,
+        "forced_actions": 0,
+        "maximum_reward_component_error": 1.1102230246251565e-15,
+        "maximum_reward_identity_error": 1.1102230246251565e-15,
+        "policy_steps": 340364,
+        "run_directory": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\matched_credit_baseline_seed11_1000_20260809",
+        "seed": 11,
+        "smoke": false,
+        "updates": 100,
+        "valid": true
+      },
+      "command": [
+        "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\train.py",
+        "--config",
+        "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\configs\\credit_assignment_matched_baseline.json",
+        "--episodes",
+        "1000",
+        "--algorithm-seed",
+        "11",
+        "--parallel-envs",
+        "10",
+        "--run-name",
+        "matched_credit_baseline_seed11_1000_20260809"
+      ],
+      "evaluation_checkpoint_sha256": "6c6e4e189cd623e6ddb4c58f0b4318ad4de16b8b4b91db883543a06557bb0ade",
+      "evaluation_directory": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\matched_credit_assignment_currentcode_20260809\\evaluations\\baseline\\seed_11",
+      "evaluation_status": "complete",
+      "exit_code": 0,
+      "finished_at_utc": "2026-08-09T12:40:37.113194+00:00",
+      "key": "formal:baseline:seed11",
+      "run_directory": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\matched_credit_baseline_seed11_1000_20260809",
+      "run_name": "matched_credit_baseline_seed11_1000_20260809",
+      "seed": 11,
+      "smoke": false,
+      "source_sha256": "4eb46186031af56ca31851fef7b943d4a186f60f90e1d291d03aa3efd7b45842",
+      "started_at_utc": "2026-08-09T05:56:39.568110+00:00",
+      "status": "complete",
+      "wall_clock_seconds": 24237.846378600007
+    },
+    "formal:baseline:seed23": {
+      "arm": "baseline",
+      "attempt": 1,
+      "command": [
+        "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\train.py",
+        "--config",
+        "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\configs\\credit_assignment_matched_baseline.json",
+        "--episodes",
+        "1000",
+        "--algorithm-seed",
+        "23",
+        "--parallel-envs",
+        "10",
+        "--run-name",
+        "matched_credit_baseline_seed23_1000_20260809"
+      ],
+      "key": "formal:baseline:seed23",
+      "run_directory": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\matched_credit_baseline_seed23_1000_20260809",
+      "run_name": "matched_credit_baseline_seed23_1000_20260809",
+      "seed": 23,
+      "smoke": false,
+      "source_sha256": "4eb46186031af56ca31851fef7b943d4a186f60f90e1d291d03aa3efd7b45842",
+      "started_at_utc": "2026-08-09T12:47:01.932936+00:00",
+      "status": "running"
+    }
+  },
+  "schema_version": "1.0.0",
+  "updated_at_utc": "2026-08-09T12:47:01.934082+00:00"
+}

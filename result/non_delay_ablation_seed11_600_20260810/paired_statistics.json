@@ -1,0 +1,56 @@
+{
+  "flow_time_objective": {
+    "count": 600,
+    "off_mean": 1031.3628333333331,
+    "off_minus_on_mean": -4.9458333333333755,
+    "off_minus_on_median": -11.500000000000341,
+    "on_mean": 1036.3086666666666,
+    "wilcoxon_p_value_two_sided": 3.032250866787882e-08,
+    "wilcoxon_statistic": 66377.0
+  },
+  "forced_action_ratio": {
+    "count": 600,
+    "off_mean": 0.6435117024463549,
+    "off_minus_on_mean": 0.00455038190684361,
+    "off_minus_on_median": 0.007675730887615195,
+    "on_mean": 0.6389613205395112,
+    "wilcoxon_p_value_two_sided": 0.0025017877792461707,
+    "wilcoxon_statistic": 77040.0
+  },
+  "forced_worker_pair_non_delay_count": {
+    "count": 600,
+    "off_mean": 0.0,
+    "off_minus_on_mean": -3.35,
+    "off_minus_on_median": -1.0,
+    "on_mean": 3.35,
+    "wilcoxon_p_value_two_sided": 4.035686637271273e-57,
+    "wilcoxon_statistic": 0.0
+  },
+  "longest_forced_action_chain": {
+    "count": 600,
+    "off_mean": 23.468333333333334,
+    "off_minus_on_mean": 4.488333333333333,
+    "off_minus_on_median": 0.0,
+    "on_mean": 18.98,
+    "wilcoxon_p_value_two_sided": 0.001075601573272841,
+    "wilcoxon_statistic": 47819.5
+  },
+  "reconfiguration_cost": {
+    "count": 600,
+    "off_mean": 820.3728909155764,
+    "off_minus_on_mean": 23.490979082081232,
+    "off_minus_on_median": 10.923372095560211,
+    "on_mean": 796.8819118334951,
+    "wilcoxon_p_value_two_sided": 0.005621059473113856,
+    "wilcoxon_statistic": 78387.0
+  },
+  "worker_load_variance": {
+    "count": 600,
+    "off_mean": 4.323936111111111,
+    "off_minus_on_mean": -0.5478990740740741,
+    "off_minus_on_median": -0.4956944444444463,
+    "on_mean": 4.871835185185186,
+    "wilcoxon_p_value_two_sided": 0.0015687502040598214,
+    "wilcoxon_statistic": 76453.0
+  }
+}

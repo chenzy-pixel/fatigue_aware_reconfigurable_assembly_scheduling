@@ -1,8 +1,14 @@
 {
-  "experiment_name": "fatigue_aware_reconfigurable_assembly_mvp",
+  "experiment_name": "credit_assignment_matched_treatment",
   "method_version": "M1_candidate_graph_v4",
   "seed": 11,
-  "algorithm_seeds": [11, 23, 37, 53, 71],
+  "algorithm_seeds": [
+    11,
+    23,
+    37,
+    53,
+    71
+  ],
   "device": "cpu",
   "paths": {
     "fixed_instance": "数据/fixed_instance.yaml",
@@ -61,83 +67,273 @@
     "max_generation_attempts": 100,
     "max_counterfactual_candidates": 3,
     "wave_count": 3,
-    "processing_time": [8, 14],
-    "initial_fatigue": [0.05, 0.15],
-    "processing_factor_local": [0.95, 1.05],
-    "reconfiguration_factor_local": [0.90, 1.10],
-    "cost_factor_local": [0.90, 1.10],
+    "processing_time": [
+      8,
+      14
+    ],
+    "initial_fatigue": [
+      0.05,
+      0.15
+    ],
+    "processing_factor_local": [
+      0.95,
+      1.05
+    ],
+    "reconfiguration_factor_local": [
+      0.9,
+      1.1
+    ],
+    "cost_factor_local": [
+      0.9,
+      1.1
+    ],
     "cost_profile_weights": {
-      "balanced_cost": 0.40,
-      "downtime_dominant": 0.20,
-      "labor_dominant": 0.20,
-      "fixed_cost_dominant": 0.20
+      "balanced_cost": 0.4,
+      "downtime_dominant": 0.2,
+      "labor_dominant": 0.2,
+      "fixed_cost_dominant": 0.2
     },
     "dataset_pressure_weights": {
       "balanced": 0.35,
       "machine_bottleneck": 0.15,
       "reconfiguration_bottleneck": 0.15,
-      "worker_bottleneck": 0.10,
-      "fatigue_bottleneck": 0.10,
-      "high_arrival_pressure": 0.10,
+      "worker_bottleneck": 0.1,
+      "fatigue_bottleneck": 0.1,
+      "high_arrival_pressure": 0.1,
       "easy": 0.05
     },
     "pressure_profiles": {
       "easy": {
-        "order_count": [12, 14],
-        "operations_per_order": [3, 4],
-        "dominant_module_share": [0.60, 0.68],
-        "release_windows": [[0.00, 0.08], [0.25, 0.32], [0.50, 0.57]],
-        "reconfiguration_scale": [0.85, 1.00]
+        "order_count": [
+          12,
+          14
+        ],
+        "operations_per_order": [
+          3,
+          4
+        ],
+        "dominant_module_share": [
+          0.6,
+          0.68
+        ],
+        "release_windows": [
+          [
+            0,
+            0.08
+          ],
+          [
+            0.25,
+            0.32
+          ],
+          [
+            0.5,
+            0.57
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.85,
+          1
+        ]
       },
       "balanced": {
-        "order_count": [12, 18],
-        "operations_per_order": [3, 5],
-        "dominant_module_share": [0.62, 0.72],
-        "release_windows": [[0.00, 0.20], [0.20, 0.45], [0.45, 0.70]],
-        "reconfiguration_scale": [0.90, 1.10]
+        "order_count": [
+          12,
+          18
+        ],
+        "operations_per_order": [
+          3,
+          5
+        ],
+        "dominant_module_share": [
+          0.62,
+          0.72
+        ],
+        "release_windows": [
+          [
+            0,
+            0.2
+          ],
+          [
+            0.2,
+            0.45
+          ],
+          [
+            0.45,
+            0.7
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ]
       },
       "machine_bottleneck": {
-        "order_count": [16, 18],
-        "operations_per_order": [4, 5],
-        "dominant_module_share": [0.70, 0.75],
-        "release_windows": [[0.00, 0.12], [0.15, 0.30], [0.32, 0.48]],
-        "reconfiguration_scale": [0.90, 1.10]
+        "order_count": [
+          16,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.7,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0,
+            0.12
+          ],
+          [
+            0.15,
+            0.3
+          ],
+          [
+            0.32,
+            0.48
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ]
       },
       "reconfiguration_bottleneck": {
-        "order_count": [15, 18],
-        "operations_per_order": [4, 5],
-        "dominant_module_share": [0.65, 0.75],
-        "release_windows": [[0.00, 0.12], [0.18, 0.30], [0.35, 0.48]],
-        "reconfiguration_scale": [1.20, 1.60]
+        "order_count": [
+          15,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0,
+            0.12
+          ],
+          [
+            0.18,
+            0.3
+          ],
+          [
+            0.35,
+            0.48
+          ]
+        ],
+        "reconfiguration_scale": [
+          1.2,
+          1.6
+        ]
       },
       "worker_bottleneck": {
-        "order_count": [15, 18],
-        "operations_per_order": [4, 5],
-        "dominant_module_share": [0.65, 0.75],
-        "release_windows": [[0.00, 0.04], [0.08, 0.12], [0.16, 0.22]],
-        "reconfiguration_scale": [0.95, 1.10]
+        "order_count": [
+          15,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0,
+            0.04
+          ],
+          [
+            0.08,
+            0.12
+          ],
+          [
+            0.16,
+            0.22
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.95,
+          1.1
+        ]
       },
       "fatigue_bottleneck": {
-        "order_count": [15, 18],
-        "operations_per_order": [4, 5],
-        "dominant_module_share": [0.65, 0.75],
-        "release_windows": [[0.00, 0.04], [0.08, 0.12], [0.16, 0.22]],
-        "reconfiguration_scale": [1.10, 1.30]
+        "order_count": [
+          15,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0,
+            0.04
+          ],
+          [
+            0.08,
+            0.12
+          ],
+          [
+            0.16,
+            0.22
+          ]
+        ],
+        "reconfiguration_scale": [
+          1.1,
+          1.3
+        ]
       },
       "high_arrival_pressure": {
-        "order_count": [16, 18],
-        "operations_per_order": [4, 5],
-        "dominant_module_share": [0.60, 0.70],
-        "release_windows": [[0.00, 0.04], [0.07, 0.11], [0.14, 0.18]],
-        "reconfiguration_scale": [0.90, 1.10]
+        "order_count": [
+          16,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.6,
+          0.7
+        ],
+        "release_windows": [
+          [
+            0,
+            0.04
+          ],
+          [
+            0.07,
+            0.11
+          ],
+          [
+            0.14,
+            0.18
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ]
       }
     },
     "acceptance": {
       "machine_min_module_load": 0.35,
-      "reconfiguration_min_ready_gap": 0.50,
+      "reconfiguration_min_ready_gap": 0.5,
       "reconfiguration_min_ratio": 0.25,
-      "arrival_min_overlap": 0.50,
-      "max_heuristic_makespan_minutes": 240.0
+      "arrival_min_overlap": 0.5,
+      "max_heuristic_makespan_minutes": 240
     },
     "ood": {
       "factors": [
@@ -150,16 +346,16 @@
       ]
     },
     "stress": {
-      "max_truncated_fraction": 0.20
+      "max_truncated_fraction": 0.2
     },
     "curriculum": {
       "mode": "linear",
       "anchors": [
         {
-          "at_fraction": 0.00,
+          "at_fraction": 0,
           "weights": {
-            "easy": 0.30,
-            "balanced": 0.50,
+            "easy": 0.3,
+            "balanced": 0.5,
             "machine_bottleneck": 0.04,
             "reconfiguration_bottleneck": 0.04,
             "worker_bottleneck": 0.04,
@@ -168,10 +364,10 @@
           }
         },
         {
-          "at_fraction": 0.20,
+          "at_fraction": 0.2,
           "weights": {
-            "easy": 0.30,
-            "balanced": 0.50,
+            "easy": 0.3,
+            "balanced": 0.5,
             "machine_bottleneck": 0.04,
             "reconfiguration_bottleneck": 0.04,
             "worker_bottleneck": 0.04,
@@ -182,37 +378,37 @@
         {
           "at_fraction": 0.55,
           "weights": {
-            "easy": 0.10,
-            "balanced": 0.40,
-            "machine_bottleneck": 0.10,
-            "reconfiguration_bottleneck": 0.10,
-            "worker_bottleneck": 0.10,
-            "fatigue_bottleneck": 0.10,
-            "high_arrival_pressure": 0.10
+            "easy": 0.1,
+            "balanced": 0.4,
+            "machine_bottleneck": 0.1,
+            "reconfiguration_bottleneck": 0.1,
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
           }
         },
         {
-          "at_fraction": 0.80,
+          "at_fraction": 0.8,
           "weights": {
             "easy": 0.05,
             "balanced": 0.35,
             "machine_bottleneck": 0.15,
             "reconfiguration_bottleneck": 0.15,
-            "worker_bottleneck": 0.10,
-            "fatigue_bottleneck": 0.10,
-            "high_arrival_pressure": 0.10
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
           }
         },
         {
-          "at_fraction": 1.00,
+          "at_fraction": 1,
           "weights": {
             "easy": 0.05,
             "balanced": 0.35,
             "machine_bottleneck": 0.15,
             "reconfiguration_bottleneck": 0.15,
-            "worker_bottleneck": 0.10,
-            "fatigue_bottleneck": 0.10,
-            "high_arrival_pressure": 0.10
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
           }
         }
       ]
@@ -234,12 +430,12 @@
   },
   "reward": {
     "mode": "hierarchical_constrained_v1",
-    "flow_scale": 1200.0,
-    "cost_scale": 1000.0,
-    "variance_scale": 50.0,
-    "flow_weight": 1.0,
-    "cost_weight": 1.0,
-    "variance_weight": 1.0,
+    "flow_scale": 1200,
+    "cost_scale": 1000,
+    "variance_scale": 50,
+    "flow_weight": 1,
+    "cost_weight": 1,
+    "variance_weight": 1,
     "quality_weights": {
       "flow": 0.5,
       "cost": 0.3,
@@ -247,12 +443,12 @@
     },
     "quality_budget": 0.5,
     "truncation_penalty": 0.5,
-    "unfinished_order_penalty": 1.0,
+    "unfinished_order_penalty": 1,
     "feasibility_shaping": {
       "enabled": true,
       "coefficient": 0.25,
       "weights": {
-        "operation_progress": 0.50,
+        "operation_progress": 0.5,
         "resource_margin": 0.25,
         "horizon_slack": 0.25
       }
@@ -262,7 +458,7 @@
     "encoder_type": "hetero_gnn",
     "hidden_dim": 128,
     "message_passing_layers": 2,
-    "dropout": 0.0,
+    "dropout": 0,
     "production_action_edge_features": true,
     "worker_action_edge_features": true,
     "production_candidate_relative_features": true,
@@ -281,8 +477,8 @@
   },
   "ppo": {
     "learning_rate": 0.0001,
-    "gamma": 1.0,
-    "gae_lambda": 0.95,
+    "gamma": 1,
+    "gae_lambda": 0.995,
     "clip_epsilon": 0.2,
     "epochs": 2,
     "batch_size": 64,
@@ -292,29 +488,33 @@
   },
   "training": {
     "online_instances": true,
-    "episodes": 2000,
-    "smoke_episodes": 2,
+    "episodes": 1000,
+    "smoke_episodes": 20,
     "smoke_rollout_steps": 64,
     "validation_split": "validation",
-    "validation_interval_episodes": 10,
+    "validation_interval_episodes": 20,
     "validation_instance_limit": null,
     "smoke_validation_instance_limit": 2,
-    "parallel_envs": 10,
-    "smoke_parallel_envs": 2,
-    "validation_parallel_envs": 10,
-    "forced_action_compression": false,
+    "parallel_envs": 20,
+    "smoke_parallel_envs": 20,
+    "validation_parallel_envs": 20,
+    "forced_action_compression": true,
     "worker_local_physical_forced_actions": true,
-    "final_evaluation_sampling_seeds": [100011, 100012, 100013],
+    "final_evaluation_sampling_seeds": [
+      100011,
+      100012,
+      100013
+    ],
     "two_stage": {
-      "completion_target": 1.0,
+      "completion_target": 1,
       "consecutive_validations": 3,
-      "quality_completion_floor": 1.0,
+      "quality_completion_floor": 1,
       "quality_checkpoint_promotion": "aligned_quality",
       "quality_validate_every_update": true
     },
     "validation_control": {
       "feasibility_rollback": {
-        "completion_drop": 0.10,
+        "completion_drop": 0.1,
         "consecutive_validations": 2,
         "cooldown_validations": 3
       },
@@ -331,11 +531,11 @@
     },
     "ablation_gate": {
       "training_window_instances": 200,
-      "reconfiguration_completion_rate": 0.60,
+      "reconfiguration_completion_rate": 0.6,
       "failure_instance_id": "validation_reconfiguration_bottleneck_2000009",
-      "failure_instance_max_worker_wait": 100.0,
+      "failure_instance_max_worker_wait": 100,
       "last_ten_validation_completion_rate": 0.95,
-      "maximum_rollback_rate": 0.20,
+      "maximum_rollback_rate": 0.2,
       "minimum_learning_rate": 0.000025,
       "reward_identity_tolerance": 1e-8
     },
@@ -360,16 +560,20 @@
     "thresholds": {
       "minimum_production_spearman": 0.8,
       "minimum_worker_spearman": 0.8,
-      "maximum_production_regret_percent": 5.0,
+      "maximum_production_regret_percent": 5,
       "maximum_worker_fatigue_regret": 0.02,
-      "maximum_worker_variance_regret_percent": 5.0,
-      "maximum_flow_gap_percent": 5.0,
-      "maximum_cost_gap_percent": 5.0,
-      "maximum_variance_gap_percent": 5.0,
-      "maximum_quality_gap_percent": 0.0
+      "maximum_worker_variance_regret_percent": 5,
+      "maximum_flow_gap_percent": 5,
+      "maximum_cost_gap_percent": 5,
+      "maximum_variance_gap_percent": 5,
+      "maximum_quality_gap_percent": 0
     },
     "overfit": {
-      "instance_stages": [5, 10, 20],
+      "instance_stages": [
+        5,
+        10,
+        20
+      ],
       "maximum_updates_per_stage": 100,
       "consecutive_passes": 3,
       "algorithm_seed": 101
@@ -382,7 +586,7 @@
       "port": 8097,
       "base_url": "/",
       "env_prefix": "fatigue_assembly",
-      "connection_timeout_seconds": 2.0,
+      "connection_timeout_seconds": 2,
       "fail_fast": false,
       "update_every": 1,
       "rolling_window_updates": 20,

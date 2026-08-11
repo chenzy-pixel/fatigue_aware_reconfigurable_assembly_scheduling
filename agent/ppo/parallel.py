@@ -39,6 +39,22 @@ class WorkerResponse:
     metadata: dict[str, Any] | None = None
     generation_time_seconds: float = 0.0
     environment_step_time_seconds: float = 0.0
+    environment_step_count: int = 0
+    local_physical_forced_action_count: int = 0
+
+
+@dataclass(frozen=True)
+class _WorkerResetRequest:
+    value: int | AssemblyInstance
+    drain_physical_forced_actions: bool = False
+    max_environment_steps: int | None = None
+
+
+@dataclass(frozen=True)
+class _WorkerStepRequest:
+    action: int
+    drain_physical_forced_actions: bool = False
+    max_environment_steps: int | None = None
 
 
 @dataclass
@@ -63,11 +79,39 @@ class EpisodeRollout:
     reward_phase: str = "legacy"
     reward_components: dict[str, float] = field(default_factory=dict)
     expected_reward: float = 0.0
+    unattributed_forced_reward: float = 0.0
+    worker_step_command_count: int = 0
+    worker_local_physical_forced_action_count: int = 0
 
     @property
     def base_reward_sum(self) -> float:
         return self.reward_sum - float(
             self.reward_components.get("feasibility_shaping", 0.0)
+        )
+
+    @property
+    def policy_step_count(self) -> int:
+        return len(self.buffer)
+
+    @property
+    def forced_action_count(self) -> int:
+        return self.step_count - self.policy_step_count
+
+    @property
+    def forced_action_ratio(self) -> float:
+        return (
+            self.forced_action_count / self.step_count
+            if self.step_count > 0
+            else 0.0
+        )
+
+    @property
+    def worker_local_physical_forced_share(self) -> float:
+        return (
+            self.worker_local_physical_forced_action_count
+            / self.forced_action_count
+            if self.forced_action_count > 0
+            else 0.0
         )
 
 
@@ -81,6 +125,227 @@ class TrainingRolloutBatch:
     @property
     def transition_count(self) -> int:
         return len(self.buffer)
+
+    @property
+    def environment_step_count(self) -> int:
+        return sum(episode.step_count for episode in self.episodes)
+
+    @property
+    def forced_action_count(self) -> int:
+        return sum(
+            episode.forced_action_count for episode in self.episodes
+        )
+
+    @property
+    def forced_action_ratio(self) -> float:
+        return (
+            self.forced_action_count / self.environment_step_count
+            if self.environment_step_count > 0
+            else 0.0
+        )
+
+    @property
+    def worker_step_command_count(self) -> int:
+        return sum(
+            episode.worker_step_command_count
+            for episode in self.episodes
+        )
+
+    @property
+    def worker_local_physical_forced_action_count(self) -> int:
+        return sum(
+            episode.worker_local_physical_forced_action_count
+            for episode in self.episodes
+        )
+
+    @property
+    def worker_local_physical_forced_share(self) -> float:
+        return (
+            self.worker_local_physical_forced_action_count
+            / self.forced_action_count
+            if self.forced_action_count > 0
+            else 0.0
+        )
+
+
+@dataclass
+class _PendingTransition:
+    observation: Observation | PolicyObservation
+    action_mask: np.ndarray
+    action: int
+    log_probability: float
+    value: float
+    reward: float = 0.0
+
+
+def forced_action_from_mask(action_mask: np.ndarray) -> int | None:
+    """Return the only legal action, or ``None`` for a policy decision."""
+
+    mask = np.asarray(action_mask, dtype=np.bool_)
+    legal_actions = np.flatnonzero(~mask)
+    if legal_actions.size == 0:
+        raise ValueError("action mask has no legal actions")
+    if legal_actions.size == 1:
+        return int(legal_actions[0])
+    return None
+
+
+def physical_forced_action_from_mask(
+    environment: AssemblySchedulingEnv,
+    action_mask: np.ndarray,
+) -> int | None:
+    """Return a physically forced action that is safe to execute locally.
+
+    A singleton created by the non-delay worker-dispatch rule remains visible
+    to the parent process.  It is still compressed there, but is deliberately
+    excluded from worker-local chaining so policy masking is not mistaken for
+    physical determinism.
+    """
+
+    action = forced_action_from_mask(action_mask)
+    if action is None:
+        return None
+    diagnostic = environment.forced_action_diagnostic(action_mask)
+    if diagnostic is None:
+        raise RuntimeError(
+            "singleton action mask has no forced-action diagnostic"
+        )
+    if bool(diagnostic["non_delay_blocked_advance"]):
+        return None
+    if not (
+        bool(diagnostic["advance_physically_unavailable"])
+        or bool(diagnostic["pair_physically_unavailable"])
+    ):
+        return None
+    return action
+
+
+def _aggregate_reward_vectors(
+    reward_vectors: Sequence[RewardVector],
+) -> RewardVector | None:
+    if not reward_vectors:
+        return None
+    totals = {
+        name: 0.0
+        for name in RewardVector.__dataclass_fields__
+    }
+    for reward_vector in reward_vectors:
+        for name, value in reward_vector.as_dict().items():
+            totals[name] += float(value)
+    return RewardVector(**totals)
+
+
+def _worker_roll_forward(
+    lane_id: int,
+    environment: AssemblySchedulingEnv,
+    observation: Observation | None,
+    *,
+    preserve_graph: bool,
+    requested_action: int | None,
+    drain_physical_forced_actions: bool,
+    max_environment_steps: int | None,
+    **kwargs,
+) -> WorkerResponse:
+    """Execute one requested action plus its physically forced suffix."""
+
+    if max_environment_steps is not None and max_environment_steps < 0:
+        raise ValueError("max_environment_steps cannot be negative")
+    if requested_action is not None and max_environment_steps == 0:
+        raise ValueError("a step request requires a positive step budget")
+
+    rewards: list[RewardVector] = []
+    environment_step_count = 0
+    local_forced_action_count = 0
+    environment_step_time_seconds = 0.0
+    terminated = environment.terminated
+    truncated = environment.truncated
+
+    def execute(action: int, *, local_forced: bool) -> None:
+        nonlocal observation
+        nonlocal environment_step_count
+        nonlocal local_forced_action_count
+        nonlocal environment_step_time_seconds
+        nonlocal terminated
+        nonlocal truncated
+        step_start = time.perf_counter()
+        observation, reward, terminated, truncated, _ = environment.step(
+            int(action),
+            build_observation=False,
+        )
+        environment_step_time_seconds += time.perf_counter() - step_start
+        rewards.append(reward)
+        environment_step_count += 1
+        if local_forced:
+            local_forced_action_count += 1
+
+    if requested_action is not None:
+        execute(requested_action, local_forced=False)
+
+    while (
+        drain_physical_forced_actions
+        and not (terminated or truncated)
+        and (
+            max_environment_steps is None
+            or environment_step_count < max_environment_steps
+        )
+    ):
+        action_mask = environment.get_action_mask()
+        forced_action = physical_forced_action_from_mask(
+            environment,
+            action_mask,
+        )
+        if forced_action is None:
+            break
+        execute(forced_action, local_forced=True)
+
+    response_kwargs = {
+        **kwargs,
+        "reward_vector": _aggregate_reward_vectors(rewards),
+        "environment_step_time_seconds": environment_step_time_seconds,
+        "environment_step_count": environment_step_count,
+        "local_physical_forced_action_count": (
+            local_forced_action_count
+        ),
+    }
+    if terminated or truncated:
+        return WorkerResponse(
+            lane_id=lane_id,
+            terminated=terminated,
+            truncated=truncated,
+            metrics=_terminal_metrics(environment),
+            **response_kwargs,
+        )
+    if environment_step_count > 0:
+        observation = environment.observe()
+    if observation is None:
+        raise RuntimeError("active worker has no observation")
+    return _worker_state(
+        lane_id,
+        environment,
+        observation,
+        preserve_graph=preserve_graph,
+        **response_kwargs,
+    )
+
+
+def _commit_pending_transition(
+    context: dict[str, Any],
+    *,
+    done: bool,
+) -> None:
+    pending = context["pending_transition"]
+    if pending is None:
+        return
+    context["buffer"].add(
+        pending.observation,
+        pending.action_mask,
+        pending.action,
+        pending.log_probability,
+        pending.value,
+        pending.reward,
+        done,
+    )
+    context["pending_transition"] = None
 
 
 @dataclass
@@ -152,8 +417,13 @@ def _worker_main(
                 connection.send(WorkerResponse(lane_id=lane_id))
                 return
             if command == "reset_online":
+                request = (
+                    payload
+                    if isinstance(payload, _WorkerResetRequest)
+                    else _WorkerResetRequest(value=int(payload))
+                )
                 generation_start = time.perf_counter()
-                record = dataset[int(payload)]
+                record = dataset[int(request.value)]
                 generation_time = time.perf_counter() - generation_start
                 observation = environment.reset(record.instance)
                 metadata = {
@@ -165,11 +435,18 @@ def _worker_main(
                     )
                 }
                 connection.send(
-                    _worker_state(
+                    _worker_roll_forward(
                         lane_id,
                         environment,
                         observation,
                         preserve_graph=preserve_graph,
+                        requested_action=None,
+                        drain_physical_forced_actions=(
+                            request.drain_physical_forced_actions
+                        ),
+                        max_environment_steps=(
+                            request.max_environment_steps
+                        ),
                         instance_id=record.instance.instance_id,
                         metadata=metadata,
                         generation_time_seconds=generation_time,
@@ -177,45 +454,54 @@ def _worker_main(
                 )
                 continue
             if command == "reset_instance":
-                observation = environment.reset(payload)
+                request = (
+                    payload
+                    if isinstance(payload, _WorkerResetRequest)
+                    else _WorkerResetRequest(value=payload)
+                )
+                if not isinstance(request.value, AssemblyInstance):
+                    raise TypeError(
+                        "reset_instance requires an AssemblyInstance"
+                    )
+                observation = environment.reset(request.value)
                 connection.send(
-                    _worker_state(
+                    _worker_roll_forward(
                         lane_id,
                         environment,
                         observation,
                         preserve_graph=preserve_graph,
-                        instance_id=payload.instance_id,
+                        requested_action=None,
+                        drain_physical_forced_actions=(
+                            request.drain_physical_forced_actions
+                        ),
+                        max_environment_steps=(
+                            request.max_environment_steps
+                        ),
+                        instance_id=request.value.instance_id,
                     )
                 )
                 continue
             if command == "step":
-                step_start = time.perf_counter()
-                observation, reward, terminated, truncated, _ = (
-                    environment.step(int(payload))
+                request = (
+                    payload
+                    if isinstance(payload, _WorkerStepRequest)
+                    else _WorkerStepRequest(action=int(payload))
                 )
-                step_time = time.perf_counter() - step_start
-                if terminated or truncated:
-                    connection.send(
-                        WorkerResponse(
-                            lane_id=lane_id,
-                            reward_vector=reward,
-                            terminated=terminated,
-                            truncated=truncated,
-                            metrics=_terminal_metrics(environment),
-                            environment_step_time_seconds=step_time,
-                        )
+                connection.send(
+                    _worker_roll_forward(
+                        lane_id,
+                        environment,
+                        None,
+                        preserve_graph=preserve_graph,
+                        requested_action=request.action,
+                        drain_physical_forced_actions=(
+                            request.drain_physical_forced_actions
+                        ),
+                        max_environment_steps=(
+                            request.max_environment_steps
+                        ),
                     )
-                else:
-                    connection.send(
-                        _worker_state(
-                            lane_id,
-                            environment,
-                            observation,
-                            preserve_graph=preserve_graph,
-                            reward_vector=reward,
-                            environment_step_time_seconds=step_time,
-                        )
-                    )
+                )
                 continue
             if command == "snapshot":
                 connection.send(
@@ -384,6 +670,27 @@ class ParallelEpisodeRunner:
             raise ValueError("episode batch exceeds worker count")
         if len(set(episode_indices)) != len(episode_indices):
             raise ValueError("episode indices must be unique")
+        forced_action_compression = bool(
+            self.config["training"].get(
+                "forced_action_compression", False
+            )
+        )
+        local_physical_setting = self.config["training"].get(
+            "worker_local_physical_forced_actions",
+            True,
+        )
+        if not isinstance(local_physical_setting, bool):
+            raise ValueError(
+                "training.worker_local_physical_forced_actions must be "
+                "boolean"
+            )
+        worker_local_physical_forced_actions = bool(
+            forced_action_compression and local_physical_setting
+        )
+        if forced_action_compression and float(gamma) != 1.0:
+            raise ValueError(
+                "forced action compression requires ppo.gamma = 1.0"
+            )
         effective_reward_phase = (
             "feasibility"
             if reward_phase is None
@@ -401,24 +708,34 @@ class ParallelEpisodeRunner:
         sampling_start = time.perf_counter()
         reset_responses = self._exchange(
             {
-                lane_id: ("reset_online", int(episode_index))
+                lane_id: (
+                    "reset_online",
+                    _WorkerResetRequest(
+                        value=int(episode_index),
+                        drain_physical_forced_actions=(
+                            worker_local_physical_forced_actions
+                        ),
+                        max_environment_steps=step_limit,
+                    ),
+                )
                 for lane_id, episode_index in enumerate(episode_indices)
             }
         )
         states: dict[int, WorkerResponse] = dict(reset_responses)
         contexts: dict[int, dict[str, Any]] = {}
+        active: set[int] = set()
+        completed: list[EpisodeRollout] = []
+        reset_cutoff_lanes: list[int] = []
         for lane_id, episode_index in enumerate(episode_indices):
             response = reset_responses[lane_id]
             if (
-                response.observation is None
-                or response.action_mask is None
-                or response.instance_id is None
+                response.instance_id is None
                 or response.metadata is None
             ):
                 raise ParallelWorkerError(
                     f"worker {lane_id} returned an incomplete reset"
                 )
-            contexts[lane_id] = {
+            context = {
                 "episode_index": int(episode_index),
                 "instance_id": response.instance_id,
                 "metadata": response.metadata,
@@ -438,66 +755,209 @@ class ParallelEpisodeRunner:
                     "unfinished": 0.0,
                     "feasibility_shaping": 0.0,
                 },
-                "step_count": 0,
+                "step_count": response.environment_step_count,
+                "policy_step_count": 0,
+                "forced_action_count": (
+                    response.local_physical_forced_action_count
+                ),
+                "worker_step_command_count": 0,
+                "worker_local_physical_forced_action_count": (
+                    response.local_physical_forced_action_count
+                ),
+                "pending_transition": None,
+                "unattributed_forced_reward": 0.0,
                 "generation_time_seconds": (
                     response.generation_time_seconds
                 ),
-                "environment_step_time_seconds": 0.0,
+                "environment_step_time_seconds": (
+                    response.environment_step_time_seconds
+                ),
             }
-        active = set(contexts)
-        completed: list[EpisodeRollout] = []
+            contexts[lane_id] = context
+            if response.environment_step_count != (
+                response.local_physical_forced_action_count
+            ):
+                raise ParallelWorkerError(
+                    "reset worker reported non-forced local steps"
+                )
+            if response.reward_vector is not None:
+                scalar_reward = response.reward_vector.scalarize(
+                    self.config["reward"],
+                    effective_reward_phase,
+                )
+                context["reward_sum"] += scalar_reward
+                context["unattributed_forced_reward"] += scalar_reward
+                for name, value in response.reward_vector.as_dict().items():
+                    context["reward_components"][name] += float(value)
+            elif response.environment_step_count:
+                raise ParallelWorkerError(
+                    "reset worker returned steps without rewards"
+                )
+            done = response.terminated or response.truncated
+            if done:
+                if response.metrics is None:
+                    raise ParallelWorkerError(
+                        "terminal reset worker returned no metrics"
+                    )
+                context["buffer"].compute_gae(
+                    last_value=0.0,
+                    gamma=gamma,
+                    gae_lambda=gae_lambda,
+                )
+                completed.append(
+                    self._episode_result(context, response.metrics)
+                )
+                continue
+            if response.observation is None or response.action_mask is None:
+                raise ParallelWorkerError(
+                    f"worker {lane_id} returned no active reset state"
+                )
+            if (
+                step_limit is not None
+                and context["step_count"] >= step_limit
+            ):
+                reset_cutoff_lanes.append(lane_id)
+            else:
+                active.add(lane_id)
+        if reset_cutoff_lanes:
+            snapshots = self._exchange(
+                {
+                    lane: ("snapshot", None)
+                    for lane in reset_cutoff_lanes
+                }
+            )
+            for lane in reset_cutoff_lanes:
+                context = contexts[lane]
+                context["buffer"].compute_gae(
+                    last_value=0.0,
+                    gamma=gamma,
+                    gae_lambda=gae_lambda,
+                )
+                metrics = snapshots[lane].metrics
+                if metrics is None:
+                    raise ParallelWorkerError(
+                        "reset cutoff worker returned no snapshot metrics"
+                    )
+                completed.append(self._episode_result(context, metrics))
         inference_time = 0.0
         while active:
             lanes = sorted(active)
-            observations = [states[lane].observation for lane in lanes]
-            masks = [states[lane].action_mask for lane in lanes]
-            if any(value is None for value in observations + masks):
-                raise ParallelWorkerError(
-                    "active worker returned an incomplete policy state"
+            policy_lanes: list[int] = []
+            policy_observations = []
+            policy_masks: list[np.ndarray] = []
+            selected_actions: dict[int, int] = {}
+            sampled_transitions: dict[int, _PendingTransition] = {}
+            for lane in lanes:
+                observation = states[lane].observation
+                action_mask = states[lane].action_mask
+                if observation is None or action_mask is None:
+                    raise ParallelWorkerError(
+                        "active worker returned an incomplete policy state"
+                    )
+                forced_action = (
+                    forced_action_from_mask(action_mask)
+                    if forced_action_compression
+                    else None
                 )
-            inference_start = time.perf_counter()
-            actions, log_probabilities, values = agent.act_batch(
-                observations,
-                masks,
-            )
-            inference_time += time.perf_counter() - inference_start
+                if forced_action is not None:
+                    selected_actions[lane] = forced_action
+                    contexts[lane]["forced_action_count"] += 1
+                    continue
+                _commit_pending_transition(
+                    contexts[lane],
+                    done=False,
+                )
+                policy_lanes.append(lane)
+                policy_observations.append(observation)
+                policy_masks.append(action_mask)
+            if policy_lanes:
+                inference_start = time.perf_counter()
+                actions, log_probabilities, values = agent.act_batch(
+                    policy_observations,
+                    policy_masks,
+                )
+                inference_time += time.perf_counter() - inference_start
+                for local_index, lane in enumerate(policy_lanes):
+                    context = contexts[lane]
+                    action = actions[local_index]
+                    selected_actions[lane] = action
+                    context["policy_step_count"] += 1
+                    sampled_transitions[lane] = _PendingTransition(
+                        observation=policy_observations[local_index],
+                        action_mask=policy_masks[local_index],
+                        action=action,
+                        log_probability=log_probabilities[local_index],
+                        value=values[local_index],
+                        reward=context["unattributed_forced_reward"],
+                    )
+                    context["unattributed_forced_reward"] = 0.0
             step_responses = self._exchange(
                 {
-                    lane: ("step", action)
-                    for lane, action in zip(lanes, actions)
+                    lane: (
+                        "step",
+                        _WorkerStepRequest(
+                            action=selected_actions[lane],
+                            drain_physical_forced_actions=(
+                                worker_local_physical_forced_actions
+                            ),
+                            max_environment_steps=(
+                                None
+                                if step_limit is None
+                                else step_limit
+                                - contexts[lane]["step_count"]
+                            ),
+                        ),
+                    )
+                    for lane in lanes
                 }
             )
             cutoff_lanes: list[int] = []
-            for local_index, lane in enumerate(lanes):
-                previous = states[lane]
+            for lane in lanes:
                 response = step_responses[lane]
                 context = contexts[lane]
                 if response.reward_vector is None:
                     raise ParallelWorkerError(
                         f"worker {lane} returned no reward"
                     )
+                if response.environment_step_count < 1:
+                    raise ParallelWorkerError(
+                        f"worker {lane} returned no environment steps"
+                    )
+                if response.local_physical_forced_action_count > (
+                    response.environment_step_count - 1
+                ):
+                    raise ParallelWorkerError(
+                        f"worker {lane} returned invalid local step counts"
+                    )
                 scalar_reward = response.reward_vector.scalarize(
                     self.config["reward"],
                     effective_reward_phase,
                 )
                 done = response.terminated or response.truncated
-                context["buffer"].add(
-                    previous.observation,
-                    previous.action_mask,
-                    actions[local_index],
-                    log_probabilities[local_index],
-                    values[local_index],
-                    scalar_reward,
-                    done,
-                )
+                if lane in sampled_transitions:
+                    pending = sampled_transitions[lane]
+                    pending.reward += scalar_reward
+                    context["pending_transition"] = pending
+                elif context["pending_transition"] is not None:
+                    context["pending_transition"].reward += scalar_reward
+                else:
+                    context["unattributed_forced_reward"] += scalar_reward
                 context["reward_sum"] += scalar_reward
                 for name, value in response.reward_vector.as_dict().items():
                     context["reward_components"][name] += float(value)
-                context["step_count"] += 1
+                context["step_count"] += response.environment_step_count
+                context["forced_action_count"] += (
+                    response.local_physical_forced_action_count
+                )
+                context["worker_step_command_count"] += 1
+                context[
+                    "worker_local_physical_forced_action_count"
+                ] += response.local_physical_forced_action_count
                 context["environment_step_time_seconds"] += (
                     response.environment_step_time_seconds
                 )
                 if done:
+                    _commit_pending_transition(context, done=True)
                     if response.metrics is None:
                         raise ParallelWorkerError(
                             f"worker {lane} returned no terminal metrics"
@@ -519,37 +979,54 @@ class ParallelEpisodeRunner:
                     step_limit is not None
                     and context["step_count"] >= step_limit
                 ):
+                    _commit_pending_transition(context, done=False)
                     cutoff_lanes.append(lane)
                 else:
                     states[lane] = response
             if cutoff_lanes:
-                cutoff_observations = [
-                    step_responses[lane].observation
+                value_lanes = [
+                    lane
                     for lane in cutoff_lanes
+                    if len(contexts[lane]["buffer"]) > 0
                 ]
-                cutoff_masks = [
-                    step_responses[lane].action_mask
-                    for lane in cutoff_lanes
-                ]
-                inference_start = time.perf_counter()
-                last_values = agent.value_batch(
-                    cutoff_observations,
-                    cutoff_masks,
-                )
-                inference_time += time.perf_counter() - inference_start
+                last_value_by_lane = {
+                    lane: 0.0 for lane in cutoff_lanes
+                }
+                if value_lanes:
+                    cutoff_observations = [
+                        step_responses[lane].observation
+                        for lane in value_lanes
+                    ]
+                    cutoff_masks = [
+                        step_responses[lane].action_mask
+                        for lane in value_lanes
+                    ]
+                    if any(
+                        value is None
+                        for value in cutoff_observations + cutoff_masks
+                    ):
+                        raise ParallelWorkerError(
+                            "cutoff worker returned an incomplete value state"
+                        )
+                    inference_start = time.perf_counter()
+                    cutoff_values = agent.value_batch(
+                        cutoff_observations,
+                        cutoff_masks,
+                    )
+                    inference_time += time.perf_counter() - inference_start
+                    last_value_by_lane.update(
+                        zip(value_lanes, cutoff_values)
+                    )
                 snapshots = self._exchange(
                     {
                         lane: ("snapshot", None)
                         for lane in cutoff_lanes
                     }
                 )
-                for lane, last_value in zip(
-                    cutoff_lanes,
-                    last_values,
-                ):
+                for lane in cutoff_lanes:
                     context = contexts[lane]
                     context["buffer"].compute_gae(
-                        last_value=last_value,
+                        last_value=last_value_by_lane[lane],
                         gamma=gamma,
                         gae_lambda=gae_lambda,
                     )
@@ -582,7 +1059,39 @@ class ParallelEpisodeRunner:
         context: dict[str, Any],
         metrics: dict[str, Any],
     ) -> EpisodeRollout:
-        return EpisodeRollout(
+        if context["pending_transition"] is not None:
+            raise RuntimeError("episode ended with an uncommitted transition")
+        if (
+            context["step_count"]
+            != context["policy_step_count"]
+            + context["forced_action_count"]
+        ):
+            raise RuntimeError("compressed rollout step accounting diverged")
+        if len(context["buffer"]) != context["policy_step_count"]:
+            raise RuntimeError("compressed rollout buffer accounting diverged")
+        if (
+            context["worker_step_command_count"]
+            + context["worker_local_physical_forced_action_count"]
+            != context["step_count"]
+        ):
+            raise RuntimeError(
+                "worker-local forced rollout accounting diverged"
+            )
+        attributed_reward = sum(
+            transition.reward
+            for transition in context["buffer"].transitions
+        )
+        reward_error = (
+            attributed_reward
+            + context["unattributed_forced_reward"]
+            - context["reward_sum"]
+        )
+        if abs(reward_error) > 1e-8:
+            raise RuntimeError(
+                "compressed rollout reward attribution diverged by "
+                f"{reward_error}"
+            )
+        episode = EpisodeRollout(
             episode_index=context["episode_index"],
             instance_id=context["instance_id"],
             metadata=context["metadata"],
@@ -603,7 +1112,30 @@ class ParallelEpisodeRunner:
                 self.config["reward"],
                 context["reward_phase"],
             ),
+            unattributed_forced_reward=context[
+                "unattributed_forced_reward"
+            ],
+            worker_step_command_count=context[
+                "worker_step_command_count"
+            ],
+            worker_local_physical_forced_action_count=context[
+                "worker_local_physical_forced_action_count"
+            ],
         )
+        reward_identity_tolerance = float(
+            self.config["training"]
+            .get("ablation_gate", {})
+            .get("reward_identity_tolerance", 1e-8)
+        )
+        reward_identity_error = (
+            episode.base_reward_sum - episode.expected_reward
+        )
+        if abs(reward_identity_error) > reward_identity_tolerance:
+            raise RuntimeError(
+                "trajectory reward identity diverged by "
+                f"{reward_identity_error}"
+            )
+        return episode
 
     def evaluate_records(
         self,

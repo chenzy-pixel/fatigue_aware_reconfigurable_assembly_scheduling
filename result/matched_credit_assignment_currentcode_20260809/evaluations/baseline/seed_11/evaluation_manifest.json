@@ -1,0 +1,20 @@
+{
+  "algorithm_seed": 11,
+  "arm": "baseline",
+  "checkpoint": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\matched_credit_baseline_seed11_1000_20260809\\accepted_checkpoint.pt",
+  "checkpoint_sha256": "6c6e4e189cd623e6ddb4c58f0b4318ad4de16b8b4b91db883543a06557bb0ade",
+  "created_at_utc": "2026-08-09T12:47:01.788760+00:00",
+  "forced_action_compression": false,
+  "greedy_rows": 20,
+  "parallel_envs": 20,
+  "sampled_rows": 60,
+  "sampling_seeds": [
+    100011,
+    100012,
+    100013
+  ],
+  "schema_version": "1.0.0",
+  "source_sha256": "4eb46186031af56ca31851fef7b943d4a186f60f90e1d291d03aa3efd7b45842",
+  "test_instance_count": 20,
+  "wall_clock_seconds": 379.37897049999447
+}
