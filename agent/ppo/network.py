@@ -390,9 +390,184 @@ BIDIRECTIONAL_EDGE_TYPES: frozenset[EdgeType] = frozenset(
     )
 )
 
+POLICY_HEAD_VERSION = 6
+PRODUCTION_RELATIVE_FEATURE_NAMES: tuple[str, ...] = (
+    "processing_time_norm",
+    "reconfiguration_time_norm",
+    "fixed_reconfiguration_cost_norm",
+    "estimated_labor_cost_norm",
+    "estimated_downtime_cost_norm",
+    "horizon_slack_norm",
+)
+WORKER_RELATIVE_FEATURE_NAMES: tuple[str, ...] = (
+    "stage_duration_norm",
+    "projected_fatigue_ratio",
+    "incremental_labor_cost_norm",
+    "incremental_downtime_cost_norm",
+    "incremental_load_variance_norm",
+)
+DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS: tuple[float, ...] = (
+    0.30,
+    0.30,
+    0.20,
+    0.20,
+    0.20,
+    0.30,
+)
+DEFAULT_WORKER_RELATIVE_INITIAL_WEIGHTS: tuple[float, ...] = (
+    0.30,
+    0.30,
+    0.20,
+    0.20,
+    0.20,
+)
+PRODUCTION_RELATIVE_DIRECTIONS: tuple[float, ...] = (
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    1.0,
+)
+WORKER_RELATIVE_DIRECTIONS: tuple[float, ...] = (-1.0,) * len(
+    WORKER_RELATIVE_FEATURE_NAMES
+)
+DEFAULT_CONTEXT_GATE_INITIAL_LOGIT = -4.0
+V6_CANDIDATE_CONTEXT_MODE = "common_plus_gated_residual_v6"
+V6_RELATIVE_WEIGHT_PARAMETERIZATION = "independent_softplus_signed_v6"
+V6_WORKER_RELATIVE_WEIGHT_SHARING = "independent_softplus_v6"
+
 
 def _relation_key(edge_type: EdgeType) -> str:
     return "__".join(edge_type)
+
+
+def _positive_weight_tuple(
+    config: Mapping[str, Any],
+    name: str,
+    default: tuple[float, ...],
+) -> tuple[float, ...]:
+    values = tuple(float(value) for value in config.get(name, default))
+    if len(values) != len(default):
+        raise ValueError(
+            f"network.{name} must contain exactly {len(default)} values"
+        )
+    if any(not np.isfinite(value) or value <= 0.0 for value in values):
+        raise ValueError(
+            f"network.{name} values must be finite and positive"
+        )
+    return values
+
+
+def _validate_v6_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    version = int(config.get("policy_head_version", POLICY_HEAD_VERSION))
+    if version != POLICY_HEAD_VERSION:
+        raise ValueError(
+            "this source tree implements policy_head_version=6 only for "
+            "hetero_gnn; v5 checkpoints and configurations require retraining "
+            "or checkout of commit 002f13d"
+        )
+    semantics = str(
+        config.get("production_action_semantics", "pair_plus_defer_v1")
+    )
+    if semantics != "pair_plus_defer_v1":
+        raise ValueError(
+            "network.production_action_semantics must be 'pair_plus_defer_v1'"
+        )
+    production_enabled = bool(
+        config.get("production_candidate_relative_features", False)
+    )
+    worker_enabled = bool(
+        config.get("worker_candidate_relative_features", False)
+    )
+    production_names = tuple(
+        config.get(
+            "production_relative_feature_names",
+            PRODUCTION_RELATIVE_FEATURE_NAMES if production_enabled else (),
+        )
+    )
+    worker_names = tuple(
+        config.get(
+            "worker_relative_feature_names",
+            WORKER_RELATIVE_FEATURE_NAMES if worker_enabled else (),
+        )
+    )
+    if production_enabled and production_names != PRODUCTION_RELATIVE_FEATURE_NAMES:
+        raise ValueError(
+            "network.production_relative_feature_names must match the v6 "
+            f"schema {PRODUCTION_RELATIVE_FEATURE_NAMES}"
+        )
+    if worker_enabled and worker_names != WORKER_RELATIVE_FEATURE_NAMES:
+        raise ValueError(
+            "network.worker_relative_feature_names must match the v6 schema "
+            f"{WORKER_RELATIVE_FEATURE_NAMES}"
+        )
+    context_mode = str(
+        config.get("candidate_context_mode", V6_CANDIDATE_CONTEXT_MODE)
+    )
+    if context_mode != V6_CANDIDATE_CONTEXT_MODE:
+        raise ValueError(
+            "network.candidate_context_mode must be "
+            f"{V6_CANDIDATE_CONTEXT_MODE!r}"
+        )
+    parameterization = str(
+        config.get(
+            "relative_weight_parameterization",
+            V6_RELATIVE_WEIGHT_PARAMETERIZATION,
+        )
+    )
+    if parameterization != V6_RELATIVE_WEIGHT_PARAMETERIZATION:
+        raise ValueError(
+            "network.relative_weight_parameterization must be "
+            f"{V6_RELATIVE_WEIGHT_PARAMETERIZATION!r}"
+        )
+    worker_sharing = str(
+        config.get(
+            "worker_relative_weight_sharing",
+            V6_WORKER_RELATIVE_WEIGHT_SHARING,
+        )
+    )
+    if worker_sharing != V6_WORKER_RELATIVE_WEIGHT_SHARING:
+        raise ValueError(
+            "network.worker_relative_weight_sharing must be "
+            f"{V6_WORKER_RELATIVE_WEIGHT_SHARING!r}"
+        )
+    common_gate = float(
+        config.get(
+            "common_context_gate_initial_logit",
+            DEFAULT_CONTEXT_GATE_INITIAL_LOGIT,
+        )
+    )
+    residual_gate = float(
+        config.get(
+            "residual_context_gate_initial_logit",
+            DEFAULT_CONTEXT_GATE_INITIAL_LOGIT,
+        )
+    )
+    if not np.isfinite(common_gate) or not np.isfinite(residual_gate):
+        raise ValueError("network context-gate initial logits must be finite")
+    return {
+        "production_relative_initial_weights": (
+            _positive_weight_tuple(
+                config,
+                "production_relative_initial_weights",
+                DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS,
+            )
+            if production_enabled
+            else DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS
+        ),
+        "worker_relative_initial_weights": (
+            _positive_weight_tuple(
+                config,
+                "worker_relative_initial_weights",
+                DEFAULT_WORKER_RELATIVE_INITIAL_WEIGHTS,
+            )
+            if worker_enabled
+            else DEFAULT_WORKER_RELATIVE_INITIAL_WEIGHTS
+        ),
+        "common_context_gate_initial_logit": common_gate,
+        "residual_context_gate_initial_logit": residual_gate,
+    }
 
 
 def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -465,7 +640,9 @@ def assert_network_config_matches_spec(
             f"configured={configured}, checkpoint={saved}"
         )
     if configured["encoder_type"] == "hetero_gnn":
-        configured_policy_head = int(config.get("policy_head_version", 5))
+        configured_policy_head = int(
+            config.get("policy_head_version", POLICY_HEAD_VERSION)
+        )
         saved_policy_head = int(
             checkpoint_spec.get("policy_head_version", 3)
         )
@@ -474,9 +651,9 @@ def assert_network_config_matches_spec(
                 "checkpoint policy head version is incompatible with the "
                 "current network: "
                 f"configured={configured_policy_head}, "
-                f"checkpoint={saved_policy_head}; v4 and older checkpoints "
-                "used production advance semantics and cannot be loaded as "
-                "the v5 production defer policy"
+                f"checkpoint={saved_policy_head}; policy-head v5 and older "
+                "checkpoints are not automatically converted to v6 and must "
+                "be retrained (use commit 002f13d to reproduce v5)"
             )
         configured_semantics = str(
             config.get(
@@ -510,7 +687,7 @@ def assert_network_config_matches_spec(
                     f"checkpoint={saved_names}"
                 )
         configured_context_mode = str(
-            config.get("candidate_context_mode", "per_candidate_v3")
+            config.get("candidate_context_mode", V6_CANDIDATE_CONTEXT_MODE)
         )
         saved_context_mode = str(
             checkpoint_spec.get(
@@ -528,7 +705,7 @@ def assert_network_config_matches_spec(
         configured_worker_sharing = str(
             config.get(
                 "worker_relative_weight_sharing",
-                "independent_v3",
+                V6_WORKER_RELATIVE_WEIGHT_SHARING,
             )
         )
         saved_worker_sharing = str(
@@ -544,6 +721,21 @@ def assert_network_config_matches_spec(
                 f"configured={configured_worker_sharing}, "
                 f"checkpoint={saved_worker_sharing}"
             )
+        for field in (
+            "relative_weight_parameterization",
+            "production_relative_initial_weights",
+            "worker_relative_initial_weights",
+            "common_context_gate_initial_logit",
+            "residual_context_gate_initial_logit",
+        ):
+            configured_value = config.get(field)
+            saved_value = checkpoint_spec.get(field)
+            if configured_value != saved_value:
+                raise ValueError(
+                    f"checkpoint {field} is incompatible with the current "
+                    f"network: configured={configured_value}, "
+                    f"checkpoint={saved_value}"
+                )
     configured_features = config.get("feature_dimensions")
     saved_features = checkpoint_spec.get("feature_dimensions")
     configured_edges = config.get("edge_feature_dimensions")
@@ -814,6 +1006,18 @@ class HeteroGraphActorCritic(nn.Module):
         worker_action_edge_features: bool = False,
         production_candidate_relative_features: bool = False,
         worker_candidate_relative_features: bool = False,
+        production_relative_initial_weights: Sequence[float] = (
+            DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS
+        ),
+        worker_relative_initial_weights: Sequence[float] = (
+            DEFAULT_WORKER_RELATIVE_INITIAL_WEIGHTS
+        ),
+        common_context_gate_initial_logit: float = (
+            DEFAULT_CONTEXT_GATE_INITIAL_LOGIT
+        ),
+        residual_context_gate_initial_logit: float = (
+            DEFAULT_CONTEXT_GATE_INITIAL_LOGIT
+        ),
     ):
         super().__init__()
         self.feature_dimensions = {
@@ -846,6 +1050,28 @@ class HeteroGraphActorCritic(nn.Module):
         self.use_worker_candidate_relative_features = bool(
             worker_candidate_relative_features
         )
+        self.production_relative_initial_weights = tuple(
+            float(value) for value in production_relative_initial_weights
+        )
+        self.worker_relative_initial_weights = tuple(
+            float(value) for value in worker_relative_initial_weights
+        )
+        self.common_context_gate_initial_logit = float(
+            common_context_gate_initial_logit
+        )
+        self.residual_context_gate_initial_logit = float(
+            residual_context_gate_initial_logit
+        )
+        if (
+            len(self.production_relative_initial_weights)
+            != len(PRODUCTION_RELATIVE_FEATURE_NAMES)
+        ):
+            raise ValueError("production relative initial-weight width is invalid")
+        if (
+            len(self.worker_relative_initial_weights)
+            != len(WORKER_RELATIVE_FEATURE_NAMES)
+        ):
+            raise ValueError("worker relative initial-weight width is invalid")
         if self.hidden_dim < 1:
             raise ValueError("hidden_dim must be positive")
         if self.message_passing_layer_count < 1:
@@ -906,25 +1132,43 @@ class HeteroGraphActorCritic(nn.Module):
             self.dropout_probability,
         )
         if self.use_production_candidate_relative_features:
-            self.production_relative_ranker = nn.Linear(1, 1, bias=False)
+            self.production_relative_ranker = nn.Linear(
+                len(PRODUCTION_RELATIVE_FEATURE_NAMES), 1, bias=False
+            )
             self._initialize_monotone_ranker(
-                self.production_relative_ranker
+                self.production_relative_ranker,
+                self.production_relative_initial_weights,
             )
             self._initialize_zero_context_output(self.production_scorer)
             self.production_context_gate = nn.Parameter(
-                torch.full((), -4.0)
+                torch.full((), self.common_context_gate_initial_logit)
+            )
+            self.production_residual_context_gate = nn.Parameter(
+                torch.full((), self.residual_context_gate_initial_logit)
             )
         else:
             self.production_relative_ranker = None
             self.register_parameter("production_context_gate", None)
+            self.register_parameter("production_residual_context_gate", None)
         if self.use_worker_candidate_relative_features:
-            self.worker_relative_ranker = nn.Linear(2, 1, bias=False)
-            self._initialize_monotone_ranker(self.worker_relative_ranker)
+            self.worker_relative_ranker = nn.Linear(
+                len(WORKER_RELATIVE_FEATURE_NAMES), 1, bias=False
+            )
+            self._initialize_monotone_ranker(
+                self.worker_relative_ranker,
+                self.worker_relative_initial_weights,
+            )
             self._initialize_zero_context_output(self.worker_scorer)
-            self.worker_context_gate = nn.Parameter(torch.full((), -4.0))
+            self.worker_context_gate = nn.Parameter(
+                torch.full((), self.common_context_gate_initial_logit)
+            )
+            self.worker_residual_context_gate = nn.Parameter(
+                torch.full((), self.residual_context_gate_initial_logit)
+            )
         else:
             self.worker_relative_ranker = None
             self.register_parameter("worker_context_gate", None)
+            self.register_parameter("worker_residual_context_gate", None)
         context_dim = self.hidden_dim * (len(NODE_TYPES) + 1)
         self.production_defer = _head(
             context_dim,
@@ -958,23 +1202,41 @@ class HeteroGraphActorCritic(nn.Module):
             "worker_candidate_relative_features": (
                 self.use_worker_candidate_relative_features
             ),
-            "policy_head_version": 5,
+            "policy_head_version": POLICY_HEAD_VERSION,
             "production_action_semantics": "pair_plus_defer_v1",
             "production_relative_feature_names": (
-                ("processing_plus_reconfiguration_time_norm",)
+                PRODUCTION_RELATIVE_FEATURE_NAMES
                 if self.use_production_candidate_relative_features
                 else ()
             ),
             "worker_relative_feature_names": (
-                (
-                    "projected_fatigue_ratio",
-                    "incremental_load_variance_norm",
-                )
+                WORKER_RELATIVE_FEATURE_NAMES
                 if self.use_worker_candidate_relative_features
                 else ()
             ),
-            "candidate_context_mode": "common_offset_v4",
-            "worker_relative_weight_sharing": "shared_mean_v4",
+            "relative_weight_parameterization": (
+                V6_RELATIVE_WEIGHT_PARAMETERIZATION
+            ),
+            "production_relative_initial_weights": (
+                self.production_relative_initial_weights
+                if self.use_production_candidate_relative_features
+                else ()
+            ),
+            "worker_relative_initial_weights": (
+                self.worker_relative_initial_weights
+                if self.use_worker_candidate_relative_features
+                else ()
+            ),
+            "candidate_context_mode": V6_CANDIDATE_CONTEXT_MODE,
+            "worker_relative_weight_sharing": (
+                V6_WORKER_RELATIVE_WEIGHT_SHARING
+            ),
+            "common_context_gate_initial_logit": (
+                self.common_context_gate_initial_logit
+            ),
+            "residual_context_gate_initial_logit": (
+                self.residual_context_gate_initial_logit
+            ),
             "observation_schema_version": 3,
             "feature_dimensions": dict(self.feature_dimensions),
             "edge_feature_dimensions": dict(self.edge_feature_dimensions),
@@ -1309,23 +1571,56 @@ class HeteroGraphActorCritic(nn.Module):
         reconfiguration = dense_features[
             :, edge_names.index("reconfiguration_time_norm")
         ]
+        fixed_reconfiguration_cost = (
+            dense_features[
+                :, edge_names.index("fixed_disassembly_cost_norm")
+            ]
+            + dense_features[
+                :, edge_names.index("fixed_installation_cost_norm")
+            ]
+        )
+        labor_cost = dense_features[
+            :, edge_names.index("estimated_labor_cost_norm")
+        ]
+        downtime_cost = dense_features[
+            :, edge_names.index("estimated_downtime_cost_norm")
+        ]
+        horizon_slack = dense_features[
+            :, edge_names.index("horizon_slack_norm")
+        ]
         relative_features = self._standardize_candidate_features(
-            (processing + reconfiguration).unsqueeze(-1),
+            torch.stack(
+                (
+                    processing,
+                    reconfiguration,
+                    fixed_reconfiguration_cost,
+                    labor_cost,
+                    downtime_cost,
+                    horizon_slack,
+                ),
+                dim=-1,
+            ),
             ~action_mask[:pair_count],
         )
+        production_directions = relative_features.new_tensor(
+            PRODUCTION_RELATIVE_DIRECTIONS
+        )
+        effective_weights = functional.softplus(
+            self.production_relative_ranker.weight
+        ) * production_directions
         relative_logits = functional.linear(
-            relative_features,
-            -functional.softplus(
-                self.production_relative_ranker.weight
-            ),
+            relative_features, effective_weights
         ).reshape(-1)
-        common_context = self._common_candidate_context(
+        common_context, residual_context = self._candidate_context_components(
             contextual_logits,
             ~action_mask[:pair_count],
         )
-        return relative_logits + torch.sigmoid(
-            self.production_context_gate
-        ) * common_context
+        return (
+            relative_logits
+            + torch.sigmoid(self.production_context_gate) * common_context
+            + torch.sigmoid(self.production_residual_context_gate)
+            * residual_context
+        )
 
     def _worker_logits(
         self,
@@ -1469,34 +1764,68 @@ class HeteroGraphActorCritic(nn.Module):
         projected_fatigue = dense_features[
             :, edge_names.index("projected_fatigue_ratio")
         ]
+        stage_duration = dense_features[
+            :, edge_names.index("stage_duration_norm")
+        ]
+        labor_cost = dense_features[
+            :, edge_names.index("incremental_labor_cost_norm")
+        ]
+        downtime_cost = dense_features[
+            :, edge_names.index("incremental_downtime_cost_norm")
+        ]
         incremental_variance = dense_features[
             :, edge_names.index("incremental_load_variance_norm")
         ]
         relative_features = self._standardize_candidate_features(
             torch.stack(
-                (projected_fatigue, incremental_variance),
+                (
+                    stage_duration,
+                    projected_fatigue,
+                    labor_cost,
+                    downtime_cost,
+                    incremental_variance,
+                ),
                 dim=-1,
             ),
             ~action_mask[:pair_count],
         )
-        shared_raw_weight = self.worker_relative_ranker.weight.mean()
-        shared_effective_weight = -functional.softplus(shared_raw_weight)
-        relative_logits = (
-            relative_features.sum(dim=-1) * shared_effective_weight
+        worker_directions = relative_features.new_tensor(
+            WORKER_RELATIVE_DIRECTIONS
         )
-        common_context = self._common_candidate_context(
+        effective_weights = functional.softplus(
+            self.worker_relative_ranker.weight
+        ) * worker_directions
+        relative_logits = functional.linear(
+            relative_features, effective_weights
+        ).reshape(-1)
+        common_context, residual_context = self._candidate_context_components(
             contextual_logits,
             ~action_mask[:pair_count],
         )
-        return relative_logits + torch.sigmoid(
-            self.worker_context_gate
-        ) * common_context
+        return (
+            relative_logits
+            + torch.sigmoid(self.worker_context_gate) * common_context
+            + torch.sigmoid(self.worker_residual_context_gate)
+            * residual_context
+        )
 
     @staticmethod
-    def _initialize_monotone_ranker(ranker: nn.Linear) -> None:
-        effective_magnitude = torch.tensor(1.0)
-        raw_value = torch.log(torch.expm1(effective_magnitude)).item()
-        nn.init.constant_(ranker.weight, raw_value)
+    def _initialize_monotone_ranker(
+        ranker: nn.Linear,
+        effective_magnitudes: Sequence[float],
+    ) -> None:
+        magnitudes = torch.as_tensor(
+            tuple(float(value) for value in effective_magnitudes),
+            dtype=ranker.weight.dtype,
+        )
+        if magnitudes.numel() != ranker.in_features:
+            raise ValueError("ranker initialization width does not match inputs")
+        if bool(torch.any(~torch.isfinite(magnitudes))) or bool(
+            torch.any(magnitudes <= 0.0)
+        ):
+            raise ValueError("ranker initial magnitudes must be finite and positive")
+        with torch.no_grad():
+            ranker.weight.copy_(torch.log(torch.expm1(magnitudes)).reshape(1, -1))
 
     @staticmethod
     def _initialize_zero_context_output(scorer: nn.Sequential) -> None:
@@ -1507,40 +1836,53 @@ class HeteroGraphActorCritic(nn.Module):
         nn.init.zeros_(output.bias)
 
     @staticmethod
-    def _common_candidate_context(
+    def _candidate_context_components(
         contextual_logits: torch.Tensor,
         feasible: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if bool(torch.any(feasible)):
             common = contextual_logits[feasible].mean()
         else:
             common = contextual_logits.new_zeros(())
-        return common.expand_as(contextual_logits)
+        residual = HeteroGraphActorCritic._standardize_candidate_features(
+            contextual_logits.unsqueeze(-1), feasible
+        ).squeeze(-1)
+        return common.expand_as(contextual_logits), residual
 
     def effective_relative_cost_weights(
         self,
-    ) -> dict[str, tuple[float, ...]]:
-        result: dict[str, tuple[float, ...]] = {}
+    ) -> dict[str, dict[str, float]]:
+        result: dict[str, dict[str, float]] = {}
         if self.production_relative_ranker is not None:
-            result["production"] = tuple(
-                float(value)
-                for value in (
-                    -functional.softplus(
-                        self.production_relative_ranker.weight.detach()
-                    )
+            values = (
+                functional.softplus(
+                    self.production_relative_ranker.weight.detach()
+                ).reshape(-1)
+                * self.production_relative_ranker.weight.new_tensor(
+                    PRODUCTION_RELATIVE_DIRECTIONS
                 )
-                .reshape(-1)
-                .cpu()
+            ).cpu()
+            result["production"] = dict(
+                zip(
+                    PRODUCTION_RELATIVE_FEATURE_NAMES,
+                    (float(value) for value in values),
+                )
             )
         if self.worker_relative_ranker is not None:
-            shared = float(
-                -functional.softplus(
-                    self.worker_relative_ranker.weight.detach().mean()
+            values = (
+                functional.softplus(
+                    self.worker_relative_ranker.weight.detach()
+                ).reshape(-1)
+                * self.worker_relative_ranker.weight.new_tensor(
+                    WORKER_RELATIVE_DIRECTIONS
                 )
-                .reshape(())
-                .cpu()
+            ).cpu()
+            result["worker"] = dict(
+                zip(
+                    WORKER_RELATIVE_FEATURE_NAMES,
+                    (float(value) for value in values),
+                )
             )
-            result["worker"] = (shared, shared)
         return result
 
     @staticmethod
@@ -1624,6 +1966,7 @@ def build_actor_critic(
             },
             config["hidden_dim"],
         )
+    policy_head = _validate_v6_policy_head_config(network_config)
     return HeteroGraphActorCritic(
         observation.feature_dimensions,
         observation.edge_feature_dimensions,
@@ -1634,4 +1977,8 @@ def build_actor_critic(
         config["worker_action_edge_features"],
         config["production_candidate_relative_features"],
         config["worker_candidate_relative_features"],
+        policy_head["production_relative_initial_weights"],
+        policy_head["worker_relative_initial_weights"],
+        policy_head["common_context_gate_initial_logit"],
+        policy_head["residual_context_gate_initial_logit"],
     )

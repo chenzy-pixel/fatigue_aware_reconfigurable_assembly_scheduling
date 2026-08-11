@@ -87,17 +87,37 @@ def test_network_factory_defaults_and_validation(config, fixed_instance):
         "worker_action_edge_features": True,
         "production_candidate_relative_features": True,
         "worker_candidate_relative_features": True,
-        "policy_head_version": 5,
+        "policy_head_version": 6,
         "production_action_semantics": "pair_plus_defer_v1",
         "production_relative_feature_names": (
-            "processing_plus_reconfiguration_time_norm",
+            "processing_time_norm",
+            "reconfiguration_time_norm",
+            "fixed_reconfiguration_cost_norm",
+            "estimated_labor_cost_norm",
+            "estimated_downtime_cost_norm",
+            "horizon_slack_norm",
         ),
         "worker_relative_feature_names": (
+            "stage_duration_norm",
             "projected_fatigue_ratio",
+            "incremental_labor_cost_norm",
+            "incremental_downtime_cost_norm",
             "incremental_load_variance_norm",
         ),
-        "candidate_context_mode": "common_offset_v4",
-        "worker_relative_weight_sharing": "shared_mean_v4",
+        "relative_weight_parameterization": "independent_softplus_signed_v6",
+        "production_relative_initial_weights": (
+            0.30,
+            0.30,
+            0.20,
+            0.20,
+            0.20,
+            0.30,
+        ),
+        "worker_relative_initial_weights": (0.30, 0.30, 0.20, 0.20, 0.20),
+        "candidate_context_mode": "common_plus_gated_residual_v6",
+        "worker_relative_weight_sharing": "independent_softplus_v6",
+        "common_context_gate_initial_logit": -4.0,
+        "residual_context_gate_initial_logit": -4.0,
         "observation_schema_version": 3,
         "feature_dimensions": observation.feature_dimensions,
         "edge_feature_dimensions": observation.edge_feature_dimensions,
@@ -135,6 +155,10 @@ def test_network_factory_defaults_and_validation(config, fixed_instance):
                 "message_passing_layers": 0,
             },
         )
+    v5_config = deepcopy(config["network"])
+    v5_config["policy_head_version"] = 5
+    with pytest.raises(ValueError, match="require retraining"):
+        build_actor_critic(observation, v5_config)
     with pytest.raises(ValueError, match="dropout"):
         build_actor_critic(
             observation,
@@ -369,19 +393,63 @@ def test_relative_rankers_are_monotone_for_every_seed(
     observation = environment.reset(fixed_instance)
     network = build_actor_critic(observation, _small_m1_config())
     weights = network.effective_relative_cost_weights()
-    assert weights["production"] == pytest.approx((-1.0,))
-    assert weights["worker"] == pytest.approx((-1.0, -1.0))
-    assert all(value < 0.0 for values in weights.values() for value in values)
+    assert weights["production"] == pytest.approx(
+        {
+            "processing_time_norm": -0.30,
+            "reconfiguration_time_norm": -0.30,
+            "fixed_reconfiguration_cost_norm": -0.20,
+            "estimated_labor_cost_norm": -0.20,
+            "estimated_downtime_cost_norm": -0.20,
+            "horizon_slack_norm": 0.30,
+        }
+    )
+    assert weights["worker"] == pytest.approx(
+        {
+            "stage_duration_norm": -0.30,
+            "projected_fatigue_ratio": -0.30,
+            "incremental_labor_cost_norm": -0.20,
+            "incremental_downtime_cost_norm": -0.20,
+            "incremental_load_variance_norm": -0.20,
+        }
+    )
 
     with torch.no_grad():
-        network.production_relative_ranker.weight.add_(100.0)
-        network.worker_relative_ranker.weight[0, 0].add_(100.0)
-        network.worker_relative_ranker.weight[0, 1].sub_(100.0)
+        network.production_relative_ranker.weight[0, 0].add_(1.0)
+        network.worker_relative_ranker.weight[0, 0].add_(1.0)
     updated = network.effective_relative_cost_weights()
-    assert all(
-        value < 0.0 for values in updated.values() for value in values
+    assert updated["production"]["processing_time_norm"] < -0.30
+    assert updated["production"]["reconfiguration_time_norm"] == pytest.approx(
+        -0.30
     )
-    assert updated["worker"][0] == pytest.approx(updated["worker"][1])
+    assert updated["worker"]["stage_duration_norm"] < -0.30
+    assert updated["worker"]["projected_fatigue_ratio"] == pytest.approx(-0.30)
+
+
+def test_candidate_context_residual_excludes_masked_and_degenerate_candidates():
+    feasible = torch.tensor([True, True, False])
+    common, residual = HeteroGraphActorCritic._candidate_context_components(
+        torch.tensor([1.0, 3.0, 100.0]),
+        feasible,
+    )
+    changed_common, changed_residual = (
+        HeteroGraphActorCritic._candidate_context_components(
+            torch.tensor([1.0, 3.0, -100.0]),
+            feasible,
+        )
+    )
+    assert common[:2].tolist() == pytest.approx([2.0, 2.0])
+    assert residual[:2].tolist() == pytest.approx([-1.0, 1.0])
+    assert torch.equal(common[:2], changed_common[:2])
+    assert torch.equal(residual[:2], changed_residual[:2])
+
+    single_common, single_residual = (
+        HeteroGraphActorCritic._candidate_context_components(
+            torch.tensor([2.0, 500.0]),
+            torch.tensor([True, False]),
+        )
+    )
+    assert torch.isfinite(single_common).all()
+    assert torch.equal(single_residual, torch.zeros_like(single_residual))
 
 
 @pytest.mark.parametrize("seed", [1, 11, 101, 1009])
@@ -431,6 +499,62 @@ def test_worker_relative_ranker_prefers_lower_variance_at_equal_fatigue(
         second_row, variance_column
     ] = 0.25
     logits, _ = network(controlled, mask, device="cpu")
+    assert logits[first_action] > logits[second_action]
+
+
+@pytest.mark.parametrize(
+    "feature_name",
+    (
+        "stage_duration_norm",
+        "projected_fatigue_ratio",
+        "incremental_labor_cost_norm",
+        "incremental_downtime_cost_norm",
+        "incremental_load_variance_norm",
+    ),
+)
+def test_worker_v6_relative_features_independently_penalize_higher_values(
+    config,
+    fixed_instance,
+    feature_name,
+):
+    observation, mask = _find_worker_observation(
+        config,
+        fixed_instance,
+        minimum_pair_actions=2,
+    )
+    network = build_actor_critic(observation, _small_m1_config())
+    service = observation.relations[SERVICE_CANDIDATE_EDGE]
+    names = service.feature_names
+    worker_count = observation.node_features["worker"].shape[0]
+    edge_actions = service.edge_index[0] * worker_count + service.edge_index[1]
+    legal_actions = [int(action) for action in np.flatnonzero(~mask[:-1])]
+    first_action, second_action = legal_actions[:2]
+    controlled = observation.copy()
+    for name in (
+        "stage_duration_norm",
+        "projected_fatigue_ratio",
+        "incremental_labor_cost_norm",
+        "incremental_downtime_cost_norm",
+        "incremental_load_variance_norm",
+    ):
+        column = names.index(name)
+        for action in legal_actions:
+            row = int(np.flatnonzero(edge_actions == action)[0])
+            controlled.relations[SERVICE_CANDIDATE_EDGE].edge_features[
+                row, column
+            ] = 0.5
+    feature_column = names.index(feature_name)
+    first_row = int(np.flatnonzero(edge_actions == first_action)[0])
+    second_row = int(np.flatnonzero(edge_actions == second_action)[0])
+    controlled.relations[SERVICE_CANDIDATE_EDGE].edge_features[
+        first_row, feature_column
+    ] = 0.25
+    controlled.relations[SERVICE_CANDIDATE_EDGE].edge_features[
+        second_row, feature_column
+    ] = 0.75
+
+    logits, _ = network(controlled, mask, device="cpu")
+
     assert logits[first_action] > logits[second_action]
 
 
@@ -484,6 +608,97 @@ def test_production_relative_ranker_prefers_shorter_duration_for_every_seed(
     logits, _ = network(controlled, mask, device="cpu")
 
     assert logits[first_action] > logits[second_action]
+
+
+@pytest.mark.parametrize(
+    ("feature_name", "higher_is_better"),
+    (
+        ("processing_time_norm", False),
+        ("reconfiguration_time_norm", False),
+        ("fixed_installation_cost_norm", False),
+        ("estimated_labor_cost_norm", False),
+        ("estimated_downtime_cost_norm", False),
+        ("horizon_slack_norm", True),
+    ),
+)
+def test_production_v6_relative_features_have_expected_monotone_direction(
+    config,
+    fixed_instance,
+    feature_name,
+    higher_is_better,
+):
+    environment = AssemblySchedulingEnv(config)
+    observation = environment.reset(fixed_instance)
+    mask = environment.get_action_mask()
+    legal_actions = [int(action) for action in np.flatnonzero(~mask[:-1])]
+    assert len(legal_actions) >= 2
+    first_action, second_action = legal_actions[:2]
+    network = build_actor_critic(observation, _small_m1_config())
+    capability = observation.relations[CAPABLE_EDGE]
+    names = capability.feature_names
+    machine_count = observation.node_features["machine"].shape[0]
+    edge_actions = capability.edge_index[0] * machine_count + capability.edge_index[1]
+    controlled = observation.copy()
+    controlled_names = (
+        "processing_time_norm",
+        "reconfiguration_time_norm",
+        "fixed_disassembly_cost_norm",
+        "fixed_installation_cost_norm",
+        "estimated_labor_cost_norm",
+        "estimated_downtime_cost_norm",
+        "horizon_slack_norm",
+    )
+    for name in controlled_names:
+        column = names.index(name)
+        for action in legal_actions:
+            row = int(np.flatnonzero(edge_actions == action)[0])
+            controlled.relations[CAPABLE_EDGE].edge_features[row, column] = 0.5
+    feature_column = names.index(feature_name)
+    first_row = int(np.flatnonzero(edge_actions == first_action)[0])
+    second_row = int(np.flatnonzero(edge_actions == second_action)[0])
+    first_value, second_value = (
+        (0.75, 0.25) if higher_is_better else (0.25, 0.75)
+    )
+    controlled.relations[CAPABLE_EDGE].edge_features[
+        first_row, feature_column
+    ] = first_value
+    controlled.relations[CAPABLE_EDGE].edge_features[
+        second_row, feature_column
+    ] = second_value
+
+    logits, _ = network(controlled, mask, device="cpu")
+
+    assert logits[first_action] > logits[second_action]
+
+
+def test_v6_candidate_residual_can_rank_pairs_without_changing_common_offset(
+    config,
+    fixed_instance,
+):
+    class IndexedScorer(nn.Module):
+        def forward(self, inputs):
+            values = torch.arange(
+                inputs[..., 0].numel(),
+                dtype=inputs.dtype,
+                device=inputs.device,
+            ).reshape(inputs.shape[:-1])
+            return values.unsqueeze(-1)
+
+    environment = AssemblySchedulingEnv(config)
+    observation = environment.reset(fixed_instance)
+    mask = environment.get_action_mask()
+    legal_actions = [int(action) for action in np.flatnonzero(~mask[:-1])]
+    assert len(legal_actions) >= 2
+    network = build_actor_critic(observation, _small_m1_config())
+    network.production_scorer = IndexedScorer()
+    with torch.no_grad():
+        network.production_context_gate.fill_(-10.0)
+        network.production_residual_context_gate.fill_(10.0)
+        network.production_relative_ranker.weight.fill_(-100.0)
+
+    logits, _ = network(observation, mask, device="cpu")
+
+    assert logits[legal_actions[-1]] > logits[legal_actions[0]]
 
 
 def test_behavior_cloning_top1_loss_treats_teacher_ties_as_equivalent():
@@ -666,12 +881,17 @@ def test_new_and_legacy_checkpoint_compatibility(
         "worker_action_edge_features": False,
         "production_candidate_relative_features": False,
         "worker_candidate_relative_features": False,
-        "policy_head_version": 5,
+        "policy_head_version": 6,
         "production_action_semantics": "pair_plus_defer_v1",
         "production_relative_feature_names": (),
         "worker_relative_feature_names": (),
-        "candidate_context_mode": "common_offset_v4",
-        "worker_relative_weight_sharing": "shared_mean_v4",
+        "relative_weight_parameterization": "independent_softplus_signed_v6",
+        "production_relative_initial_weights": (),
+        "worker_relative_initial_weights": (),
+        "candidate_context_mode": "common_plus_gated_residual_v6",
+        "worker_relative_weight_sharing": "independent_softplus_v6",
+        "common_context_gate_initial_logit": -4.0,
+        "residual_context_gate_initial_logit": -4.0,
         "observation_schema_version": 3,
         "feature_dimensions": observation.feature_dimensions,
         "edge_feature_dimensions": observation.edge_feature_dimensions,
@@ -702,22 +922,47 @@ def test_new_and_legacy_checkpoint_compatibility(
     with pytest.raises(ValueError, match="policy head version is incompatible"):
         gnn_clone.load(old_gnn_checkpoint)
 
-    v4_checkpoint = tmp_path / "v4_gnn.pt"
-    v4_payload = torch.load(
+    v5_checkpoint = tmp_path / "v5_gnn.pt"
+    v5_payload = torch.load(
         gnn_checkpoint,
         map_location="cpu",
         weights_only=False,
     )
-    v4_spec = dict(v4_payload["network_spec"])
-    v4_spec["policy_head_version"] = 4
-    v4_spec.pop("production_action_semantics", None)
-    v4_payload["network_spec"] = v4_spec
-    torch.save(v4_payload, v4_checkpoint)
+    v5_spec = dict(v5_payload["network_spec"])
+    v5_spec["policy_head_version"] = 5
+    v5_payload["network_spec"] = v5_spec
+    torch.save(v5_payload, v5_checkpoint)
     with pytest.raises(
         ValueError,
-        match="v4 and older checkpoints used production advance semantics",
+        match="not automatically converted to v6",
     ):
-        gnn_clone.load(v4_checkpoint)
+        gnn_clone.load(v5_checkpoint)
+
+    wrong_features_checkpoint = tmp_path / "wrong_features_gnn.pt"
+    wrong_features_payload = torch.load(
+        gnn_checkpoint,
+        map_location="cpu",
+        weights_only=False,
+    )
+    wrong_features_spec = dict(wrong_features_payload["network_spec"])
+    wrong_features_spec["worker_relative_feature_names"] = ("wrong",)
+    wrong_features_payload["network_spec"] = wrong_features_spec
+    torch.save(wrong_features_payload, wrong_features_checkpoint)
+    with pytest.raises(ValueError, match="worker_relative_feature_names"):
+        gnn_clone.load(wrong_features_checkpoint)
+
+    wrong_context_checkpoint = tmp_path / "wrong_context_gnn.pt"
+    wrong_context_payload = torch.load(
+        gnn_checkpoint,
+        map_location="cpu",
+        weights_only=False,
+    )
+    wrong_context_spec = dict(wrong_context_payload["network_spec"])
+    wrong_context_spec["candidate_context_mode"] = "common_offset_v4"
+    wrong_context_payload["network_spec"] = wrong_context_spec
+    torch.save(wrong_context_payload, wrong_context_checkpoint)
+    with pytest.raises(ValueError, match="candidate_context_mode"):
+        gnn_clone.load(wrong_context_checkpoint)
 
     typed_network = TypedActorCritic(
         observation.feature_dimensions,

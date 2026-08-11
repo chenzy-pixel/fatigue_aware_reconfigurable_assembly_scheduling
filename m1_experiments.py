@@ -57,7 +57,7 @@ from utils import set_seed
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-M1_METHOD_VERSION = "M1_candidate_graph_v4"
+M1_METHOD_VERSION = "M1_candidate_graph_v6"
 M1_ROOT = PROJECT_ROOT / "result" / "m1" / M1_METHOD_VERSION
 STAGE_DIRECTORIES = {
     "p1": M1_ROOT / "P1_state_machine",
@@ -129,14 +129,14 @@ def _prepare_stage(
         raise ValueError(
             "M1 artifact version mismatch: expected "
             f"{M1_METHOD_VERSION}, got {configured_method or '<missing>'}. "
-            "v3 artifacts and caches cannot be loaded by the v4 pipeline."
+            "older artifacts and caches cannot be loaded by the v6 pipeline."
         )
     configured_head = int(
-        config.get("network", {}).get("policy_head_version", 4)
+        config.get("network", {}).get("policy_head_version", 6)
     )
-    if configured_head != 4:
+    if configured_head != 6:
         raise ValueError(
-            "M1 policy head version mismatch: expected 4, "
+            "M1 policy head version mismatch: expected 6, "
             f"got {configured_head}. Automatic weight conversion is disabled."
         )
     directory = STAGE_DIRECTORIES[stage]
@@ -311,7 +311,7 @@ def _p5_instance_snapshot(
             "snapshot_schema_version": "M1_INSTANCE_SNAPSHOT_V1",
             "snapshot_role": snapshot_role,
             "method_version": M1_METHOD_VERSION,
-            "policy_head_version": 4,
+            "policy_head_version": 6,
             "seeds": expected_seeds,
         }
         for field, expected in expected_version.items():
@@ -320,7 +320,7 @@ def _p5_instance_snapshot(
                 raise ValueError(
                     "P5 instance cache version mismatch for "
                     f"{field}: expected {expected!r}, got {actual!r}. "
-                    "v3 caches cannot be reused by the v4 pipeline."
+                    "older caches cannot be reused by the v6 pipeline."
                 )
         entries = manifest.get("records")
         if not isinstance(entries, list) or len(entries) != len(
@@ -413,7 +413,7 @@ def _p5_instance_snapshot(
             "snapshot_schema_version": "M1_INSTANCE_SNAPSHOT_V1",
             "snapshot_role": snapshot_role,
             "method_version": M1_METHOD_VERSION,
-            "policy_head_version": 4,
+            "policy_head_version": 6,
             "seeds": expected_seeds,
             "records": entries,
         },
@@ -1217,7 +1217,7 @@ def _load_ranking_cache(
     payload = torch.load(path, map_location="cpu", weights_only=False)
     expected = {
         "method_version": M1_METHOD_VERSION,
-        "policy_head_version": 4,
+        "policy_head_version": 6,
         "seeds": [int(seed) for seed in seeds],
         "training_count": int(training_count),
         "maximum_pairs": int(maximum_pairs),
@@ -1227,7 +1227,7 @@ def _load_ranking_cache(
             raise ValueError(
                 "ranking cache version mismatch for "
                 f"{field}: expected {value!r}, got {payload.get(field)!r}. "
-                "v3 ranking caches cannot be loaded by the v4 pipeline."
+                "older ranking caches cannot be loaded by the v6 pipeline."
             )
     if not isinstance(payload.get("training_states"), list) or not isinstance(
         payload.get("held_out_states"), list
@@ -1248,7 +1248,7 @@ def _save_ranking_cache(
     torch.save(
         {
             "method_version": M1_METHOD_VERSION,
-            "policy_head_version": 4,
+            "policy_head_version": 6,
             "seeds": [int(seed) for seed in seeds],
             "training_count": int(training_count),
             "maximum_pairs": int(maximum_pairs),
@@ -1282,7 +1282,7 @@ def _collect_ranking_states_cached(
             )
             expected = {
                 "method_version": M1_METHOD_VERSION,
-                "policy_head_version": 4,
+                "policy_head_version": 6,
                 "seed": seed,
                 "record_sha256": record_hash,
                 "maximum_pairs": int(maximum_pairs),
@@ -1293,7 +1293,7 @@ def _collect_ranking_states_cached(
                         "ranking cache shard version mismatch for "
                         f"{field}: expected {value!r}, "
                         f"got {payload.get(field)!r}. v3 ranking caches "
-                        "cannot be loaded by the v4 pipeline."
+                        "cannot be loaded by the v6 pipeline."
                     )
             states = payload.get("states")
             if not isinstance(states, list):
@@ -1308,7 +1308,7 @@ def _collect_ranking_states_cached(
             )
             payload = {
                 "method_version": M1_METHOD_VERSION,
-                "policy_head_version": 4,
+                "policy_head_version": 6,
                 "seed": seed,
                 "record_sha256": record_hash,
                 "maximum_pairs": int(maximum_pairs),

@@ -216,7 +216,7 @@ def test_p5_instance_snapshot_reloads_exact_records_and_rejects_v3(
     manifest["method_version"] = "M1_candidate_graph_v3"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="v3 caches cannot be reused"):
+    with pytest.raises(ValueError, match="older caches cannot be reused"):
         _p5_instance_snapshot(tmp_path, config, [seed])
 
 
@@ -235,7 +235,9 @@ def test_v3_ranking_cache_is_rejected(tmp_path) -> None:
         cache,
     )
 
-    with pytest.raises(ValueError, match="v3 ranking caches cannot be loaded"):
+    with pytest.raises(
+        ValueError, match="older ranking caches cannot be loaded"
+    ):
         _load_ranking_cache(
             cache,
             seeds=[1],

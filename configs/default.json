@@ -1,6 +1,6 @@
 {
   "experiment_name": "fatigue_aware_reconfigurable_assembly_mvp",
-  "method_version": "M1_candidate_graph_v4",
+  "method_version": "M1_candidate_graph_v6",
   "seed": 11,
   "algorithm_seeds": [11, 23, 37, 53, 71],
   "device": "cpu",
@@ -267,17 +267,30 @@
     "worker_action_edge_features": true,
     "production_candidate_relative_features": true,
     "worker_candidate_relative_features": true,
-    "policy_head_version": 5,
+    "policy_head_version": 6,
     "production_action_semantics": "pair_plus_defer_v1",
     "production_relative_feature_names": [
-      "processing_plus_reconfiguration_time_norm"
+      "processing_time_norm",
+      "reconfiguration_time_norm",
+      "fixed_reconfiguration_cost_norm",
+      "estimated_labor_cost_norm",
+      "estimated_downtime_cost_norm",
+      "horizon_slack_norm"
     ],
     "worker_relative_feature_names": [
+      "stage_duration_norm",
       "projected_fatigue_ratio",
+      "incremental_labor_cost_norm",
+      "incremental_downtime_cost_norm",
       "incremental_load_variance_norm"
     ],
-    "candidate_context_mode": "common_offset_v4",
-    "worker_relative_weight_sharing": "shared_mean_v4"
+    "relative_weight_parameterization": "independent_softplus_signed_v6",
+    "production_relative_initial_weights": [0.30, 0.30, 0.20, 0.20, 0.20, 0.30],
+    "worker_relative_initial_weights": [0.30, 0.30, 0.20, 0.20, 0.20],
+    "candidate_context_mode": "common_plus_gated_residual_v6",
+    "worker_relative_weight_sharing": "independent_softplus_v6",
+    "common_context_gate_initial_logit": -4.0,
+    "residual_context_gate_initial_logit": -4.0
   },
   "ppo": {
     "learning_rate": 0.0001,
