@@ -207,6 +207,10 @@ class AssemblySchedulingEnv:
             tuple[int, str, str, str]
         ] = set()
         self._candidate_recovery_advance_count = 0
+        self._production_defer_recovery_improvement_count = 0
+        self._production_defer_wait_ticks = 0
+        self._production_defer_reason_counts: dict[str, int] = {}
+        self._action_type_counts: dict[str, int] = {}
         self._minimum_worker_alternatives_seen: int | None = None
         self._resource_snapshot_cache: ResourceFeasibilitySnapshot | None = None
         self._candidate_profile_cache: dict[
@@ -215,6 +219,9 @@ class AssemblySchedulingEnv:
         self._stage_projection_cache: dict[
             tuple[int, int, str, bool, int], tuple[int, int] | None
         ] = {}
+        self._state_version = 0
+        self._production_defer_recovery_cache_version = -1
+        self._production_defer_recovery_cache: int | None = None
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
         self._order_released: dict[str, bool] = {}
         self._order_completion_tick: dict[str, int] = {}
@@ -239,12 +246,31 @@ class AssemblySchedulingEnv:
         return len(self.machines) * len(self.workers) + 1
 
     @property
+    def production_defer_action(self) -> int:
+        return self.production_action_size - 1
+
+    @property
+    def worker_advance_action(self) -> int:
+        return self.worker_action_size - 1
+
+    @property
     def advance_action(self) -> int:
+        """Compatibility alias for the phase-specific terminal action slot."""
         if self.decision_type == DecisionType.PRODUCTION:
-            return self.production_action_size - 1
+            return self.production_defer_action
         if self.decision_type == DecisionType.WORKER:
-            return self.worker_action_size - 1
+            return self.worker_advance_action
         raise RuntimeError("terminal state has no action")
+
+    @property
+    def production_defer(self) -> dict[str, Any]:
+        settings = self.config.get("environment", {}).get(
+            "production_defer",
+            {"allow_recovery_improvement": True},
+        )
+        if not isinstance(settings, dict):
+            raise TypeError("environment.production_defer must be a mapping")
+        return settings
 
     @property
     def worker_resource_control(self) -> dict[str, Any]:
@@ -272,9 +298,12 @@ class AssemblySchedulingEnv:
         return bool(self.worker_resource_control.get(name, default))
 
     def _invalidate_resource_snapshot(self) -> None:
+        self._state_version += 1
         self._resource_snapshot_cache = None
         self._candidate_profile_cache = {}
         self._stage_projection_cache = {}
+        self._production_defer_recovery_cache_version = -1
+        self._production_defer_recovery_cache = None
 
     def reset(self, instance: AssemblyInstance) -> Observation:
         self.instance = instance
@@ -330,6 +359,10 @@ class AssemblySchedulingEnv:
         self._resource_admission_masked = set()
         self._matching_preserving_worker_actions = set()
         self._candidate_recovery_advance_count = 0
+        self._production_defer_recovery_improvement_count = 0
+        self._production_defer_wait_ticks = 0
+        self._production_defer_reason_counts = {}
+        self._action_type_counts = {}
         self._minimum_worker_alternatives_seen = None
         self._invalidate_resource_snapshot()
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
@@ -1283,8 +1316,8 @@ class AssemblySchedulingEnv:
                                     operation_index, machine_index
                                 )
                             ] = False
-            if self._production_advance_allowed():
-                mask[-1] = False
+            if self._production_defer_opportunity() is not None:
+                mask[self.production_defer_action] = False
             return mask
         mask = np.ones(self.worker_action_size, dtype=bool)
         legal_worker_pairs = 0
@@ -1328,6 +1361,22 @@ class AssemblySchedulingEnv:
             mask[-1] = False
         return mask
 
+    def _action_type(self, phase: DecisionType, action: int) -> str:
+        if phase == DecisionType.PRODUCTION:
+            if action == self.production_defer_action:
+                return "DEFER_PRODUCTION"
+            operation_index, machine_index = self.decode_production_action(action)
+            operation = self.operations[operation_index]
+            machine = self.machines[machine_index]
+            if machine.current_module == operation.spec.required_module:
+                return "DIRECT_PROCESS"
+            return "COMMIT_RECONFIG"
+        if phase == DecisionType.WORKER:
+            if action == self.worker_advance_action:
+                return "ADVANCE_EVENT"
+            return "WORKER_ASSIGN"
+        raise RuntimeError("terminal state has no action type")
+
     def encode_production_action(
         self, operation_index: int, machine_index: int
     ) -> int:
@@ -1365,21 +1414,26 @@ class AssemblySchedulingEnv:
             self.config["reward"],
         )
         phase = self.decision_type
+        action_type = self._action_type(phase, action)
+        action_outcome: dict[str, Any] = {}
         if phase == DecisionType.WORKER:
             self._record_worker_pressure_snapshot()
         self._invalidate_resource_snapshot()
         if phase == DecisionType.PRODUCTION:
-            if action == self.advance_action:
-                self.decision_type = DecisionType.WORKER
+            if action == self.production_defer_action:
+                action_outcome = self._execute_production_defer()
             else:
                 operation_index, machine_index = self.decode_production_action(action)
                 self._execute_production_action(operation_index, machine_index)
         else:
-            if action == self.advance_action:
-                self._advance_to_next_event()
+            if action == self.worker_advance_action:
+                action_outcome = self._advance_to_next_event()
             else:
                 machine_index, worker_index = self.decode_worker_action(action)
                 self._execute_worker_action(machine_index, worker_index)
+        self._action_type_counts[action_type] = (
+            self._action_type_counts.get(action_type, 0) + 1
+        )
         self._decision_count += 1
         if self.current_tick == before_tick:
             self._zero_time_actions += 1
@@ -1435,7 +1489,7 @@ class AssemblySchedulingEnv:
         )
         if (
             phase == DecisionType.WORKER
-            and action != self.worker_action_size - 1
+            and action != self.worker_advance_action
         ):
             self._worker_assignment_count += 1
             self._worker_assignment_variance_reward_sum += reward.variance
@@ -1453,6 +1507,16 @@ class AssemblySchedulingEnv:
             "time": self.current_time,
             "decision_type": self.decision_type.value,
             "action_phase": phase.value,
+            "action_type": action_type,
+            "defer_reason": action_outcome.get("defer_reason"),
+            "wait_ticks": int(action_outcome.get("wait_ticks", 0)),
+            "wait_time": ticks_to_minutes(
+                int(action_outcome.get("wait_ticks", 0)),
+                self.resolution,
+            ),
+            "recovery_improvement": bool(
+                action_outcome.get("recovery_improvement", False)
+            ),
             "terminal_reason": self.terminal_reason,
         }
         return self.observe(), reward, self.terminated, self.truncated, info
@@ -1847,6 +1911,33 @@ class AssemblySchedulingEnv:
             "candidate_recovery_advance_count": (
                 self._candidate_recovery_advance_count
             ),
+            "action_type_counts": dict(self._action_type_counts),
+            "direct_process_action_count": self._action_type_counts.get(
+                "DIRECT_PROCESS", 0
+            ),
+            "commit_reconfig_action_count": self._action_type_counts.get(
+                "COMMIT_RECONFIG", 0
+            ),
+            "defer_production_action_count": self._action_type_counts.get(
+                "DEFER_PRODUCTION", 0
+            ),
+            "worker_assign_action_count": self._action_type_counts.get(
+                "WORKER_ASSIGN", 0
+            ),
+            "advance_event_action_count": self._action_type_counts.get(
+                "ADVANCE_EVENT", 0
+            ),
+            "production_defer_reason_counts": dict(
+                self._production_defer_reason_counts
+            ),
+            "production_defer_wait_ticks": self._production_defer_wait_ticks,
+            "production_defer_wait_time": ticks_to_minutes(
+                self._production_defer_wait_ticks,
+                self.resolution,
+            ),
+            "production_defer_recovery_improvement_count": (
+                self._production_defer_recovery_improvement_count
+            ),
             "machine_waiting_for_worker_time": (
                 self._machine_waiting_for_worker_time()
             ),
@@ -2003,6 +2094,30 @@ class AssemblySchedulingEnv:
         machine.source_module = machine.current_module
         machine.target_module = operation.spec.required_module
 
+    def _execute_production_defer(self) -> dict[str, Any]:
+        opportunity = self._production_defer_opportunity()
+        if opportunity is None:
+            raise RuntimeError("production defer has no decision-relevant future")
+        _, defer_reason = opportunity
+        if self._has_pending_worker_task():
+            self.decision_type = DecisionType.WORKER
+            outcome: dict[str, Any] = {
+                "defer_reason": "worker_phase_handoff",
+                "wait_ticks": 0,
+                "recovery_improvement": False,
+            }
+        else:
+            outcome = {
+                **self._advance_to_next_event(),
+                "defer_reason": defer_reason,
+            }
+        reason = str(outcome["defer_reason"])
+        self._production_defer_reason_counts[reason] = (
+            self._production_defer_reason_counts.get(reason, 0) + 1
+        )
+        self._production_defer_wait_ticks += int(outcome["wait_ticks"])
+        return outcome
+
     def _execute_worker_action(
         self, machine_index: int, worker_index: int
     ) -> None:
@@ -2110,34 +2225,83 @@ class AssemblySchedulingEnv:
             }
         )
 
-    def _advance_to_next_event(self) -> None:
+    def _advance_to_next_event(self) -> dict[str, Any]:
         event_ticks = [event[0] for event in self._events if event[0] > self.current_tick]
         recovery_tick = self._earliest_recovery_tick()
         candidate_recovery_tick = self._earliest_candidate_recovery_tick()
+        recovery_improvement_tick = (
+            self._earliest_production_defer_recovery_improvement_tick()
+        )
         candidates = event_ticks + (
             [recovery_tick] if recovery_tick is not None else []
         ) + (
             [candidate_recovery_tick]
             if candidate_recovery_tick is not None
             else []
+        ) + (
+            [recovery_improvement_tick]
+            if recovery_improvement_tick is not None
+            else []
         )
         if not candidates:
+            before_tick = self.current_tick
             self._truncate_at_horizon("deadlock")
-            return
+            return {
+                "event_reason": "deadlock",
+                "wait_ticks": self.current_tick - before_tick,
+                "recovery_improvement": False,
+            }
         next_tick = min(candidates)
         if (
             candidate_recovery_tick is not None
             and next_tick == candidate_recovery_tick
         ):
             self._candidate_recovery_advance_count += 1
+        recovery_improvement = bool(
+            recovery_improvement_tick is not None
+            and next_tick == recovery_improvement_tick
+        )
+        if recovery_improvement:
+            self._production_defer_recovery_improvement_count += 1
         if next_tick > self.horizon_tick:
+            before_tick = self.current_tick
             self._truncate_at_horizon("horizon")
-            return
+            return {
+                "event_reason": "horizon",
+                "wait_ticks": self.current_tick - before_tick,
+                "recovery_improvement": recovery_improvement,
+            }
+        before_tick = self.current_tick
+        event_types = sorted(
+            {
+                event[3].value
+                for event in self._events
+                if event[0] == next_tick
+            }
+        )
+        if event_types:
+            event_reason = "external_event:" + "+".join(event_types)
+        elif recovery_tick is not None and next_tick == recovery_tick:
+            event_reason = "worker_recovery_feasible"
+        elif (
+            candidate_recovery_tick is not None
+            and next_tick == candidate_recovery_tick
+        ):
+            event_reason = "candidate_recovery_feasible"
+        elif recovery_improvement:
+            event_reason = "reconfiguration_duration_improved"
+        else:
+            raise RuntimeError("next decision event has no classified cause")
         self._advance_interval(next_tick)
         self.current_tick = next_tick
         self._process_events_at_current_tick()
         self._invalidate_resource_snapshot()
         self.decision_type = DecisionType.PRODUCTION
+        return {
+            "event_reason": event_reason,
+            "wait_ticks": self.current_tick - before_tick,
+            "recovery_improvement": recovery_improvement,
+        }
 
     def _advance_interval(self, next_tick: int) -> None:
         delta_ticks = next_tick - self.current_tick
@@ -2872,20 +3036,191 @@ class AssemblySchedulingEnv:
                         return tick
         return None
 
-    def _production_advance_allowed(self) -> bool:
-        pending = any(
+    def _has_pending_worker_task(self) -> bool:
+        return any(
             value.stage
             in {ReconfigurationStage.WAIT_DIS, ReconfigurationStage.WAIT_INS}
             for value in self.reconfigurations.values()
         )
-        return pending or self._has_strict_future()
+
+    def _production_defer_opportunity(self) -> tuple[int, str] | None:
+        """Return the next state-changing consequence of production defer."""
+        if self.current_tick >= self.horizon_tick:
+            return None
+        if self._has_pending_worker_task():
+            return self.current_tick, "worker_phase_handoff"
+
+        candidates: list[tuple[int, int, str]] = []
+        future_events = [
+            event for event in self._events if event[0] > self.current_tick
+        ]
+        if future_events:
+            event_tick = min(event[0] for event in future_events)
+            event_types = sorted(
+                {event[3].value for event in future_events if event[0] == event_tick}
+            )
+            candidates.append(
+                (
+                    event_tick,
+                    0,
+                    "external_event:" + "+".join(event_types),
+                )
+            )
+        candidate_recovery_tick = self._earliest_candidate_recovery_tick()
+        if candidate_recovery_tick is not None:
+            candidates.append(
+                (candidate_recovery_tick, 1, "candidate_recovery_feasible")
+            )
+        recovery_improvement_tick = (
+            self._earliest_production_defer_recovery_improvement_tick()
+        )
+        if recovery_improvement_tick is not None:
+            candidates.append(
+                (
+                    recovery_improvement_tick,
+                    2,
+                    "reconfiguration_duration_improved",
+                )
+            )
+        candidates = [
+            candidate
+            for candidate in candidates
+            if self.current_tick < candidate[0] <= self.horizon_tick
+        ]
+        if not candidates:
+            return None
+        tick, _, reason = min(candidates)
+        return tick, reason
+
+    def _earliest_production_defer_recovery_improvement_tick(
+        self,
+    ) -> int | None:
+        """Find the first tick where idle recovery lowers a legal mismatch duration."""
+        if self._production_defer_recovery_cache_version == self._state_version:
+            return self._production_defer_recovery_cache
+        self._production_defer_recovery_cache_version = self._state_version
+        self._production_defer_recovery_cache = None
+        if not bool(
+            self.production_defer.get("allow_recovery_improvement", True)
+        ):
+            return None
+        recovery_rate = self.instance.fatigue.idle_recovery_rate_per_minute
+        if recovery_rate <= 0.0 or self.current_tick >= self.horizon_tick:
+            return None
+
+        scan_end_tick = min(
+            self.horizon_tick,
+            min(
+                [
+                    event[0]
+                    for event in self._events
+                    if event[0] > self.current_tick
+                ]
+                or [self.horizon_tick]
+            ),
+        )
+        mismatch_candidates: list[tuple[MachineRuntime, str, int]] = []
+        for operation_index, operation in enumerate(self.operations):
+            if operation.state != OperationState.READY:
+                continue
+            for machine_index, machine in enumerate(self.machines):
+                if (
+                    machine.state != MachineState.IDLE
+                    or machine.current_module == self.instance.no_module_state
+                    or machine.current_module == operation.spec.required_module
+                    or operation.spec.required_module
+                    not in machine.spec.module_parameters
+                ):
+                    continue
+                if (
+                    self.matching_admission_enabled
+                    and not self._production_candidate_profile(
+                        operation_index,
+                        machine_index,
+                    ).admissible
+                ):
+                    continue
+                current_duration = self._idle_worker_reconfiguration_ticks_at(
+                    machine,
+                    operation.spec.required_module,
+                    self.current_tick,
+                )
+                if current_duration is not None:
+                    mismatch_candidates.append(
+                        (machine, operation.spec.required_module, current_duration)
+                    )
+
+        for tick in range(self.current_tick + 1, scan_end_tick + 1):
+            for machine, target_module, current_duration in mismatch_candidates:
+                duration = self._idle_worker_reconfiguration_ticks_at(
+                    machine,
+                    target_module,
+                    tick,
+                )
+                if duration is not None and duration < current_duration:
+                    self._production_defer_recovery_cache = tick
+                    return tick
+        return None
+
+    def _idle_worker_reconfiguration_ticks_at(
+        self,
+        machine: MachineRuntime,
+        target_module: str,
+        tick: int,
+    ) -> int | None:
+        stage_specs = (
+            (machine.current_module, False),
+            (target_module, True),
+        )
+        elapsed = ticks_to_minutes(tick - self.current_tick, self.resolution)
+        recovery_rate = self.instance.fatigue.idle_recovery_rate_per_minute
+        total_ticks = 0
+        for module, installation in stage_specs:
+            if module == self.instance.no_module_state:
+                continue
+            qualified_workers = [
+                worker
+                for worker in self.workers
+                if worker.state == WorkerState.IDLE
+                and module in worker.spec.qualified_modules
+            ]
+            if not qualified_workers:
+                return None
+            minimum_fatigue = min(
+                max(0.0, worker.fatigue - recovery_rate * elapsed)
+                for worker in qualified_workers
+            )
+            module_parameters = machine.spec.module_parameters[module]
+            if installation:
+                base_time = module_parameters.installation_base_time
+                coefficient = self.instance.fatigue.installation_time_coefficient
+            else:
+                base_time = module_parameters.disassembly_base_time
+                coefficient = self.instance.fatigue.disassembly_time_coefficient
+            total_ticks += max(
+                1,
+                quantize_to_ticks(
+                    base_time * (1.0 + coefficient * minimum_fatigue),
+                    self.resolution,
+                ),
+            )
+        return total_ticks
+
+    def _production_advance_allowed(self) -> bool:
+        """Deprecated compatibility wrapper for the old production action name."""
+        return self._production_defer_opportunity() is not None
 
     def _has_strict_future(self) -> bool:
         if any(event[0] > self.current_tick for event in self._events):
             return True
         if self._earliest_recovery_tick() is not None:
             return True
-        return self._earliest_candidate_recovery_tick() is not None
+        if self._earliest_candidate_recovery_tick() is not None:
+            return True
+        return (
+            self._earliest_production_defer_recovery_improvement_tick()
+            is not None
+        )
 
     def _pending_reconfiguration(
         self, machine_id: str
@@ -2916,7 +3251,12 @@ class AssemblySchedulingEnv:
         if self.decision_type != DecisionType.TERMINAL:
             mask = self.get_action_mask()
             if bool(mask.all()):
-                self._truncate_at_horizon("deadlock")
+                has_event_beyond_horizon = any(
+                    event[0] > self.horizon_tick for event in self._events
+                )
+                self._truncate_at_horizon(
+                    "horizon" if has_event_beyond_horizon else "deadlock"
+                )
 
     def _truncate_at_horizon(self, reason: str) -> None:
         if self.terminated or self.truncated:

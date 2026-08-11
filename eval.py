@@ -420,6 +420,21 @@ def _evaluation_row(
         "candidate_recovery_advance_count": metrics[
             "candidate_recovery_advance_count"
         ],
+        "production_defer_recovery_improvement_count": metrics[
+            "production_defer_recovery_improvement_count"
+        ],
+        "production_defer_wait_ticks": metrics["production_defer_wait_ticks"],
+        "production_defer_wait_time": metrics["production_defer_wait_time"],
+        **{
+            name: metrics[name]
+            for name in (
+                "direct_process_action_count",
+                "commit_reconfig_action_count",
+                "defer_production_action_count",
+                "worker_assign_action_count",
+                "advance_event_action_count",
+            )
+        },
         "machine_waiting_for_worker_time": metrics[
             "machine_waiting_for_worker_time"
         ],

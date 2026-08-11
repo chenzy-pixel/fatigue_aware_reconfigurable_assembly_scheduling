@@ -159,6 +159,23 @@ def aggregate_evaluation_rows(
         "candidate_recovery_advance_count": summarize_values(
             row.get("candidate_recovery_advance_count") for row in rows
         ),
+        "production_defer_recovery_improvement_count": summarize_values(
+            row.get("production_defer_recovery_improvement_count")
+            for row in rows
+        ),
+        "production_defer_wait_time": summarize_values(
+            row.get("production_defer_wait_time") for row in rows
+        ),
+        **{
+            name: summarize_values(row.get(name) for row in rows)
+            for name in (
+                "direct_process_action_count",
+                "commit_reconfig_action_count",
+                "defer_production_action_count",
+                "worker_assign_action_count",
+                "advance_event_action_count",
+            )
+        },
         "machine_waiting_for_worker_time": summarize_values(
             row.get("machine_waiting_for_worker_time") for row in rows
         ),

@@ -1301,6 +1301,25 @@ def _training_effect_fields(metrics: dict) -> dict:
         "candidate_recovery_advance_count": metrics.get(
             "candidate_recovery_advance_count"
         ),
+        "production_defer_recovery_improvement_count": metrics.get(
+            "production_defer_recovery_improvement_count"
+        ),
+        "production_defer_wait_ticks": metrics.get(
+            "production_defer_wait_ticks"
+        ),
+        "production_defer_wait_time": metrics.get(
+            "production_defer_wait_time"
+        ),
+        **{
+            name: metrics.get(name, 0)
+            for name in (
+                "direct_process_action_count",
+                "commit_reconfig_action_count",
+                "defer_production_action_count",
+                "worker_assign_action_count",
+                "advance_event_action_count",
+            )
+        },
         "machine_waiting_for_worker_time": metrics.get(
             "machine_waiting_for_worker_time"
         ),
@@ -1341,6 +1360,8 @@ def _late_training_diagnostics(
         "minimum_worker_alternatives",
         "matching_preserving_worker_action_count",
         "candidate_recovery_advance_count",
+        "production_defer_recovery_improvement_count",
+        "production_defer_wait_time",
         "reward_base",
         "reward_shaping",
         "reward_training",

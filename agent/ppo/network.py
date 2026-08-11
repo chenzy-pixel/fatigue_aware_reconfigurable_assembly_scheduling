@@ -76,7 +76,7 @@ class TypedActorCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, 1),
         )
-        self.production_advance = nn.Linear(hidden_dim, 1)
+        self.production_defer = nn.Linear(hidden_dim, 1)
         self.worker_advance = nn.Linear(hidden_dim, 1)
         self.critic = nn.Sequential(
             nn.Linear(hidden_dim * 4, hidden_dim),
@@ -88,6 +88,8 @@ class TypedActorCritic(nn.Module):
         return {
             "encoder_type": "typed_mlp",
             "hidden_dim": self.hidden_dim,
+            "policy_head_version": 5,
+            "production_action_semantics": "pair_plus_defer_v1",
             "observation_schema_version": 3,
             "feature_dimensions": dict(self.feature_dimensions),
         }
@@ -235,7 +237,7 @@ class TypedActorCritic(nn.Module):
                         dim=-1,
                     )
                 ).reshape(len(indices), -1)
-                advance_logits = self.production_advance(
+                defer_logits = self.production_defer(
                     group_global
                 ).squeeze(-1)
                 for local_index, observation_index in enumerate(indices):
@@ -252,7 +254,7 @@ class TypedActorCritic(nn.Module):
                         local_index,
                         :pair_count,
                     ]
-                    logits[observation_index, pair_count] = advance_logits[
+                    logits[observation_index, pair_count] = defer_logits[
                         local_index
                     ]
             elif decision_type == DecisionType.WORKER:
@@ -463,7 +465,7 @@ def assert_network_config_matches_spec(
             f"configured={configured}, checkpoint={saved}"
         )
     if configured["encoder_type"] == "hetero_gnn":
-        configured_policy_head = int(config.get("policy_head_version", 4))
+        configured_policy_head = int(config.get("policy_head_version", 5))
         saved_policy_head = int(
             checkpoint_spec.get("policy_head_version", 3)
         )
@@ -472,7 +474,28 @@ def assert_network_config_matches_spec(
                 "checkpoint policy head version is incompatible with the "
                 "current network: "
                 f"configured={configured_policy_head}, "
-                f"checkpoint={saved_policy_head}"
+                f"checkpoint={saved_policy_head}; v4 and older checkpoints "
+                "used production advance semantics and cannot be loaded as "
+                "the v5 production defer policy"
+            )
+        configured_semantics = str(
+            config.get(
+                "production_action_semantics",
+                "pair_plus_defer_v1",
+            )
+        )
+        saved_semantics = str(
+            checkpoint_spec.get(
+                "production_action_semantics",
+                "pair_plus_advance_v0",
+            )
+        )
+        if configured_semantics != saved_semantics:
+            raise ValueError(
+                "checkpoint production action semantics are incompatible "
+                "with the current network: "
+                f"configured={configured_semantics}, "
+                f"checkpoint={saved_semantics}"
             )
         for field in (
             "production_relative_feature_names",
@@ -903,7 +926,7 @@ class HeteroGraphActorCritic(nn.Module):
             self.worker_relative_ranker = None
             self.register_parameter("worker_context_gate", None)
         context_dim = self.hidden_dim * (len(NODE_TYPES) + 1)
-        self.production_advance = _head(
+        self.production_defer = _head(
             context_dim,
             self.hidden_dim,
             self.dropout_probability,
@@ -935,7 +958,8 @@ class HeteroGraphActorCritic(nn.Module):
             "worker_candidate_relative_features": (
                 self.use_worker_candidate_relative_features
             ),
-            "policy_head_version": 4,
+            "policy_head_version": 5,
+            "production_action_semantics": "pair_plus_defer_v1",
             "production_relative_feature_names": (
                 ("processing_plus_reconfiguration_time_norm",)
                 if self.use_production_candidate_relative_features
@@ -1060,7 +1084,7 @@ class HeteroGraphActorCritic(nn.Module):
                     masks[batch_index],
                     device=device,
                 )
-                advance_logit = self.production_advance(
+                terminal_logit = self.production_defer(
                     context[batch_index]
                 ).reshape(1)
             elif observation.decision_type == DecisionType.WORKER:
@@ -1073,14 +1097,14 @@ class HeteroGraphActorCritic(nn.Module):
                     masks[batch_index],
                     device=device,
                 )
-                advance_logit = self.worker_advance(
+                terminal_logit = self.worker_advance(
                     context[batch_index]
                 ).reshape(1)
             else:
                 raise ValueError(
                     f"unsupported decision type {observation.decision_type}"
                 )
-            unmasked_logits = torch.cat((pair_logits, advance_logit))
+            unmasked_logits = torch.cat((pair_logits, terminal_logit))
             if unmasked_logits.shape[0] != action_counts[batch_index]:
                 raise ValueError(
                     f"{observation.decision_type.value.lower()} action mask "

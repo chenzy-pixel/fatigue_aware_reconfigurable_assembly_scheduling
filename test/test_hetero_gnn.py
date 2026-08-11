@@ -87,7 +87,8 @@ def test_network_factory_defaults_and_validation(config, fixed_instance):
         "worker_action_edge_features": True,
         "production_candidate_relative_features": True,
         "worker_candidate_relative_features": True,
-        "policy_head_version": 4,
+        "policy_head_version": 5,
+        "production_action_semantics": "pair_plus_defer_v1",
         "production_relative_feature_names": (
             "processing_plus_reconfiguration_time_norm",
         ),
@@ -111,6 +112,8 @@ def test_network_factory_defaults_and_validation(config, fixed_instance):
     assert legacy.network_spec() == {
         "encoder_type": "typed_mlp",
         "hidden_dim": 32,
+        "policy_head_version": 5,
+        "production_action_semantics": "pair_plus_defer_v1",
         "observation_schema_version": 3,
         "feature_dimensions": {
             name: observation.feature_dimensions[name]
@@ -663,7 +666,8 @@ def test_new_and_legacy_checkpoint_compatibility(
         "worker_action_edge_features": False,
         "production_candidate_relative_features": False,
         "worker_candidate_relative_features": False,
-        "policy_head_version": 4,
+        "policy_head_version": 5,
+        "production_action_semantics": "pair_plus_defer_v1",
         "production_relative_feature_names": (),
         "worker_relative_feature_names": (),
         "candidate_context_mode": "common_offset_v4",
@@ -697,6 +701,23 @@ def test_new_and_legacy_checkpoint_compatibility(
     )
     with pytest.raises(ValueError, match="policy head version is incompatible"):
         gnn_clone.load(old_gnn_checkpoint)
+
+    v4_checkpoint = tmp_path / "v4_gnn.pt"
+    v4_payload = torch.load(
+        gnn_checkpoint,
+        map_location="cpu",
+        weights_only=False,
+    )
+    v4_spec = dict(v4_payload["network_spec"])
+    v4_spec["policy_head_version"] = 4
+    v4_spec.pop("production_action_semantics", None)
+    v4_payload["network_spec"] = v4_spec
+    torch.save(v4_payload, v4_checkpoint)
+    with pytest.raises(
+        ValueError,
+        match="v4 and older checkpoints used production advance semantics",
+    ):
+        gnn_clone.load(v4_checkpoint)
 
     typed_network = TypedActorCritic(
         observation.feature_dimensions,

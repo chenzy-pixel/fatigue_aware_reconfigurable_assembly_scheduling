@@ -227,6 +227,9 @@
       "preserve_matching_on_worker_action": true,
       "non_delay_worker_dispatch": true,
       "candidate_recovery_advance": true
+    },
+    "production_defer": {
+      "allow_recovery_improvement": true
     }
   },
   "reward": {
@@ -264,7 +267,8 @@
     "worker_action_edge_features": true,
     "production_candidate_relative_features": true,
     "worker_candidate_relative_features": true,
-    "policy_head_version": 4,
+    "policy_head_version": 5,
+    "production_action_semantics": "pair_plus_defer_v1",
     "production_relative_feature_names": [
       "processing_plus_reconfiguration_time_norm"
     ],

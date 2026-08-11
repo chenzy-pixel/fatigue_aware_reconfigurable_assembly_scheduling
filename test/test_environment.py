@@ -400,14 +400,16 @@ def test_candidate_recovery_advance_without_pending_task(
 
     assert environment.get_action_mask()[candidate]
     assert not environment.get_action_mask()[-1]
-    environment.step(environment.advance_action)
-    assert environment.decision_type == DecisionType.WORKER
-    assert not environment.get_action_mask()[-1]
-    environment.step(environment.advance_action)
+    _, _, _, _, info = environment.step(
+        environment.production_defer_action
+    )
 
     assert environment.current_tick == recovery_tick
+    assert environment.decision_type == DecisionType.PRODUCTION
     assert not environment.truncated
     assert not environment.get_action_mask()[candidate]
+    assert info["action_type"] == "DEFER_PRODUCTION"
+    assert info["defer_reason"] == "candidate_recovery_feasible"
     assert environment.metrics()["candidate_recovery_advance_count"] == 1
 
 
