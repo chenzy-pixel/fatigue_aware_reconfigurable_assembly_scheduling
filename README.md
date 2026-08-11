@@ -78,11 +78,43 @@ Visdom 0.2.4 的源码包仍依赖 `pkg_resources`，因此先固定 setuptools 
 恢复工序后，按机器优先顺序评分 `(工序, 机器, 工人)`。Critic 分别均值
 池化工序、机器和工人节点，再与全局特征拼接。
 
+### 策略头 v6
+
+默认 `M1_candidate_graph_v6` 使用独立、带符号的 softplus 权重进行候选内
+多目标排序：
+
+\[
+z_i=\sum_j s_j\operatorname{softplus}(\theta_j)\tilde x_{ij}
++\sigma(g_c)\overline c+\sigma(g_r)\widetilde c_i.
+\]
+
+生产候选的 processing time、reconfiguration time、拆装固定成本、预计劳动
+成本和预计停机成本均为惩罚项，初始有效权重依次为
+`-0.30/-0.30/-0.20/-0.20/-0.20`；horizon slack 为收益项，初始权重
+`+0.30`。工人候选的阶段时长、预计疲劳比例、增量劳动成本、增量停机成本
+和增量负荷方差均为惩罚项，初始有效权重依次为
+`-0.30/-0.30/-0.20/-0.20/-0.20`。每个 raw 参数彼此独立，softplus 与固定
+符号保证训练不能把成本学成奖励，或把 slack 学成惩罚。
+
+标准化只使用当前合法 pair；少于两个合法 pair 或某维零方差时，该维贡献
+为零，masked 候选不会影响合法候选排序。公共上下文和逐候选中心化残差分别
+使用 sigmoid 门控，两个生产门控和两个工人门控均以 logit `-4.0` 初始化；
+contextual scorer 的输出层零初始化，使训练初期由显式单调特征主导。
+生产动作语义仍为 `pair_plus_defer_v1`，环境边特征未变，因此
+`observation_schema_version` 保持为 3。
+
+v6 checkpoint 的 `network_spec` 保存完整特征顺序、参数化方式、上下文模式
+和门控初始化。v5 checkpoint 不支持自动转换，会在加载 state dict 前报告
+必须重训；不得迁移网络权重或优化器。历史 `credit_assignment_*.json` 和已有
+结果保持 v5 语义，可检出提交 `002f13d` 复现。每次 PPO 更新记录 11 个
+`policy_head_weight_*` 和 4 个 `policy_head_gate_*` 指标；这些指标同时写入
+`update_log.csv`、`summary.json` 和 checkpoint metadata。
+
 做 MLP 消融时复制实验配置并把 `network.encoder_type` 改为
 `typed_mlp`；`message_passing_layers` 和 `dropout` 对该基线不生效。
 缺少 `encoder_type` 的旧配置按 `typed_mlp` 解释。新 checkpoint 的
 `network_spec` 同时保存编码器结构、节点/边特征维度和
-`observation_schema_version = 2`。加载器会从旧 state dict 推断 schema v1
+`observation_schema_version = 3`。加载器会从旧 state dict 推断 schema v1
 维度；若与当前观测不一致，会报告明确的 observation schema incompatibility，
 不会部分加载。旧最佳 checkpoint 只复用既有 E0 指标作基线，新训练从头初始化。
 
@@ -312,7 +344,8 @@ Visdom 0.2.4 首次启动会下载前端 JavaScript/CSS 资源，需保证该次
 `phase1_checkpoint.pt`。`update_log.csv` 记录每批 transition 数、
 采样/推理/更新耗时、实际吞吐量、奖励阶段和候选接受/回滚状态。
 此外还记录 approximate KL、clip fraction、梯度范数、梯度裁剪比例、
-更新前 explained variance、return/advantage/value 统计和当前学习率；
+更新前 explained variance、return/advantage/value 统计、当前学习率，以及
+v6 策略头的 11 个命名有效权重和 4 个上下文门控；
 `train_log.csv` 记录 `reward_base`、`reward_shaping`、`reward_training`、
 `reward_truncation`、`reward_unfinished`，以及 matching deficit、资源准入
 屏蔽率、最小工人备选数、matching-preserving 动作、候选恢复推进和机台等待
