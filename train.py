@@ -2630,6 +2630,7 @@ def train(
             },
             "last_episode": rows[-1],
             "last_update": update_rows[-1],
+            "policy_head_diagnostics": agent.policy_head_diagnostics(),
         },
     )
     dashboard.log_event(
@@ -3484,6 +3485,7 @@ def _train_parallel(
             },
             "last_episode": rows[-1],
             "last_update": update_rows[-1],
+            "policy_head_diagnostics": agent.policy_head_diagnostics(),
         },
     )
     dashboard.log_event(

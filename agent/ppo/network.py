@@ -1885,6 +1885,24 @@ class HeteroGraphActorCritic(nn.Module):
             )
         return result
 
+    def policy_head_diagnostics(self) -> dict[str, float]:
+        diagnostics: dict[str, float] = {}
+        for phase, weights in self.effective_relative_cost_weights().items():
+            for name, value in weights.items():
+                diagnostics[f"policy_head_weight_{phase}_{name}"] = float(value)
+        gates = (
+            ("production_common", self.production_context_gate),
+            ("production_residual", self.production_residual_context_gate),
+            ("worker_common", self.worker_context_gate),
+            ("worker_residual", self.worker_residual_context_gate),
+        )
+        for name, parameter in gates:
+            if parameter is not None:
+                diagnostics[f"policy_head_gate_{name}"] = float(
+                    torch.sigmoid(parameter.detach()).cpu()
+                )
+        return diagnostics
+
     @staticmethod
     def _standardize_candidate_features(
         features: torch.Tensor,

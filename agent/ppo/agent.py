@@ -303,6 +303,7 @@ class PPOAgent:
         result["learning_rate"] = float(
             self.optimizer.param_groups[0]["lr"]
         )
+        result.update(self.policy_head_diagnostics())
         if not all(math.isfinite(value) for value in result.values()):
             raise FloatingPointError("PPO returned non-finite metrics")
         return result
@@ -318,16 +319,32 @@ class PPOAgent:
         for group in self.optimizer.param_groups:
             group["lr"] = learning_rate
 
+    def policy_head_diagnostics(self) -> dict[str, float]:
+        diagnostics = getattr(self.network, "policy_head_diagnostics", None)
+        if diagnostics is None:
+            return {}
+        values = diagnostics()
+        if not isinstance(values, dict):
+            raise TypeError("policy-head diagnostics must be a mapping")
+        result = {str(name): float(value) for name, value in values.items()}
+        if not all(math.isfinite(value) for value in result.values()):
+            raise FloatingPointError("policy-head diagnostics are non-finite")
+        return result
+
     def save(self, path: str | Path, metadata: dict[str, Any] | None = None) -> None:
         output = Path(path)
         output.parent.mkdir(parents=True, exist_ok=True)
+        saved_metadata = dict(metadata or {})
+        diagnostics = self.policy_head_diagnostics()
+        if diagnostics:
+            saved_metadata["policy_head_diagnostics"] = diagnostics
         torch.save(
             {
                 "network": self.network.state_dict(),
                 "network_spec": self.network.network_spec(),
                 "optimizer": self.optimizer.state_dict(),
                 "ppo_config": self.config,
-                "metadata": metadata or {},
+                "metadata": saved_metadata,
             },
             output,
         )

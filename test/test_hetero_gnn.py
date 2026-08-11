@@ -860,6 +860,122 @@ def test_graph_buffer_and_gnn_ppo_update(
     )
 
 
+def test_v6_policy_head_diagnostics_and_optimizer_checkpoint_restore(
+    config,
+    fixed_instance,
+    tmp_path,
+):
+    effective_config = deepcopy(config)
+    effective_config["network"] = _small_m1_config()
+    effective_config["ppo"]["epochs"] = 1
+    effective_config["ppo"]["batch_size"] = 4
+    set_seed(int(effective_config["seed"]))
+
+    production_environment = AssemblySchedulingEnv(effective_config)
+    production_observation = production_environment.reset(fixed_instance)
+    production_mask = production_environment.get_action_mask()
+    assert np.count_nonzero(~production_mask[:-1]) >= 2
+    worker_observation, worker_mask = _find_worker_observation(
+        effective_config,
+        fixed_instance,
+        minimum_pair_actions=2,
+    )
+    network = build_actor_critic(
+        production_observation,
+        effective_config["network"],
+    )
+    agent = PPOAgent(network, effective_config["ppo"], device="cpu")
+
+    initial_diagnostics = agent.policy_head_diagnostics()
+    network_spec = network.network_spec()
+    expected_weight_keys = {
+        f"policy_head_weight_production_{name}"
+        for name in network_spec["production_relative_feature_names"]
+    } | {
+        f"policy_head_weight_worker_{name}"
+        for name in network_spec["worker_relative_feature_names"]
+    }
+    expected_gate_keys = {
+        "policy_head_gate_production_common",
+        "policy_head_gate_production_residual",
+        "policy_head_gate_worker_common",
+        "policy_head_gate_worker_residual",
+    }
+    assert set(initial_diagnostics) == expected_weight_keys | expected_gate_keys
+    assert len(initial_diagnostics) == 15
+    assert all(np.isfinite(value) for value in initial_diagnostics.values())
+    expected_initial_gate = float(torch.sigmoid(torch.tensor(-4.0)))
+    assert all(
+        initial_diagnostics[name] == pytest.approx(expected_initial_gate)
+        for name in expected_gate_keys
+    )
+
+    buffer = RolloutBuffer(preserve_graph=True)
+    samples = (
+        (production_observation, production_mask, 0.0),
+        (worker_observation, worker_mask, 1.0),
+        (production_observation, production_mask, -0.5),
+        (worker_observation, worker_mask, 2.0),
+    )
+    for index, (observation, mask, reward) in enumerate(samples):
+        action, log_probability, value = agent.act(observation, mask)
+        buffer.add(
+            observation,
+            mask,
+            action,
+            log_probability,
+            value,
+            reward,
+            index == len(samples) - 1,
+        )
+    buffer.compute_gae(
+        last_value=0.0,
+        gamma=float(effective_config["ppo"]["gamma"]),
+        gae_lambda=float(effective_config["ppo"]["gae_lambda"]),
+    )
+    metrics = agent.update(buffer)
+    assert expected_weight_keys | expected_gate_keys <= set(metrics)
+    assert all(np.isfinite(metrics[name]) for name in initial_diagnostics)
+    for parameter in (
+        network.production_relative_ranker.weight,
+        network.worker_relative_ranker.weight,
+        network.production_context_gate,
+        network.production_residual_context_gate,
+        network.worker_context_gate,
+        network.worker_residual_context_gate,
+    ):
+        assert parameter.grad is not None
+        assert torch.all(torch.isfinite(parameter.grad))
+
+    checkpoint = tmp_path / "v6_optimizer.pt"
+    agent.save(checkpoint, metadata={"kind": "v6"})
+    clone_network = build_actor_critic(
+        production_observation,
+        effective_config["network"],
+    )
+    clone = PPOAgent(clone_network, effective_config["ppo"], device="cpu")
+    metadata = clone.load(checkpoint, load_optimizer=True)
+    assert metadata == {
+        "kind": "v6",
+        "policy_head_diagnostics": agent.policy_head_diagnostics(),
+    }
+    for original, restored in zip(
+        network.parameters(), clone_network.parameters()
+    ):
+        assert torch.equal(original.detach(), restored.detach())
+    original_optimizer = agent.optimizer.state_dict()
+    restored_optimizer = clone.optimizer.state_dict()
+    assert original_optimizer["param_groups"] == restored_optimizer["param_groups"]
+    assert original_optimizer["state"].keys() == restored_optimizer["state"].keys()
+    for parameter_id, original_state in original_optimizer["state"].items():
+        for name, original_value in original_state.items():
+            restored_value = restored_optimizer["state"][parameter_id][name]
+            if torch.is_tensor(original_value):
+                assert torch.equal(original_value, restored_value)
+            else:
+                assert original_value == restored_value
+
+
 def test_new_and_legacy_checkpoint_compatibility(
     config,
     fixed_instance,

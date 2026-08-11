@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
@@ -239,6 +240,15 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     assert summary["unique_instance_count"] == 11
     assert summary["validation_runs"] == 2
     assert summary["best_validation"]["episode"] == 10
+    policy_head_diagnostics = summary["policy_head_diagnostics"]
+    assert len(policy_head_diagnostics) == 15
+    assert all(
+        math.isfinite(value) for value in policy_head_diagnostics.values()
+    )
+    assert policy_head_diagnostics == {
+        name: summary["last_update"][name]
+        for name in policy_head_diagnostics
+    }
     checkpoint_hash = hashlib.sha256(
         (run_directory / "checkpoint.pt").read_bytes()
     ).hexdigest()
@@ -273,6 +283,19 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     assert validation_rows[1]["sampled_completion_rate"] != ""
     assert summary["sampled_validation_runs"] == 1
 
+    with (run_directory / "update_log.csv").open(
+        "r",
+        encoding="utf-8-sig",
+        newline="",
+    ) as handle:
+        update_rows = list(csv.DictReader(handle))
+    assert update_rows
+    assert set(policy_head_diagnostics) <= set(update_rows[-1])
+    assert all(
+        math.isfinite(float(update_rows[-1][name]))
+        for name in policy_head_diagnostics
+    )
+
     best = torch.load(
         run_directory / "best_checkpoint.pt",
         map_location="cpu",
@@ -280,6 +303,11 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     )
     assert best["metadata"]["accepted_episode"] == 10
     assert best["metadata"]["checkpoint_role"] == "shadow_best"
+    checkpoint_diagnostics = best["metadata"]["policy_head_diagnostics"]
+    assert set(checkpoint_diagnostics) == set(policy_head_diagnostics)
+    assert all(
+        math.isfinite(value) for value in checkpoint_diagnostics.values()
+    )
 
 
 def test_non_smoke_fixed_instance_training_is_rejected(
