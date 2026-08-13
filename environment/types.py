@@ -326,6 +326,10 @@ class HeterogeneousGraphObservation:
     global_feature_names: tuple[str, ...] = field(default_factory=tuple)
     node_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
     relations: dict[EdgeType, EdgeStore] = field(default_factory=dict)
+    action_set_features: np.ndarray = field(
+        default_factory=lambda: np.empty((0,), dtype=np.float32)
+    )
+    action_set_feature_names: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         normalized_features = {
@@ -345,6 +349,16 @@ class HeterogeneousGraphObservation:
                 str(node_type): tuple(names)
                 for node_type, names in self.node_feature_names.items()
             },
+        )
+        object.__setattr__(
+            self,
+            "action_set_features",
+            np.asarray(self.action_set_features, dtype=np.float32),
+        )
+        object.__setattr__(
+            self,
+            "action_set_feature_names",
+            tuple(self.action_set_feature_names),
         )
 
     @property
@@ -392,6 +406,8 @@ class HeterogeneousGraphObservation:
                 edge_type: edge_store.copy()
                 for edge_type, edge_store in self.relations.items()
             },
+            action_set_features=self.action_set_features.copy(),
+            action_set_feature_names=tuple(self.action_set_feature_names),
         )
 
     @property
@@ -414,6 +430,14 @@ class HeterogeneousGraphObservation:
         node_features = self.node_features
         if self.global_features.ndim != 1:
             raise ValueError("global features must have shape (F,)")
+        if self.action_set_features.ndim != 1:
+            raise ValueError("action-set features must have shape (F,)")
+        if len(self.action_set_feature_names) != self.action_set_features.shape[0]:
+            raise ValueError(
+                "action-set feature width must match the number of names"
+            )
+        if not np.all(np.isfinite(self.action_set_features)):
+            raise ValueError("action-set features must be finite")
         if (
             self.global_feature_names
             and len(self.global_feature_names) != self.global_features.shape[0]

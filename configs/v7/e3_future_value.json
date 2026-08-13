@@ -1,0 +1,31 @@
+{
+  "extends": "c0_v6_control.json",
+  "experiment_name": "v7_e3_future_value",
+  "method_version": "M1_candidate_graph_v7",
+  "network": {
+    "policy_head_version": 7,
+    "candidate_context_mode": "common_plus_gated_residual_v6",
+    "production_commit_set_scorer": false,
+    "future_value_features": true,
+    "worker_common_context_enabled": false,
+    "production_relative_feature_names": [
+      "processing_time_norm",
+      "reconfiguration_time_norm",
+      "total_reconfiguration_cost_norm",
+      "horizon_slack_norm",
+      "future_configuration_reuse_value_norm",
+      "configuration_opportunity_cost_norm"
+    ],
+    "worker_relative_feature_names": [
+      "stage_duration_norm",
+      "fatigue_headroom_ratio",
+      "total_incremental_cost_norm",
+      "incremental_load_variance_norm",
+      "qualification_opportunity_cost_norm",
+      "recovery_eta_norm",
+      "remaining_service_capacity_norm"
+    ],
+    "production_relative_initial_weights": [0.30, 0.30, 0.30, 0.30, 0.20, 0.20],
+    "worker_relative_initial_weights": [0.30, 0.30, 0.25, 0.20, 0.20, 0.15, 0.15]
+  }
+}
