@@ -1,0 +1,27 @@
+{
+  "extends": "e3_future_value.json",
+  "experiment_name": "v7_full",
+  "network": {
+    "candidate_context_mode": "bounded_ranker_scale_v7",
+    "residual_context_gate_initial_logit": -2.0,
+    "residual_scale_ratio": 2.0,
+    "production_commit_set_scorer": true,
+    "worker_common_context_enabled": true
+  },
+  "environment": {
+    "worker_resource_control": {
+      "conditional_wait": {
+        "enabled": true,
+        "max_wait_minutes": 10.0,
+        "max_consecutive_waits": 2,
+        "minimum_fatigue_ratio_improvement": 0.05,
+        "minimum_duration_improvement_ticks": 1,
+        "require_full_matching": true,
+        "require_horizon_feasible": true
+      }
+    }
+  },
+  "reward": {
+    "variance_scale": 20.0
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "extends": "c0_v6_control.json",
+  "experiment_name": "v7_e5_variance_scale",
+  "reward": {
+    "variance_scale": 20.0
+  }
+}

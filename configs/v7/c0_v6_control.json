@@ -1,0 +1,18 @@
+{
+  "extends": "../default.json",
+  "experiment_name": "v7_c0_v6_control",
+  "experiment_suite_version": "v7_e0_e5_protocol_v1",
+  "training": {
+    "forced_action_compression": false,
+    "two_stage": {
+      "quality_checkpoint_promotion": "balanced_guarded_v7",
+      "quality_promotion_constraints": {
+        "minimum_normalized_quality_improvement": 0.0001,
+        "variance_relative_tolerance": 0.05,
+        "sampled_completion_drop_tolerance": 0.02,
+        "fatigue_cvar_relative_tolerance": 0.05,
+        "tail_fraction": 0.10
+      }
+    }
+  }
+}

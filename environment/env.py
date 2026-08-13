@@ -30,6 +30,7 @@ from environment.types import (
     EdgeStore,
     EdgeType,
     EventType,
+    HeterogeneousGraphObservation,
     MachineState,
     Observation,
     OperationState,
@@ -175,6 +176,20 @@ class ProductionResourceProfile:
     base_admissible: bool
 
 
+@dataclass(frozen=True)
+class ConditionalWorkerWaitPreview:
+    next_tick: int
+    wait_ticks: int
+    current_legal_pairs: int
+    future_legal_pairs: int
+    fatigue_ratio_improvement: float
+    duration_improvement_ticks: int
+    future_matching_size: int
+    future_task_count: int
+    horizon_feasible: bool
+    reason: str
+
+
 class AssemblySchedulingEnv:
     """Single-instance discrete-event environment with two decision phases."""
 
@@ -238,6 +253,20 @@ class AssemblySchedulingEnv:
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
         self._production_defer_reason_counts: dict[str, int] = {}
+        self._conditional_wait_opportunity_count = 0
+        self._conditional_wait_selected_count = 0
+        self._conditional_wait_total_ticks = 0
+        self._conditional_wait_pair_gain_sum = 0
+        self._conditional_wait_fatigue_improvement_sum = 0.0
+        self._conditional_wait_duration_improvement_sum = 0
+        self._conditional_wait_reason_counts: dict[str, int] = {}
+        self._conditional_wait_opportunity_states: set[int] = set()
+        self._consecutive_conditional_waits = 0
+        self._maximum_consecutive_conditional_waits = 0
+        self._reconfiguration_reuse_count = 0
+        self._post_reconfiguration_process_count: dict[str, int] = {}
+        self._qualification_scarcity_regret = 0.0
+        self._qualification_scarcity_decision_count = 0
         self._action_type_counts: dict[str, int] = {}
         self._minimum_worker_alternatives_seen: int | None = None
         self._resource_snapshot_cache: ResourceFeasibilitySnapshot | None = None
@@ -330,6 +359,64 @@ class AssemblySchedulingEnv:
     def _resource_setting(self, name: str, default: bool) -> bool:
         return bool(self.worker_resource_control.get(name, default))
 
+    @property
+    def network_settings(self) -> dict[str, Any]:
+        settings = self.config.get("network", {})
+        if not isinstance(settings, dict):
+            raise TypeError("network configuration must be a mapping")
+        return settings
+
+    @property
+    def future_value_features_enabled(self) -> bool:
+        return bool(self.network_settings.get("future_value_features", False))
+
+    @property
+    def production_commit_set_enabled(self) -> bool:
+        return bool(
+            self.network_settings.get("production_commit_set_scorer", False)
+        )
+
+    @property
+    def conditional_worker_wait(self) -> dict[str, Any]:
+        raw = self.worker_resource_control.get("conditional_wait", {})
+        if not isinstance(raw, dict):
+            raise TypeError(
+                "environment.worker_resource_control.conditional_wait "
+                "must be a mapping"
+            )
+        result = {
+            "enabled": bool(raw.get("enabled", False)),
+            "max_wait_minutes": float(raw.get("max_wait_minutes", 10.0)),
+            "max_consecutive_waits": int(raw.get("max_consecutive_waits", 2)),
+            "minimum_fatigue_ratio_improvement": float(
+                raw.get("minimum_fatigue_ratio_improvement", 0.05)
+            ),
+            "minimum_duration_improvement_ticks": int(
+                raw.get("minimum_duration_improvement_ticks", 1)
+            ),
+            "require_full_matching": bool(
+                raw.get("require_full_matching", True)
+            ),
+            "require_horizon_feasible": bool(
+                raw.get("require_horizon_feasible", True)
+            ),
+        }
+        if result["max_wait_minutes"] <= 0.0:
+            raise ValueError("conditional wait max_wait_minutes must be positive")
+        if result["max_consecutive_waits"] < 1:
+            raise ValueError(
+                "conditional wait max_consecutive_waits must be positive"
+            )
+        if result["minimum_fatigue_ratio_improvement"] < 0.0:
+            raise ValueError(
+                "conditional wait fatigue improvement must be non-negative"
+            )
+        if result["minimum_duration_improvement_ticks"] < 1:
+            raise ValueError(
+                "conditional wait duration improvement must be positive"
+            )
+        return result
+
     def _invalidate_resource_snapshot(self) -> None:
         self._state_version += 1
         self._resource_snapshot_cache = None
@@ -409,6 +496,20 @@ class AssemblySchedulingEnv:
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
         self._production_defer_reason_counts = {}
+        self._conditional_wait_opportunity_count = 0
+        self._conditional_wait_selected_count = 0
+        self._conditional_wait_total_ticks = 0
+        self._conditional_wait_pair_gain_sum = 0
+        self._conditional_wait_fatigue_improvement_sum = 0.0
+        self._conditional_wait_duration_improvement_sum = 0
+        self._conditional_wait_reason_counts = {}
+        self._conditional_wait_opportunity_states = set()
+        self._consecutive_conditional_waits = 0
+        self._maximum_consecutive_conditional_waits = 0
+        self._reconfiguration_reuse_count = 0
+        self._post_reconfiguration_process_count = {}
+        self._qualification_scarcity_regret = 0.0
+        self._qualification_scarcity_decision_count = 0
         self._action_type_counts = {}
         self._minimum_worker_alternatives_seen = None
         self._invalidate_resource_snapshot()
@@ -794,6 +895,9 @@ class AssemblySchedulingEnv:
             dtype=np.float32,
         )
         relations = self._build_graph_relations()
+        action_set_features, action_set_feature_names = (
+            self._build_action_set_features(relations)
+        )
         observation = Observation(
             node_features={
                 "operation": np.asarray(operation_features, dtype=np.float32),
@@ -837,6 +941,8 @@ class AssemblySchedulingEnv:
                 "wave": wave_ids,
             },
             relations=relations,
+            action_set_features=action_set_features,
+            action_set_feature_names=action_set_feature_names,
         )
         self._observation_cache = observation.copy()
         self._observation_cache_version = self._state_version
@@ -1059,6 +1165,16 @@ class AssemblySchedulingEnv:
             "estimated_labor_cost_norm",
             "estimated_downtime_cost_norm",
         )
+        if self.future_value_features_enabled:
+            feature_names += (
+                "current_wave_target_demand_ratio",
+                "future_wave_target_demand_ratio",
+                "target_remaining_workload_norm",
+                "configured_machine_support_ratio",
+                "future_configuration_reuse_value_norm",
+                "configuration_opportunity_cost_norm",
+                "future_horizon_risk_norm",
+            )
         if edge_count == 0:
             return EdgeStore(
                 edge_index=edge_index.copy(),
@@ -1192,6 +1308,85 @@ class AssemblySchedulingEnv:
         features[:, 11] = fixed_installation[group_ids] / cost_scale
         features[:, 12] = labor_cost[group_ids] / cost_scale
         features[:, 13] = downtime_cost[group_ids] / cost_scale
+        if self.future_value_features_enabled:
+            remaining_by_module = {
+                module: [
+                    operation
+                    for operation in self.operations
+                    if operation.state != OperationState.DONE
+                    and operation.spec.required_module == module
+                ]
+                for module in self.instance.modules
+            }
+            total_remaining = max(
+                1,
+                sum(len(values) for values in remaining_by_module.values()),
+            )
+            total_remaining_workload = max(
+                EPSILON,
+                sum(
+                    operation.spec.base_processing_time
+                    for values in remaining_by_module.values()
+                    for operation in values
+                ),
+            )
+            configured_support = {
+                module: sum(
+                    machine.current_module == module
+                    or machine.target_module == module
+                    for machine in self.machines
+                )
+                for module in self.instance.modules
+            }
+            for edge, (operation_index, machine_index) in enumerate(
+                edge_index.T
+            ):
+                operation = self.operations[int(operation_index)]
+                machine = self.machines[int(machine_index)]
+                target_module = operation.spec.required_module
+                target_remaining = remaining_by_module[target_module]
+                current_demand = sum(
+                    self._order_released[value.spec.order_id]
+                    for value in target_remaining
+                )
+                future_demand = sum(
+                    not self._order_released[value.spec.order_id]
+                    for value in target_remaining
+                )
+                target_workload = sum(
+                    value.spec.base_processing_time
+                    for value in target_remaining
+                )
+                source_module = machine.current_module
+                source_workload = sum(
+                    value.spec.base_processing_time
+                    for value in remaining_by_module.get(source_module, ())
+                )
+                source_support = configured_support.get(source_module, 0)
+                opportunity_cost = (
+                    0.0
+                    if source_module in {
+                        self.instance.no_module_state,
+                        target_module,
+                    }
+                    else (source_workload / total_remaining_workload)
+                    / max(1, source_support)
+                )
+                features[edge, 14] = current_demand / total_remaining
+                features[edge, 15] = future_demand / total_remaining
+                features[edge, 16] = target_workload / max(
+                    self.instance.horizon,
+                    total_remaining_workload,
+                )
+                features[edge, 17] = configured_support[
+                    target_module
+                ] / max(1, len(self.machines))
+                features[edge, 18] = target_workload / total_remaining_workload
+                features[edge, 19] = opportunity_cost
+                features[edge, 20] = max(
+                    0.0,
+                    -horizon_slack[edge] / horizon_tick,
+                )
         return EdgeStore(
             edge_index=edge_index.copy(),
             edge_features=features,
@@ -1318,6 +1513,26 @@ class AssemblySchedulingEnv:
         variance_scale = float(self.config["reward"]["variance_scale"])
         safe_fatigue = float(self.instance.fatigue.maximum_safe_fatigue)
         current_load_variance = self._committed_load_variance()
+        remaining_workload_by_module = {
+            module: sum(
+                operation.spec.base_processing_time
+                for operation in self.operations
+                if operation.state != OperationState.DONE
+                and operation.spec.required_module == module
+            )
+            for module in self.instance.modules
+        }
+        total_remaining_workload = max(
+            EPSILON,
+            sum(remaining_workload_by_module.values()),
+        )
+        qualified_worker_count = {
+            module: sum(
+                module in worker.spec.qualified_modules
+                for worker in self.workers
+            )
+            for module in self.instance.modules
+        }
         for machine_index, machine in enumerate(self.machines):
             reconfiguration = self._pending_reconfiguration(machine.spec.id)
             if reconfiguration is None:
@@ -1350,43 +1565,124 @@ class AssemblySchedulingEnv:
                     machine_index,
                     worker_index,
                 )
-                service_pairs.append((machine_index, worker_index))
-                service_features.append(
-                    [
-                        float(
-                            reconfiguration.stage
-                            == ReconfigurationStage.WAIT_DIS
-                        ),
-                        float(
-                            reconfiguration.stage
-                            == ReconfigurationStage.WAIT_INS
-                        ),
-                        duration / self.instance.horizon,
-                        projected_fatigue / safe_fatigue,
-                        fixed_cost / cost_scale,
-                        duration * worker.spec.labor_cost_per_minute
-                        / cost_scale,
-                        duration * machine.spec.downtime_cost_per_minute
-                        / cost_scale,
-                        (projected_variance - current_load_variance)
-                        / variance_scale,
-                    ]
+                labor_cost = duration * worker.spec.labor_cost_per_minute
+                downtime_cost = (
+                    duration * machine.spec.downtime_cost_per_minute
                 )
+                values = [
+                    float(
+                        reconfiguration.stage
+                        == ReconfigurationStage.WAIT_DIS
+                    ),
+                    float(
+                        reconfiguration.stage
+                        == ReconfigurationStage.WAIT_INS
+                    ),
+                    duration / self.instance.horizon,
+                    projected_fatigue / safe_fatigue,
+                    fixed_cost / cost_scale,
+                    labor_cost / cost_scale,
+                    downtime_cost / cost_scale,
+                    (projected_variance - current_load_variance)
+                    / variance_scale,
+                ]
+                if self.future_value_features_enabled:
+                    headroom = max(0.0, safe_fatigue - projected_fatigue)
+                    weighted_future_workload = sum(
+                        remaining_workload_by_module[module]
+                        / max(1, qualified_worker_count[module])
+                        for module in worker.spec.qualified_modules
+                    )
+                    exclusive_workload = sum(
+                        remaining_workload_by_module[module]
+                        for module in worker.spec.qualified_modules
+                        if qualified_worker_count[module] == 1
+                    )
+                    breadth = len(worker.spec.qualified_modules) / max(
+                        1, len(self.instance.modules)
+                    )
+                    qualification_opportunity = (
+                        0.5
+                        * weighted_future_workload
+                        / total_remaining_workload
+                        + 0.25
+                        * exclusive_workload
+                        / total_remaining_workload
+                        + 0.25 * breadth
+                    )
+                    recovery_rate = (
+                        self.instance.fatigue.idle_recovery_rate_per_minute
+                    )
+                    recovery_minutes = (
+                        max(
+                            0.0,
+                            projected_fatigue - worker.spec.initial_fatigue,
+                        )
+                        / recovery_rate
+                        if recovery_rate > 0.0
+                        else self.instance.horizon
+                    )
+                    accumulation_rate = self._stage_accumulation_rate(
+                        reconfiguration
+                    )
+                    service_capacity = (
+                        headroom / accumulation_rate
+                        if accumulation_rate > 0.0
+                        else self.instance.horizon
+                    )
+                    alternative_count = sum(
+                        other_index != worker_index
+                        and self._worker_can_start(reconfiguration, other)
+                        for other_index, other in enumerate(self.workers)
+                    )
+                    values.extend(
+                        [
+                            headroom / safe_fatigue,
+                            (fixed_cost + labor_cost + downtime_cost)
+                            / cost_scale,
+                            alternative_count / max(1, len(self.workers) - 1),
+                            qualification_opportunity,
+                            min(
+                                2.0,
+                                (duration + recovery_minutes)
+                                / self.instance.horizon,
+                            ),
+                            min(
+                                2.0,
+                                service_capacity / self.instance.horizon,
+                            ),
+                            weighted_future_workload
+                            / total_remaining_workload,
+                        ]
+                    )
+                service_pairs.append((machine_index, worker_index))
+                service_features.append(values)
+        service_feature_names = (
+            "stage_dis",
+            "stage_ins",
+            "stage_duration_norm",
+            "projected_fatigue_ratio",
+            "fixed_cost_norm",
+            "incremental_labor_cost_norm",
+            "incremental_downtime_cost_norm",
+            "incremental_load_variance_norm",
+        )
+        if self.future_value_features_enabled:
+            service_feature_names += (
+                "fatigue_headroom_ratio",
+                "total_incremental_cost_norm",
+                "qualified_alternative_worker_ratio",
+                "qualification_opportunity_cost_norm",
+                "recovery_eta_norm",
+                "remaining_service_capacity_norm",
+                "future_qualified_workload_norm",
+            )
         service_candidate = EdgeStore(
             edge_index=_as_edge_index(service_pairs),
             edge_features=np.asarray(
                 service_features, dtype=np.float32
-            ).reshape(-1, 8),
-            feature_names=(
-                "stage_dis",
-                "stage_ins",
-                "stage_duration_norm",
-                "projected_fatigue_ratio",
-                "fixed_cost_norm",
-                "incremental_labor_cost_norm",
-                "incremental_downtime_cost_norm",
-                "incremental_load_variance_norm",
-            ),
+            ).reshape(-1, len(service_feature_names)),
+            feature_names=service_feature_names,
             bidirectional=True,
         )
 
@@ -1404,6 +1700,100 @@ class AssemblySchedulingEnv:
             WAVE_MODULE_EDGE: wave_module,
             SERVICE_CANDIDATE_EDGE: service_candidate,
         }
+
+    def _build_action_set_features(
+        self,
+        relations: dict[EdgeType, EdgeStore],
+    ) -> tuple[np.ndarray, tuple[str, ...]]:
+        """Return absolute set-level inputs without changing pair embeddings."""
+
+        if (
+            self.decision_type != DecisionType.PRODUCTION
+            or not self.production_commit_set_enabled
+        ):
+            return np.empty((0,), dtype=np.float32), ()
+        names = (
+            "legal_candidate_count_norm",
+            "configuration_match_rate",
+            "minimum_reconfiguration_time_norm",
+            "mean_reconfiguration_time_norm",
+            "minimum_total_reconfiguration_cost_norm",
+            "mean_total_reconfiguration_cost_norm",
+            "minimum_horizon_slack_norm",
+            "next_defer_event_distance_norm",
+            "projected_legal_candidate_gain_norm",
+        )
+        capable = relations[CAPABLE_EDGE]
+        mask = self.get_action_mask()
+        machine_count = len(self.machines)
+        action_indices = (
+            capable.edge_index[0] * machine_count + capable.edge_index[1]
+        )
+        legal_edges = ~mask[action_indices]
+        legal_count = int(np.count_nonzero(legal_edges))
+        maximum_pairs = max(1, len(self.operations) * machine_count)
+        edge_names = capable.feature_names
+
+        def column(name: str) -> np.ndarray:
+            return capable.edge_features[:, edge_names.index(name)]
+
+        configuration = column("configuration_match")
+        reconfiguration = column("reconfiguration_time_norm")
+        total_cost = (
+            column("fixed_disassembly_cost_norm")
+            + column("fixed_installation_cost_norm")
+            + column("estimated_labor_cost_norm")
+            + column("estimated_downtime_cost_norm")
+        )
+        slack = column("horizon_slack_norm")
+
+        def minimum(values: np.ndarray) -> float:
+            return float(np.min(values[legal_edges])) if legal_count else 0.0
+
+        def mean(values: np.ndarray) -> float:
+            return float(np.mean(values[legal_edges])) if legal_count else 0.0
+
+        defer = self._production_defer_opportunity()
+        defer_tick = defer[0] if defer is not None else self.current_tick
+        future_legal = legal_count
+        if defer_tick > self.current_tick:
+            for operation_index, machine_index in capable.edge_index.T:
+                action = self.encode_production_action(
+                    int(operation_index), int(machine_index)
+                )
+                if not mask[action]:
+                    continue
+                operation = self.operations[int(operation_index)]
+                machine = self.machines[int(machine_index)]
+                if (
+                    operation.state != OperationState.READY
+                    or machine.state != MachineState.IDLE
+                ):
+                    continue
+                profile = self._production_candidate_profile(
+                    int(operation_index), int(machine_index)
+                )
+                if (
+                    profile.resource_ready_tick <= defer_tick
+                    and profile.predicted_finish_tick <= self.horizon_tick
+                ):
+                    future_legal += 1
+        values = np.asarray(
+            [
+                legal_count / maximum_pairs,
+                mean(configuration),
+                minimum(reconfiguration),
+                mean(reconfiguration),
+                minimum(total_cost),
+                mean(total_cost),
+                minimum(slack),
+                max(0, defer_tick - self.current_tick)
+                / max(1, self.horizon_tick),
+                max(0, future_legal - legal_count) / maximum_pairs,
+            ],
+            dtype=np.float32,
+        )
+        return values, names
 
     def _build_locked_edges(self) -> EdgeStore:
         self._require_instance()
@@ -1562,7 +1952,15 @@ class AssemblySchedulingEnv:
             and self._resource_setting("non_delay_worker_dispatch", True)
         )
         strict_future = self._has_strict_future()
-        if strict_future and not (
+        conditional_preview = None
+        if non_delay and legal_worker_pairs > 0:
+            conditional_preview = self._conditional_worker_wait_preview()
+        if conditional_preview is not None:
+            mask[-1] = False
+            if self._state_version not in self._conditional_wait_opportunity_states:
+                self._conditional_wait_opportunity_states.add(self._state_version)
+                self._conditional_wait_opportunity_count += 1
+        elif strict_future and not (
             non_delay and legal_worker_pairs > 0
         ):
             mask[-1] = False
@@ -1573,6 +1971,11 @@ class AssemblySchedulingEnv:
             "legal_pair_count": legal_worker_pairs,
             "non_delay": non_delay,
             "strict_future": strict_future,
+            "conditional_wait": (
+                conditional_preview.__dict__
+                if conditional_preview is not None
+                else None
+            ),
         }
         return mask
 
@@ -1858,8 +2261,22 @@ class AssemblySchedulingEnv:
         phase = self.decision_type
         action_type = self._action_type(phase, action)
         action_outcome: dict[str, Any] = {}
+        conditional_wait_analysis = (
+            dict(self._last_action_mask_analysis.get("conditional_wait"))
+            if phase == DecisionType.WORKER
+            and action == self.worker_advance_action
+            and self._last_action_mask_analysis is not None
+            and self._last_action_mask_analysis.get("conditional_wait")
+            is not None
+            else None
+        )
         if phase == DecisionType.WORKER:
             self._record_worker_pressure_snapshot()
+            if (
+                action != self.worker_advance_action
+                and self.future_value_features_enabled
+            ):
+                self._record_qualification_scarcity_regret(action, mask)
         self._invalidate_resource_snapshot()
         if phase == DecisionType.PRODUCTION:
             if action == self.production_defer_action:
@@ -1870,9 +2287,39 @@ class AssemblySchedulingEnv:
         else:
             if action == self.worker_advance_action:
                 action_outcome = self._advance_to_next_event()
+                if conditional_wait_analysis is not None:
+                    self._conditional_wait_selected_count += 1
+                    self._consecutive_conditional_waits += 1
+                    self._maximum_consecutive_conditional_waits = max(
+                        self._maximum_consecutive_conditional_waits,
+                        self._consecutive_conditional_waits,
+                    )
+                    self._conditional_wait_total_ticks += int(
+                        conditional_wait_analysis["wait_ticks"]
+                    )
+                    self._conditional_wait_pair_gain_sum += max(
+                        0,
+                        int(conditional_wait_analysis["future_legal_pairs"])
+                        - int(conditional_wait_analysis["current_legal_pairs"]),
+                    )
+                    self._conditional_wait_fatigue_improvement_sum += float(
+                        conditional_wait_analysis[
+                            "fatigue_ratio_improvement"
+                        ]
+                    )
+                    self._conditional_wait_duration_improvement_sum += int(
+                        conditional_wait_analysis[
+                            "duration_improvement_ticks"
+                        ]
+                    )
+                    reason = str(conditional_wait_analysis["reason"])
+                    self._conditional_wait_reason_counts[reason] = (
+                        self._conditional_wait_reason_counts.get(reason, 0) + 1
+                    )
             else:
                 machine_index, worker_index = self.decode_worker_action(action)
                 self._execute_worker_action(machine_index, worker_index)
+                self._consecutive_conditional_waits = 0
         self._action_type_counts[action_type] = (
             self._action_type_counts.get(action_type, 0) + 1
         )
@@ -1959,6 +2406,7 @@ class AssemblySchedulingEnv:
             "recovery_improvement": bool(
                 action_outcome.get("recovery_improvement", False)
             ),
+            "conditional_wait": conditional_wait_analysis,
             "terminal_reason": self.terminal_reason,
         }
         observation = self.observe() if build_observation else None
@@ -2381,6 +2829,42 @@ class AssemblySchedulingEnv:
             "production_defer_recovery_improvement_count": (
                 self._production_defer_recovery_improvement_count
             ),
+            "conditional_worker_wait_opportunity_count": (
+                self._conditional_wait_opportunity_count
+            ),
+            "conditional_worker_wait_selected_count": (
+                self._conditional_wait_selected_count
+            ),
+            "conditional_worker_wait_total_ticks": (
+                self._conditional_wait_total_ticks
+            ),
+            "conditional_worker_wait_total_time": ticks_to_minutes(
+                self._conditional_wait_total_ticks,
+                self.resolution,
+            ),
+            "conditional_worker_wait_pair_gain_sum": (
+                self._conditional_wait_pair_gain_sum
+            ),
+            "conditional_worker_wait_fatigue_improvement_sum": (
+                self._conditional_wait_fatigue_improvement_sum
+            ),
+            "conditional_worker_wait_duration_improvement_ticks_sum": (
+                self._conditional_wait_duration_improvement_sum
+            ),
+            "conditional_worker_wait_reason_counts": dict(
+                self._conditional_wait_reason_counts
+            ),
+            "conditional_worker_wait_max_consecutive_observed": min(
+                self._maximum_consecutive_conditional_waits,
+                int(self.conditional_worker_wait["max_consecutive_waits"]),
+            ),
+            "reconfiguration_reuse_count": self._reconfiguration_reuse_count,
+            "qualification_scarcity_regret": (
+                self._qualification_scarcity_regret
+            ),
+            "qualification_scarcity_decision_count": (
+                self._qualification_scarcity_decision_count
+            ),
             **self._forced_action_metrics(),
             "machine_waiting_for_worker_time": (
                 self._machine_waiting_for_worker_time()
@@ -2638,6 +3122,15 @@ class AssemblySchedulingEnv:
     def _start_processing(
         self, operation: OperationRuntime, machine: MachineRuntime
     ) -> None:
+        if machine.spec.id in self._post_reconfiguration_process_count:
+            prior_uses = self._post_reconfiguration_process_count[
+                machine.spec.id
+            ]
+            if prior_uses >= 1:
+                self._reconfiguration_reuse_count += 1
+            self._post_reconfiguration_process_count[machine.spec.id] = (
+                prior_uses + 1
+            )
         operation_index = self.operations.index(operation)
         machine_index = self.machines.index(machine)
         duration_ticks = self.estimate_processing_ticks(
@@ -2898,6 +3391,7 @@ class AssemblySchedulingEnv:
         machine.state = MachineState.IDLE
         machine.busy_until_tick = None
         reconfiguration.stage = ReconfigurationStage.DONE
+        self._post_reconfiguration_process_count[machine.spec.id] = 0
         self._machine_reconfiguration.pop(machine.spec.id, None)
         locked_operation = self._operation_by_id(reconfiguration.operation_id)
         self._start_processing(locked_operation, machine)
@@ -2982,6 +3476,143 @@ class AssemblySchedulingEnv:
             edges.append(safe)
         return tuple(edges)
 
+    def _worker_fatigue_at_tick(
+        self, worker_index: int, tick: int
+    ) -> float | None:
+        worker = self.workers[worker_index]
+        if worker.state == WorkerState.IDLE:
+            available_tick = self.current_tick
+            available_fatigue = worker.fatigue
+        else:
+            available_tick, available_fatigue = (
+                self._worker_fatigue_at_availability(worker_index)
+            )
+            if available_tick > tick:
+                return None
+        recovery = (
+            self.instance.fatigue.idle_recovery_rate_per_minute
+            * ticks_to_minutes(max(0, tick - available_tick), self.resolution)
+        )
+        return max(0.0, available_fatigue - recovery)
+
+    def _projected_stage_duration_ticks(
+        self,
+        task: WorkerTaskSnapshot,
+        worker_index: int,
+        tick: int,
+    ) -> int:
+        worker = self.workers[worker_index]
+        fatigue = self._worker_fatigue_at_tick(worker_index, tick)
+        if fatigue is None:
+            return self.horizon_tick + 1
+        temporary = ReconfigurationRuntime(
+            id=task.task_id,
+            machine_id=self.machines[task.machine_index].spec.id,
+            operation_id="",
+            source_module=(
+                task.module
+                if task.stage == ReconfigurationStage.WAIT_DIS
+                else self.instance.no_module_state
+            ),
+            target_module=(
+                task.module
+                if task.stage == ReconfigurationStage.WAIT_INS
+                else self.instance.no_module_state
+            ),
+            lock_tick=self.current_tick,
+            stage=task.stage,
+        )
+        return self._stage_duration_ticks(
+            temporary, worker, fatigue_override=fatigue
+        )
+
+    def _projected_safe_edges_for_tasks(
+        self,
+        tasks: tuple[WorkerTaskSnapshot, ...],
+        tick: int,
+    ) -> tuple[tuple[int, ...], ...]:
+        edges: list[tuple[int, ...]] = []
+        safe_limit = float(self.instance.fatigue.maximum_safe_fatigue)
+        for task in tasks:
+            accumulation_rate = (
+                self.instance.fatigue.disassembly_accumulation_rate_per_minute
+                if task.stage == ReconfigurationStage.WAIT_DIS
+                else self.instance.fatigue.installation_accumulation_rate_per_minute
+            )
+            safe_workers = []
+            for worker_index, worker in enumerate(self.workers):
+                if task.module not in worker.spec.qualified_modules:
+                    continue
+                fatigue = self._worker_fatigue_at_tick(worker_index, tick)
+                if fatigue is None:
+                    continue
+                duration_ticks = self._projected_stage_duration_ticks(
+                    task, worker_index, tick
+                )
+                predicted = fatigue + accumulation_rate * ticks_to_minutes(
+                    duration_ticks, self.resolution
+                )
+                if predicted <= safe_limit + EPSILON:
+                    safe_workers.append(worker_index)
+            edges.append(tuple(safe_workers))
+        return tuple(edges)
+
+    def _matching_preserving_pair_count(
+        self,
+        edges: tuple[tuple[int, ...], ...],
+        matching_size: int,
+    ) -> int:
+        if matching_size != len(edges):
+            return 0
+        count = 0
+        for task_index, edge in enumerate(edges):
+            for worker_index in edge:
+                remaining = [
+                    [candidate for candidate in other if candidate != worker_index]
+                    for index, other in enumerate(edges)
+                    if index != task_index
+                ]
+                if _maximum_matching_size(
+                    remaining, len(self.workers)
+                ) == len(remaining):
+                    count += 1
+        return count
+
+    def _best_projected_worker_candidate(
+        self,
+        tasks: tuple[WorkerTaskSnapshot, ...],
+        edges: tuple[tuple[int, ...], ...],
+        *,
+        tick: int | None = None,
+    ) -> tuple[float, int]:
+        effective_tick = self.current_tick if tick is None else int(tick)
+        safe_limit = float(self.instance.fatigue.maximum_safe_fatigue)
+        fatigue_values: list[float] = []
+        durations: list[int] = []
+        for task, edge in zip(tasks, edges):
+            accumulation_rate = (
+                self.instance.fatigue.disassembly_accumulation_rate_per_minute
+                if task.stage == ReconfigurationStage.WAIT_DIS
+                else self.instance.fatigue.installation_accumulation_rate_per_minute
+            )
+            for worker_index in edge:
+                fatigue = self._worker_fatigue_at_tick(
+                    worker_index, effective_tick
+                )
+                if fatigue is None:
+                    continue
+                duration_ticks = self._projected_stage_duration_ticks(
+                    task, worker_index, effective_tick
+                )
+                projected = fatigue + accumulation_rate * ticks_to_minutes(
+                    duration_ticks, self.resolution
+                )
+                fatigue_values.append(projected / safe_limit)
+                durations.append(duration_ticks)
+        if not fatigue_values:
+            return math.inf, self.horizon_tick + 1
+        return min(fatigue_values), min(durations)
+
     def _resource_feasibility_snapshot(
         self,
     ) -> ResourceFeasibilitySnapshot:
@@ -3020,6 +3651,43 @@ class AssemblySchedulingEnv:
                     minimum_alternatives,
                 )
         return snapshot
+
+    def _record_qualification_scarcity_regret(
+        self,
+        action: int,
+        action_mask: np.ndarray,
+    ) -> None:
+        observation = self.observe()
+        if not isinstance(observation, HeterogeneousGraphObservation):
+            return
+        service = observation.relations[SERVICE_CANDIDATE_EDGE]
+        if "qualification_opportunity_cost_norm" not in service.feature_names:
+            return
+        feature_index = service.feature_names.index(
+            "qualification_opportunity_cost_norm"
+        )
+        worker_count = len(self.workers)
+        costs: dict[int, float] = {}
+        for edge_offset in range(service.num_edges):
+            machine_index = int(service.edge_index[0, edge_offset])
+            worker_index = int(service.edge_index[1, edge_offset])
+            action_index = machine_index * worker_count + worker_index
+            costs[action_index] = float(
+                service.edge_features[edge_offset, feature_index]
+            )
+        legal_costs = [
+            value
+            for action_index, value in costs.items()
+            if action_index < len(action_mask) - 1
+            and not bool(action_mask[action_index])
+        ]
+        selected = costs.get(int(action))
+        if selected is None or not legal_costs:
+            return
+        self._qualification_scarcity_regret += max(
+            0.0, selected - min(legal_costs)
+        )
+        self._qualification_scarcity_decision_count += 1
 
     def _worker_action_preserves_matching(
         self,
@@ -3573,6 +4241,152 @@ class AssemblySchedulingEnv:
             value.stage
             in {ReconfigurationStage.WAIT_DIS, ReconfigurationStage.WAIT_INS}
             for value in self.reconfigurations.values()
+        )
+
+    def _next_decision_event_tick(self) -> int | None:
+        event_ticks = [
+            event[0] for event in self._events if event[0] > self.current_tick
+        ]
+        recovery_tick = self._earliest_recovery_tick()
+        candidate_recovery_tick = self._earliest_candidate_recovery_tick()
+        recovery_improvement_tick = (
+            self._earliest_production_defer_recovery_improvement_tick()
+        )
+        candidates = event_ticks
+        candidates += [recovery_tick] if recovery_tick is not None else []
+        candidates += (
+            [candidate_recovery_tick]
+            if candidate_recovery_tick is not None
+            else []
+        )
+        candidates += (
+            [recovery_improvement_tick]
+            if recovery_improvement_tick is not None
+            else []
+        )
+        return min(candidates) if candidates else None
+
+    def _conditional_worker_wait_preview(
+        self,
+    ) -> ConditionalWorkerWaitPreview | None:
+        settings = self.conditional_worker_wait
+        if not settings["enabled"]:
+            return None
+        if self._consecutive_conditional_waits >= settings[
+            "max_consecutive_waits"
+        ]:
+            return None
+        next_tick = self._next_decision_event_tick()
+        if next_tick is None or next_tick <= self.current_tick:
+            return None
+        wait_ticks = next_tick - self.current_tick
+        maximum_wait_ticks = quantize_to_ticks(
+            settings["max_wait_minutes"], self.resolution
+        )
+        if wait_ticks > maximum_wait_ticks:
+            return None
+
+        current_tasks = self._current_worker_tasks()
+        current_edges = self._projected_safe_edges_for_tasks(
+            current_tasks,
+            self.current_tick,
+        )
+        future_tasks = list(current_tasks)
+        current_task_ids = {task.task_id for task in future_tasks}
+        for event in self._events:
+            if event[0] != next_tick or event[3] != EventType.DIS_COMPLETE:
+                continue
+            reconfiguration = self.reconfigurations[
+                str(event[4]["reconfiguration_id"])
+            ]
+            if reconfiguration.id in current_task_ids:
+                continue
+            future_tasks.append(
+                WorkerTaskSnapshot(
+                    task_id=reconfiguration.id,
+                    machine_index=self.instance.machine_index[
+                        reconfiguration.machine_id
+                    ],
+                    stage=ReconfigurationStage.WAIT_INS,
+                    module=reconfiguration.target_module,
+                )
+            )
+        future_tasks_tuple = tuple(
+            sorted(future_tasks, key=lambda value: value.task_id)
+        )
+        future_edges = self._projected_safe_edges_for_tasks(
+            future_tasks_tuple,
+            next_tick,
+        )
+        current_matching = _maximum_matching_size(
+            [list(edge) for edge in current_edges], len(self.workers)
+        )
+        future_matching = _maximum_matching_size(
+            [list(edge) for edge in future_edges], len(self.workers)
+        )
+        if settings["require_full_matching"] and (
+            future_matching != len(future_tasks_tuple)
+        ):
+            return None
+
+        horizon_feasible = all(
+            any(
+                next_tick
+                + self._projected_stage_duration_ticks(task, worker_index, next_tick)
+                <= self.horizon_tick
+                for worker_index in edge
+            )
+            for task, edge in zip(future_tasks_tuple, future_edges)
+        )
+        if settings["require_horizon_feasible"] and not horizon_feasible:
+            return None
+
+        current_pairs = self._matching_preserving_pair_count(
+            current_edges, current_matching
+        )
+        future_pairs = self._matching_preserving_pair_count(
+            future_edges, future_matching
+        )
+        current_best_fatigue, current_best_duration = (
+            self._best_projected_worker_candidate(current_tasks, current_edges)
+        )
+        future_best_fatigue, future_best_duration = (
+            self._best_projected_worker_candidate(
+                future_tasks_tuple,
+                future_edges,
+                tick=next_tick,
+            )
+        )
+        fatigue_improvement = max(
+            0.0, current_best_fatigue - future_best_fatigue
+        )
+        duration_improvement = max(
+            0, current_best_duration - future_best_duration
+        )
+        reasons = []
+        if future_pairs > current_pairs:
+            reasons.append("legal_pair_gain")
+        if fatigue_improvement >= settings[
+            "minimum_fatigue_ratio_improvement"
+        ]:
+            reasons.append("fatigue_improvement")
+        if duration_improvement >= settings[
+            "minimum_duration_improvement_ticks"
+        ]:
+            reasons.append("duration_improvement")
+        if not reasons:
+            return None
+        return ConditionalWorkerWaitPreview(
+            next_tick=next_tick,
+            wait_ticks=wait_ticks,
+            current_legal_pairs=current_pairs,
+            future_legal_pairs=future_pairs,
+            fatigue_ratio_improvement=fatigue_improvement,
+            duration_improvement_ticks=duration_improvement,
+            future_matching_size=future_matching,
+            future_task_count=len(future_tasks_tuple),
+            horizon_feasible=horizon_feasible,
+            reason="+".join(reasons),
         )
 
     def _production_defer_opportunity(self) -> tuple[int, str] | None:
