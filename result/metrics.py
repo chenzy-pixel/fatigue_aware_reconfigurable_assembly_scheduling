@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "3.0.0"
+EVALUATION_SCHEMA_VERSION = "4.0.0"
 
 
 def compare_lexicographic(
@@ -78,6 +78,31 @@ def summarize_values(
             if len(observations) > 1
             else 0.0
         ),
+    }
+
+
+def summarize_upper_tail(
+    values: Iterable[float | int | None],
+    *,
+    tail_fraction: float,
+) -> dict[str, float | int | None]:
+    observations = sorted(
+        float(value) for value in values if value is not None
+    )
+    if not observations:
+        return {"count": 0, "quantile": None, "cvar": None, "max": None}
+    if not 0.0 < tail_fraction <= 1.0:
+        raise ValueError("tail_fraction must be in (0, 1]")
+    if any(not math.isfinite(value) for value in observations):
+        raise ValueError("cannot summarize a non-finite tail value")
+    rank = max(0, math.ceil((1.0 - tail_fraction) * len(observations)) - 1)
+    tail_count = max(1, math.ceil(tail_fraction * len(observations)))
+    tail = observations[-tail_count:]
+    return {
+        "count": len(observations),
+        "quantile": observations[rank],
+        "cvar": float(statistics.fmean(tail)),
+        "max": observations[-1],
     }
 
 
@@ -169,6 +194,29 @@ def aggregate_evaluation_rows(
         **{
             name: summarize_values(row.get(name) for row in rows)
             for name in (
+                "ranker_top_selection_rate",
+                "context_override_rate",
+                "production_pair_plus_defer_state_count",
+                "production_decision_state_count",
+                "production_pair_plus_defer_ratio",
+                "worker_pair_plus_advance_state_count",
+                "worker_decision_state_count",
+                "worker_pair_plus_advance_ratio",
+                "mean_commit_set_logit",
+                "conditional_worker_wait_opportunity_count",
+                "conditional_worker_wait_selected_count",
+                "conditional_worker_wait_total_ticks",
+                "conditional_worker_wait_pair_gain_sum",
+                "conditional_worker_wait_fatigue_improvement_sum",
+                "conditional_worker_wait_duration_improvement_ticks_sum",
+                "conditional_worker_wait_max_consecutive_observed",
+                "reconfiguration_reuse_count",
+                "qualification_scarcity_regret",
+            )
+        },
+        **{
+            name: summarize_values(row.get(name) for row in rows)
+            for name in (
                 "direct_process_action_count",
                 "commit_reconfig_action_count",
                 "defer_production_action_count",
@@ -241,6 +289,20 @@ def aggregate_evaluation_rows(
             for row in rows
         ),
     }
+    tail_metrics = {
+        "worker_load_variance": summarize_upper_tail(
+            (row.get("worker_load_variance") for row in rows),
+            tail_fraction=0.10,
+        ),
+        "maximum_worker_fatigue": summarize_upper_tail(
+            (row.get("maximum_worker_fatigue") for row in rows),
+            tail_fraction=0.10,
+        ),
+        "forced_action_chain": summarize_upper_tail(
+            (row.get("longest_forced_action_chain") for row in rows),
+            tail_fraction=0.05,
+        ),
+    }
     return {
         "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
         "dataset": dataset,
@@ -265,6 +327,7 @@ def aggregate_evaluation_rows(
         "completed_metrics": completed_metrics,
         "all_instance_metrics": all_instance_metrics,
         "gap_metrics": gap_metrics,
+        "tail_metrics": tail_metrics,
     }
 
 

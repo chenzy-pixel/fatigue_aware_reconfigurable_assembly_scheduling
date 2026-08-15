@@ -20,6 +20,7 @@ from agent.ppo.parallel import (
     forced_action_from_mask,
 )
 from configs import load_config, project_path
+from configs.config import public_config
 from data.dataset import (
     GeneratedInstanceRecord,
     OnlineInstanceDataset,
@@ -50,6 +51,43 @@ from result.visdom_dashboard import (
 from utils import set_seed
 
 
+_SOURCE_STATE_HASH: str | None = None
+
+
+def _source_state_hash() -> str:
+    global _SOURCE_STATE_HASH
+    if _SOURCE_STATE_HASH is not None:
+        return _SOURCE_STATE_HASH
+    root = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(
+        value
+        for value in root.rglob("*")
+        if value.is_file()
+        and value.suffix.lower() in {".py", ".json"}
+        and not any(
+            part in {".git", ".venv", "result", "__pycache__"}
+            for part in value.relative_to(root).parts
+        )
+    ):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(path.read_bytes())
+    _SOURCE_STATE_HASH = digest.hexdigest()
+    return _SOURCE_STATE_HASH
+
+
+def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
+    return {
+        "effective_config": public_config(config),
+        "source_state_sha256": _source_state_hash(),
+        "experiment_suite_version": config.get(
+            "experiment_suite_version", "legacy"
+        ),
+        "algorithm_seed": int(config["seed"]),
+        "result_schema_version": "4.0.0",
+    }
+
+
 @dataclass
 class TrainingPhaseController:
     enabled: bool
@@ -68,6 +106,11 @@ class TrainingPhaseController:
     accepted_quality_episode: int | None = None
     quality_promotion_constraints: dict[str, float] = field(default_factory=dict)
     last_promotion_diagnostics: dict[str, object] = field(default_factory=dict)
+    accepted_sampled_completion_rate: float | None = None
+    accepted_sampled_fatigue_cvar90: float | None = None
+    pending_quality_score: tuple[float, float, float, float] | None = None
+    pending_normalized_quality_score: float | None = None
+    pending_quality_episode: int | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> "TrainingPhaseController":
@@ -103,14 +146,16 @@ class TrainingPhaseController:
             "score_improving",
             "constrained_weighted",
             "aligned_quality",
+            "balanced_guarded_v7",
         }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
                 "'completion_only', 'score_improving', or "
-                "'constrained_weighted', or 'aligned_quality'"
+                "'constrained_weighted', 'aligned_quality', or "
+                "'balanced_guarded_v7'"
             )
         constraints: dict[str, float] = {}
-        if promotion == "constrained_weighted":
+        if promotion in {"constrained_weighted", "balanced_guarded_v7"}:
             configured_constraints = settings.get(
                 "quality_promotion_constraints"
             )
@@ -119,10 +164,20 @@ class TrainingPhaseController:
                     "two_stage.quality_promotion_constraints must be an object"
                 )
             required_constraints = (
-                "flow_relative_tolerance",
-                "cost_relative_tolerance",
-                "variance_relative_tolerance",
-                "minimum_normalized_score_improvement",
+                (
+                    "minimum_normalized_quality_improvement",
+                    "variance_relative_tolerance",
+                    "sampled_completion_drop_tolerance",
+                    "fatigue_cvar_relative_tolerance",
+                    "tail_fraction",
+                )
+                if promotion == "balanced_guarded_v7"
+                else (
+                    "flow_relative_tolerance",
+                    "cost_relative_tolerance",
+                    "variance_relative_tolerance",
+                    "minimum_normalized_score_improvement",
+                )
             )
             for name in required_constraints:
                 if name not in configured_constraints:
@@ -192,6 +247,13 @@ class TrainingPhaseController:
                 )
                 return "transition"
             return "feasibility"
+        if self.quality_checkpoint_promotion == "balanced_guarded_v7":
+            return self._observe_balanced_greedy_candidate(
+                completion_rate=rate,
+                completed_episodes=completed_episodes,
+                score=score,
+                normalized_quality_score=normalized_quality_score,
+            )
         if self.quality_checkpoint_promotion == "aligned_quality":
             anchor = self.accepted_normalized_quality_score
             anchor_episode = self.accepted_quality_episode
@@ -287,6 +349,183 @@ class TrainingPhaseController:
             anchor_episode=self.accepted_quality_episode,
         )
         return "rejected"
+
+    def _observe_balanced_greedy_candidate(
+        self,
+        *,
+        completion_rate: float,
+        completed_episodes: int,
+        score: tuple[float, float, float, float] | None,
+        normalized_quality_score: float | None,
+    ) -> str:
+        anchor = self.accepted_normalized_quality_score
+        anchor_score = self.accepted_quality_score
+        finite = bool(
+            score is not None
+            and len(score) == 4
+            and normalized_quality_score is not None
+            and math.isfinite(float(normalized_quality_score))
+            and all(math.isfinite(float(value)) for value in score)
+            and anchor is not None
+            and math.isfinite(float(anchor))
+            and anchor_score is not None
+            and len(anchor_score) == 4
+        )
+        constraints = self.quality_promotion_constraints
+        completion_pass = completion_rate >= 1.0 - 1e-12
+        quality_pass = bool(
+            finite
+            and float(normalized_quality_score)
+            <= float(anchor)
+            - constraints["minimum_normalized_quality_improvement"]
+            + 1e-12
+        )
+        variance_pass = bool(
+            finite
+            and float(score[3])
+            <= float(anchor_score[3])
+            * (1.0 + constraints["variance_relative_tolerance"])
+            + 1e-12
+        )
+        checks = (
+            (completion_pass, "greedy_completion_below_one"),
+            (finite, "missing_or_non_finite_promotion_metric"),
+            (quality_pass, "normalized_quality_not_improved"),
+            (variance_pass, "variance_regressed"),
+        )
+        reason = next(
+            (failure for passed, failure in checks if not passed),
+            "sampled_guard_pending",
+        )
+        event = (
+            "sampled_guard_pending"
+            if reason == "sampled_guard_pending"
+            else "rejected"
+        )
+        if event == "sampled_guard_pending":
+            self.pending_quality_score = score
+            self.pending_normalized_quality_score = float(
+                normalized_quality_score
+            )
+            self.pending_quality_episode = int(completed_episodes)
+        else:
+            self.rejected_quality_updates += 1
+        self.last_promotion_diagnostics = {
+            "promotion_mode": "balanced_guarded_v7",
+            "promotion_event": event,
+            "promotion_decision_reason": reason,
+            "promotion_candidate_normalized_quality_score": (
+                float(normalized_quality_score)
+                if normalized_quality_score is not None
+                and math.isfinite(float(normalized_quality_score))
+                else None
+            ),
+            "promotion_anchor_normalized_quality_score": anchor,
+            "promotion_anchor_episode": self.accepted_quality_episode,
+            "promotion_completion_constraint_pass": completion_pass,
+            "promotion_variance_constraint_pass": variance_pass,
+            "promotion_normalized_quality_constraint_pass": quality_pass,
+            "promotion_sampled_guard_executed": False,
+        }
+        return event
+
+    def observe_sampled_guard(
+        self,
+        sampled: dict,
+        *,
+        completed_episodes: int,
+        transition_anchor: bool = False,
+    ) -> str:
+        """Resolve the delayed sampled guard after greedy eligibility."""
+        if self.quality_checkpoint_promotion != "balanced_guarded_v7":
+            raise ValueError("sampled guard is only valid for balanced_guarded_v7")
+        completion = float(
+            sampled.get(
+                "minimum_repeat_completion_rate",
+                sampled.get("completion_rate", float("nan")),
+            )
+        )
+        cvar = float(sampled.get("fatigue_cvar90", float("nan")))
+        safe_pass = bool(sampled.get("fatigue_safe_line_pass", False))
+        finite = math.isfinite(completion) and math.isfinite(cvar)
+        if transition_anchor:
+            passed = finite and safe_pass
+            reason = "transition_anchor" if passed else "unsafe_transition_anchor"
+            event = "transition" if passed else "rejected"
+            if not passed:
+                self.phase = "feasibility"
+                self.phase_transition_episode = None
+                self.consecutive_successes = 0
+                self.accepted_quality_score = None
+                self.accepted_normalized_quality_score = None
+                self.accepted_quality_episode = None
+        else:
+            anchor_completion = self.accepted_sampled_completion_rate
+            anchor_cvar = self.accepted_sampled_fatigue_cvar90
+            constraints = self.quality_promotion_constraints
+            completion_pass = bool(
+                finite
+                and anchor_completion is not None
+                and completion
+                >= anchor_completion
+                - constraints["sampled_completion_drop_tolerance"]
+                - 1e-12
+            )
+            fatigue_limit = (
+                float(anchor_cvar)
+                * (1.0 + constraints["fatigue_cvar_relative_tolerance"])
+                if anchor_cvar is not None
+                else float("nan")
+            )
+            fatigue_pass = bool(
+                finite
+                and anchor_cvar is not None
+                and cvar <= fatigue_limit + 1e-12
+            )
+            checks = (
+                (completion_pass, "sampled_completion_regressed"),
+                (fatigue_pass, "sampled_fatigue_cvar_regressed"),
+                (safe_pass, "sampled_fatigue_safety_violation"),
+            )
+            reason = next(
+                (failure for passed, failure in checks if not passed),
+                "accepted",
+            )
+            event = "accepted" if reason == "accepted" else "rejected"
+            self.last_promotion_diagnostics.update(
+                {
+                    "promotion_sampled_completion_constraint_pass": completion_pass,
+                    "promotion_sampled_fatigue_cvar_constraint_pass": fatigue_pass,
+                }
+            )
+        self.last_promotion_diagnostics.update(
+            {
+                "promotion_event": event,
+                "promotion_decision_reason": reason,
+                "promotion_sampled_guard_executed": True,
+                "promotion_candidate_sampled_completion_rate": completion,
+                "promotion_anchor_sampled_completion_rate": self.accepted_sampled_completion_rate,
+                "promotion_candidate_sampled_fatigue_cvar90": cvar,
+                "promotion_anchor_sampled_fatigue_cvar90": self.accepted_sampled_fatigue_cvar90,
+                "promotion_sampled_fatigue_safe_line_pass": safe_pass,
+            }
+        )
+        if event in {"transition", "accepted"}:
+            self.accepted_sampled_completion_rate = completion
+            self.accepted_sampled_fatigue_cvar90 = cvar
+            if event == "accepted":
+                self.accepted_quality_score = self.pending_quality_score
+                self.accepted_normalized_quality_score = (
+                    self.pending_normalized_quality_score
+                )
+                self.accepted_quality_episode = int(completed_episodes)
+                self.accepted_quality_updates += 1
+        else:
+            self.rejected_quality_updates += 1
+        self.pending_quality_score = None
+        self.pending_normalized_quality_score = None
+        self.pending_quality_episode = None
+        return event
 
     def _observe_constrained_candidate(
         self,
@@ -486,6 +725,7 @@ class TrainingPhaseController:
         if self.quality_checkpoint_promotion in {
             "constrained_weighted",
             "aligned_quality",
+            "balanced_guarded_v7",
         }:
             result.update(
                 {
@@ -498,6 +738,12 @@ class TrainingPhaseController:
                     ),
                     "last_promotion_diagnostics": dict(
                         self.last_promotion_diagnostics
+                    ),
+                    "accepted_sampled_completion_rate": (
+                        self.accepted_sampled_completion_rate
+                    ),
+                    "accepted_sampled_fatigue_cvar90": (
+                        self.accepted_sampled_fatigue_cvar90
                     ),
                 }
             )
@@ -1116,6 +1362,7 @@ def _evaluate_sampled_validation(
 ) -> dict:
     all_rows: list[dict] = []
     reference: dict | None = None
+    repeat_completion_rates: list[float] = []
     for sampling_seed in sampling_seeds:
         if use_parallel:
             if runner is None:
@@ -1141,6 +1388,7 @@ def _evaluate_sampled_validation(
             )
         all_rows.extend(rows)
         reference = aggregate
+        repeat_completion_rates.append(float(aggregate["completion_rate"]))
     if reference is None:
         raise ValueError("sampled validation requires at least one seed")
     combined = aggregate_evaluation_rows(
@@ -1155,6 +1403,36 @@ def _evaluate_sampled_validation(
     combined["unique_instance_count"] = (
         combined["instance_count"] // len(sampling_seeds)
     )
+    combined["repeat_completion_rates"] = repeat_completion_rates
+    combined["minimum_repeat_completion_rate"] = min(
+        repeat_completion_rates
+    )
+    fatigue_values = sorted(
+        float(row["maximum_worker_fatigue"])
+        for row in all_rows
+        if row.get("maximum_worker_fatigue") is not None
+        and math.isfinite(float(row["maximum_worker_fatigue"]))
+    )
+    tail_fraction = float(
+        config["training"]["two_stage"]
+        .get("quality_promotion_constraints", {})
+        .get("tail_fraction", 0.10)
+    )
+    tail_count = max(1, int(math.ceil(len(fatigue_values) * tail_fraction)))
+    fatigue_tail = fatigue_values[-tail_count:] if fatigue_values else []
+    combined["fatigue_cvar90"] = (
+        sum(fatigue_tail) / len(fatigue_tail)
+        if fatigue_tail
+        else float("nan")
+    )
+    combined["maximum_observed_fatigue"] = (
+        max(fatigue_values) if fatigue_values else float("nan")
+    )
+    combined["fatigue_safe_line_pass"] = all(
+        float(row.get("maximum_worker_fatigue", float("inf")))
+        <= float(row.get("safe_fatigue_limit", float("-inf"))) + 1e-12
+        for row in all_rows
+    )
     return combined
 
 
@@ -1167,6 +1445,24 @@ def _normalized_validation_quality_score(
         return None
     result = float(score[1])
     return result if math.isfinite(result) and result >= 0.0 else None
+
+
+def _balanced_guard_score(
+    validation: dict,
+) -> tuple[float, float, float, float]:
+    base = evaluation_selection_key(validation)
+    metrics = validation["all_instance_metrics"]
+
+    def mean(name: str) -> float:
+        value = metrics.get(name, {}).get("mean")
+        return float(value) if value is not None else math.inf
+
+    return (
+        float(base[0]),
+        float(base[1]),
+        mean("reconfiguration_cost"),
+        mean("worker_load_variance"),
+    )
 
 
 def _official_evaluation_sampling_seeds(config: dict) -> list[int]:
@@ -1433,6 +1729,27 @@ def _training_effect_fields(metrics: dict) -> dict:
         ),
         "production_defer_wait_time": metrics.get(
             "production_defer_wait_time"
+        ),
+        **{
+            name: metrics.get(name, 0)
+            for name in (
+                "conditional_worker_wait_opportunity_count",
+                "conditional_worker_wait_selected_count",
+                "conditional_worker_wait_total_ticks",
+                "conditional_worker_wait_total_time",
+                "conditional_worker_wait_pair_gain_sum",
+                "conditional_worker_wait_fatigue_improvement_sum",
+                "conditional_worker_wait_duration_improvement_ticks_sum",
+                "conditional_worker_wait_max_consecutive_observed",
+                "reconfiguration_reuse_count",
+                "qualification_scarcity_regret",
+                "qualification_scarcity_decision_count",
+            )
+        },
+        "conditional_worker_wait_reason_counts": json.dumps(
+            metrics.get("conditional_worker_wait_reason_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
         ),
         "machine_waiting_for_worker_time": metrics.get(
             "machine_waiting_for_worker_time"
@@ -2161,13 +2478,22 @@ def train(
                 completed_episodes=completed_episodes,
             )
             score = evaluation_selection_key(validation)
+            if (
+                phase_controller.quality_checkpoint_promotion
+                == "balanced_guarded_v7"
+            ):
+                score = _balanced_guard_score(validation)
             normalized_quality_score = (
                 _normalized_validation_quality_score(
                     score,
                     config["reward"],
                 )
                 if phase_controller.quality_checkpoint_promotion
-                in {"constrained_weighted", "aligned_quality"}
+                in {
+                    "constrained_weighted",
+                    "aligned_quality",
+                    "balanced_guarded_v7",
+                }
                 else None
             )
             stability = stability_controller.observe_greedy(
@@ -2179,6 +2505,9 @@ def train(
             if stability_controller.should_run_sampled(
                 final_validation=completed_episodes == episodes,
                 completed_episodes=completed_episodes,
+            ) and (
+                phase_controller.quality_checkpoint_promotion
+                != "balanced_guarded_v7"
             ):
                 sampled_validation = _evaluate_sampled_validation(
                     config,
@@ -2203,6 +2532,34 @@ def train(
                 score=score,
                 normalized_quality_score=normalized_quality_score,
             )
+            if (
+                phase_controller.quality_checkpoint_promotion
+                == "balanced_guarded_v7"
+                and validation_event
+                in {"transition", "sampled_guard_pending"}
+            ):
+                sampled_validation = _evaluate_sampled_validation(
+                    config,
+                    dataset_name=validation_split,
+                    ppo_agent=agent,
+                    instance_limit=validation_limit,
+                    sampling_seeds=_official_evaluation_sampling_seeds(
+                        config
+                    ),
+                )
+                stability_controller.sampled_validation_runs += 1
+                last_sampled_validation = sampled_validation
+                last_sampled_validation_episode = completed_episodes
+                _attach_sampled_validation(
+                    validation_row,
+                    sampled_validation,
+                    completed_episodes=completed_episodes,
+                )
+                validation_event = phase_controller.observe_sampled_guard(
+                    sampled_validation,
+                    completed_episodes=completed_episodes,
+                    transition_anchor=validation_event == "transition",
+                )
             last_validation_event = validation_event
             validation_row["candidate_phase"] = reward_phase
             validation_row["validation_event"] = validation_event
@@ -2274,6 +2631,7 @@ def train(
                 update_rows[-1]["candidate_status"] = "phase_transition"
             if validation_event in {"transition", "promoted", "accepted"}:
                 accepted_metadata = {
+                    **_checkpoint_protocol_metadata(config),
                     "checkpoint_role": "shadow_best",
                     "seed": config["seed"],
                     "accepted_episode": completed_episodes,
@@ -2940,13 +3298,22 @@ def _train_parallel(
                     completed_episodes=completed_episodes,
                 )
                 score = evaluation_selection_key(validation)
+                if (
+                    phase_controller.quality_checkpoint_promotion
+                    == "balanced_guarded_v7"
+                ):
+                    score = _balanced_guard_score(validation)
                 normalized_quality_score = (
                     _normalized_validation_quality_score(
                         score,
                         config["reward"],
                     )
                     if phase_controller.quality_checkpoint_promotion
-                    in {"constrained_weighted", "aligned_quality"}
+                    in {
+                        "constrained_weighted",
+                        "aligned_quality",
+                        "balanced_guarded_v7",
+                    }
                     else None
                 )
                 stability = stability_controller.observe_greedy(
@@ -2958,6 +3325,9 @@ def _train_parallel(
                 if stability_controller.should_run_sampled(
                     final_validation=completed_episodes == episodes,
                     completed_episodes=completed_episodes,
+                ) and (
+                    phase_controller.quality_checkpoint_promotion
+                    != "balanced_guarded_v7"
                 ):
                     sampled_validation = _evaluate_sampled_validation(
                         config,
@@ -2986,6 +3356,36 @@ def _train_parallel(
                     score=score,
                     normalized_quality_score=normalized_quality_score,
                 )
+                if (
+                    phase_controller.quality_checkpoint_promotion
+                    == "balanced_guarded_v7"
+                    and validation_event
+                    in {"transition", "sampled_guard_pending"}
+                ):
+                    sampled_validation = _evaluate_sampled_validation(
+                        config,
+                        dataset_name=validation_split,
+                        ppo_agent=agent,
+                        instance_limit=validation_limit,
+                        sampling_seeds=(
+                            _official_evaluation_sampling_seeds(config)
+                        ),
+                        runner=runner,
+                        use_parallel=validation_parallel_envs > 1,
+                    )
+                    stability_controller.sampled_validation_runs += 1
+                    last_sampled_validation = sampled_validation
+                    last_sampled_validation_episode = completed_episodes
+                    _attach_sampled_validation(
+                        validation_row,
+                        sampled_validation,
+                        completed_episodes=completed_episodes,
+                    )
+                    validation_event = phase_controller.observe_sampled_guard(
+                        sampled_validation,
+                        completed_episodes=completed_episodes,
+                        transition_anchor=validation_event == "transition",
+                    )
                 last_validation_event = validation_event
                 validation_row["candidate_phase"] = reward_phase
                 validation_row["validation_event"] = validation_event
@@ -3078,6 +3478,7 @@ def _train_parallel(
                     agent.save(
                         accepted_checkpoint,
                         metadata={
+                            **_checkpoint_protocol_metadata(config),
                             "checkpoint_role": "shadow_best",
                             "seed": config["seed"],
                             "parallel_envs": parallel_envs,

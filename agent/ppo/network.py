@@ -85,7 +85,7 @@ class TypedActorCritic(nn.Module):
         )
 
     def network_spec(self) -> dict[str, Any]:
-        return {
+        spec = {
             "encoder_type": "typed_mlp",
             "hidden_dim": self.hidden_dim,
             "policy_head_version": 5,
@@ -93,6 +93,7 @@ class TypedActorCritic(nn.Module):
             "observation_schema_version": 3,
             "feature_dimensions": dict(self.feature_dimensions),
         }
+        return spec
 
     def forward(
         self,
@@ -391,7 +392,8 @@ BIDIRECTIONAL_EDGE_TYPES: frozenset[EdgeType] = frozenset(
 )
 
 POLICY_HEAD_VERSION = 6
-PRODUCTION_RELATIVE_FEATURE_NAMES: tuple[str, ...] = (
+SUPPORTED_POLICY_HEAD_VERSIONS = (6, 7)
+V6_PRODUCTION_RELATIVE_FEATURE_NAMES: tuple[str, ...] = (
     "processing_time_norm",
     "reconfiguration_time_norm",
     "fixed_reconfiguration_cost_norm",
@@ -399,7 +401,7 @@ PRODUCTION_RELATIVE_FEATURE_NAMES: tuple[str, ...] = (
     "estimated_downtime_cost_norm",
     "horizon_slack_norm",
 )
-WORKER_RELATIVE_FEATURE_NAMES: tuple[str, ...] = (
+V6_WORKER_RELATIVE_FEATURE_NAMES: tuple[str, ...] = (
     "stage_duration_norm",
     "projected_fatigue_ratio",
     "incremental_labor_cost_norm",
@@ -429,13 +431,44 @@ PRODUCTION_RELATIVE_DIRECTIONS: tuple[float, ...] = (
     -1.0,
     1.0,
 )
+V7_PRODUCTION_FUTURE_FEATURE_NAMES: tuple[str, ...] = (
+    "processing_time_norm",
+    "reconfiguration_time_norm",
+    "total_reconfiguration_cost_norm",
+    "horizon_slack_norm",
+    "future_configuration_reuse_value_norm",
+    "configuration_opportunity_cost_norm",
+)
+V7_WORKER_FUTURE_FEATURE_NAMES: tuple[str, ...] = (
+    "stage_duration_norm",
+    "fatigue_headroom_ratio",
+    "total_incremental_cost_norm",
+    "incremental_load_variance_norm",
+    "qualification_opportunity_cost_norm",
+    "recovery_eta_norm",
+    "remaining_service_capacity_norm",
+)
+PRODUCTION_RELATIVE_FEATURE_NAMES = V6_PRODUCTION_RELATIVE_FEATURE_NAMES
+WORKER_RELATIVE_FEATURE_NAMES = V6_WORKER_RELATIVE_FEATURE_NAMES
 WORKER_RELATIVE_DIRECTIONS: tuple[float, ...] = (-1.0,) * len(
-    WORKER_RELATIVE_FEATURE_NAMES
+    V6_WORKER_RELATIVE_FEATURE_NAMES
 )
 DEFAULT_CONTEXT_GATE_INITIAL_LOGIT = -4.0
 V6_CANDIDATE_CONTEXT_MODE = "common_plus_gated_residual_v6"
 V6_RELATIVE_WEIGHT_PARAMETERIZATION = "independent_softplus_signed_v6"
 V6_WORKER_RELATIVE_WEIGHT_SHARING = "independent_softplus_v6"
+V7_BOUNDED_CONTEXT_MODE = "bounded_ranker_scale_v7"
+PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
+    "legal_candidate_count_norm",
+    "configuration_match_rate",
+    "minimum_reconfiguration_time_norm",
+    "mean_reconfiguration_time_norm",
+    "minimum_total_reconfiguration_cost_norm",
+    "mean_total_reconfiguration_cost_norm",
+    "minimum_horizon_slack_norm",
+    "next_defer_event_distance_norm",
+    "projected_legal_candidate_gain_norm",
+)
 
 
 def _relation_key(edge_type: EdgeType) -> str:
@@ -459,13 +492,23 @@ def _positive_weight_tuple(
     return values
 
 
-def _validate_v6_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
+def _relative_directions(names: Sequence[str]) -> tuple[float, ...]:
+    positive = {
+        "horizon_slack_norm",
+        "future_configuration_reuse_value_norm",
+        "fatigue_headroom_ratio",
+        "remaining_service_capacity_norm",
+    }
+    return tuple(1.0 if name in positive else -1.0 for name in names)
+
+
+def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
     version = int(config.get("policy_head_version", POLICY_HEAD_VERSION))
-    if version != POLICY_HEAD_VERSION:
+    if version not in SUPPORTED_POLICY_HEAD_VERSIONS:
         raise ValueError(
-            "this source tree implements policy_head_version=6 only for "
-            "hetero_gnn; v5 checkpoints and configurations require retraining "
-            "or checkout of commit 002f13d"
+            "policy_head_version must be 6 or 7; older checkpoints require "
+            "retraining or their historical source tree and v6/v7 weights "
+            "are never converted"
         )
     semantics = str(
         config.get("production_action_semantics", "pair_plus_defer_v1")
@@ -492,23 +535,41 @@ def _validate_v6_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]
             WORKER_RELATIVE_FEATURE_NAMES if worker_enabled else (),
         )
     )
-    if production_enabled and production_names != PRODUCTION_RELATIVE_FEATURE_NAMES:
-        raise ValueError(
-            "network.production_relative_feature_names must match the v6 "
-            f"schema {PRODUCTION_RELATIVE_FEATURE_NAMES}"
+    allowed_production = (
+        (V6_PRODUCTION_RELATIVE_FEATURE_NAMES,)
+        if version == 6
+        else (
+            V6_PRODUCTION_RELATIVE_FEATURE_NAMES,
+            V7_PRODUCTION_FUTURE_FEATURE_NAMES,
         )
-    if worker_enabled and worker_names != WORKER_RELATIVE_FEATURE_NAMES:
+    )
+    allowed_worker = (
+        (V6_WORKER_RELATIVE_FEATURE_NAMES,)
+        if version == 6
+        else (V6_WORKER_RELATIVE_FEATURE_NAMES, V7_WORKER_FUTURE_FEATURE_NAMES)
+    )
+    if production_enabled and production_names not in allowed_production:
         raise ValueError(
-            "network.worker_relative_feature_names must match the v6 schema "
-            f"{WORKER_RELATIVE_FEATURE_NAMES}"
+            "network.production_relative_feature_names does not match a "
+            f"policy-head v{version} schema"
+        )
+    if worker_enabled and worker_names not in allowed_worker:
+        raise ValueError(
+            "network.worker_relative_feature_names does not match a "
+            f"policy-head v{version} schema"
         )
     context_mode = str(
         config.get("candidate_context_mode", V6_CANDIDATE_CONTEXT_MODE)
     )
-    if context_mode != V6_CANDIDATE_CONTEXT_MODE:
+    allowed_context_modes = (
+        {V6_CANDIDATE_CONTEXT_MODE}
+        if version == 6
+        else {V6_CANDIDATE_CONTEXT_MODE, V7_BOUNDED_CONTEXT_MODE}
+    )
+    if context_mode not in allowed_context_modes:
         raise ValueError(
-            "network.candidate_context_mode must be "
-            f"{V6_CANDIDATE_CONTEXT_MODE!r}"
+            "network.candidate_context_mode is incompatible with "
+            f"policy-head v{version}"
         )
     parameterization = str(
         config.get(
@@ -546,24 +607,51 @@ def _validate_v6_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]
     )
     if not np.isfinite(common_gate) or not np.isfinite(residual_gate):
         raise ValueError("network context-gate initial logits must be finite")
+    residual_scale_ratio = float(config.get("residual_scale_ratio", 2.0))
+    if not np.isfinite(residual_scale_ratio) or residual_scale_ratio <= 0.0:
+        raise ValueError("network.residual_scale_ratio must be positive")
+    production_defaults = (
+        DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS
+        if production_names == V6_PRODUCTION_RELATIVE_FEATURE_NAMES
+        else tuple(0.30 if index < 4 else 0.20 for index in range(len(production_names)))
+    )
+    worker_defaults = (
+        DEFAULT_WORKER_RELATIVE_INITIAL_WEIGHTS
+        if worker_names == V6_WORKER_RELATIVE_FEATURE_NAMES
+        else tuple(0.30 if index < 2 else 0.20 for index in range(len(worker_names)))
+    )
     return {
+        "policy_head_version": version,
+        "production_relative_feature_names": production_names,
+        "worker_relative_feature_names": worker_names,
+        "candidate_context_mode": context_mode,
+        "production_commit_set_scorer": bool(
+            config.get("production_commit_set_scorer", False)
+        ),
+        "future_value_features": bool(
+            config.get("future_value_features", False)
+        ),
+        "worker_common_context_enabled": bool(
+            config.get("worker_common_context_enabled", True)
+        ),
+        "residual_scale_ratio": residual_scale_ratio,
         "production_relative_initial_weights": (
             _positive_weight_tuple(
                 config,
                 "production_relative_initial_weights",
-                DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS,
+                production_defaults,
             )
             if production_enabled
-            else DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS
+            else production_defaults
         ),
         "worker_relative_initial_weights": (
             _positive_weight_tuple(
                 config,
                 "worker_relative_initial_weights",
-                DEFAULT_WORKER_RELATIVE_INITIAL_WEIGHTS,
+                worker_defaults,
             )
             if worker_enabled
-            else DEFAULT_WORKER_RELATIVE_INITIAL_WEIGHTS
+            else worker_defaults
         ),
         "common_context_gate_initial_logit": common_gate,
         "residual_context_gate_initial_logit": residual_gate,
@@ -651,9 +739,8 @@ def assert_network_config_matches_spec(
                 "checkpoint policy head version is incompatible with the "
                 "current network: "
                 f"configured={configured_policy_head}, "
-                f"checkpoint={saved_policy_head}; policy-head v5 and older "
-                "checkpoints are not automatically converted to v6 and must "
-                "be retrained (use commit 002f13d to reproduce v5)"
+                f"checkpoint={saved_policy_head}; older policy heads are "
+                "not automatically converted to v6 or v7"
             )
         configured_semantics = str(
             config.get(
@@ -736,6 +823,42 @@ def assert_network_config_matches_spec(
                     f"network: configured={configured_value}, "
                     f"checkpoint={saved_value}"
                 )
+        if configured_policy_head == 7:
+            for field in (
+                "production_commit_set_scorer",
+                "future_value_features",
+                "worker_common_context_enabled",
+                "residual_scale_ratio",
+                "action_set_feature_names",
+            ):
+                configured_defaults = {
+                    "production_commit_set_scorer": False,
+                    "future_value_features": False,
+                    "worker_common_context_enabled": True,
+                    "residual_scale_ratio": 2.0,
+                }
+                if field == "action_set_feature_names":
+                    configured_value = (
+                        PRODUCTION_ACTION_SET_FEATURE_NAMES
+                        if bool(
+                            config.get(
+                                "production_commit_set_scorer", False
+                            )
+                        )
+                        else ()
+                    )
+                else:
+                    configured_value = config.get(
+                        field, configured_defaults[field]
+                    )
+                saved_value = checkpoint_spec.get(field)
+                if configured_value != saved_value:
+                    raise ValueError(
+                        f"checkpoint {field} is incompatible with the "
+                        "current network: "
+                        f"configured={configured_value}, "
+                        f"checkpoint={saved_value}"
+                    )
     configured_features = config.get("feature_dimensions")
     saved_features = checkpoint_spec.get("feature_dimensions")
     configured_edges = config.get("edge_feature_dimensions")
@@ -1018,6 +1141,18 @@ class HeteroGraphActorCritic(nn.Module):
         residual_context_gate_initial_logit: float = (
             DEFAULT_CONTEXT_GATE_INITIAL_LOGIT
         ),
+        policy_head_version: int = POLICY_HEAD_VERSION,
+        production_relative_feature_names: Sequence[str] = (
+            V6_PRODUCTION_RELATIVE_FEATURE_NAMES
+        ),
+        worker_relative_feature_names: Sequence[str] = (
+            V6_WORKER_RELATIVE_FEATURE_NAMES
+        ),
+        candidate_context_mode: str = V6_CANDIDATE_CONTEXT_MODE,
+        production_commit_set_scorer: bool = False,
+        future_value_features: bool = False,
+        worker_common_context_enabled: bool = True,
+        residual_scale_ratio: float = 2.0,
     ):
         super().__init__()
         self.feature_dimensions = {
@@ -1062,14 +1197,28 @@ class HeteroGraphActorCritic(nn.Module):
         self.residual_context_gate_initial_logit = float(
             residual_context_gate_initial_logit
         )
+        self.policy_head_version = int(policy_head_version)
+        self.production_relative_feature_names = tuple(
+            production_relative_feature_names
+        )
+        self.worker_relative_feature_names = tuple(worker_relative_feature_names)
+        self.candidate_context_mode = str(candidate_context_mode)
+        self.use_production_commit_set_scorer = bool(
+            production_commit_set_scorer
+        )
+        self.use_future_value_features = bool(future_value_features)
+        self.worker_common_context_enabled = bool(
+            worker_common_context_enabled
+        )
+        self.residual_scale_ratio = float(residual_scale_ratio)
         if (
             len(self.production_relative_initial_weights)
-            != len(PRODUCTION_RELATIVE_FEATURE_NAMES)
+            != len(self.production_relative_feature_names)
         ):
             raise ValueError("production relative initial-weight width is invalid")
         if (
             len(self.worker_relative_initial_weights)
-            != len(WORKER_RELATIVE_FEATURE_NAMES)
+            != len(self.worker_relative_feature_names)
         ):
             raise ValueError("worker relative initial-weight width is invalid")
         if self.hidden_dim < 1:
@@ -1133,7 +1282,7 @@ class HeteroGraphActorCritic(nn.Module):
         )
         if self.use_production_candidate_relative_features:
             self.production_relative_ranker = nn.Linear(
-                len(PRODUCTION_RELATIVE_FEATURE_NAMES), 1, bias=False
+                len(self.production_relative_feature_names), 1, bias=False
             )
             self._initialize_monotone_ranker(
                 self.production_relative_ranker,
@@ -1152,7 +1301,7 @@ class HeteroGraphActorCritic(nn.Module):
             self.register_parameter("production_residual_context_gate", None)
         if self.use_worker_candidate_relative_features:
             self.worker_relative_ranker = nn.Linear(
-                len(WORKER_RELATIVE_FEATURE_NAMES), 1, bias=False
+                len(self.worker_relative_feature_names), 1, bias=False
             )
             self._initialize_monotone_ranker(
                 self.worker_relative_ranker,
@@ -1185,9 +1334,21 @@ class HeteroGraphActorCritic(nn.Module):
             self.hidden_dim,
             self.dropout_probability,
         )
+        self.production_commit_set = (
+            _head(
+                len(PRODUCTION_ACTION_SET_FEATURE_NAMES),
+                self.hidden_dim,
+                self.dropout_probability,
+            )
+            if self.use_production_commit_set_scorer
+            else None
+        )
+        if self.production_commit_set is not None:
+            self._initialize_zero_context_output(self.production_commit_set)
+        self._latest_policy_decision_diagnostics: list[dict[str, Any]] = []
 
     def network_spec(self) -> dict[str, Any]:
-        return {
+        spec = {
             "encoder_type": "hetero_gnn",
             "hidden_dim": self.hidden_dim,
             "message_passing_layers": self.message_passing_layer_count,
@@ -1202,15 +1363,15 @@ class HeteroGraphActorCritic(nn.Module):
             "worker_candidate_relative_features": (
                 self.use_worker_candidate_relative_features
             ),
-            "policy_head_version": POLICY_HEAD_VERSION,
+            "policy_head_version": self.policy_head_version,
             "production_action_semantics": "pair_plus_defer_v1",
             "production_relative_feature_names": (
-                PRODUCTION_RELATIVE_FEATURE_NAMES
+                self.production_relative_feature_names
                 if self.use_production_candidate_relative_features
                 else ()
             ),
             "worker_relative_feature_names": (
-                WORKER_RELATIVE_FEATURE_NAMES
+                self.worker_relative_feature_names
                 if self.use_worker_candidate_relative_features
                 else ()
             ),
@@ -1227,7 +1388,7 @@ class HeteroGraphActorCritic(nn.Module):
                 if self.use_worker_candidate_relative_features
                 else ()
             ),
-            "candidate_context_mode": V6_CANDIDATE_CONTEXT_MODE,
+            "candidate_context_mode": self.candidate_context_mode,
             "worker_relative_weight_sharing": (
                 V6_WORKER_RELATIVE_WEIGHT_SHARING
             ),
@@ -1237,10 +1398,31 @@ class HeteroGraphActorCritic(nn.Module):
             "residual_context_gate_initial_logit": (
                 self.residual_context_gate_initial_logit
             ),
-            "observation_schema_version": 3,
+            "observation_schema_version": (
+                4 if self.policy_head_version == 7 else 3
+            ),
             "feature_dimensions": dict(self.feature_dimensions),
             "edge_feature_dimensions": dict(self.edge_feature_dimensions),
         }
+        if self.policy_head_version == 7:
+            spec.update(
+                {
+                    "production_commit_set_scorer": (
+                        self.use_production_commit_set_scorer
+                    ),
+                    "future_value_features": self.use_future_value_features,
+                    "worker_common_context_enabled": (
+                        self.worker_common_context_enabled
+                    ),
+                    "residual_scale_ratio": self.residual_scale_ratio,
+                    "action_set_feature_names": (
+                        PRODUCTION_ACTION_SET_FEATURE_NAMES
+                        if self.use_production_commit_set_scorer
+                        else ()
+                    ),
+                }
+            )
+        return spec
 
     def forward(
         self,
@@ -1283,6 +1465,8 @@ class HeteroGraphActorCritic(nn.Module):
             for observation in observations
         ):
             raise ValueError("actor cannot evaluate a terminal observation")
+
+        self._latest_policy_decision_diagnostics.clear()
 
         graph_batch = self._collate_graphs(observations, device=device)
         node_embeddings = {
@@ -1588,22 +1772,37 @@ class HeteroGraphActorCritic(nn.Module):
         horizon_slack = dense_features[
             :, edge_names.index("horizon_slack_norm")
         ]
+        production_columns = {
+            "processing_time_norm": processing,
+            "reconfiguration_time_norm": reconfiguration,
+            "fixed_reconfiguration_cost_norm": fixed_reconfiguration_cost,
+            "estimated_labor_cost_norm": labor_cost,
+            "estimated_downtime_cost_norm": downtime_cost,
+            "total_reconfiguration_cost_norm": (
+                fixed_reconfiguration_cost + labor_cost + downtime_cost
+            ),
+            "horizon_slack_norm": horizon_slack,
+        }
+        for name in (
+            "future_configuration_reuse_value_norm",
+            "configuration_opportunity_cost_norm",
+        ):
+            if name in edge_names:
+                production_columns[name] = dense_features[
+                    :, edge_names.index(name)
+                ]
         relative_features = self._standardize_candidate_features(
             torch.stack(
-                (
-                    processing,
-                    reconfiguration,
-                    fixed_reconfiguration_cost,
-                    labor_cost,
-                    downtime_cost,
-                    horizon_slack,
+                tuple(
+                    production_columns[name]
+                    for name in self.production_relative_feature_names
                 ),
                 dim=-1,
             ),
             ~action_mask[:pair_count],
         )
         production_directions = relative_features.new_tensor(
-            PRODUCTION_RELATIVE_DIRECTIONS
+            _relative_directions(self.production_relative_feature_names)
         )
         effective_weights = functional.softplus(
             self.production_relative_ranker.weight
@@ -1611,16 +1810,48 @@ class HeteroGraphActorCritic(nn.Module):
         relative_logits = functional.linear(
             relative_features, effective_weights
         ).reshape(-1)
-        common_context, residual_context = self._candidate_context_components(
+        common_context, raw_residual_context = self._candidate_context_components(
             contextual_logits,
             ~action_mask[:pair_count],
         )
-        return (
+        if self.candidate_context_mode == V7_BOUNDED_CONTEXT_MODE:
+            raw_residual_context = contextual_logits - common_context
+        residual_context = self._context_residual(
+            relative_logits,
+            raw_residual_context,
+            ~action_mask[:pair_count],
+            self.production_residual_context_gate,
+        )
+        commit_set_logit = relative_logits.new_zeros(())
+        if self.production_commit_set is not None:
+            if tuple(observation.action_set_feature_names) != (
+                PRODUCTION_ACTION_SET_FEATURE_NAMES
+            ):
+                raise ValueError(
+                    "production action-set feature schema does not match v7"
+                )
+            action_set_features = torch.as_tensor(
+                observation.action_set_features,
+                dtype=relative_logits.dtype,
+                device=device,
+            )
+            commit_set_logit = self.production_commit_set(
+                action_set_features
+            ).squeeze(-1)
+        final_logits = (
             relative_logits
             + torch.sigmoid(self.production_context_gate) * common_context
-            + torch.sigmoid(self.production_residual_context_gate)
-            * residual_context
+            + residual_context
+            + commit_set_logit
         )
+        self._record_policy_components(
+            DecisionType.PRODUCTION,
+            relative_logits,
+            final_logits,
+            action_mask,
+            commit_set_logit=commit_set_logit,
+        )
+        return final_logits
 
     def _worker_logits(
         self,
@@ -1776,21 +2007,36 @@ class HeteroGraphActorCritic(nn.Module):
         incremental_variance = dense_features[
             :, edge_names.index("incremental_load_variance_norm")
         ]
+        worker_columns = {
+            "stage_duration_norm": stage_duration,
+            "projected_fatigue_ratio": projected_fatigue,
+            "incremental_labor_cost_norm": labor_cost,
+            "incremental_downtime_cost_norm": downtime_cost,
+            "incremental_load_variance_norm": incremental_variance,
+        }
+        for name in (
+            "fatigue_headroom_ratio",
+            "total_incremental_cost_norm",
+            "qualification_opportunity_cost_norm",
+            "recovery_eta_norm",
+            "remaining_service_capacity_norm",
+        ):
+            if name in edge_names:
+                worker_columns[name] = dense_features[
+                    :, edge_names.index(name)
+                ]
         relative_features = self._standardize_candidate_features(
             torch.stack(
-                (
-                    stage_duration,
-                    projected_fatigue,
-                    labor_cost,
-                    downtime_cost,
-                    incremental_variance,
+                tuple(
+                    worker_columns[name]
+                    for name in self.worker_relative_feature_names
                 ),
                 dim=-1,
             ),
             ~action_mask[:pair_count],
         )
         worker_directions = relative_features.new_tensor(
-            WORKER_RELATIVE_DIRECTIONS
+            _relative_directions(self.worker_relative_feature_names)
         )
         effective_weights = functional.softplus(
             self.worker_relative_ranker.weight
@@ -1798,16 +2044,42 @@ class HeteroGraphActorCritic(nn.Module):
         relative_logits = functional.linear(
             relative_features, effective_weights
         ).reshape(-1)
-        common_context, residual_context = self._candidate_context_components(
+        common_context, raw_residual_context = self._candidate_context_components(
             contextual_logits,
             ~action_mask[:pair_count],
         )
-        return (
-            relative_logits
-            + torch.sigmoid(self.worker_context_gate) * common_context
-            + torch.sigmoid(self.worker_residual_context_gate)
-            * residual_context
+        if self.candidate_context_mode == V7_BOUNDED_CONTEXT_MODE:
+            raw_residual_context = contextual_logits - common_context
+        residual_context = self._context_residual(
+            relative_logits,
+            raw_residual_context,
+            ~action_mask[:pair_count],
+            self.worker_residual_context_gate,
         )
+        common_term_enabled = (
+            self.policy_head_version == 6
+            or (
+                self.worker_common_context_enabled
+                and bool(~action_mask[-1])
+            )
+        )
+        common_term = (
+            torch.sigmoid(self.worker_context_gate) * common_context
+            if common_term_enabled
+            else torch.zeros_like(common_context)
+        )
+        final_logits = (
+            relative_logits
+            + common_term
+            + residual_context
+        )
+        self._record_policy_components(
+            DecisionType.WORKER,
+            relative_logits,
+            final_logits,
+            action_mask,
+        )
+        return final_logits
 
     @staticmethod
     def _initialize_monotone_ranker(
@@ -1849,6 +2121,76 @@ class HeteroGraphActorCritic(nn.Module):
         ).squeeze(-1)
         return common.expand_as(contextual_logits), residual
 
+    def _context_residual(
+        self,
+        relative_logits: torch.Tensor,
+        raw_residual: torch.Tensor,
+        feasible: torch.Tensor,
+        gate: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.candidate_context_mode == V6_CANDIDATE_CONTEXT_MODE:
+            return torch.sigmoid(gate) * raw_residual
+        if self.candidate_context_mode != V7_BOUNDED_CONTEXT_MODE:
+            raise RuntimeError("unknown candidate context mode")
+        selected = relative_logits[feasible]
+        ranker_scale = (
+            selected.std(unbiased=False)
+            if selected.numel() >= 2
+            else relative_logits.new_zeros(())
+        ).clamp_min(1e-3)
+        return (
+            torch.sigmoid(gate)
+            * self.residual_scale_ratio
+            * ranker_scale
+            * torch.tanh(raw_residual)
+        )
+
+    def _record_policy_components(
+        self,
+        decision_type: DecisionType,
+        relative_logits: torch.Tensor,
+        final_pair_logits: torch.Tensor,
+        action_mask: torch.Tensor,
+        *,
+        commit_set_logit: torch.Tensor | None = None,
+    ) -> None:
+        feasible = ~action_mask[:-1]
+        feasible_indices = torch.nonzero(feasible, as_tuple=False).flatten()
+        if feasible_indices.numel():
+            relative_top = int(
+                feasible_indices[
+                    torch.argmax(relative_logits[feasible_indices])
+                ].detach().cpu()
+            )
+            final_top = int(
+                feasible_indices[
+                    torch.argmax(final_pair_logits[feasible_indices])
+                ].detach().cpu()
+            )
+        else:
+            relative_top = -1
+            final_top = -1
+        self._latest_policy_decision_diagnostics.append(
+            {
+                "decision_type": decision_type.value,
+                "legal_pair_count": int(feasible_indices.numel()),
+                "terminal_legal": bool((~action_mask[-1]).detach().cpu()),
+                "relative_top_action": relative_top,
+                "final_pair_top_action": final_top,
+                "context_overrode_top": relative_top != final_top,
+                "commit_set_logit": (
+                    float(commit_set_logit.detach().cpu())
+                    if commit_set_logit is not None
+                    else 0.0
+                ),
+            }
+        )
+
+    def consume_policy_decision_diagnostics(self) -> list[dict[str, Any]]:
+        values = list(self._latest_policy_decision_diagnostics)
+        self._latest_policy_decision_diagnostics.clear()
+        return values
+
     def effective_relative_cost_weights(
         self,
     ) -> dict[str, dict[str, float]]:
@@ -1859,12 +2201,14 @@ class HeteroGraphActorCritic(nn.Module):
                     self.production_relative_ranker.weight.detach()
                 ).reshape(-1)
                 * self.production_relative_ranker.weight.new_tensor(
-                    PRODUCTION_RELATIVE_DIRECTIONS
+                    _relative_directions(
+                        self.production_relative_feature_names
+                    )
                 )
             ).cpu()
             result["production"] = dict(
                 zip(
-                    PRODUCTION_RELATIVE_FEATURE_NAMES,
+                    self.production_relative_feature_names,
                     (float(value) for value in values),
                 )
             )
@@ -1874,12 +2218,12 @@ class HeteroGraphActorCritic(nn.Module):
                     self.worker_relative_ranker.weight.detach()
                 ).reshape(-1)
                 * self.worker_relative_ranker.weight.new_tensor(
-                    WORKER_RELATIVE_DIRECTIONS
+                    _relative_directions(self.worker_relative_feature_names)
                 )
             ).cpu()
             result["worker"] = dict(
                 zip(
-                    WORKER_RELATIVE_FEATURE_NAMES,
+                    self.worker_relative_feature_names,
                     (float(value) for value in values),
                 )
             )
@@ -1984,7 +2328,7 @@ def build_actor_critic(
             },
             config["hidden_dim"],
         )
-    policy_head = _validate_v6_policy_head_config(network_config)
+    policy_head = _validate_policy_head_config(network_config)
     return HeteroGraphActorCritic(
         observation.feature_dimensions,
         observation.edge_feature_dimensions,
@@ -1999,4 +2343,12 @@ def build_actor_critic(
         policy_head["worker_relative_initial_weights"],
         policy_head["common_context_gate_initial_logit"],
         policy_head["residual_context_gate_initial_logit"],
+        policy_head["policy_head_version"],
+        policy_head["production_relative_feature_names"],
+        policy_head["worker_relative_feature_names"],
+        policy_head["candidate_context_mode"],
+        policy_head["production_commit_set_scorer"],
+        policy_head["future_value_features"],
+        policy_head["worker_common_context_enabled"],
+        policy_head["residual_scale_ratio"],
     )

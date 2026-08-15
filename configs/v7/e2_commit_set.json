@@ -1,0 +1,12 @@
+{
+  "extends": "c0_v6_control.json",
+  "experiment_name": "v7_e2_commit_set",
+  "method_version": "M1_candidate_graph_v7",
+  "network": {
+    "policy_head_version": 7,
+    "candidate_context_mode": "common_plus_gated_residual_v6",
+    "production_commit_set_scorer": true,
+    "future_value_features": false,
+    "worker_common_context_enabled": false
+  }
+}

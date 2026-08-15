@@ -4,10 +4,8 @@ instance_type: "fixed_standard"
 description: "8台可重构机器、6名重构工人、15个订单和60道串行工序的固定标准算例"
 
 provenance:
-  normative_model_document: "参数定义.md"
-  graph_document: "异质动态图参数定义.md"
   pdf_is_reference_only: true
-  numeric_source_of_truth: "fixed_instance.yaml"
+  numeric_source_of_truth: "data/instances/fixed_instance.yaml"
 
 time:
   unit: "minute"
