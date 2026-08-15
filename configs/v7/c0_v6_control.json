@@ -1,7 +1,7 @@
 {
   "extends": "../default.json",
   "experiment_name": "v7_c0_v6_control",
-  "experiment_suite_version": "v7_e0_e5_protocol_v1",
+  "experiment_suite_version": "v7_e1_protocol_v1",
   "training": {
     "forced_action_compression": false,
     "two_stage": {

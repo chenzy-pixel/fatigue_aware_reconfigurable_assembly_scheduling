@@ -7,8 +7,6 @@
     "candidate_context_mode": "bounded_ranker_scale_v7",
     "residual_context_gate_initial_logit": -2.0,
     "residual_scale_ratio": 2.0,
-    "production_commit_set_scorer": false,
-    "future_value_features": false,
     "worker_common_context_enabled": false
   }
 }

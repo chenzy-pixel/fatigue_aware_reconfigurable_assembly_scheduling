@@ -1,22 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import math
-
-import numpy as np
 import pytest
 import torch
 
 from agent.ppo import PPOAgent, build_actor_critic
 from configs import load_config, project_path
 from data import load_instance_pickle
-from environment import (
-    CAPABLE_EDGE,
-    SERVICE_CANDIDATE_EDGE,
-    AssemblySchedulingEnv,
-)
-from environment.env import WorkerTaskSnapshot
-from environment.types import ReconfigurationStage
+from environment import AssemblySchedulingEnv
 
 
 def _environment(arm: str):
@@ -52,75 +43,8 @@ def test_e1_bounded_residual_has_gradient_and_ranker_scaled_bound():
     assert network.production_residual_context_gate.grad is not None
 
 
-def test_e2_commit_set_common_shift_preserves_pair_order_and_zero_alignment():
-    config, environment, observation = _environment("e2_commit_set")
-    network = build_actor_critic(observation, config["network"])
-    mask = environment.get_action_mask()
-    logits_zero, _ = network(observation, mask, device="cpu")
-    assert network.production_commit_set is not None
-    output = network.production_commit_set[-1]
-    assert torch.equal(output.weight, torch.zeros_like(output.weight))
-    assert torch.equal(output.bias, torch.zeros_like(output.bias))
-    with torch.no_grad():
-        output.bias.fill_(1.25)
-    logits_shifted, _ = network(observation, mask, device="cpu")
-    feasible = torch.as_tensor(~mask[:-1])
-    assert torch.allclose(
-        logits_shifted[:-1][feasible] - logits_zero[:-1][feasible],
-        torch.full_like(logits_zero[:-1][feasible], 1.25),
-        atol=1e-6,
-    )
-    assert torch.equal(
-        torch.argsort(logits_zero[:-1][feasible]),
-        torch.argsort(logits_shifted[:-1][feasible]),
-    )
-    assert float(logits_shifted[-1].detach()) == pytest.approx(
-        float(logits_zero[-1].detach())
-    )
-
-
-def test_e3_future_features_are_named_finite_and_monotone_directions_hold():
-    config, _, observation = _environment("e3_future_value")
-    capability = observation.relations[CAPABLE_EDGE]
-    service = observation.relations[SERVICE_CANDIDATE_EDGE]
-    for name in (
-        "current_wave_target_demand_ratio",
-        "future_wave_target_demand_ratio",
-        "target_remaining_workload_norm",
-        "configured_machine_support_ratio",
-        "future_configuration_reuse_value_norm",
-        "configuration_opportunity_cost_norm",
-        "future_horizon_risk_norm",
-    ):
-        assert name in capability.feature_names
-    for name in (
-        "fatigue_headroom_ratio",
-        "total_incremental_cost_norm",
-        "qualification_opportunity_cost_norm",
-        "recovery_eta_norm",
-        "remaining_service_capacity_norm",
-    ):
-        assert name in service.feature_names
-    assert np.isfinite(capability.edge_features).all()
-    assert np.isfinite(service.edge_features).all()
-    network = build_actor_critic(observation, config["network"])
-    weights = network.effective_relative_cost_weights()
-    assert weights["production"]["processing_time_norm"] < 0.0
-    assert weights["production"]["future_configuration_reuse_value_norm"] > 0.0
-    assert weights["worker"]["fatigue_headroom_ratio"] > 0.0
-    assert weights["worker"]["qualification_opportunity_cost_norm"] < 0.0
-    assert all(
-        math.isfinite(value)
-        for phase in weights.values()
-        for value in phase.values()
-    )
-
-
-@pytest.mark.parametrize(
-    "arm",
-    ("e1_context_exception", "e2_commit_set", "e3_future_value", "full_v7"),
-)
-def test_v7_checkpoint_round_trip_uses_exact_schema(arm, tmp_path):
+def test_v7_checkpoint_round_trip_uses_exact_schema(tmp_path):
+    arm = "e1_context_exception"
     config, _, observation = _environment(arm)
     agent = PPOAgent(
         build_actor_critic(observation, config["network"]),
@@ -146,56 +70,6 @@ def test_v7_checkpoint_round_trip_uses_exact_schema(arm, tmp_path):
     )
     with pytest.raises(ValueError, match="not automatically converted"):
         v6_clone.load(checkpoint)
-
-
-def test_e4_conditional_wait_open_and_boundary_rejections(monkeypatch):
-    _, environment, _ = _environment("e4_conditional_wait")
-    task = WorkerTaskSnapshot(
-        task_id="synthetic",
-        machine_index=0,
-        stage=ReconfigurationStage.WAIT_INS,
-        module=environment.instance.modules[0],
-    )
-    next_tick = environment.current_tick + 1
-    monkeypatch.setattr(
-        environment, "_next_decision_event_tick", lambda: next_tick
-    )
-    monkeypatch.setattr(
-        environment, "_current_worker_tasks", lambda: (task,)
-    )
-    monkeypatch.setattr(
-        environment,
-        "_projected_safe_edges_for_tasks",
-        lambda tasks, tick: ((0,),) if tick == environment.current_tick else ((0, 1),),
-    )
-    monkeypatch.setattr(
-        environment,
-        "_projected_stage_duration_ticks",
-        lambda task, worker, tick: 1,
-    )
-    monkeypatch.setattr(
-        environment,
-        "_best_projected_worker_candidate",
-        lambda tasks, edges, tick=None: (
-            (0.70, 10) if tick is None else (0.64, 9)
-        ),
-    )
-    preview = environment._conditional_worker_wait_preview()
-    assert preview is not None
-    assert preview.wait_ticks == 1
-    assert "legal_pair_gain" in preview.reason
-    assert "fatigue_improvement" in preview.reason
-    assert "duration_improvement" in preview.reason
-
-    environment._consecutive_conditional_waits = 2
-    assert environment._conditional_worker_wait_preview() is None
-    environment._consecutive_conditional_waits = 0
-    monkeypatch.setattr(
-        environment,
-        "_next_decision_event_tick",
-        lambda: environment.current_tick,
-    )
-    assert environment._conditional_worker_wait_preview() is None
 
 
 @pytest.mark.parametrize(
