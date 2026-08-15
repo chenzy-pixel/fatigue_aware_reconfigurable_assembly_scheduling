@@ -1,0 +1,12 @@
+{
+  "extends": "c0_v6_control.json",
+  "experiment_name": "v7_e1_context_exception",
+  "method_version": "M1_candidate_graph_v7",
+  "network": {
+    "policy_head_version": 7,
+    "candidate_context_mode": "bounded_ranker_scale_v7",
+    "residual_context_gate_initial_logit": -2.0,
+    "residual_scale_ratio": 2.0,
+    "worker_common_context_enabled": false
+  }
+}

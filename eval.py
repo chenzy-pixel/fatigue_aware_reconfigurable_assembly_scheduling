@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from copy import deepcopy
 from typing import Any
@@ -72,6 +73,7 @@ class EvaluationPolicy:
             raise ValueError("sampled decode_mode is only available for PPO")
         self.decode_mode = decode_mode
         self.generator: torch.Generator | None = None
+        self._episode_policy_diagnostics: list[dict[str, Any]] = []
         if policy_name == "heuristic":
             if ppo_agent is not None or checkpoint is not None:
                 raise ValueError(
@@ -130,10 +132,83 @@ class EvaluationPolicy:
                 deterministic=self.decode_mode == "greedy",
                 generator=self.generator,
             )
+            for diagnostic in (
+                self.ppo_agent.consume_policy_decision_diagnostics()
+            ):
+                diagnostic["selected_action"] = int(action)
+                diagnostic["ranker_top_selected"] = bool(
+                    int(action)
+                    == int(diagnostic.get("relative_top_action", -1))
+                )
+                self._episode_policy_diagnostics.append(diagnostic)
             return action
         if self.policy is None:
             raise RuntimeError("evaluation policy is not initialized")
         return self.policy.select_action(environment)
+
+    def begin_episode(self) -> None:
+        self._episode_policy_diagnostics.clear()
+
+    def episode_policy_metrics(self) -> dict[str, float | int]:
+        rows = list(self._episode_policy_diagnostics)
+        ranked = [row for row in rows if int(row.get("legal_pair_count", 0))]
+        production = [
+            row for row in rows if row.get("decision_type") == "production"
+        ]
+        worker = [
+            row for row in rows if row.get("decision_type") == "worker"
+        ]
+        commit_logits = [
+            float(row["commit_set_logit"])
+            for row in production
+            if math.isfinite(float(row.get("commit_set_logit", 0.0)))
+        ]
+        return {
+            "ranker_top_decision_count": len(ranked),
+            "ranker_top_selected_count": sum(
+                bool(row.get("ranker_top_selected", False)) for row in ranked
+            ),
+            "ranker_top_selection_rate": (
+                sum(bool(row.get("ranker_top_selected", False)) for row in ranked)
+                / len(ranked)
+                if ranked
+                else 0.0
+            ),
+            "context_override_count": sum(
+                bool(row.get("context_overrode_top", False)) for row in ranked
+            ),
+            "context_override_rate": (
+                sum(bool(row.get("context_overrode_top", False)) for row in ranked)
+                / len(ranked)
+                if ranked
+                else 0.0
+            ),
+            "production_pair_plus_defer_state_count": sum(
+                bool(row.get("terminal_legal", False)) for row in production
+            ),
+            "production_decision_state_count": len(production),
+            "production_pair_plus_defer_ratio": (
+                sum(bool(row.get("terminal_legal", False)) for row in production)
+                / len(production)
+                if production
+                else 0.0
+            ),
+            "worker_pair_plus_advance_state_count": sum(
+                bool(row.get("terminal_legal", False)) for row in worker
+            ),
+            "worker_decision_state_count": len(worker),
+            "worker_pair_plus_advance_ratio": (
+                sum(bool(row.get("terminal_legal", False)) for row in worker)
+                / len(worker)
+                if worker
+                else 0.0
+            ),
+            "mean_commit_set_logit": (
+                sum(commit_logits) / len(commit_logits)
+                if commit_logits
+                else 0.0
+            ),
+        }
 
     def synchronize(self) -> None:
         if self.device.type == "cuda" and torch.cuda.is_available():
@@ -207,6 +282,7 @@ def evaluate_instance(
     solve_start = time.perf_counter()
     env = AssemblySchedulingEnv(config)
     observation = env.reset(instance)
+    runner.begin_episode()
     inference_time = 0.0
     decisions = 0
     while not (env.terminated or env.truncated):
@@ -233,6 +309,7 @@ def evaluate_instance(
         1000.0 * inference_time / decisions if decisions else 0.0
     )
     metrics["schedule_violations"] = env.validate_schedule()
+    metrics.update(runner.episode_policy_metrics())
     return env, metrics
 
 
@@ -457,6 +534,39 @@ def _evaluation_row(
         ],
         "production_defer_wait_ticks": metrics["production_defer_wait_ticks"],
         "production_defer_wait_time": metrics["production_defer_wait_time"],
+        **{
+            name: metrics.get(name, 0)
+            for name in (
+                "ranker_top_decision_count",
+                "ranker_top_selected_count",
+                "ranker_top_selection_rate",
+                "context_override_count",
+                "context_override_rate",
+                "production_pair_plus_defer_state_count",
+                "production_decision_state_count",
+                "production_pair_plus_defer_ratio",
+                "worker_pair_plus_advance_state_count",
+                "worker_decision_state_count",
+                "worker_pair_plus_advance_ratio",
+                "mean_commit_set_logit",
+                "conditional_worker_wait_opportunity_count",
+                "conditional_worker_wait_selected_count",
+                "conditional_worker_wait_total_ticks",
+                "conditional_worker_wait_total_time",
+                "conditional_worker_wait_pair_gain_sum",
+                "conditional_worker_wait_fatigue_improvement_sum",
+                "conditional_worker_wait_duration_improvement_ticks_sum",
+                "conditional_worker_wait_max_consecutive_observed",
+                "reconfiguration_reuse_count",
+                "qualification_scarcity_regret",
+                "qualification_scarcity_decision_count",
+            )
+        },
+        "conditional_worker_wait_reason_counts": json.dumps(
+            metrics.get("conditional_worker_wait_reason_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
         **{
             name: metrics[name]
             for name in (

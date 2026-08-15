@@ -5,7 +5,7 @@
   "algorithm_seeds": [11, 23, 37, 53, 71],
   "device": "cpu",
   "paths": {
-    "fixed_instance": "数据/fixed_instance.yaml",
+    "fixed_instance": "data/instances/fixed_instance.yaml",
     "instance_cache": "data/instances/fixed_15x4_v1.pkl",
     "manifests_root": "data/manifests",
     "instances_root": "data/instances",

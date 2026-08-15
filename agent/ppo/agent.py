@@ -331,6 +331,17 @@ class PPOAgent:
             raise FloatingPointError("policy-head diagnostics are non-finite")
         return result
 
+    def consume_policy_decision_diagnostics(self) -> list[dict[str, Any]]:
+        consume = getattr(
+            self.network, "consume_policy_decision_diagnostics", None
+        )
+        if consume is None:
+            return []
+        values = consume()
+        if not isinstance(values, list):
+            raise TypeError("policy decision diagnostics must be a list")
+        return [dict(value) for value in values]
+
     def save(self, path: str | Path, metadata: dict[str, Any] | None = None) -> None:
         output = Path(path)
         output.parent.mkdir(parents=True, exist_ok=True)
