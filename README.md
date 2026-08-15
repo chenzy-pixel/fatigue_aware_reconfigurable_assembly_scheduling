@@ -2,7 +2,7 @@
 
 本项目是一个可直接运行的 PyTorch + PPO 最小系统，覆盖固定算例加载、离散事件仿真、疲劳约束、两阶段动作屏蔽、启发式/随机基线、轻量 PPO 训练与结果持久化。
 
-`数据/fixed_instance.yaml` 是数值唯一事实源；`数据/参数定义.md` 和 `数据/异质动态图参数定义.md` 定义环境语义；PDF 只作为论文方案背景。生成的 `data/instances/fixed_15x4_v1.pkl` 是可删除并重新生成的缓存。
+`data/instances/fixed_instance.yaml` 是固定标准算例的数值唯一事实源；`docs/dev_context/` 仅保存可删除的开发上下文；PDF 只作为论文方案背景。生成的 `data/instances/fixed_15x4_v1.pkl` 是可删除并重新生成的缓存。
 
 ## 建模边界
 
@@ -32,7 +32,9 @@ data/
   generate_orders.py     固定缓存、压力实例和固定数据集生成
   dataset.py             规范化记录、manifest 与哈希校验加载器
   manifests/             validation/test/ood/stress 固定集合清单
-  instances/             固定缓存及按集合划分的规范化 JSON 实例
+  instances/             标准算例、固定缓存及按集合划分的规范化 JSON 实例
+docs/
+  dev_context/           可删除的建模与图结构开发上下文
 environment/             实体、状态、动作掩码与离散事件环境
 test/                    数据、环境、端到端与 PPO 测试
 result/
