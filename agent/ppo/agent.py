@@ -17,6 +17,61 @@ from agent.ppo.network import (
     infer_checkpoint_network_spec,
 )
 from environment import Observation, PolicyObservation
+from result.provenance import (
+    network_weights_sha256,
+    provenance_with_network_weights,
+)
+
+
+def summarize_policy_decision_diagnostics(
+    rows: Sequence[dict[str, Any]],
+) -> dict[str, float | int]:
+    ranked = [row for row in rows if int(row.get("legal_pair_count", 0))]
+    production = [
+        row for row in rows if row.get("decision_type") == "production"
+    ]
+    worker = [row for row in rows if row.get("decision_type") == "worker"]
+    commit_logits = [
+        float(row["commit_set_logit"])
+        for row in production
+        if math.isfinite(float(row.get("commit_set_logit", 0.0)))
+    ]
+    ranker_top_count = sum(
+        bool(row.get("ranker_top_selected", False)) for row in ranked
+    )
+    context_override_count = sum(
+        bool(row.get("context_overrode_top", False)) for row in ranked
+    )
+    production_terminal_count = sum(
+        bool(row.get("terminal_legal", False)) for row in production
+    )
+    worker_terminal_count = sum(
+        bool(row.get("terminal_legal", False)) for row in worker
+    )
+    return {
+        "ranker_top_decision_count": len(ranked),
+        "ranker_top_selected_count": ranker_top_count,
+        "ranker_top_selection_rate": (
+            ranker_top_count / len(ranked) if ranked else 0.0
+        ),
+        "context_override_count": context_override_count,
+        "context_override_rate": (
+            context_override_count / len(ranked) if ranked else 0.0
+        ),
+        "production_pair_plus_defer_state_count": production_terminal_count,
+        "production_decision_state_count": len(production),
+        "production_pair_plus_defer_ratio": (
+            production_terminal_count / len(production) if production else 0.0
+        ),
+        "worker_pair_plus_advance_state_count": worker_terminal_count,
+        "worker_decision_state_count": len(worker),
+        "worker_pair_plus_advance_ratio": (
+            worker_terminal_count / len(worker) if worker else 0.0
+        ),
+        "mean_commit_set_logit": (
+            sum(commit_logits) / len(commit_logits) if commit_logits else 0.0
+        ),
+    }
 
 
 def read_checkpoint_network_spec(path: str | Path) -> dict[str, Any]:
@@ -346,12 +401,20 @@ class PPOAgent:
         output = Path(path)
         output.parent.mkdir(parents=True, exist_ok=True)
         saved_metadata = dict(metadata or {})
+        network_state = self.network.state_dict()
+        weights_hash = network_weights_sha256(network_state)
+        saved_metadata["network_weights_sha256"] = weights_hash
+        if isinstance(saved_metadata.get("provenance"), dict):
+            saved_metadata["provenance"] = provenance_with_network_weights(
+                saved_metadata["provenance"],
+                weights_hash,
+            )
         diagnostics = self.policy_head_diagnostics()
         if diagnostics:
             saved_metadata["policy_head_diagnostics"] = diagnostics
         torch.save(
             {
-                "network": self.network.state_dict(),
+                "network": network_state,
                 "network_spec": self.network.network_spec(),
                 "optimizer": self.optimizer.state_dict(),
                 "ppo_config": self.config,
