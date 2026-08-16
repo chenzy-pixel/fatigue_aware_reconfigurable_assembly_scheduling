@@ -78,7 +78,8 @@ def test_ppo_update_changes_parameters_and_checkpoint_reloads(
     )
     reloaded = PPOAgent(reloaded_network, config["ppo"], device="cpu")
     metadata = reloaded.load(checkpoint)
-    assert metadata == {"test": True}
+    assert metadata["test"] is True
+    assert len(metadata["network_weights_sha256"]) == 64
     for original, restored in zip(
         network.parameters(), reloaded_network.parameters()
     ):

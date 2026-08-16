@@ -258,6 +258,19 @@
       }
     }
   },
+  "evaluation": {
+    "quality_metric": {
+      "version": "canonical_bounded_quality_v1",
+      "flow_scale": 1200.0,
+      "cost_scale": 1000.0,
+      "variance_scale": 50.0,
+      "quality_weights": {
+        "flow": 0.5,
+        "cost": 0.3,
+        "variance": 0.2
+      }
+    }
+  },
   "network": {
     "encoder_type": "hetero_gnn",
     "hidden_dim": 128,

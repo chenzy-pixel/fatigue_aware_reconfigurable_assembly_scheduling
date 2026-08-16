@@ -2,11 +2,105 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from copy import deepcopy
+import hashlib
+import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "4.0.0"
+EVALUATION_SCHEMA_VERSION = "4.1.0"
+QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
+CANONICAL_QUALITY_METRIC: dict[str, Any] = {
+    "version": QUALITY_METRIC_VERSION,
+    "flow_scale": 1200.0,
+    "cost_scale": 1000.0,
+    "variance_scale": 50.0,
+    "quality_weights": {
+        "flow": 0.5,
+        "cost": 0.3,
+        "variance": 0.2,
+    },
+}
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def evaluation_quality_metric(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the immutable paper-quality metric, with a legacy fallback."""
+
+    evaluation = config.get("evaluation")
+    if evaluation is None:
+        return deepcopy(CANONICAL_QUALITY_METRIC)
+    if not isinstance(evaluation, Mapping):
+        raise TypeError("config.evaluation must be an object")
+    raw = evaluation.get("quality_metric")
+    if raw is None:
+        return deepcopy(CANONICAL_QUALITY_METRIC)
+    if not isinstance(raw, Mapping):
+        raise TypeError("config.evaluation.quality_metric must be an object")
+    metric = deepcopy(dict(raw))
+    expected_keys = set(CANONICAL_QUALITY_METRIC)
+    if set(metric) != expected_keys:
+        raise ValueError(
+            "evaluation.quality_metric must contain exactly "
+            f"{sorted(expected_keys)}"
+        )
+    weights = metric.get("quality_weights")
+    if not isinstance(weights, Mapping) or set(weights) != {
+        "flow",
+        "cost",
+        "variance",
+    }:
+        raise ValueError(
+            "evaluation.quality_metric.quality_weights must contain exactly "
+            "flow/cost/variance"
+        )
+    normalized = {
+        "version": str(metric["version"]),
+        "flow_scale": float(metric["flow_scale"]),
+        "cost_scale": float(metric["cost_scale"]),
+        "variance_scale": float(metric["variance_scale"]),
+        "quality_weights": {
+            name: float(weights[name])
+            for name in ("flow", "cost", "variance")
+        },
+    }
+    scales = tuple(
+        normalized[name]
+        for name in ("flow_scale", "cost_scale", "variance_scale")
+    )
+    weight_values = tuple(normalized["quality_weights"].values())
+    if any(not math.isfinite(value) or value <= 0.0 for value in scales):
+        raise ValueError("evaluation quality scales must be finite and positive")
+    if any(not math.isfinite(value) or value < 0.0 for value in weight_values):
+        raise ValueError("evaluation quality weights must be finite and nonnegative")
+    if sum(weight_values) <= 0.0:
+        raise ValueError("evaluation quality weights must have a positive sum")
+    if normalized != CANONICAL_QUALITY_METRIC:
+        raise ValueError(
+            f"{QUALITY_METRIC_VERSION} is immutable and must use "
+            "flow/cost/variance scales 1200/1000/50 and weights 0.5/0.3/0.2"
+        )
+    return normalized
+
+
+def quality_metric_sha256(metric: Mapping[str, Any]) -> str:
+    normalized = evaluation_quality_metric(
+        {"evaluation": {"quality_metric": dict(metric)}}
+    )
+    return hashlib.sha256(_canonical_json_bytes(normalized)).hexdigest()
 
 
 def compare_lexicographic(
@@ -112,7 +206,25 @@ def aggregate_evaluation_rows(
     dataset: str,
     policy: str,
     manifest: str,
+    quality_metric: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    normalized_metric = evaluation_quality_metric(
+        {}
+        if quality_metric is None
+        else {"evaluation": {"quality_metric": dict(quality_metric)}}
+    )
+    metric_hash = quality_metric_sha256(normalized_metric)
+    row_hashes = {
+        str(row["quality_metric_sha256"])
+        for row in rows
+        if row.get("quality_metric_sha256") is not None
+    }
+    if len(row_hashes) > 1:
+        raise ValueError("cannot aggregate rows with different quality metrics")
+    if row_hashes and row_hashes != {metric_hash}:
+        raise ValueError(
+            "row quality metric hash does not match the aggregate metric"
+        )
     completed = [
         row
         for row in rows
@@ -132,6 +244,12 @@ def aggregate_evaluation_rows(
         ),
         "heuristic_quality_score": summarize_values(
             row.get("heuristic_quality_score") for row in rows
+        ),
+        "reward_quality_score": summarize_values(
+            row.get("reward_quality_score") for row in rows
+        ),
+        "heuristic_reward_quality_score": summarize_values(
+            row.get("heuristic_reward_quality_score") for row in rows
         ),
         "flow_time_objective": summarize_values(
             row["flow_time_objective"] for row in rows
@@ -305,6 +423,9 @@ def aggregate_evaluation_rows(
     }
     return {
         "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+        "quality_metric_version": normalized_metric["version"],
+        "quality_metric": normalized_metric,
+        "quality_metric_sha256": metric_hash,
         "dataset": dataset,
         "manifest": manifest,
         "policy": policy,

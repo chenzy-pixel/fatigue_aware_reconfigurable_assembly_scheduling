@@ -38,7 +38,9 @@ from eval import (
     load_configured_instance,
 )
 from result import (
+    EVALUATION_SCHEMA_VERSION,
     aggregate_evaluation_rows,
+    build_provenance,
     create_run_directory,
     evaluation_selection_key,
 )
@@ -51,40 +53,33 @@ from result.visdom_dashboard import (
 from utils import set_seed
 
 
-_SOURCE_STATE_HASH: str | None = None
-
-
-def _source_state_hash() -> str:
-    global _SOURCE_STATE_HASH
-    if _SOURCE_STATE_HASH is not None:
-        return _SOURCE_STATE_HASH
-    root = Path(__file__).resolve().parent
-    digest = hashlib.sha256()
-    for path in sorted(
-        value
-        for value in root.rglob("*")
-        if value.is_file()
-        and value.suffix.lower() in {".py", ".json"}
-        and not any(
-            part in {".git", ".venv", "result", "__pycache__"}
-            for part in value.relative_to(root).parts
-        )
-    ):
-        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(path.read_bytes())
-    _SOURCE_STATE_HASH = digest.hexdigest()
-    return _SOURCE_STATE_HASH
+def _validation_manifest_path(config: dict) -> Path:
+    split = str(config["training"]["validation_split"])
+    return project_path(config["paths"]["manifests_root"]) / split / "manifest.json"
 
 
 def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
+    manifest = _validation_manifest_path(config)
+    provenance = build_provenance(
+        config,
+        dataset_manifest_path=manifest if manifest.is_file() else None,
+        checkpoint_metadata={
+            "experiment_suite_version": config.get(
+                "experiment_suite_version", "legacy"
+            )
+        },
+    )
     return {
         "effective_config": public_config(config),
-        "source_state_sha256": _source_state_hash(),
+        "source_state_sha256": provenance["source_state_sha256"],
+        "effective_config_sha256": provenance["effective_config_sha256"],
+        "dataset_manifest_sha256": provenance["dataset_manifest_sha256"],
         "experiment_suite_version": config.get(
             "experiment_suite_version", "legacy"
         ),
         "algorithm_seed": int(config["seed"]),
-        "result_schema_version": "4.0.0",
+        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "provenance": provenance,
     }
 
 
@@ -1520,10 +1515,19 @@ def _reevaluate_checkpoint_from_disk(
         instance_limit=instance_limit,
         sampling_seeds=sampling_seeds,
     )
+    manifest_path = _validation_manifest_path(config)
     return {
         "checkpoint": str(checkpoint),
         "checkpoint_sha256": _checkpoint_sha256(checkpoint),
         "checkpoint_metadata": metadata,
+        "provenance": build_provenance(
+            config,
+            dataset_manifest_path=(
+                manifest_path if manifest_path.is_file() else None
+            ),
+            checkpoint_path=checkpoint,
+            checkpoint_metadata=metadata,
+        ),
         "evaluation_config": {
             "dataset": dataset_name,
             "instance_limit": instance_limit,
@@ -2679,6 +2683,7 @@ def train(
                 agent.save(
                     accepted_checkpoint,
                     metadata={
+                        **_checkpoint_protocol_metadata(config),
                         "feature_dimensions": (
                             observation.feature_dimensions
                         ),
@@ -2806,6 +2811,7 @@ def train(
         else {}
     )
     final_metadata = {
+            **_checkpoint_protocol_metadata(config),
             "feature_dimensions": observation.feature_dimensions,
             "edge_feature_dimensions": (
                 observation.edge_feature_dimensions
@@ -2878,6 +2884,13 @@ def train(
             instance_limit=validation_limit,
             sampling_seeds=_official_evaluation_sampling_seeds(config),
         )
+    summary_checkpoint = checkpoint or last_checkpoint
+    summary_provenance = build_provenance(
+        config,
+        dataset_manifest_path=_validation_manifest_path(config),
+        checkpoint_path=summary_checkpoint,
+        checkpoint_metadata=_checkpoint_protocol_metadata(config),
+    )
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
@@ -2912,6 +2925,7 @@ def train(
             "unique_instance_count": len(set(instance_ids)),
             "checkpoint": str(checkpoint) if checkpoint is not None else None,
             "checkpoint_sha256": checkpoint_sha256,
+            "provenance": summary_provenance,
             "final_checkpoint_evaluation": final_checkpoint_evaluation,
             "accepted_checkpoint": (
                 str(accepted_checkpoint)
@@ -3529,6 +3543,7 @@ def _train_parallel(
                     agent.save(
                         accepted_checkpoint,
                         metadata={
+                            **_checkpoint_protocol_metadata(config),
                             "feature_dimensions": (
                                 bootstrap_observation.feature_dimensions
                             ),
@@ -3663,6 +3678,7 @@ def _train_parallel(
         else {}
     )
     final_metadata = {
+            **_checkpoint_protocol_metadata(config),
             "feature_dimensions": (
                 bootstrap_observation.feature_dimensions
             ),
@@ -3760,6 +3776,13 @@ def _train_parallel(
             instance_limit=validation_limit,
             sampling_seeds=_official_evaluation_sampling_seeds(config),
         )
+    summary_checkpoint = checkpoint or last_checkpoint
+    summary_provenance = build_provenance(
+        config,
+        dataset_manifest_path=_validation_manifest_path(config),
+        checkpoint_path=summary_checkpoint,
+        checkpoint_metadata=_checkpoint_protocol_metadata(config),
+    )
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
@@ -3810,6 +3833,7 @@ def _train_parallel(
             ),
             "checkpoint": str(checkpoint) if checkpoint is not None else None,
             "checkpoint_sha256": checkpoint_sha256,
+            "provenance": summary_provenance,
             "final_checkpoint_evaluation": final_checkpoint_evaluation,
             "accepted_checkpoint": (
                 str(accepted_checkpoint)

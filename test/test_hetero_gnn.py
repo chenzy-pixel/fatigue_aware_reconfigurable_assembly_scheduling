@@ -955,6 +955,8 @@ def test_v6_policy_head_diagnostics_and_optimizer_checkpoint_restore(
     )
     clone = PPOAgent(clone_network, effective_config["ppo"], device="cpu")
     metadata = clone.load(checkpoint, load_optimizer=True)
+    weights_hash = metadata.pop("network_weights_sha256")
+    assert len(weights_hash) == 64
     assert metadata == {
         "kind": "v6",
         "policy_head_diagnostics": agent.policy_head_diagnostics(),
@@ -1017,7 +1019,9 @@ def test_new_and_legacy_checkpoint_compatibility(
         config["ppo"],
         device="cpu",
     )
-    assert gnn_clone.load(gnn_checkpoint) == {"kind": "gnn"}
+    gnn_metadata = gnn_clone.load(gnn_checkpoint)
+    assert gnn_metadata.pop("network_weights_sha256")
+    assert gnn_metadata == {"kind": "gnn"}
 
     old_gnn_checkpoint = tmp_path / "old_gnn.pt"
     old_gnn_payload = torch.load(

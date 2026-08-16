@@ -483,6 +483,86 @@ def test_parallel_validation_matches_serial_and_preserves_rng(
     assert all(not process.is_alive() for process in processes)
 
 
+def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
+    config,
+    fixed_instance,
+):
+    effective_config = deepcopy(config)
+    effective_config["training"]["worker_timeout_seconds"] = 120
+    effective_config["environment"]["max_decisions"] = 30
+    agent = _agent(effective_config, fixed_instance)
+    sampling_seed = 100011
+    instance_limit = 10
+    timing_fields = {
+        "inference_time_seconds",
+        "solve_time_seconds",
+        "inference_time_per_decision_ms",
+    }
+
+    random.seed(314)
+    np.random.seed(314)
+    torch.manual_seed(314)
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state().clone()
+
+    serial_rows, _, _, _ = evaluate_dataset(
+        effective_config,
+        dataset_name="validation",
+        policy_name="ppo",
+        ppo_agent=agent,
+        instance_limit=instance_limit,
+        decode_mode="sampled",
+        sampling_seed=sampling_seed,
+    )
+    expected = [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in timing_fields
+        }
+        for row in serial_rows
+    ]
+
+    with ParallelEpisodeRunner(
+        config=effective_config,
+        template=fixed_instance,
+        episode_count=instance_limit,
+        worker_count=10,
+    ) as runner:
+        for parallel_envs in (1, 2, 10):
+            effective_config["training"][
+                "validation_parallel_envs"
+            ] = parallel_envs
+            parallel_rows, aggregate = evaluate_dataset_parallel(
+                effective_config,
+                dataset_name="validation",
+                ppo_agent=agent,
+                runner=runner,
+                instance_limit=instance_limit,
+                decode_mode="sampled",
+                sampling_seed=sampling_seed,
+            )
+            actual = [
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in timing_fields
+                }
+                for row in parallel_rows
+            ]
+            assert actual == expected
+            assert aggregate["parallel_envs"] == parallel_envs
+            assert all(row["action_trace_sha256"] for row in parallel_rows)
+
+    assert random.getstate() == python_state
+    after_numpy = np.random.get_state()
+    assert after_numpy[0] == numpy_state[0]
+    assert np.array_equal(after_numpy[1], numpy_state[1])
+    assert after_numpy[2:] == numpy_state[2:]
+    assert torch.equal(torch.get_rng_state(), torch_state)
+
+
 def test_serial_and_parallel_shaping_are_identical(
     config,
     fixed_instance,

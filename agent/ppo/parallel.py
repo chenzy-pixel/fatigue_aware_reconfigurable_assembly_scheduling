@@ -9,8 +9,10 @@ from multiprocessing.connection import Connection, wait
 from typing import Any, TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from agent.ppo.buffer import RolloutBuffer
+from agent.ppo.agent import summarize_policy_decision_diagnostics
 from agent.ppo.network import network_requires_graph_observation
 from data.dataset import GeneratedInstanceRecord, OnlineInstanceDataset
 from data.models import AssemblyInstance
@@ -21,6 +23,7 @@ from environment import (
     RewardVector,
     proxy_return_from_metrics,
 )
+from utils import action_trace_sha256, derive_evaluation_sampling_seed
 
 if TYPE_CHECKING:
     from agent.ppo.agent import PPOAgent
@@ -355,6 +358,7 @@ class FixedEvaluationRollout:
     decisions: int
     inference_time_seconds: float
     solve_time_seconds: float
+    action_trace_sha256: str
 
 
 class ParallelWorkerError(RuntimeError):
@@ -1144,7 +1148,7 @@ class ParallelEpisodeRunner:
         *,
         max_parallelism: int | None = None,
         deterministic: bool = True,
-        generator: torch.Generator | None = None,
+        sampling_seed: int | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1154,6 +1158,10 @@ class ParallelEpisodeRunner:
         if parallelism < 1 or parallelism > self.worker_count:
             raise ValueError(
                 "max_parallelism must be within the worker pool size"
+            )
+        if not deterministic and sampling_seed is None:
+            raise ValueError(
+                "sampling_seed is required for sampled fixed evaluation"
             )
         results: list[FixedEvaluationRollout] = []
         for start in range(0, len(records), parallelism):
@@ -1169,6 +1177,25 @@ class ParallelEpisodeRunner:
             active = set(range(len(chunk)))
             decisions = {lane: 0 for lane in active}
             inference_times = {lane: 0.0 for lane in active}
+            action_traces: dict[int, list[int]] = {
+                lane: [] for lane in active
+            }
+            policy_diagnostics: dict[int, list[dict[str, Any]]] = {
+                lane: [] for lane in active
+            }
+            generators = (
+                {
+                    lane: torch.Generator(device=agent.device).manual_seed(
+                        derive_evaluation_sampling_seed(
+                            int(sampling_seed),
+                            chunk[lane].instance.instance_id,
+                        )
+                    )
+                    for lane in active
+                }
+                if not deterministic
+                else {}
+            )
             while active:
                 lanes = sorted(active)
                 observations = [
@@ -1177,17 +1204,63 @@ class ParallelEpisodeRunner:
                 masks = [
                     states[lane].action_mask for lane in lanes
                 ]
-                inference_start = time.perf_counter()
-                actions, _, _ = agent.act_batch(
-                    observations,
-                    masks,
-                    deterministic=deterministic,
-                    generator=generator,
-                )
-                elapsed = time.perf_counter() - inference_start
-                share = elapsed / len(lanes)
-                for lane in lanes:
-                    inference_times[lane] += share
+                if deterministic:
+                    inference_start = time.perf_counter()
+                    actions, _, _ = agent.act_batch(
+                        observations,
+                        masks,
+                        deterministic=True,
+                    )
+                    elapsed = time.perf_counter() - inference_start
+                    share = elapsed / len(lanes)
+                    for lane in lanes:
+                        inference_times[lane] += share
+                    diagnostic_rows = (
+                        agent.consume_policy_decision_diagnostics()
+                    )
+                    if diagnostic_rows and len(diagnostic_rows) != len(lanes):
+                        raise RuntimeError(
+                            "batched policy diagnostics do not match lanes"
+                        )
+                    for lane, action, diagnostic in zip(
+                        lanes, actions, diagnostic_rows
+                    ):
+                        diagnostic["selected_action"] = int(action)
+                        diagnostic["ranker_top_selected"] = bool(
+                            int(action)
+                            == int(diagnostic.get("relative_top_action", -1))
+                        )
+                        policy_diagnostics[lane].append(diagnostic)
+                else:
+                    actions = []
+                    for lane, observation, mask in zip(
+                        lanes, observations, masks
+                    ):
+                        inference_start = time.perf_counter()
+                        action, _, _ = agent.act(
+                            observation,
+                            mask,
+                            deterministic=False,
+                            generator=generators[lane],
+                        )
+                        inference_times[lane] += (
+                            time.perf_counter() - inference_start
+                        )
+                        actions.append(action)
+                        diagnostic_rows = (
+                            agent.consume_policy_decision_diagnostics()
+                        )
+                        for diagnostic in diagnostic_rows:
+                            diagnostic["selected_action"] = int(action)
+                            diagnostic["ranker_top_selected"] = bool(
+                                int(action)
+                                == int(
+                                    diagnostic.get("relative_top_action", -1)
+                                )
+                            )
+                            policy_diagnostics[lane].append(diagnostic)
+                for lane, action in zip(lanes, actions):
+                    action_traces[lane].append(int(action))
                 step_responses = self._exchange(
                     {
                         lane: ("step", action)
@@ -1202,6 +1275,11 @@ class ParallelEpisodeRunner:
                             raise ParallelWorkerError(
                                 f"worker {lane} returned no metrics"
                             )
+                        response.metrics.update(
+                            summarize_policy_decision_diagnostics(
+                                policy_diagnostics[lane]
+                            )
+                        )
                         results.append(
                             FixedEvaluationRollout(
                                 record_index=start + lane,
@@ -1212,6 +1290,9 @@ class ParallelEpisodeRunner:
                                 ),
                                 solve_time_seconds=(
                                     time.perf_counter() - chunk_start
+                                ),
+                                action_trace_sha256=action_trace_sha256(
+                                    action_traces[lane]
                                 ),
                             )
                         )

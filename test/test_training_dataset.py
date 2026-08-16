@@ -256,6 +256,18 @@ def test_training_uses_unique_episode_instances_and_writes_validation_artifacts(
     assert checkpoint_hash == summary["final_checkpoint_evaluation"][
         "checkpoint_sha256"
     ]
+    checkpoint_payload = torch.load(
+        run_directory / "checkpoint.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    weights_hash = checkpoint_payload["metadata"][
+        "network_weights_sha256"
+    ]
+    assert summary["provenance"]["network_weights_sha256"] == weights_hash
+    assert summary["final_checkpoint_evaluation"]["provenance"][
+        "network_weights_sha256"
+    ] == weights_hash
     assert (run_directory / "checkpoint.pt").read_bytes() == (
         run_directory / "accepted_checkpoint.pt"
     ).read_bytes()
@@ -533,6 +545,14 @@ def test_parallel_training_batches_updates_and_writes_update_log(
     assert (run_directory / "checkpoint.pt").exists()
     assert (run_directory / "best_checkpoint.pt").exists()
     assert (run_directory / "best_feasibility_checkpoint.pt").exists()
+    checkpoint_payload = torch.load(
+        run_directory / "checkpoint.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert summary["provenance"]["network_weights_sha256"] == (
+        checkpoint_payload["metadata"]["network_weights_sha256"]
+    )
     repeat_directory = training_module.train(
         effective_config,
         smoke=True,

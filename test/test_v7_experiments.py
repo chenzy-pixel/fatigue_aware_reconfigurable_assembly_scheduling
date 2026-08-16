@@ -100,6 +100,10 @@ def test_e1_configs_keep_p5_e6_disabled():
         "configs/v7/e1_context_exception.json",
     ):
         config = load_config(path)
+        assert config["experiment_suite_version"] == "v7_e1_protocol_v2"
+        assert config["evaluation"]["quality_metric"]["version"] == (
+            "canonical_bounded_quality_v1"
+        )
         assert config["training"]["forced_action_compression"] is False
         assert config["environment"]["worker_resource_control"][
             "non_delay_worker_dispatch"

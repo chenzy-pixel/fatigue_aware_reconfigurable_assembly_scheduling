@@ -103,7 +103,10 @@ def test_aggregate_uses_completed_and_all_instance_populations():
         policy="ppo",
         manifest="manifest.json",
     )
-    assert aggregate["evaluation_schema_version"] == "4.0.0"
+    assert aggregate["evaluation_schema_version"] == "4.1.0"
+    assert aggregate["quality_metric_version"] == (
+        "canonical_bounded_quality_v1"
+    )
     assert aggregate["completed_count"] == 1
     assert aggregate["completion_rate"] == 0.5
     assert aggregate["truncated_count"] == 1
@@ -182,7 +185,7 @@ def test_fixed_validation_evaluation_is_read_only_and_reports_zero_gap(
     saved_metrics = json.loads(
         (tmp_path / "metrics.json").read_text(encoding="utf-8")
     )
-    assert saved_metrics["evaluation_schema_version"] == "4.0.0"
+    assert saved_metrics["evaluation_schema_version"] == "4.1.0"
     with (tmp_path / "instance_metrics.csv").open(
         "r",
         encoding="utf-8-sig",
@@ -324,6 +327,28 @@ def test_ppo_checkpoint_loads_once_and_validation_preserves_rng(
     assert after_numpy[2:] == numpy_state[2:]
     assert torch.equal(torch.random.get_rng_state(), torch_state)
     assert agent.network.training
+
+    random.seed(119)
+    np.random.seed(119)
+    torch.manual_seed(119)
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state().clone()
+    evaluation_module.evaluate_dataset(
+        effective_config,
+        dataset_name="validation",
+        policy_name="ppo",
+        checkpoint=str(checkpoint),
+        instance_limit=1,
+        decode_mode="sampled",
+        sampling_seed=100011,
+    )
+    assert random.getstate() == python_state
+    after_numpy = np.random.get_state()
+    assert after_numpy[0] == numpy_state[0]
+    assert np.array_equal(after_numpy[1], numpy_state[1])
+    assert after_numpy[2:] == numpy_state[2:]
+    assert torch.equal(torch.get_rng_state(), torch_state)
 
 
 def test_eval_cli_requires_dataset(monkeypatch):

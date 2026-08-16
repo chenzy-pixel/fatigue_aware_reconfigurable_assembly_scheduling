@@ -58,7 +58,9 @@ def test_v7_checkpoint_round_trip_uses_exact_schema(tmp_path):
         config["ppo"],
         device="cpu",
     )
-    assert clone.load(checkpoint) == {
+    metadata = clone.load(checkpoint)
+    assert len(metadata.pop("network_weights_sha256")) == 64
+    assert metadata == {
         "arm": arm,
         "policy_head_diagnostics": agent.policy_head_diagnostics(),
     }

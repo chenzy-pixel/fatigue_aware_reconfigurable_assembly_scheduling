@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
 from copy import deepcopy
+from functools import wraps
 from typing import Any
 
 import torch
@@ -12,6 +12,7 @@ import torch
 from agent.ppo import (
     PPOAgent,
     build_actor_critic,
+    summarize_policy_decision_diagnostics,
 )
 from agent.ppo.parallel import ParallelEpisodeRunner
 from agent.baselines import HeuristicPolicy, RandomPolicy
@@ -31,11 +32,35 @@ from environment import (
 )
 from result import (
     aggregate_evaluation_rows,
+    build_provenance,
     create_run_directory,
+    dataset_manifest_snapshot,
+    evaluation_quality_metric,
+    quality_metric_sha256,
     relative_gap_percent,
 )
 from result.io import write_config, write_csv, write_json
-from utils import set_seed
+from utils import (
+    action_trace_sha256,
+    capture_global_rng_state,
+    derive_evaluation_sampling_seed,
+    restore_global_rng_state,
+    set_seed,
+)
+
+
+def _preserve_rng_for_sampled(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if kwargs.get("decode_mode", "greedy") != "sampled":
+            return function(*args, **kwargs)
+        state = capture_global_rng_state()
+        try:
+            return function(*args, **kwargs)
+        finally:
+            restore_global_rng_state(state)
+
+    return wrapped
 
 
 def load_configured_instance(config: dict[str, Any]):
@@ -73,6 +98,8 @@ class EvaluationPolicy:
             raise ValueError("sampled decode_mode is only available for PPO")
         self.decode_mode = decode_mode
         self.generator: torch.Generator | None = None
+        self.sampling_seed = sampling_seed
+        self._episode_actions: list[int] = []
         self._episode_policy_diagnostics: list[dict[str, Any]] = []
         if policy_name == "heuristic":
             if ppo_agent is not None or checkpoint is not None:
@@ -114,9 +141,6 @@ class EvaluationPolicy:
                     raise ValueError(
                         "sampling_seed is required for sampled PPO evaluation"
                     )
-                self.generator = torch.Generator(
-                    device=self.device
-                ).manual_seed(int(sampling_seed))
         else:
             raise ValueError(f"unknown policy {policy_name}")
 
@@ -141,72 +165,34 @@ class EvaluationPolicy:
                     == int(diagnostic.get("relative_top_action", -1))
                 )
                 self._episode_policy_diagnostics.append(diagnostic)
+            self._episode_actions.append(int(action))
             return action
         if self.policy is None:
             raise RuntimeError("evaluation policy is not initialized")
-        return self.policy.select_action(environment)
+        action = self.policy.select_action(environment)
+        self._episode_actions.append(int(action))
+        return action
 
-    def begin_episode(self) -> None:
+    def begin_episode(self, instance_id: str) -> None:
         self._episode_policy_diagnostics.clear()
+        self._episode_actions.clear()
+        if self.decode_mode == "sampled":
+            if self.sampling_seed is None:
+                raise RuntimeError("sampled evaluation has no sampling seed")
+            self.generator = torch.Generator(device=self.device).manual_seed(
+                derive_evaluation_sampling_seed(
+                    self.sampling_seed,
+                    instance_id,
+                )
+            )
 
     def episode_policy_metrics(self) -> dict[str, float | int]:
-        rows = list(self._episode_policy_diagnostics)
-        ranked = [row for row in rows if int(row.get("legal_pair_count", 0))]
-        production = [
-            row for row in rows if row.get("decision_type") == "production"
-        ]
-        worker = [
-            row for row in rows if row.get("decision_type") == "worker"
-        ]
-        commit_logits = [
-            float(row["commit_set_logit"])
-            for row in production
-            if math.isfinite(float(row.get("commit_set_logit", 0.0)))
-        ]
         return {
-            "ranker_top_decision_count": len(ranked),
-            "ranker_top_selected_count": sum(
-                bool(row.get("ranker_top_selected", False)) for row in ranked
+            "action_trace_sha256": action_trace_sha256(
+                self._episode_actions
             ),
-            "ranker_top_selection_rate": (
-                sum(bool(row.get("ranker_top_selected", False)) for row in ranked)
-                / len(ranked)
-                if ranked
-                else 0.0
-            ),
-            "context_override_count": sum(
-                bool(row.get("context_overrode_top", False)) for row in ranked
-            ),
-            "context_override_rate": (
-                sum(bool(row.get("context_overrode_top", False)) for row in ranked)
-                / len(ranked)
-                if ranked
-                else 0.0
-            ),
-            "production_pair_plus_defer_state_count": sum(
-                bool(row.get("terminal_legal", False)) for row in production
-            ),
-            "production_decision_state_count": len(production),
-            "production_pair_plus_defer_ratio": (
-                sum(bool(row.get("terminal_legal", False)) for row in production)
-                / len(production)
-                if production
-                else 0.0
-            ),
-            "worker_pair_plus_advance_state_count": sum(
-                bool(row.get("terminal_legal", False)) for row in worker
-            ),
-            "worker_decision_state_count": len(worker),
-            "worker_pair_plus_advance_ratio": (
-                sum(bool(row.get("terminal_legal", False)) for row in worker)
-                / len(worker)
-                if worker
-                else 0.0
-            ),
-            "mean_commit_set_logit": (
-                sum(commit_logits) / len(commit_logits)
-                if commit_logits
-                else 0.0
+            **summarize_policy_decision_diagnostics(
+                self._episode_policy_diagnostics
             ),
         }
 
@@ -226,6 +212,7 @@ class EvaluationPolicy:
             self.ppo_agent.network.train(was_training)
 
 
+@_preserve_rng_for_sampled
 def evaluate(
     config: dict[str, Any],
     *,
@@ -246,6 +233,7 @@ def evaluate(
     )
 
 
+@_preserve_rng_for_sampled
 def evaluate_instance(
     config: dict[str, Any],
     *,
@@ -282,7 +270,7 @@ def evaluate_instance(
     solve_start = time.perf_counter()
     env = AssemblySchedulingEnv(config)
     observation = env.reset(instance)
-    runner.begin_episode()
+    runner.begin_episode(instance.instance_id)
     inference_time = 0.0
     decisions = 0
     while not (env.terminated or env.truncated):
@@ -386,6 +374,7 @@ def _evaluation_row(
     record,
     metrics: dict[str, Any],
     reward_config: dict[str, Any],
+    quality_metric: dict[str, Any],
 ) -> dict[str, Any]:
     heuristic = record.metadata["heuristic_metrics"]
     pressure = record.metadata["pressure_metrics"]
@@ -397,6 +386,7 @@ def _evaluation_row(
     heuristic_variance = heuristic.get(
         "worker_workload_variance"
     )
+    metric_hash = quality_metric_sha256(quality_metric)
     return {
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
@@ -453,14 +443,29 @@ def _evaluation_row(
             metrics["flow_time_objective"],
             metrics["reconfiguration_cost"],
             metrics["worker_load_variance"],
-            reward_config,
+            quality_metric,
         ),
         "heuristic_quality_score": bounded_quality_score(
             heuristic_flow_time,
             heuristic_cost,
             heuristic_variance,
+            quality_metric,
+        ),
+        "reward_quality_score": bounded_quality_score(
+            metrics["flow_time_objective"],
+            metrics["reconfiguration_cost"],
+            metrics["worker_load_variance"],
             reward_config,
         ),
+        "heuristic_reward_quality_score": bounded_quality_score(
+            heuristic_flow_time,
+            heuristic_cost,
+            heuristic_variance,
+            reward_config,
+        ),
+        "quality_metric_version": quality_metric["version"],
+        "quality_metric_sha256": metric_hash,
+        "action_trace_sha256": metrics.get("action_trace_sha256"),
         "inference_time_seconds": metrics[
             "inference_time_seconds"
         ],
@@ -603,6 +608,7 @@ def _evaluation_row(
     }
 
 
+@_preserve_rng_for_sampled
 def evaluate_dataset(
     config: dict[str, Any],
     *,
@@ -644,6 +650,7 @@ def evaluate_dataset(
         sampling_seed=sampling_seed,
     )
     was_training = runner.enter_evaluation_mode()
+    quality_metric = evaluation_quality_metric(config)
     rows: list[dict[str, Any]] = []
     schedules: list[dict[str, Any]] = []
     reconfigurations: list[dict[str, Any]] = []
@@ -656,7 +663,12 @@ def evaluate_dataset(
                 prepared_policy=runner,
                 decode_mode=decode_mode,
             )
-            row = _evaluation_row(record, metrics, config["reward"])
+            row = _evaluation_row(
+                record,
+                metrics,
+                config["reward"],
+                quality_metric,
+            )
             rows.append(row)
             schedules.extend(
                 {"instance_id": record.instance.instance_id, **value}
@@ -673,11 +685,16 @@ def evaluate_dataset(
         dataset=dataset_name,
         policy=policy_name,
         manifest=str(dataset.manifest_path),
+        quality_metric=quality_metric,
     )
     aggregate["decode_mode"] = decode_mode
+    aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
+        dataset.manifest_path
+    )["sha256"]
     return rows, schedules, reconfigurations, aggregate
 
 
+@_preserve_rng_for_sampled
 def evaluate_dataset_parallel(
     config: dict[str, Any],
     *,
@@ -711,24 +728,18 @@ def evaluate_dataset_parallel(
         raise ValueError(
             "sampling_seed is required for sampled PPO evaluation"
         )
-    generator = (
-        torch.Generator(device=ppo_agent.device).manual_seed(
-            int(sampling_seed)
-        )
-        if decode_mode == "sampled"
-        else None
-    )
     try:
         rollouts = runner.evaluate_records(
             ppo_agent,
             records,
             max_parallelism=parallelism,
             deterministic=decode_mode == "greedy",
-            generator=generator,
+            sampling_seed=sampling_seed,
         )
     finally:
         ppo_agent.network.train(was_training)
     rows = []
+    quality_metric = evaluation_quality_metric(config)
     for rollout in rollouts:
         metrics = dict(rollout.metrics)
         metrics["decisions"] = rollout.decisions
@@ -748,9 +759,13 @@ def evaluate_dataset_parallel(
             config["reward"],
             "feasibility",
         )
+        metrics["action_trace_sha256"] = rollout.action_trace_sha256
         rows.append(
             _evaluation_row(
-                records[rollout.record_index], metrics, config["reward"]
+                records[rollout.record_index],
+                metrics,
+                config["reward"],
+                quality_metric,
             )
         )
     aggregate = aggregate_evaluation_rows(
@@ -758,9 +773,13 @@ def evaluate_dataset_parallel(
         dataset=dataset_name,
         policy="ppo",
         manifest=str(dataset.manifest_path),
+        quality_metric=quality_metric,
     )
     aggregate["decode_mode"] = decode_mode
     aggregate["parallel_envs"] = parallelism
+    aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
+        dataset.manifest_path
+    )["sha256"]
     return rows, aggregate
 
 
@@ -806,6 +825,23 @@ def main() -> None:
             if args.decode_mode == "sampled"
             else None
         ),
+    )
+    checkpoint_path = (
+        project_path(args.checkpoint) if args.checkpoint is not None else None
+    )
+    checkpoint_metadata = None
+    if checkpoint_path is not None:
+        checkpoint_payload = torch.load(
+            checkpoint_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        checkpoint_metadata = dict(checkpoint_payload.get("metadata", {}))
+    metrics["provenance"] = build_provenance(
+        config,
+        dataset_manifest_path=metrics["manifest"],
+        checkpoint_path=checkpoint_path,
+        checkpoint_metadata=checkpoint_metadata,
     )
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),

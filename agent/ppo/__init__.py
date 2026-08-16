@@ -1,4 +1,8 @@
-from .agent import PPOAgent, read_checkpoint_network_spec
+from .agent import (
+    PPOAgent,
+    read_checkpoint_network_spec,
+    summarize_policy_decision_diagnostics,
+)
 from .buffer import RolloutBuffer
 from .network import (
     HeteroGraphActorCritic,
@@ -29,4 +33,5 @@ __all__ = [
     "network_requires_graph_observation",
     "normalize_network_config",
     "read_checkpoint_network_spec",
+    "summarize_policy_decision_diagnostics",
 ]
