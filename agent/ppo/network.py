@@ -18,6 +18,7 @@ from environment import (
     MACHINE_MODULE_EDGE,
     OPERATION_ORDER_EDGE,
     ORDER_WAVE_EDGE,
+    PREFERENCE_NAMES,
     REQUIRES_MODULE_EDGE,
     SERVICE_CANDIDATE_EDGE,
     WAVE_MODULE_EDGE,
@@ -676,6 +677,20 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "encoder_type": encoder_type,
         "hidden_dim": hidden_dim,
     }
+    preference_conditioning = str(
+        config.get("preference_conditioning", "none")
+    )
+    if preference_conditioning not in {"none", "separate_encoder_v1"}:
+        raise ValueError(
+            "network.preference_conditioning must be 'none' or "
+            "'separate_encoder_v1'"
+        )
+    if encoder_type != "hetero_gnn" and preference_conditioning != "none":
+        raise ValueError(
+            "preference conditioning is only supported by the hetero_gnn encoder"
+        )
+    if preference_conditioning != "none":
+        normalized["preference_conditioning"] = preference_conditioning
     if encoder_type == "hetero_gnn":
         message_passing_layers = int(
             config.get("message_passing_layers", 2)
@@ -1153,6 +1168,7 @@ class HeteroGraphActorCritic(nn.Module):
         future_value_features: bool = False,
         worker_common_context_enabled: bool = True,
         residual_scale_ratio: float = 2.0,
+        preference_conditioning: str = "none",
     ):
         super().__init__()
         self.feature_dimensions = {
@@ -1211,6 +1227,15 @@ class HeteroGraphActorCritic(nn.Module):
             worker_common_context_enabled
         )
         self.residual_scale_ratio = float(residual_scale_ratio)
+        self.preference_conditioning = str(preference_conditioning)
+        if self.preference_conditioning not in {
+            "none",
+            "separate_encoder_v1",
+        }:
+            raise ValueError("unsupported preference conditioning mode")
+        self.use_preference_conditioning = (
+            self.preference_conditioning == "separate_encoder_v1"
+        )
         if (
             len(self.production_relative_initial_weights)
             != len(self.production_relative_feature_names)
@@ -1247,6 +1272,11 @@ class HeteroGraphActorCritic(nn.Module):
             ),
             nn.ReLU(),
         )
+        self.preference_encoder = (
+            _mlp(len(PREFERENCE_NAMES), self.hidden_dim)
+            if self.use_preference_conditioning
+            else None
+        )
         self.message_layers = nn.ModuleList(
             [
                 HeterogeneousMessagePassingLayer(
@@ -1271,12 +1301,12 @@ class HeteroGraphActorCritic(nn.Module):
             nn.ReLU(),
         )
         self.production_scorer = _head(
-            self.hidden_dim * 4,
+            self.hidden_dim * (5 if self.use_preference_conditioning else 4),
             self.hidden_dim,
             self.dropout_probability,
         )
         self.worker_scorer = _head(
-            self.hidden_dim * 5,
+            self.hidden_dim * (6 if self.use_preference_conditioning else 5),
             self.hidden_dim,
             self.dropout_probability,
         )
@@ -1318,7 +1348,9 @@ class HeteroGraphActorCritic(nn.Module):
             self.worker_relative_ranker = None
             self.register_parameter("worker_context_gate", None)
             self.register_parameter("worker_residual_context_gate", None)
-        context_dim = self.hidden_dim * (len(NODE_TYPES) + 1)
+        context_dim = self.hidden_dim * (
+            len(NODE_TYPES) + 1 + int(self.use_preference_conditioning)
+        )
         self.production_defer = _head(
             context_dim,
             self.hidden_dim,
@@ -1399,7 +1431,11 @@ class HeteroGraphActorCritic(nn.Module):
                 self.residual_context_gate_initial_logit
             ),
             "observation_schema_version": (
-                4 if self.policy_head_version == 7 else 3
+                5
+                if self.use_preference_conditioning
+                else 4
+                if self.policy_head_version == 7
+                else 3
             ),
             "feature_dimensions": dict(self.feature_dimensions),
             "edge_feature_dimensions": dict(self.edge_feature_dimensions),
@@ -1420,6 +1456,13 @@ class HeteroGraphActorCritic(nn.Module):
                         if self.use_production_commit_set_scorer
                         else ()
                     ),
+                }
+            )
+        if self.use_preference_conditioning:
+            spec.update(
+                {
+                    "preference_conditioning": self.preference_conditioning,
+                    "preference_names": PREFERENCE_NAMES,
                 }
             )
         return spec
@@ -1483,6 +1526,31 @@ class HeteroGraphActorCritic(nn.Module):
         global_embeddings = self.global_encoder(
             graph_batch.global_features
         )
+        if self.preference_encoder is not None:
+            preference_values = torch.stack(
+                [
+                    torch.as_tensor(
+                        observation.preference,
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    for observation in observations
+                ]
+            )
+            if preference_values.shape != (len(observations), 3):
+                raise ValueError("preference batch must have shape (B, 3)")
+            if any(
+                tuple(observation.preference_names) != PREFERENCE_NAMES
+                for observation in observations
+            ):
+                raise ValueError(
+                    "preference names must be flow/cost/variance in order"
+                )
+            preference_embeddings = self.preference_encoder(preference_values)
+        else:
+            preference_embeddings = global_embeddings.new_empty(
+                (len(observations), 0)
+            )
         pooled = {
             node_type: self._pool_slices(
                 node_embeddings[node_type],
@@ -1492,7 +1560,7 @@ class HeteroGraphActorCritic(nn.Module):
         }
         context = torch.cat(
             tuple(pooled[node_type] for node_type in NODE_TYPES)
-            + (global_embeddings,),
+            + (global_embeddings, preference_embeddings),
             dim=-1,
         )
         values = self.critic(context).squeeze(-1)
@@ -1527,6 +1595,7 @@ class HeteroGraphActorCritic(nn.Module):
                     operation_embeddings,
                     machine_embeddings,
                     global_embeddings[batch_index],
+                    preference_embeddings[batch_index],
                     masks[batch_index],
                     device=device,
                 )
@@ -1540,6 +1609,7 @@ class HeteroGraphActorCritic(nn.Module):
                     machine_embeddings,
                     worker_embeddings,
                     global_embeddings[batch_index],
+                    preference_embeddings[batch_index],
                     masks[batch_index],
                     device=device,
                 )
@@ -1675,6 +1745,7 @@ class HeteroGraphActorCritic(nn.Module):
         operation_embeddings: torch.Tensor,
         machine_embeddings: torch.Tensor,
         global_embedding: torch.Tensor,
+        preference_embedding: torch.Tensor,
         action_mask: torch.Tensor,
         *,
         device: torch.device | str,
@@ -1692,6 +1763,11 @@ class HeteroGraphActorCritic(nn.Module):
             -1,
         )
         global_pairs = global_embedding[None, None, :].expand(
+            operation_count,
+            machine_count,
+            -1,
+        )
+        preference_pairs = preference_embedding[None, None, :].expand(
             operation_count,
             machine_count,
             -1,
@@ -1740,6 +1816,7 @@ class HeteroGraphActorCritic(nn.Module):
                     machine_pairs,
                     global_pairs,
                     edge_pairs,
+                    preference_pairs,
                 ),
                 dim=-1,
             )
@@ -1860,6 +1937,7 @@ class HeteroGraphActorCritic(nn.Module):
         machine_embeddings: torch.Tensor,
         worker_embeddings: torch.Tensor,
         global_embedding: torch.Tensor,
+        preference_embedding: torch.Tensor,
         action_mask: torch.Tensor,
         *,
         device: torch.device | str,
@@ -1943,6 +2021,11 @@ class HeteroGraphActorCritic(nn.Module):
             worker_count,
             -1,
         )
+        preference_pairs = preference_embedding[None, None, :].expand(
+            machine_count,
+            worker_count,
+            -1,
+        )
         service = observation.relations[SERVICE_CANDIDATE_EDGE]
         dense_features = operation_pairs.new_zeros(
             (
@@ -1983,6 +2066,7 @@ class HeteroGraphActorCritic(nn.Module):
                     worker_pairs,
                     global_pairs,
                     action_edge_pairs,
+                    preference_pairs,
                 ),
                 dim=-1,
             )
@@ -2351,4 +2435,5 @@ def build_actor_critic(
         policy_head["future_value_features"],
         policy_head["worker_common_context_enabled"],
         policy_head["residual_scale_ratio"],
+        config.get("preference_conditioning", "none"),
     )

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from agent.ppo import PPOAgent, RolloutBuffer, build_actor_critic
 from agent.ppo.parallel import (
@@ -29,7 +30,10 @@ from data.dataset import (
 from data.models import load_instance_yaml
 from environment import (
     AssemblySchedulingEnv,
+    derive_episode_action_seed,
+    preference_enabled,
     proxy_return_from_metrics,
+    sample_episode_preference,
 )
 from eval import (
     evaluate_dataset,
@@ -38,11 +42,11 @@ from eval import (
     load_configured_instance,
 )
 from result import (
-    EVALUATION_SCHEMA_VERSION,
     aggregate_evaluation_rows,
     build_provenance,
     create_run_directory,
     evaluation_selection_key,
+    result_schema_version,
 )
 from result.io import write_config, write_csv, write_json
 from result.visdom_dashboard import (
@@ -78,7 +82,7 @@ def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
             "experiment_suite_version", "legacy"
         ),
         "algorithm_seed": int(config["seed"]),
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": result_schema_version(config),
         "provenance": provenance,
     }
 
@@ -1029,9 +1033,28 @@ def _collect_serial_batch(
         if reward_phase is None
         else str(reward_phase)
     )
-    observation = environment.reset(instance)
+    preference, preference_source = sample_episode_preference(
+        config,
+        algorithm_seed=int(config["seed"]),
+        episode_index=int(episode_index),
+    )
+    observation = (
+        environment.reset(instance, preference=preference)
+        if preference_enabled(config)
+        else environment.reset(instance)
+    )
     buffer = RolloutBuffer(
         preserve_graph=agent.requires_graph_observation
+    )
+    action_generator = (
+        torch.Generator(device=agent.device).manual_seed(
+            derive_episode_action_seed(
+                int(config["seed"]),
+                int(episode_index),
+            )
+        )
+        if preference_enabled(config)
+        else None
     )
     step_count = 0
     reward_sum = 0.0
@@ -1079,10 +1102,17 @@ def _collect_serial_batch(
         if sampled_policy_action:
             commit_pending(done=False)
             inference_start = time.perf_counter()
-            action, log_probability, value = agent.act(
-                observation,
-                action_mask,
-            )
+            if action_generator is None:
+                action, log_probability, value = agent.act(
+                    observation,
+                    action_mask,
+                )
+            else:
+                action, log_probability, value = agent.act(
+                    observation,
+                    action_mask,
+                    generator=action_generator,
+                )
             inference_time += time.perf_counter() - inference_start
             policy_step_count += 1
             pending_transition = {
@@ -1178,12 +1208,15 @@ def _collect_serial_batch(
         metrics=metrics,
         generation_time_seconds=generation_time_seconds,
         environment_step_time_seconds=environment_step_time,
+        preference=preference,
+        preference_source=preference_source,
         reward_phase=effective_reward_phase,
         reward_components=reward_components,
         expected_reward=proxy_return_from_metrics(
             metrics,
             config["reward"],
             effective_reward_phase,
+            preference=preference,
         ),
         unattributed_forced_reward=unattributed_forced_reward,
     )
@@ -1391,6 +1424,7 @@ def _evaluate_sampled_validation(
         dataset=dataset_name,
         policy="ppo",
         manifest=str(reference["manifest"]),
+        schema_version=result_schema_version(config),
     )
     combined["decode_mode"] = "sampled"
     combined["parallel_envs"] = reference.get("parallel_envs", 1)
@@ -1691,6 +1725,9 @@ def _training_effect_fields(metrics: dict) -> dict:
         ),
         "worker_load_variance": metrics.get("worker_load_variance"),
         "quality_score": metrics.get("quality_score"),
+        "preference_quality_score": metrics.get(
+            "preference_quality_score"
+        ),
         "maximum_worker_fatigue": metrics.get(
             "maximum_worker_fatigue"
         ),
@@ -2385,6 +2422,10 @@ def train(
             "cost_profile": (
                 record.metadata["cost_profile"] if record is not None else "fixed"
             ),
+            "w_flow": episode_rollout.preference.flow,
+            "w_cost": episode_rollout.preference.cost,
+            "w_variance": episode_rollout.preference.variance,
+            "preference_source": episode_rollout.preference_source,
             "steps": step_count,
             "policy_steps": len(buffer),
             "forced_actions": step_count - len(buffer),
@@ -3215,6 +3256,10 @@ def _train_parallel(
                         "pressure_type"
                     ],
                     "cost_profile": episode.metadata["cost_profile"],
+                    "w_flow": episode.preference.flow,
+                    "w_cost": episode.preference.cost,
+                    "w_variance": episode.preference.variance,
+                    "preference_source": episode.preference_source,
                     "steps": episode.step_count,
                     "policy_steps": episode.policy_step_count,
                     "forced_actions": episode.forced_action_count,

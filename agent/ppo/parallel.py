@@ -20,8 +20,14 @@ from environment import (
     AssemblySchedulingEnv,
     Observation,
     PolicyObservation,
+    PreferenceInput,
+    PreferenceVector,
     RewardVector,
+    derive_episode_action_seed,
+    normalize_preference,
+    preference_enabled,
     proxy_return_from_metrics,
+    sample_episode_preference,
 )
 from utils import action_trace_sha256, derive_evaluation_sampling_seed
 
@@ -49,6 +55,7 @@ class WorkerResponse:
 @dataclass(frozen=True)
 class _WorkerResetRequest:
     value: int | AssemblyInstance
+    preference: PreferenceVector | None = None
     drain_physical_forced_actions: bool = False
     max_environment_steps: int | None = None
 
@@ -79,6 +86,10 @@ class EpisodeRollout:
     metrics: dict[str, Any]
     generation_time_seconds: float
     environment_step_time_seconds: float
+    preference: PreferenceVector = field(
+        default_factory=lambda: PreferenceVector(0.5, 0.3, 0.2)
+    )
+    preference_source: str = "fixed_default"
     reward_phase: str = "legacy"
     reward_components: dict[str, float] = field(default_factory=dict)
     expected_reward: float = 0.0
@@ -429,7 +440,10 @@ def _worker_main(
                 generation_start = time.perf_counter()
                 record = dataset[int(request.value)]
                 generation_time = time.perf_counter() - generation_start
-                observation = environment.reset(record.instance)
+                observation = environment.reset(
+                    record.instance,
+                    preference=request.preference,
+                )
                 metadata = {
                     key: record.metadata.get(key)
                     for key in (
@@ -467,7 +481,10 @@ def _worker_main(
                     raise TypeError(
                         "reset_instance requires an AssemblyInstance"
                     )
-                observation = environment.reset(request.value)
+                observation = environment.reset(
+                    request.value,
+                    preference=request.preference,
+                )
                 connection.send(
                     _worker_roll_forward(
                         lane_id,
@@ -710,12 +727,21 @@ class ParallelEpisodeRunner:
             else str(reward_phase)
         )
         sampling_start = time.perf_counter()
+        episode_preferences = {
+            int(episode_index): sample_episode_preference(
+                self.config,
+                algorithm_seed=int(self.config["seed"]),
+                episode_index=int(episode_index),
+            )
+            for episode_index in episode_indices
+        }
         reset_responses = self._exchange(
             {
                 lane_id: (
                     "reset_online",
                     _WorkerResetRequest(
                         value=int(episode_index),
+                        preference=episode_preferences[int(episode_index)][0],
                         drain_physical_forced_actions=(
                             worker_local_physical_forced_actions
                         ),
@@ -743,6 +769,10 @@ class ParallelEpisodeRunner:
                 "episode_index": int(episode_index),
                 "instance_id": response.instance_id,
                 "metadata": response.metadata,
+                "preference": episode_preferences[int(episode_index)][0],
+                "preference_source": episode_preferences[
+                    int(episode_index)
+                ][1],
                 "buffer": RolloutBuffer(
                     preserve_graph=agent.requires_graph_observation
                 ),
@@ -844,6 +874,19 @@ class ParallelEpisodeRunner:
                     )
                 completed.append(self._episode_result(context, metrics))
         inference_time = 0.0
+        action_generators = (
+            {
+                lane: torch.Generator(device=agent.device).manual_seed(
+                    derive_episode_action_seed(
+                        int(self.config["seed"]),
+                        int(contexts[lane]["episode_index"]),
+                    )
+                )
+                for lane in contexts
+            }
+            if preference_enabled(self.config)
+            else {}
+        )
         while active:
             lanes = sorted(active)
             policy_lanes: list[int] = []
@@ -876,10 +919,28 @@ class ParallelEpisodeRunner:
                 policy_masks.append(action_mask)
             if policy_lanes:
                 inference_start = time.perf_counter()
-                actions, log_probabilities, values = agent.act_batch(
-                    policy_observations,
-                    policy_masks,
-                )
+                if action_generators:
+                    sampled = [
+                        agent.act(
+                            observation,
+                            mask,
+                            generator=action_generators[lane],
+                        )
+                        for lane, observation, mask in zip(
+                            policy_lanes,
+                            policy_observations,
+                            policy_masks,
+                            strict=True,
+                        )
+                    ]
+                    actions = [item[0] for item in sampled]
+                    log_probabilities = [item[1] for item in sampled]
+                    values = [item[2] for item in sampled]
+                else:
+                    actions, log_probabilities, values = agent.act_batch(
+                        policy_observations,
+                        policy_masks,
+                    )
                 inference_time += time.perf_counter() - inference_start
                 for local_index, lane in enumerate(policy_lanes):
                     context = contexts[lane]
@@ -1109,12 +1170,15 @@ class ParallelEpisodeRunner:
             environment_step_time_seconds=context[
                 "environment_step_time_seconds"
             ],
+            preference=context["preference"],
+            preference_source=context["preference_source"],
             reward_phase=context["reward_phase"],
             reward_components=dict(context["reward_components"]),
             expected_reward=proxy_return_from_metrics(
                 metrics,
                 self.config["reward"],
                 context["reward_phase"],
+                preference=context["preference"],
             ),
             unattributed_forced_reward=context[
                 "unattributed_forced_reward"
@@ -1149,6 +1213,7 @@ class ParallelEpisodeRunner:
         max_parallelism: int | None = None,
         deterministic: bool = True,
         sampling_seed: int | None = None,
+        preference: PreferenceInput | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1163,13 +1228,24 @@ class ParallelEpisodeRunner:
             raise ValueError(
                 "sampling_seed is required for sampled fixed evaluation"
             )
+        evaluation_preference = (
+            None
+            if preference is None
+            else normalize_preference(preference)
+        )
         results: list[FixedEvaluationRollout] = []
         for start in range(0, len(records), parallelism):
             chunk = records[start : start + parallelism]
             chunk_start = time.perf_counter()
             reset_responses = self._exchange(
                 {
-                    lane_id: ("reset_instance", record.instance)
+                    lane_id: (
+                        "reset_instance",
+                        _WorkerResetRequest(
+                            value=record.instance,
+                            preference=evaluation_preference,
+                        ),
+                    )
                     for lane_id, record in enumerate(chunk)
                 }
             )

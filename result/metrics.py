@@ -10,6 +10,7 @@ from typing import Any
 
 
 EVALUATION_SCHEMA_VERSION = "4.1.0"
+PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.2.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,
@@ -22,6 +23,21 @@ CANONICAL_QUALITY_METRIC: dict[str, Any] = {
         "variance": 0.2,
     },
 }
+
+
+def result_schema_version(config: Mapping[str, Any]) -> str:
+    evaluation = config.get("evaluation", {})
+    if not isinstance(evaluation, Mapping):
+        raise TypeError("config.evaluation must be an object")
+    version = str(
+        evaluation.get("result_schema_version", EVALUATION_SCHEMA_VERSION)
+    )
+    if version not in {
+        EVALUATION_SCHEMA_VERSION,
+        PREFERENCE_EVALUATION_SCHEMA_VERSION,
+    }:
+        raise ValueError(f"unsupported evaluation result schema {version!r}")
+    return version
 
 
 def _canonical_json_bytes(value: Any) -> bytes:
@@ -207,7 +223,13 @@ def aggregate_evaluation_rows(
     policy: str,
     manifest: str,
     quality_metric: Mapping[str, Any] | None = None,
+    schema_version: str = EVALUATION_SCHEMA_VERSION,
 ) -> dict[str, Any]:
+    if schema_version not in {
+        EVALUATION_SCHEMA_VERSION,
+        PREFERENCE_EVALUATION_SCHEMA_VERSION,
+    }:
+        raise ValueError(f"unsupported evaluation result schema {schema_version!r}")
     normalized_metric = evaluation_quality_metric(
         {}
         if quality_metric is None
@@ -247,6 +269,9 @@ def aggregate_evaluation_rows(
         ),
         "reward_quality_score": summarize_values(
             row.get("reward_quality_score") for row in rows
+        ),
+        "preference_quality_score": summarize_values(
+            row.get("preference_quality_score") for row in rows
         ),
         "heuristic_reward_quality_score": summarize_values(
             row.get("heuristic_reward_quality_score") for row in rows
@@ -422,7 +447,7 @@ def aggregate_evaluation_rows(
         ),
     }
     return {
-        "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+        "evaluation_schema_version": schema_version,
         "quality_metric_version": normalized_metric["version"],
         "quality_metric": normalized_metric,
         "quality_metric_sha256": metric_hash,

@@ -4,7 +4,7 @@
 
 `data/instances/fixed_instance.yaml` 是固定标准算例的数值唯一事实源。运行时代码不依赖 `docs/dev_context/` 中的开发上下文或项目根目录下的 PDF；二者仅用于开发和论文背景参考，可独立删除。
 
-当前默认配置 `configs/default.json` 是 `M1_candidate_graph_v6` 稳定基线。主线同时提供通过 `extends` 继承默认配置的 v7 C0/E1 实验：`configs/v7/c0_v6_control.json` 保持 v6 策略头，`configs/v7/e1_context_exception.json` 只加入 E1 有界上下文残差，不启用 E2--E6 或 forced-action compression。v7 C0/E1 的正式评估协议为 `v7_e1_protocol_v2`；通用评估结果 schema 为 `4.1.0`。
+当前默认配置 `configs/default.json` 是 `M1_candidate_graph_v6` 稳定基线。主线同时提供通过 `extends` 继承默认配置的 v7 C0/E1/E2 实验：`configs/v7/c0_v6_control.json` 保持 v6 策略头，`configs/v7/e1_context_exception.json` 只加入 E1 有界上下文残差，`configs/v7/e2_preference_conditioned.json` 则在 E1 上加入 episode 级偏好条件。C0/E1 的正式协议与结果 schema 仍为 `v7_e1_protocol_v2`/`4.1.0`；E2 偏好评估使用 schema `4.2.0`，且不与 E1 checkpoint 互载。
 
 ## 数据依赖
 
@@ -34,7 +34,7 @@
 
 ```text
 configs/                 默认配置与 JSON 继承加载器
-  v7/                    同协议 C0 控制组与 E1 有界残差配置
+  v7/                    C0、E1 有界残差与 E2 偏好条件配置
 agent/
   ppo/                   类型编码器、双策略头、Critic、GAE、PPO
   baselines/             启发式与掩码随机策略
@@ -53,6 +53,7 @@ train.py                 PPO 训练入口
 eval.py                  heuristic/random/PPO 评估入口
 e1_reproducibility_audit.py  C0/E1 串行/并行可复现性审计
 pareto_analysis.py       C0/E1 经验 Pareto 前沿与 Hypervolume 分析
+e2_preference_analysis.py E1/E2 等预算偏好响应与经验 Pareto 分析
 benchmark_parallel.py    并行 rollout 吞吐基准
 ```
 
@@ -154,6 +155,18 @@ v7 checkpoint 使用 `observation_schema_version = 4`。加载器严格比对
 维度；若与当前观测不一致，会报告明确的 observation schema incompatibility，
 不会部分加载。旧最佳 checkpoint 只复用既有 E0 指标作基线，新训练从头初始化。
 
+### E2：偏好条件化多目标策略
+
+`configs/v7/e2_preference_conditioned.json` 继承 E1，并把 episode 级偏好
+`(w_flow,w_cost,w_variance)` 通过独立两层编码器接入 production/worker
+Actor、defer/advance head 和 Critic。训练偏好采用 70% 均匀单纯形
+`Dirichlet(1,1,1)` 与 30% 顶点/中心/canonical 锚点混合采样；采样种子只由
+算法 seed 和 episode index 派生，不受并行环境数影响。
+
+E2 checkpoint 使用 observation schema 5，不能与 E1 部分加载。质量阶段按
+episode 偏好标量化，但正式 `quality_score`、周期验证和 checkpoint 晋升仍固定
+使用 `0.5/0.3/0.2`。完整契约见 `E2_PREFERENCE_CONDITIONING.md`。
+
 ## 运行
 
 ```powershell
@@ -230,6 +243,27 @@ sampled 评估采用 `per_instance_sha256_v1`：每个实例根据稳定
 ```powershell
 .\.venv\Scripts\python.exe -m pytest test\test_pareto_analysis.py -q
 ```
+
+### E2 训练、指定偏好推断与等预算 Pareto
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest test\test_e2_preference.py -q
+.\.venv\Scripts\python.exe train.py --config configs\v7\e2_preference_conditioned.json --smoke --run-name e2_preference_smoke
+.\.venv\Scripts\python.exe eval.py --config configs\v7\e2_preference_conditioned.json --dataset test --policy ppo --checkpoint result\runs\v7_2000_e2_seed11\accepted_checkpoint.pt --preference 0.5 0.3 0.2
+```
+
+正式 E1/E2 对照为每实例 22 次等预算推断：E2 使用 21 个分母为 5 的单纯形
+格点加 canonical 点，E1 使用一次 greedy 加 sampled seeds 100001--100021。
+五个算法 seed 及 test/OOD/stress 的示例 manifest 位于
+`configs/v7/e2_analysis_manifest.example.json`：
+
+```powershell
+.\.venv\Scripts\python.exe e2_preference_analysis.py --manifest configs\v7\e2_analysis_manifest.example.json --output-dir result\analysis\e1_e2_equal_budget
+```
+
+输出包括逐候选/逐前沿/逐实例/逐 seed CSV、三维 Hypervolume、偏好响应
+Spearman、单目标顶点相对 canonical 的变化、exact Wilcoxon、PDF/PNG 图和报告。
+这些是经验 rollout 前沿，不作真实 Pareto 最优声明；固定权重单点成绩单独报告。
 
 构建并使用主动压力数据集：
 

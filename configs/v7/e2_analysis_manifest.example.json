@@ -1,0 +1,40 @@
+{
+  "datasets": ["test", "ood", "stress"],
+  "runs": [
+    {
+      "algorithm_seed": 11,
+      "e1_config": "configs/v7/e1_context_exception.json",
+      "e1_checkpoint": "result/runs/v7_2000_e1_seed11/accepted_checkpoint.pt",
+      "e2_config": "configs/v7/e2_preference_conditioned.json",
+      "e2_checkpoint": "result/runs/v7_2000_e2_seed11/accepted_checkpoint.pt"
+    },
+    {
+      "algorithm_seed": 23,
+      "e1_config": "configs/v7/e1_context_exception.json",
+      "e1_checkpoint": "result/runs/v7_2000_e1_seed23/accepted_checkpoint.pt",
+      "e2_config": "configs/v7/e2_preference_conditioned.json",
+      "e2_checkpoint": "result/runs/v7_2000_e2_seed23/accepted_checkpoint.pt"
+    },
+    {
+      "algorithm_seed": 37,
+      "e1_config": "configs/v7/e1_context_exception.json",
+      "e1_checkpoint": "result/runs/v7_2000_e1_seed37/accepted_checkpoint.pt",
+      "e2_config": "configs/v7/e2_preference_conditioned.json",
+      "e2_checkpoint": "result/runs/v7_2000_e2_seed37/accepted_checkpoint.pt"
+    },
+    {
+      "algorithm_seed": 53,
+      "e1_config": "configs/v7/e1_context_exception.json",
+      "e1_checkpoint": "result/runs/v7_2000_e1_seed53/accepted_checkpoint.pt",
+      "e2_config": "configs/v7/e2_preference_conditioned.json",
+      "e2_checkpoint": "result/runs/v7_2000_e2_seed53/accepted_checkpoint.pt"
+    },
+    {
+      "algorithm_seed": 71,
+      "e1_config": "configs/v7/e1_context_exception.json",
+      "e1_checkpoint": "result/runs/v7_2000_e1_seed71/accepted_checkpoint.pt",
+      "e2_config": "configs/v7/e2_preference_conditioned.json",
+      "e2_checkpoint": "result/runs/v7_2000_e2_seed71/accepted_checkpoint.pt"
+    }
+  ]
+}

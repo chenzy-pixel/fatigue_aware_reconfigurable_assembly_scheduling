@@ -4,6 +4,7 @@ from .io import create_run_directory, write_evaluation_outputs
 from .metrics import (
     CANONICAL_QUALITY_METRIC,
     EVALUATION_SCHEMA_VERSION,
+    PREFERENCE_EVALUATION_SCHEMA_VERSION,
     QUALITY_METRIC_VERSION,
     aggregate_evaluation_rows,
     compare_lexicographic,
@@ -11,6 +12,7 @@ from .metrics import (
     evaluation_selection_key,
     quality_metric_sha256,
     relative_gap_percent,
+    result_schema_version,
     summarize_values,
 )
 from .provenance import (
@@ -29,6 +31,7 @@ from .visdom_dashboard import (
 
 __all__ = [
     "EVALUATION_SCHEMA_VERSION",
+    "PREFERENCE_EVALUATION_SCHEMA_VERSION",
     "QUALITY_METRIC_VERSION",
     "CANONICAL_QUALITY_METRIC",
     "aggregate_evaluation_rows",
@@ -38,6 +41,7 @@ __all__ = [
     "evaluation_quality_metric",
     "quality_metric_sha256",
     "relative_gap_percent",
+    "result_schema_version",
     "summarize_values",
     "TrainingDashboard",
     "create_training_dashboard",

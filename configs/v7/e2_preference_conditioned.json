@@ -1,0 +1,32 @@
+{
+  "extends": "e1_context_exception.json",
+  "experiment_name": "v7_e2_preference_conditioned",
+  "experiment_suite_version": "v7_e2_preference_protocol_v1",
+  "preference": {
+    "enabled": true,
+    "names": ["flow", "cost", "variance"],
+    "default": [0.5, 0.3, 0.2],
+    "sampler": {
+      "version": "dirichlet_anchor_mixture_v1",
+      "dirichlet_probability": 0.7,
+      "concentration": [1.0, 1.0, 1.0],
+      "anchors": [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.3333333333333333, 0.3333333333333333, 0.3333333333333333],
+        [0.5, 0.3, 0.2]
+      ]
+    },
+    "evaluation_grid": {
+      "denominator": 5,
+      "include_default": true
+    }
+  },
+  "network": {
+    "preference_conditioning": "separate_encoder_v1"
+  },
+  "evaluation": {
+    "result_schema_version": "4.2.0"
+  }
+}

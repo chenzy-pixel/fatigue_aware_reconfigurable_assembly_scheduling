@@ -27,7 +27,10 @@ from data import (
 from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
 from environment import (
     AssemblySchedulingEnv,
+    PreferenceInput,
     bounded_quality_score,
+    default_preference,
+    normalize_preference,
     proxy_return_from_metrics,
 )
 from result import (
@@ -38,6 +41,7 @@ from result import (
     evaluation_quality_metric,
     quality_metric_sha256,
     relative_gap_percent,
+    result_schema_version,
 )
 from result.io import write_config, write_csv, write_json
 from utils import (
@@ -220,6 +224,7 @@ def evaluate(
     checkpoint: str | None = None,
     decode_mode: str = "greedy",
     sampling_seed: int | None = None,
+    preference: PreferenceInput | None = None,
 ) -> tuple[AssemblySchedulingEnv, dict[str, Any]]:
     set_seed(validate_algorithm_seed(config, int(config["seed"])))
     instance = load_configured_instance(config)
@@ -230,6 +235,7 @@ def evaluate(
         checkpoint=checkpoint,
         decode_mode=decode_mode,
         sampling_seed=sampling_seed,
+        preference=preference,
     )
 
 
@@ -243,13 +249,22 @@ def evaluate_instance(
     prepared_policy: EvaluationPolicy | None = None,
     decode_mode: str = "greedy",
     sampling_seed: int | None = None,
+    preference: PreferenceInput | None = None,
 ) -> tuple[AssemblySchedulingEnv, dict[str, Any]]:
+    effective_preference = (
+        default_preference(config)
+        if preference is None
+        else normalize_preference(preference)
+    )
     if prepared_policy is None:
         set_seed(validate_algorithm_seed(config, int(config["seed"])))
     runner = prepared_policy
     if runner is None:
         bootstrap_environment = AssemblySchedulingEnv(config)
-        bootstrap_observation = bootstrap_environment.reset(instance)
+        bootstrap_observation = bootstrap_environment.reset(
+            instance,
+            preference=effective_preference,
+        )
         runner = EvaluationPolicy(
             config,
             policy_name=policy_name,
@@ -269,7 +284,7 @@ def evaluate_instance(
         )
     solve_start = time.perf_counter()
     env = AssemblySchedulingEnv(config)
-    observation = env.reset(instance)
+    observation = env.reset(instance, preference=effective_preference)
     runner.begin_episode(instance.instance_id)
     inference_time = 0.0
     decisions = 0
@@ -289,6 +304,7 @@ def evaluate_instance(
         metrics,
         config["reward"],
         "feasibility",
+        preference=effective_preference,
     )
     metrics["decisions"] = decisions
     metrics["inference_time_seconds"] = inference_time
@@ -387,6 +403,9 @@ def _evaluation_row(
         "worker_workload_variance"
     )
     metric_hash = quality_metric_sha256(quality_metric)
+    preference = normalize_preference(
+        metrics.get("preference", default_preference({"reward": reward_config}))
+    )
     return {
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
@@ -407,6 +426,9 @@ def _evaluation_row(
         "flow_time_objective": metrics["flow_time_objective"],
         "reconfiguration_cost": metrics["reconfiguration_cost"],
         "worker_load_variance": metrics["worker_load_variance"],
+        "w_flow": preference.flow,
+        "w_cost": preference.cost,
+        "w_variance": preference.variance,
         **{
             name: metrics.get(name, 0)
             for name in (
@@ -456,6 +478,13 @@ def _evaluation_row(
             metrics["reconfiguration_cost"],
             metrics["worker_load_variance"],
             reward_config,
+        ),
+        "preference_quality_score": bounded_quality_score(
+            metrics["flow_time_objective"],
+            metrics["reconfiguration_cost"],
+            metrics["worker_load_variance"],
+            reward_config,
+            preference=preference,
         ),
         "heuristic_reward_quality_score": bounded_quality_score(
             heuristic_flow_time,
@@ -619,6 +648,7 @@ def evaluate_dataset(
     instance_limit: int | None = None,
     decode_mode: str = "greedy",
     sampling_seed: int | None = None,
+    preference: PreferenceInput | None = None,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -634,9 +664,15 @@ def evaluate_dataset(
             f"instance_limit must be in [1, {len(dataset)}]"
         )
     records = [dataset[index] for index in range(effective_count)]
+    effective_preference = (
+        default_preference(config)
+        if preference is None
+        else normalize_preference(preference)
+    )
     bootstrap_environment = AssemblySchedulingEnv(config)
     bootstrap_observation = bootstrap_environment.reset(
-        records[0].instance
+        records[0].instance,
+        preference=effective_preference,
     )
     if ppo_agent is None:
         set_seed(validate_algorithm_seed(config, int(config["seed"])))
@@ -662,6 +698,7 @@ def evaluate_dataset(
                 policy_name=policy_name,
                 prepared_policy=runner,
                 decode_mode=decode_mode,
+                preference=effective_preference,
             )
             row = _evaluation_row(
                 record,
@@ -686,6 +723,7 @@ def evaluate_dataset(
         policy=policy_name,
         manifest=str(dataset.manifest_path),
         quality_metric=quality_metric,
+        schema_version=result_schema_version(config),
     )
     aggregate["decode_mode"] = decode_mode
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
@@ -704,6 +742,7 @@ def evaluate_dataset_parallel(
     instance_limit: int | None = None,
     decode_mode: str = "greedy",
     sampling_seed: int | None = None,
+    preference: PreferenceInput | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate fixed records in parallel for periodic training validation."""
     dataset = load_dataset_split(config, dataset_name)
@@ -715,6 +754,11 @@ def evaluate_dataset_parallel(
             f"instance_limit must be in [1, {len(dataset)}]"
         )
     records = [dataset[index] for index in range(effective_count)]
+    effective_preference = (
+        default_preference(config)
+        if preference is None
+        else normalize_preference(preference)
+    )
     was_training = ppo_agent.network.training
     ppo_agent.network.eval()
     parallelism = min(
@@ -735,6 +779,7 @@ def evaluate_dataset_parallel(
             max_parallelism=parallelism,
             deterministic=decode_mode == "greedy",
             sampling_seed=sampling_seed,
+            preference=effective_preference,
         )
     finally:
         ppo_agent.network.train(was_training)
@@ -758,6 +803,7 @@ def evaluate_dataset_parallel(
             metrics,
             config["reward"],
             "feasibility",
+            preference=effective_preference,
         )
         metrics["action_trace_sha256"] = rollout.action_trace_sha256
         rows.append(
@@ -774,6 +820,7 @@ def evaluate_dataset_parallel(
         policy="ppo",
         manifest=str(dataset.manifest_path),
         quality_metric=quality_metric,
+        schema_version=result_schema_version(config),
     )
     aggregate["decode_mode"] = decode_mode
     aggregate["parallel_envs"] = parallelism
@@ -797,6 +844,13 @@ def main() -> None:
     )
     parser.add_argument("--sampling-seed", type=int)
     parser.add_argument("--algorithm-seed", type=int)
+    parser.add_argument(
+        "--preference",
+        nargs=3,
+        type=float,
+        metavar=("FLOW", "COST", "VARIANCE"),
+        help="flow/cost/variance weights on the probability simplex",
+    )
     parser.add_argument(
         "--dataset",
         choices=PERSISTED_SPLITS,
@@ -825,6 +879,7 @@ def main() -> None:
             if args.decode_mode == "sampled"
             else None
         ),
+        preference=args.preference,
     )
     checkpoint_path = (
         project_path(args.checkpoint) if args.checkpoint is not None else None

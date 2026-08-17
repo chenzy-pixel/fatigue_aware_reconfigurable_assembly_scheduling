@@ -13,6 +13,12 @@ from data.models import (
     OperationSpec,
     WorkerSpec,
 )
+from environment.preference import (
+    PreferenceInput,
+    PreferenceVector,
+    default_preference,
+    normalize_preference,
+)
 from environment.types import (
     CAPABLE_EDGE,
     CAN_DISASSEMBLE_EDGE,
@@ -195,6 +201,7 @@ class AssemblySchedulingEnv:
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
+        self.preference: PreferenceVector = default_preference(config)
         self.instance: AssemblyInstance | None = None
         self.current_tick = 0
         self.horizon_tick = 0
@@ -432,8 +439,14 @@ class AssemblySchedulingEnv:
         self,
         instance: AssemblyInstance,
         *,
+        preference: PreferenceInput | None = None,
         build_observation: bool = True,
     ) -> Observation | None:
+        self.preference = (
+            default_preference(self.config)
+            if preference is None
+            else normalize_preference(preference)
+        )
         self.instance = instance
         self.current_tick = 0
         self.horizon_tick = quantize_to_ticks(instance.horizon, instance.resolution)
@@ -943,6 +956,8 @@ class AssemblySchedulingEnv:
             relations=relations,
             action_set_features=action_set_features,
             action_set_feature_names=action_set_feature_names,
+            preference=self.preference.as_array(),
+            preference_names=("flow", "cost", "variance"),
         )
         self._observation_cache = observation.copy()
         self._observation_cache_version = self._state_version
@@ -2257,6 +2272,7 @@ class AssemblySchedulingEnv:
         quality_before = bounded_quality_score(
             *before,
             self.config["reward"],
+            preference=self.preference,
         )
         phase = self.decision_type
         action_type = self._action_type(phase, action)
@@ -2341,6 +2357,7 @@ class AssemblySchedulingEnv:
         quality_after = bounded_quality_score(
             *after,
             self.config["reward"],
+            preference=self.preference,
         )
         shaping_config = self.config["reward"].get(
             "feasibility_shaping", {}
@@ -2884,6 +2901,14 @@ class AssemblySchedulingEnv:
                 self._load_variance(),
                 self.config["reward"],
             ),
+            "preference_quality_score": bounded_quality_score(
+                self._flow_integral + self._flow_penalty,
+                self._reconfiguration_cost,
+                self._load_variance(),
+                self.config["reward"],
+                preference=self.preference,
+            ),
+            "preference": self.preference.as_dict(),
         }
 
     def validate_schedule(self) -> list[str]:
