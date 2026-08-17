@@ -1,8 +1,10 @@
-# 疲劳感知可重构装配调度最小系统
+# 疲劳感知可重构装配调度（PyTorch + PPO）
 
-本项目是一个可直接运行的 PyTorch + PPO 最小系统，覆盖固定算例加载、离散事件仿真、疲劳约束、两阶段动作屏蔽、启发式/随机基线、轻量 PPO 训练与结果持久化。
+本项目是一个可直接运行、面向论文复现的 PyTorch + PPO 调度系统，覆盖固定算例与主动压力数据生成、离散事件仿真、疲劳约束、双资源匹配准入、异质图策略网络、两阶段完成约束训练、固定数据集评估、可复现审计和结果持久化。
 
 `data/instances/fixed_instance.yaml` 是固定标准算例的数值唯一事实源。运行时代码不依赖 `docs/dev_context/` 中的开发上下文或项目根目录下的 PDF；二者仅用于开发和论文背景参考，可独立删除。
+
+当前默认配置 `configs/default.json` 是 `M1_candidate_graph_v6` 稳定基线。主线同时提供通过 `extends` 继承默认配置的 v7 C0/E1 实验：`configs/v7/c0_v6_control.json` 保持 v6 策略头，`configs/v7/e1_context_exception.json` 只加入 E1 有界上下文残差，不启用 E2--E6 或 forced-action compression。v7 C0/E1 的正式评估协议为 `v7_e1_protocol_v2`；通用评估结果 schema 为 `4.1.0`。
 
 ## 数据依赖
 
@@ -24,14 +26,15 @@
 - 生成实例使用规范化 JSON 与 SHA-256 manifest；验证、测试、OOD 和 stress 集固定存盘，训练可按课程分布在线生成。
 - 每个生成候选都会检查波次与释放区间、资源可行性、主导模块比例、串行前序无环、数值有限性以及启发式调度可行性；train/validation/test/OOD 必须在 240 分钟内完成，stress 允许最多 20% 截断。
 - 到达计划期时结算正在进行的拆装负荷与疲劳；决策数/零时间动作保护触发时在当前时刻截断，不跳过未来事件并推进到计划期末。
-- 评估采用 `(总流经时间, 重构成本, 工人负荷方差)` 严格词典序；PPO 使用下述带完成约束的两阶段代理目标，后三项仍是有界加权近似而不是精确词典序 PPO。
+- 评估保留总流经时间、重构成本和工人负荷方差三个原始最小化目标；正式模型选择先约束完成率，再使用不可变的有界质量指标。经验 Pareto 分析仍直接使用三个原始目标，不把加权分数解释为真实 Pareto 最优。
 - 环境返回轻量 NumPy 异质图观测，包含工序、机器、工人三类节点和五类关系；能力边的 `EST` 表示计入已有机器承诺与必要乐观重构后的最早加工开始时刻。
 - 默认策略网络是纯 PyTorch 两层异质关系 GNN；原类型感知 MLP 以 `typed_mlp` 编码器保留，供消融和旧 checkpoint 复评。
 
 ## 目录
 
 ```text
-configs/                 单一实验配置 default.json
+configs/                 默认配置与 JSON 继承加载器
+  v7/                    同协议 C0 控制组与 E1 有界残差配置
 agent/
   ppo/                   类型编码器、双策略头、Critic、GAE、PPO
   baselines/             启发式与掩码随机策略
@@ -48,6 +51,9 @@ result/
   runs/                  训练/评估运行目录
 train.py                 PPO 训练入口
 eval.py                  heuristic/random/PPO 评估入口
+e1_reproducibility_audit.py  C0/E1 串行/并行可复现性审计
+pareto_analysis.py       C0/E1 经验 Pareto 前沿与 Hypervolume 分析
+benchmark_parallel.py    并行 rollout 吞吐基准
 ```
 
 ## 安装
@@ -87,7 +93,7 @@ Visdom 0.2.4 的源码包仍依赖 `pkg_resources`，因此先固定 setuptools 
 恢复工序后，按机器优先顺序评分 `(工序, 机器, 工人)`。Critic 分别均值
 池化工序、机器和工人节点，再与全局特征拼接。
 
-### 策略头 v6
+### 策略头 v6（默认基线）
 
 默认 `M1_candidate_graph_v6` 使用独立、带符号的 softplus 权重进行候选内
 多目标排序：
@@ -119,9 +125,30 @@ v6 checkpoint 的 `network_spec` 保存完整特征顺序、参数化方式、�
 `policy_head_weight_*` 和 4 个 `policy_head_gate_*` 指标；这些指标同时写入
 `update_log.csv`、`summary.json` 和 checkpoint metadata。
 
+### 策略头 v7：E1 有界上下文残差
+
+`configs/v7/e1_context_exception.json` 在 v6 单调 ranker 上只增加有界残差：
+
+```text
+sigmoid(gate) * residual_scale_ratio
+* max(std(relative_logits), 1e-3)
+* tanh(raw_residual)
+```
+
+E1 使用 `gate = -2`、`residual_scale_ratio = 2`，并关闭不能改变 worker
+pair-vs-`ADVANCE` 竞争的公共偏置。残差的量级由当前候选 ranker logits 的
+标准差约束，保留显式单调排序作为主信号。对应的 C0 配置继续使用 v6 策略头，
+但共享相同训练与评估协议；两个配置均保持
+`training.forced_action_compression = false` 和
+`non_delay_worker_dispatch = true`。
+
+v7 checkpoint 使用 `observation_schema_version = 4`。加载器严格比对
+`network_spec`、策略头版本、动作语义及节点/边特征维度；v6 与 v7 权重不会
+相互转换，也不会部分加载。完整设计边界见 `E1_POLICY_HEAD.md`。
+
 做 MLP 消融时复制实验配置并把 `network.encoder_type` 改为
 `typed_mlp`；`message_passing_layers` 和 `dropout` 对该基线不生效。
-缺少 `encoder_type` 的旧配置按 `typed_mlp` 解释。新 checkpoint 的
+缺少 `encoder_type` 的旧配置按 `typed_mlp` 解释。v6 checkpoint 的
 `network_spec` 同时保存编码器结构、节点/边特征维度和
 `observation_schema_version = 3`。加载器会从旧 state dict 推断 schema v1
 维度；若与当前观测不一致，会报告明确的 observation schema incompatibility，
@@ -135,6 +162,73 @@ v6 checkpoint 的 `network_spec` 保存完整特征顺序、参数化方式、�
 .\.venv\Scripts\python.exe train.py --config configs\default.json --smoke
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pytest --runslow -m slow -q
+```
+
+### v7 C0/E1 训练与评估协议
+
+先运行 v7/E1 契约测试和最小训练：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest test\test_v7_policy.py test\test_v7_experiments.py test\test_e1_protocol_v2.py -q
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_context_exception.json --smoke --run-name e1_mainline_smoke
+```
+
+正式的同协议 seed 11 C0/E1 训练使用各自配置；两者都从头训练，不能互相加载
+checkpoint：
+
+```powershell
+.\.venv\Scripts\python.exe train.py --config configs\v7\c0_v6_control.json --algorithm-seed 11 --run-name v7_2000_c0_seed11
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_context_exception.json --algorithm-seed 11 --run-name v7_2000_e1_seed11
+```
+
+正式论文质量指标固定为：
+
+```text
+Q_paper = 0.5 * F / (1200 + F)
+        + 0.3 * C / (1000 + C)
+        + 0.2 * V / (50 + V)
+```
+
+`Q_paper` 越小越好。`canonical_bounded_quality_v1` 的尺度和权重不可由实验配置
+改写；`quality_metric_sha256` 防止混合聚合不同指标。训练奖励中的
+`reward_quality_score` 作为诊断保留，正式报告使用 `quality_score`。评估结果
+使用 schema `4.1.0`。
+
+sampled 评估采用 `per_instance_sha256_v1`：每个实例根据稳定
+`instance_id` 和指定 sampling seed 获得独立 `torch.Generator`，因此
+`parallel_envs = 1/2/10` 消耗完全相同的随机流；逐实例结果同时写入
+`action_trace_sha256`。checkpoint、训练摘要和评估指标携带源码、有效配置、
+数据 manifest、固定模板、Git 状态、协议、评估器和 checkpoint 哈希。
+
+### C0/E1 可复现性审计与经验 Pareto
+
+`e1_reproducibility_audit.py` 默认读取上述两个 run 的
+`accepted_checkpoint.pt`，在固定 validation 集上核对 greedy 串行结果、
+三个固定 sampled seed（100011/100012/100013）以及 1/10 worker 并行复现，
+并确认 sampled 评估不修改全局 Python/NumPy/Torch RNG：
+
+```powershell
+.\.venv\Scripts\python.exe e1_reproducibility_audit.py
+```
+
+审计通过后，可按固定实例提取经验非支配前沿，并使用规范化目标与固定参考点
+计算三维 Hypervolume：
+
+```powershell
+.\.venv\Scripts\python.exe pareto_analysis.py `
+  --audit-dir result\audits\<timestamp>_c0_e1_validation `
+  --output-dir result\analysis\c0_e1_pareto_seed11
+```
+
+分析只读取 `greedy_serial` 和 `sampled_serial`，并用动作轨迹哈希核对后排除
+并行复现副本。三个目标均按最小化处理；主结果按 `instance_id` 分别构建
+前沿，跨实例均值前沿仅作为辅助诊断。输出包括逐候选/逐前沿/逐实例 CSV、
+`summary.json`、英文报告，以及 PDF 和 300 dpi PNG 图。该结果是单训练 seed
+的 validation 工程预检，不证明真实 Pareto 最优，也不支持多 seed 显著性
+结论。实现测试可单独运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest test\test_pareto_analysis.py -q
 ```
 
 构建并使用主动压力数据集：
@@ -206,21 +300,21 @@ deficit 和 horizon slack；全局向量追加安全空闲工人比例、当前�
 默认 `reward.mode` 为 `hierarchical_constrained_v1`。令
 
 ```text
-Q = (
-    1.0  * F / (3600 + F)
-  + 0.1  * C / (1000 + C)
-  + 0.01 * V / (100 + V)
-) / 1.11
+Q_reward = 0.5 * F / (1200 + F)
+         + 0.3 * C / (1000 + C)
+         + 0.2 * V / (50 + V)
 ```
 
 其中 `F` 是包含既有截断罚值的 `flow_time_objective`，`C` 是重构成本，
-`V` 是工人负荷方差，因此 `0 <= Q < 1`。再令 `c` 为订单完成比例、
+`V` 是工人负荷方差，因此 `0 <= Q_reward < 1`。默认训练尺度与正式
+`Q_paper` 一致，但两者在记录中保持独立：训练消融可以产生不同的
+`reward_quality_score`，不能改变正式 `quality_score`。再令 `c` 为订单完成比例、
 `u = 1 - c`、`T` 表示 horizon、deadlock 或 decision-limit 截断，则
 可行性阶段的整轨迹代理回报为
 
 ```text
 R_feasibility = c + complete - 0.5 * T - 1.0 * u
-R_quality     = R_feasibility - 0.5 * Q
+R_quality     = R_feasibility - 0.5 * Q_reward
 ```
 
 终局截断和未完成罚项只施加一次；串行 rollout、并行 rollout、验证中的
@@ -247,28 +341,41 @@ shaping。
 
 训练在可行性阶段每隔 `validation_interval_episodes` 个 episode 以及最后
 一个 episode 读取固定 validation manifest。质量阶段每次 PPO 更新后都
-立即验证；完成率低于 100% 的候选会同时回滚网络和 optimizer。所有阶段
-控制均由 greedy 验证决定。初始学习率为 `1e-4`；greedy 验证连续 15 次未
-刷新历史最优时乘 `0.5`，最低为 `2.5e-5`。阶段切换重置停滞计数，checkpoint
+立即验证。默认 `aligned_quality` 只晋升 greedy 完成率 100% 且平均
+`quality_score` 严格下降的候选；未晋升候选继续记录，但不会因一次波动立即
+覆盖正式 checkpoint。初始学习率为 `1e-4`；greedy 验证连续 15 次未刷新
+历史最优时乘 `0.5`，最低为 `2.5e-5`。阶段切换重置停滞计数，checkpoint
 回滚后重新应用当前学习率，不会被 checkpoint 中的旧学习率覆盖。
 
-可行性阶段按相同的 greedy 词典序另存
-`best_feasibility_checkpoint.pt`，包含网络、optimizer、学习率、验证指标和
-来源 episode。只有连续 2 次 greedy 验证均相对历史最佳下降至少 10 个百分点
-才回滚；单次退化和 5 个百分点波动均不回滚。回滚后 3 次 greedy 验证处于
-cooldown，并清空退化和 plateau 计数。该临时模型不替代正式的
-`best_checkpoint.pt`。
+v7 C0/E1 使用 `balanced_guarded_v7`：greedy 候选必须保持 100% 完成率、
+`quality_score` 至少改善 `1e-4`，且负荷方差相对 accepted anchor 的退化不
+超过 5%。通过 greedy 条件后立即运行 100011/100012/100013 三个 sampled
+seed；相对 anchor 的最差重复完成率下降不得超过 2%，疲劳 CVaR90 退化不得
+超过 5%，且必须通过疲劳安全线，候选才会成为新的 accepted checkpoint。
+阶段切换 anchor 同样要经过该 sampled 安全检查。
 
-每第 5 次 greedy 验证以及训练结束时，固定验证集使用三个固定且独立的
-`torch.Generator` 做 3 次 sampled 解码。sampled 只诊断“采样训练成功但
-greedy 推断失败”的差异，不触发阶段切换、checkpoint、回滚或学习率调整。
-独立 `eval.py` 仍默认 greedy 串行评估，也可显式传入
+可行性阶段按 greedy 的“完成率优先、正式质量分数次之”选择键另存
+`best_feasibility_checkpoint.pt`，包含网络、optimizer、学习率、验证指标和
+来源 episode。稳定性控制器只有在连续 2 次 greedy 完成率均不高于 90% 时，
+才将网络和 optimizer 回滚到最近一次 100% 完成的 `safe_checkpoint.pt`；
+单次退化和 5 个百分点波动均不回滚。回滚后 3 次 greedy 验证处于 cooldown，
+并清空退化和 plateau 计数。该临时模型不替代正式的 accepted checkpoint。
+
+默认 `aligned_quality` 每第 5 次 greedy 验证以及训练结束时，在固定验证集
+使用三个固定且独立的 `torch.Generator` 做 3 次 sampled 解码，只诊断“采样
+训练成功但 greedy 推断失败”的差异，不触发普通稳定性回滚或学习率调整。
+`balanced_guarded_v7` 将这一周期诊断替换为候选触发的官方三 seed sampled
+guard，并在正式 checkpoint 落盘后再次复评；该 guard 明确参与阶段切换和
+候选晋升。独立 `eval.py` 仍默认 greedy 串行评估，也可显式传入
 `--decode-mode sampled --sampling-seed <seed>`。
 
-`phase1_checkpoint.pt` 保存进入质量阶段时的模型，`checkpoint.pt` 保存
-训练结束时最后一个已接受状态，`best_checkpoint.pt` 按完成率、流经时间
-目标、重构成本和工人负荷方差的词典序保存最优验证模型。若训练预算内未
-满足阶段切换门槛，`summary.json` 标记
+`phase1_checkpoint.pt` 保存进入质量阶段时的模型；`safe_checkpoint.pt` 保存
+最近一次 100% greedy 完成的状态；`accepted_checkpoint.pt` 保存当前通过
+晋升规则的 shadow best；`last_checkpoint.pt` 保存训练结束时最后一个在线
+候选。正式训练完成时，`checkpoint.pt` 和 `best_checkpoint.pt` 都复制自
+`accepted_checkpoint.pt`，三者 SHA-256 必须一致，并从磁盘重新执行一次
+greedy 与三 seed sampled 验证。若训练预算内未满足阶段切换门槛，
+`summary.json` 标记
 `formal_training_status = feasibility_not_reached`，该运行不得作为正式模型。
 此时仅保存 `last_candidate_checkpoint.pt`，正式的 `checkpoint.pt` 和
 `best_checkpoint.pt` 均不生成。缺少 `reward.mode` 的历史配置仍按原三项
@@ -283,16 +390,21 @@ greedy 验证；E0 不允许重训：
 .\.venv\Scripts\python.exe train.py --config configs\default.json --ablation E3 --run-name controller_e3
 ```
 
-E1 仅启用 matching admission/schema v2，E2 再启用 shaping，E3 再启用新
-回滚/LR 控制器。`summary.json.ablation_gate` 会先从全部训练记录筛出
+这里的历史筛选 E1 仅启用 matching admission/schema v2，E2 再启用
+shaping，E3 再启用新回滚/LR 控制器；这组编号与 v7 的 E1 有界残差策略头
+不是同一实验命名空间。`summary.json.ablation_gate` 会先从全部训练记录筛出
 `reconfiguration_bottleneck`，再核对最后最多 200 个重构实例的完成率，同时
 报告请求窗口、全部可用样本数和实际样本数；另核对已知失败实例、最后 10 次
 验证、回滚率、LR floor、约束违反和基础奖励恒等式。历史配置项
 `training_window_episodes` 仍兼容，但同样按重构实例数解释。gate 只报告是否
 具备正式多 seed 训练资格，不会自动启动 2000-episode 训练。
 
+同一入口还保留 `R11/S11/L11/Q11/Q12/Q13` 协议比较变体；它们同样固定
+seed 11、600 episode 和 10-episode greedy 验证间隔。具体覆盖项由
+`train.py::_apply_ablation_variant` 集中定义，E0 始终只复用历史基线。
+
 ```powershell
-.\.venv\Scripts\python.exe train.py --config configs\default.json --parallel-envs 10 --run-name ppo_1000_parallel
+.\.venv\Scripts\python.exe train.py --config configs\default.json --parallel-envs 10 --run-name ppo_2000_parallel
 .\.venv\Scripts\python.exe benchmark_parallel.py --episodes 10 --steps 64 --workers 10
 ```
 
@@ -300,9 +412,13 @@ E1 仅启用 matching admission/schema v2，E2 再启用 shaping，E3 再启用�
 
 ```powershell
 .\.venv\Scripts\python.exe eval.py --config configs\default.json --dataset validation --policy heuristic
-.\.venv\Scripts\python.exe eval.py --config configs\default.json --dataset test --policy ppo --checkpoint result\runs\<run>\best_checkpoint.pt
-.\.venv\Scripts\python.exe eval.py --config configs\default.json --dataset ood --policy ppo --checkpoint result\runs\<run>\best_checkpoint.pt
+.\.venv\Scripts\python.exe eval.py --config configs\default.json --dataset test --policy ppo --checkpoint result\runs\<run>\checkpoint.pt
+.\.venv\Scripts\python.exe eval.py --config configs\default.json --dataset ood --policy ppo --checkpoint result\runs\<run>\checkpoint.pt
+.\.venv\Scripts\python.exe eval.py --config configs\default.json --dataset validation --policy ppo --checkpoint result\runs\<run>\checkpoint.pt --decode-mode sampled --sampling-seed 100011
 ```
+
+评估配置必须与 checkpoint 的 `network_spec` 匹配；v7 checkpoint 应改用对应
+的 `configs\v7\*.json`，不能用 `configs\default.json` 强行加载。
 
 ## Visdom 实时科研监控
 
@@ -346,15 +462,21 @@ Visdom 0.2.4 首次启动会下载前端 JavaScript/CSS 资源，需保证该次
 `instance_metrics.csv`、`schedule.csv` 和 `reconfigurations.csv`。
 聚合统计使用样本标准差，并分别报告完成实例的 makespan/真实流经时间、
 全部实例的惩罚后目标/成本/负荷方差、截断数、推理与求解计时，以及相对
-启发式 gap（负值表示优于启发式）。训练目录另含 `train_log.csv`、
-`update_log.csv`、`validation_log.csv`、`summary.json`、最后模型
-`checkpoint.pt`、验证最优模型 `best_checkpoint.pt`、最佳可行模型
-`best_feasibility_checkpoint.pt`，以及达到阶段门槛时生成的
-`phase1_checkpoint.pt`。`update_log.csv` 记录每批 transition 数、
+启发式 gap（负值表示优于启发式）。`metrics.json` 和逐实例行还记录评估
+schema、正式质量指标及哈希、数据 manifest 哈希、解码模式、sampling seed、
+动作轨迹哈希和完整 provenance。
+
+训练目录始终包含 `train_log.csv`、`update_log.csv`、`validation_log.csv`、
+`summary.json` 和 `last_checkpoint.pt`。验证出现 100% 完成状态后生成
+`safe_checkpoint.pt`；可行性历史最优写入 `best_feasibility_checkpoint.pt`；
+达到阶段门槛后生成 `phase1_checkpoint.pt` 和 `accepted_checkpoint.pt`。
+满足正式资格时还生成字节一致的 `checkpoint.pt` 和 `best_checkpoint.pt`；
+未达到门槛时改为生成 `last_candidate_checkpoint.pt`。`update_log.csv` 记录
+每批 transition 数、
 采样/推理/更新耗时、实际吞吐量、奖励阶段和候选接受/回滚状态。
 此外还记录 approximate KL、clip fraction、梯度范数、梯度裁剪比例、
 更新前 explained variance、return/advantage/value 统计、当前学习率，以及
-v6 策略头的 11 个命名有效权重和 4 个上下文门控；
+v6/v7 策略头的 11 个命名有效权重和 4 个上下文门控；
 `train_log.csv` 记录 `reward_base`、`reward_shaping`、`reward_training`、
 `reward_truncation`、`reward_unfinished`，以及 matching deficit、资源准入
 屏蔽率、最小工人备选数、matching-preserving 动作、候选恢复推进和机台等待
@@ -362,4 +484,5 @@ v6 策略头的 11 个命名有效权重和 4 个上下文门控；
 `validation_log.csv` 保留原 greedy 列并增加 `sampled_*`、
 sampled-minus-greedy、平均未完成订单数和 feasibility proxy return。
 `summary.json` 记录最佳可行验证及来源 episode、可行性回滚/cooldown、学习率
-衰减、sampled 验证、后 500 episode 诊断均值和消融 gate。
+衰减、sampled 验证、后 500 episode 诊断均值、消融 gate、正式训练状态、
+checkpoint 哈希和最终从磁盘复评结果。
