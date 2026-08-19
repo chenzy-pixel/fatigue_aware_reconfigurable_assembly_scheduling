@@ -3,7 +3,7 @@ from __future__ import annotations
 import multiprocessing
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from multiprocessing.connection import Connection, wait
 from typing import Any, TYPE_CHECKING
@@ -67,6 +67,95 @@ class _WorkerStepRequest:
     max_environment_steps: int | None = None
 
 
+@dataclass(frozen=True)
+class TrainingEpisodeAssignment:
+    trajectory_index: int
+    base_instance_index: int
+    preference_slot: int
+    preference_group_id: int
+    preference: PreferenceVector
+    preference_source: str
+
+
+def training_preference_group(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    training = config.get("training", {})
+    if not isinstance(training, Mapping):
+        raise TypeError("config.training must be an object")
+    raw = training.get("preference_grouping")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise TypeError("training.preference_grouping must be an object")
+    if not bool(raw.get("enabled", False)):
+        return None
+    version = str(raw.get("version", "fixed_anchor_group_v1"))
+    if version != "fixed_anchor_group_v1":
+        raise ValueError(
+            "training.preference_grouping.version must be "
+            "'fixed_anchor_group_v1'"
+        )
+    anchors_raw = raw.get("anchors")
+    if not isinstance(anchors_raw, Sequence) or isinstance(
+        anchors_raw, (str, bytes)
+    ):
+        raise TypeError("training.preference_grouping.anchors must be a sequence")
+    anchors = tuple(normalize_preference(value) for value in anchors_raw)
+    if len(anchors) < 2:
+        raise ValueError("grouped preference training requires at least two anchors")
+    return {"version": version, "anchors": anchors, "group_size": len(anchors)}
+
+
+def training_base_instance_count(
+    config: Mapping[str, Any], trajectory_count: int
+) -> int:
+    count = int(trajectory_count)
+    if count < 1:
+        raise ValueError("trajectory_count must be positive")
+    grouping = training_preference_group(config)
+    if grouping is None:
+        return count
+    group_size = int(grouping["group_size"])
+    if count % group_size:
+        raise ValueError(
+            "grouped preference trajectory count must be divisible by group size"
+        )
+    return count // group_size
+
+
+def training_episode_assignment(
+    config: Mapping[str, Any], trajectory_index: int
+) -> TrainingEpisodeAssignment:
+    index = int(trajectory_index)
+    if index < 0:
+        raise ValueError("trajectory_index must be non-negative")
+    grouping = training_preference_group(config)
+    if grouping is None:
+        preference, source = sample_episode_preference(
+            config,
+            algorithm_seed=int(config["seed"]),
+            episode_index=index,
+        )
+        return TrainingEpisodeAssignment(
+            trajectory_index=index,
+            base_instance_index=index,
+            preference_slot=-1,
+            preference_group_id=index,
+            preference=preference,
+            preference_source=source,
+        )
+    anchors: tuple[PreferenceVector, ...] = grouping["anchors"]
+    group_size = int(grouping["group_size"])
+    base_instance_index, preference_slot = divmod(index, group_size)
+    return TrainingEpisodeAssignment(
+        trajectory_index=index,
+        base_instance_index=base_instance_index,
+        preference_slot=preference_slot,
+        preference_group_id=base_instance_index,
+        preference=anchors[preference_slot],
+        preference_source=f"group_anchor_{preference_slot}",
+    )
+
+
 @dataclass
 class WorkerFailure:
     lane_id: int
@@ -96,6 +185,9 @@ class EpisodeRollout:
     unattributed_forced_reward: float = 0.0
     worker_step_command_count: int = 0
     worker_local_physical_forced_action_count: int = 0
+    base_instance_index: int | None = None
+    preference_slot: int = -1
+    preference_group_id: int | None = None
 
     @property
     def base_reward_sum(self) -> float:
@@ -727,11 +819,9 @@ class ParallelEpisodeRunner:
             else str(reward_phase)
         )
         sampling_start = time.perf_counter()
-        episode_preferences = {
-            int(episode_index): sample_episode_preference(
-                self.config,
-                algorithm_seed=int(self.config["seed"]),
-                episode_index=int(episode_index),
+        assignments = {
+            int(episode_index): training_episode_assignment(
+                self.config, int(episode_index)
             )
             for episode_index in episode_indices
         }
@@ -740,8 +830,10 @@ class ParallelEpisodeRunner:
                 lane_id: (
                     "reset_online",
                     _WorkerResetRequest(
-                        value=int(episode_index),
-                        preference=episode_preferences[int(episode_index)][0],
+                        value=assignments[
+                            int(episode_index)
+                        ].base_instance_index,
+                        preference=assignments[int(episode_index)].preference,
                         drain_physical_forced_actions=(
                             worker_local_physical_forced_actions
                         ),
@@ -757,6 +849,7 @@ class ParallelEpisodeRunner:
         completed: list[EpisodeRollout] = []
         reset_cutoff_lanes: list[int] = []
         for lane_id, episode_index in enumerate(episode_indices):
+            assignment = assignments[int(episode_index)]
             response = reset_responses[lane_id]
             if (
                 response.instance_id is None
@@ -767,12 +860,13 @@ class ParallelEpisodeRunner:
                 )
             context = {
                 "episode_index": int(episode_index),
+                "base_instance_index": assignment.base_instance_index,
+                "preference_slot": assignment.preference_slot,
+                "preference_group_id": assignment.preference_group_id,
                 "instance_id": response.instance_id,
                 "metadata": response.metadata,
-                "preference": episode_preferences[int(episode_index)][0],
-                "preference_source": episode_preferences[
-                    int(episode_index)
-                ][1],
+                "preference": assignment.preference,
+                "preference_source": assignment.preference_source,
                 "buffer": RolloutBuffer(
                     preserve_graph=agent.requires_graph_observation
                 ),
@@ -1158,6 +1252,9 @@ class ParallelEpisodeRunner:
             )
         episode = EpisodeRollout(
             episode_index=context["episode_index"],
+            base_instance_index=context["base_instance_index"],
+            preference_slot=context["preference_slot"],
+            preference_group_id=context["preference_group_id"],
             instance_id=context["instance_id"],
             metadata=context["metadata"],
             buffer=context["buffer"],

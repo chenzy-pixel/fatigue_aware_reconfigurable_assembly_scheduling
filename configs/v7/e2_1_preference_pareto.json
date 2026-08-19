@@ -1,0 +1,44 @@
+{
+  "extends": "e2_preference_conditioned.json",
+  "experiment_name": "v7_e2_1_preference_pareto",
+  "experiment_suite_version": "v7_e2_1_pareto_protocol_v1",
+  "training": {
+    "episodes": 2000,
+    "parallel_envs": 10,
+    "smoke_episodes": 10,
+    "smoke_parallel_envs": 10,
+    "preference_grouping": {
+      "enabled": true,
+      "version": "fixed_anchor_group_v1",
+      "anchors": [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.3333333333333333, 0.3333333333333333, 0.3333333333333333],
+        [0.5, 0.3, 0.2]
+      ]
+    },
+    "two_stage": {
+      "quality_checkpoint_promotion": "pareto_guarded_e2_v1",
+      "quality_validate_every_update": true,
+      "pareto_promotion": {
+        "anchor_validate_every_updates": 5,
+        "full_grid_validate_every_updates": 20,
+        "minimum_hv_improvement": 0.0001,
+        "canonical_relative_tolerance": 0.01,
+        "canonical_absolute_tolerance": 0.000001,
+        "fatigue_absolute_tolerance": 1e-9
+      }
+    }
+  },
+  "network": {
+    "preference_action_score": {
+      "enabled": true,
+      "version": "direct_main_rank_v1",
+      "shared_scale": true,
+      "initial_scale": 1.0,
+      "minimum_scale": 0.1,
+      "standardization": "legal_candidate_zscore"
+    }
+  }
+}

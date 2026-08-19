@@ -42,6 +42,13 @@ def summarize_policy_decision_diagnostics(
     context_override_count = sum(
         bool(row.get("context_overrode_top", False)) for row in ranked
     )
+    preference_override_count = sum(
+        bool(row.get("preference_overrode_relative_top", False))
+        for row in ranked
+    )
+    preference_logit_stds = [
+        float(row.get("preference_logit_std", 0.0)) for row in ranked
+    ]
     production_terminal_count = sum(
         bool(row.get("terminal_legal", False)) for row in production
     )
@@ -57,6 +64,15 @@ def summarize_policy_decision_diagnostics(
         "context_override_count": context_override_count,
         "context_override_rate": (
             context_override_count / len(ranked) if ranked else 0.0
+        ),
+        "preference_override_count": preference_override_count,
+        "preference_override_rate": (
+            preference_override_count / len(ranked) if ranked else 0.0
+        ),
+        "mean_preference_logit_std": (
+            sum(preference_logit_stds) / len(preference_logit_stds)
+            if preference_logit_stds
+            else 0.0
         ),
         "production_pair_plus_defer_state_count": production_terminal_count,
         "production_decision_state_count": len(production),

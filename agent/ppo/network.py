@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -459,6 +460,8 @@ V6_CANDIDATE_CONTEXT_MODE = "common_plus_gated_residual_v6"
 V6_RELATIVE_WEIGHT_PARAMETERIZATION = "independent_softplus_signed_v6"
 V6_WORKER_RELATIVE_WEIGHT_SHARING = "independent_softplus_v6"
 V7_BOUNDED_CONTEXT_MODE = "bounded_ranker_scale_v7"
+DIRECT_PREFERENCE_ACTION_SCORE_VERSION = "direct_main_rank_v1"
+DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION = "legal_candidate_zscore"
 PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
     "legal_candidate_count_norm",
     "configuration_match_rate",
@@ -611,6 +614,80 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
     residual_scale_ratio = float(config.get("residual_scale_ratio", 2.0))
     if not np.isfinite(residual_scale_ratio) or residual_scale_ratio <= 0.0:
         raise ValueError("network.residual_scale_ratio must be positive")
+    preference_action_score_raw = config.get("preference_action_score", {})
+    if not isinstance(preference_action_score_raw, Mapping):
+        raise TypeError("network.preference_action_score must be an object")
+    preference_action_score_enabled = bool(
+        preference_action_score_raw.get("enabled", False)
+    )
+    preference_action_score_version = str(
+        preference_action_score_raw.get(
+            "version", DIRECT_PREFERENCE_ACTION_SCORE_VERSION
+        )
+    )
+    preference_action_score_shared_scale = bool(
+        preference_action_score_raw.get("shared_scale", True)
+    )
+    preference_action_score_initial_scale = float(
+        preference_action_score_raw.get("initial_scale", 1.0)
+    )
+    preference_action_score_minimum_scale = float(
+        preference_action_score_raw.get("minimum_scale", 0.1)
+    )
+    preference_action_score_standardization = str(
+        preference_action_score_raw.get(
+            "standardization",
+            DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION,
+        )
+    )
+    if preference_action_score_enabled:
+        if version != 7:
+            raise ValueError(
+                "direct preference-action scoring requires policy_head_version=7"
+            )
+        if str(config.get("preference_conditioning", "none")) != (
+            "separate_encoder_v1"
+        ):
+            raise ValueError(
+                "direct preference-action scoring requires preference conditioning"
+            )
+        if not production_enabled or not worker_enabled:
+            raise ValueError(
+                "direct preference-action scoring requires both relative rankers"
+            )
+        if preference_action_score_version != (
+            DIRECT_PREFERENCE_ACTION_SCORE_VERSION
+        ):
+            raise ValueError(
+                "network.preference_action_score.version must be "
+                f"{DIRECT_PREFERENCE_ACTION_SCORE_VERSION!r}"
+            )
+        if not preference_action_score_shared_scale:
+            raise ValueError(
+                "E2.1 requires one shared preference-action scale"
+            )
+        if preference_action_score_standardization != (
+            DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION
+        ):
+            raise ValueError(
+                "network.preference_action_score.standardization must be "
+                f"{DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION!r}"
+            )
+        if (
+            not np.isfinite(preference_action_score_minimum_scale)
+            or preference_action_score_minimum_scale < 0.0
+        ):
+            raise ValueError(
+                "preference-action minimum_scale must be finite and non-negative"
+            )
+        if (
+            not np.isfinite(preference_action_score_initial_scale)
+            or preference_action_score_initial_scale
+            <= preference_action_score_minimum_scale
+        ):
+            raise ValueError(
+                "preference-action initial_scale must exceed minimum_scale"
+            )
     production_defaults = (
         DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS
         if production_names == V6_PRODUCTION_RELATIVE_FEATURE_NAMES
@@ -636,6 +713,20 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             config.get("worker_common_context_enabled", True)
         ),
         "residual_scale_ratio": residual_scale_ratio,
+        "preference_action_score_enabled": preference_action_score_enabled,
+        "preference_action_score_version": preference_action_score_version,
+        "preference_action_score_shared_scale": (
+            preference_action_score_shared_scale
+        ),
+        "preference_action_score_initial_scale": (
+            preference_action_score_initial_scale
+        ),
+        "preference_action_score_minimum_scale": (
+            preference_action_score_minimum_scale
+        ),
+        "preference_action_score_standardization": (
+            preference_action_score_standardization
+        ),
         "production_relative_initial_weights": (
             _positive_weight_tuple(
                 config,
@@ -874,6 +965,19 @@ def assert_network_config_matches_spec(
                         f"configured={configured_value}, "
                         f"checkpoint={saved_value}"
                     )
+            configured_preference_action = dict(
+                config.get("preference_action_score", {})
+            )
+            saved_preference_action = dict(
+                checkpoint_spec.get("preference_action_score", {})
+            )
+            if configured_preference_action != saved_preference_action:
+                raise ValueError(
+                    "checkpoint preference_action_score is incompatible "
+                    "with the current network: "
+                    f"configured={configured_preference_action}, "
+                    f"checkpoint={saved_preference_action}"
+                )
     configured_features = config.get("feature_dimensions")
     saved_features = checkpoint_spec.get("feature_dimensions")
     configured_edges = config.get("edge_feature_dimensions")
@@ -1169,6 +1273,16 @@ class HeteroGraphActorCritic(nn.Module):
         worker_common_context_enabled: bool = True,
         residual_scale_ratio: float = 2.0,
         preference_conditioning: str = "none",
+        preference_action_score_enabled: bool = False,
+        preference_action_score_version: str = (
+            DIRECT_PREFERENCE_ACTION_SCORE_VERSION
+        ),
+        preference_action_score_shared_scale: bool = True,
+        preference_action_score_initial_scale: float = 1.0,
+        preference_action_score_minimum_scale: float = 0.1,
+        preference_action_score_standardization: str = (
+            DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION
+        ),
     ):
         super().__init__()
         self.feature_dimensions = {
@@ -1228,6 +1342,24 @@ class HeteroGraphActorCritic(nn.Module):
         )
         self.residual_scale_ratio = float(residual_scale_ratio)
         self.preference_conditioning = str(preference_conditioning)
+        self.preference_action_score_enabled = bool(
+            preference_action_score_enabled
+        )
+        self.preference_action_score_version = str(
+            preference_action_score_version
+        )
+        self.preference_action_score_shared_scale = bool(
+            preference_action_score_shared_scale
+        )
+        self.preference_action_score_initial_scale = float(
+            preference_action_score_initial_scale
+        )
+        self.preference_action_score_minimum_scale = float(
+            preference_action_score_minimum_scale
+        )
+        self.preference_action_score_standardization = str(
+            preference_action_score_standardization
+        )
         if self.preference_conditioning not in {
             "none",
             "separate_encoder_v1",
@@ -1236,6 +1368,15 @@ class HeteroGraphActorCritic(nn.Module):
         self.use_preference_conditioning = (
             self.preference_conditioning == "separate_encoder_v1"
         )
+        if self.preference_action_score_enabled and not (
+            self.use_preference_conditioning
+            and self.use_production_candidate_relative_features
+            and self.use_worker_candidate_relative_features
+        ):
+            raise ValueError(
+                "direct preference-action scoring requires preference "
+                "conditioning and both relative rankers"
+            )
         if (
             len(self.production_relative_initial_weights)
             != len(self.production_relative_feature_names)
@@ -1277,6 +1418,16 @@ class HeteroGraphActorCritic(nn.Module):
             if self.use_preference_conditioning
             else None
         )
+        if self.preference_action_score_enabled:
+            initial_magnitude = (
+                self.preference_action_score_initial_scale
+                - self.preference_action_score_minimum_scale
+            )
+            self.preference_action_scale_raw = nn.Parameter(
+                torch.tensor(math.log(math.expm1(initial_magnitude)))
+            )
+        else:
+            self.register_parameter("preference_action_scale_raw", None)
         self.message_layers = nn.ModuleList(
             [
                 HeterogeneousMessagePassingLayer(
@@ -1456,6 +1607,26 @@ class HeteroGraphActorCritic(nn.Module):
                         if self.use_production_commit_set_scorer
                         else ()
                     ),
+                    "preference_action_score": (
+                        {
+                            "enabled": True,
+                            "version": self.preference_action_score_version,
+                            "shared_scale": (
+                                self.preference_action_score_shared_scale
+                            ),
+                            "initial_scale": (
+                                self.preference_action_score_initial_scale
+                            ),
+                            "minimum_scale": (
+                                self.preference_action_score_minimum_scale
+                            ),
+                            "standardization": (
+                                self.preference_action_score_standardization
+                            ),
+                        }
+                        if self.preference_action_score_enabled
+                        else {}
+                    ),
                 }
             )
         if self.use_preference_conditioning:
@@ -1526,17 +1697,17 @@ class HeteroGraphActorCritic(nn.Module):
         global_embeddings = self.global_encoder(
             graph_batch.global_features
         )
+        preference_values = torch.stack(
+            [
+                torch.as_tensor(
+                    observation.preference,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                for observation in observations
+            ]
+        )
         if self.preference_encoder is not None:
-            preference_values = torch.stack(
-                [
-                    torch.as_tensor(
-                        observation.preference,
-                        dtype=torch.float32,
-                        device=device,
-                    )
-                    for observation in observations
-                ]
-            )
             if preference_values.shape != (len(observations), 3):
                 raise ValueError("preference batch must have shape (B, 3)")
             if any(
@@ -1596,6 +1767,7 @@ class HeteroGraphActorCritic(nn.Module):
                     machine_embeddings,
                     global_embeddings[batch_index],
                     preference_embeddings[batch_index],
+                    preference_values[batch_index],
                     masks[batch_index],
                     device=device,
                 )
@@ -1610,6 +1782,7 @@ class HeteroGraphActorCritic(nn.Module):
                     worker_embeddings,
                     global_embeddings[batch_index],
                     preference_embeddings[batch_index],
+                    preference_values[batch_index],
                     masks[batch_index],
                     device=device,
                 )
@@ -1746,6 +1919,7 @@ class HeteroGraphActorCritic(nn.Module):
         machine_embeddings: torch.Tensor,
         global_embedding: torch.Tensor,
         preference_embedding: torch.Tensor,
+        preference: torch.Tensor,
         action_mask: torch.Tensor,
         *,
         device: torch.device | str,
@@ -1887,6 +2061,20 @@ class HeteroGraphActorCritic(nn.Module):
         relative_logits = functional.linear(
             relative_features, effective_weights
         ).reshape(-1)
+        preference_logits = relative_logits.new_zeros(relative_logits.shape)
+        if self.preference_action_score_enabled:
+            preference_logits = self._direct_preference_logits(
+                torch.stack(
+                    (
+                        processing + reconfiguration,
+                        production_columns["total_reconfiguration_cost_norm"],
+                    ),
+                    dim=-1,
+                ),
+                ~action_mask[:pair_count],
+                preference,
+            )
+        primary_logits = relative_logits + preference_logits
         common_context, raw_residual_context = self._candidate_context_components(
             contextual_logits,
             ~action_mask[:pair_count],
@@ -1894,7 +2082,7 @@ class HeteroGraphActorCritic(nn.Module):
         if self.candidate_context_mode == V7_BOUNDED_CONTEXT_MODE:
             raw_residual_context = contextual_logits - common_context
         residual_context = self._context_residual(
-            relative_logits,
+            primary_logits,
             raw_residual_context,
             ~action_mask[:pair_count],
             self.production_residual_context_gate,
@@ -1916,7 +2104,7 @@ class HeteroGraphActorCritic(nn.Module):
                 action_set_features
             ).squeeze(-1)
         final_logits = (
-            relative_logits
+            primary_logits
             + torch.sigmoid(self.production_context_gate) * common_context
             + residual_context
             + commit_set_logit
@@ -1926,6 +2114,7 @@ class HeteroGraphActorCritic(nn.Module):
             relative_logits,
             final_logits,
             action_mask,
+            preference_logits=preference_logits,
             commit_set_logit=commit_set_logit,
         )
         return final_logits
@@ -1938,6 +2127,7 @@ class HeteroGraphActorCritic(nn.Module):
         worker_embeddings: torch.Tensor,
         global_embedding: torch.Tensor,
         preference_embedding: torch.Tensor,
+        preference: torch.Tensor,
         action_mask: torch.Tensor,
         *,
         device: torch.device | str,
@@ -2128,6 +2318,21 @@ class HeteroGraphActorCritic(nn.Module):
         relative_logits = functional.linear(
             relative_features, effective_weights
         ).reshape(-1)
+        preference_logits = relative_logits.new_zeros(relative_logits.shape)
+        if self.preference_action_score_enabled:
+            preference_logits = self._direct_preference_logits(
+                torch.stack(
+                    (
+                        stage_duration,
+                        labor_cost + downtime_cost,
+                        incremental_variance,
+                    ),
+                    dim=-1,
+                ),
+                ~action_mask[:pair_count],
+                preference,
+            )
+        primary_logits = relative_logits + preference_logits
         common_context, raw_residual_context = self._candidate_context_components(
             contextual_logits,
             ~action_mask[:pair_count],
@@ -2135,7 +2340,7 @@ class HeteroGraphActorCritic(nn.Module):
         if self.candidate_context_mode == V7_BOUNDED_CONTEXT_MODE:
             raw_residual_context = contextual_logits - common_context
         residual_context = self._context_residual(
-            relative_logits,
+            primary_logits,
             raw_residual_context,
             ~action_mask[:pair_count],
             self.worker_residual_context_gate,
@@ -2153,7 +2358,7 @@ class HeteroGraphActorCritic(nn.Module):
             else torch.zeros_like(common_context)
         )
         final_logits = (
-            relative_logits
+            primary_logits
             + common_term
             + residual_context
         )
@@ -2162,6 +2367,7 @@ class HeteroGraphActorCritic(nn.Module):
             relative_logits,
             final_logits,
             action_mask,
+            preference_logits=preference_logits,
         )
         return final_logits
 
@@ -2236,6 +2442,7 @@ class HeteroGraphActorCritic(nn.Module):
         final_pair_logits: torch.Tensor,
         action_mask: torch.Tensor,
         *,
+        preference_logits: torch.Tensor | None = None,
         commit_set_logit: torch.Tensor | None = None,
     ) -> None:
         feasible = ~action_mask[:-1]
@@ -2251,17 +2458,44 @@ class HeteroGraphActorCritic(nn.Module):
                     torch.argmax(final_pair_logits[feasible_indices])
                 ].detach().cpu()
             )
+            preference_adjusted = relative_logits + (
+                preference_logits
+                if preference_logits is not None
+                else torch.zeros_like(relative_logits)
+            )
+            preference_top = int(
+                feasible_indices[
+                    torch.argmax(preference_adjusted[feasible_indices])
+                ].detach().cpu()
+            )
         else:
             relative_top = -1
             final_top = -1
+            preference_top = -1
+        feasible_preference = (
+            preference_logits[feasible_indices]
+            if preference_logits is not None and feasible_indices.numel()
+            else relative_logits.new_zeros((0,))
+        )
         self._latest_policy_decision_diagnostics.append(
             {
                 "decision_type": decision_type.value,
                 "legal_pair_count": int(feasible_indices.numel()),
                 "terminal_legal": bool((~action_mask[-1]).detach().cpu()),
                 "relative_top_action": relative_top,
+                "preference_top_action": preference_top,
                 "final_pair_top_action": final_top,
-                "context_overrode_top": relative_top != final_top,
+                "preference_overrode_relative_top": (
+                    relative_top != preference_top
+                ),
+                "context_overrode_top": preference_top != final_top,
+                "preference_logit_std": (
+                    float(
+                        feasible_preference.std(unbiased=False).detach().cpu()
+                    )
+                    if feasible_preference.numel() >= 2
+                    else 0.0
+                ),
                 "commit_set_logit": (
                     float(commit_set_logit.detach().cpu())
                     if commit_set_logit is not None
@@ -2329,7 +2563,42 @@ class HeteroGraphActorCritic(nn.Module):
                 diagnostics[f"policy_head_gate_{name}"] = float(
                     torch.sigmoid(parameter.detach()).cpu()
                 )
+        if self.preference_action_score_enabled:
+            diagnostics["policy_head_preference_action_scale"] = float(
+                self.preference_action_scale().detach().cpu()
+            )
         return diagnostics
+
+    def preference_action_scale(self) -> torch.Tensor:
+        if self.preference_action_scale_raw is None:
+            return next(self.parameters()).new_zeros(())
+        return (
+            self.preference_action_scale_raw.new_tensor(
+                self.preference_action_score_minimum_scale
+            )
+            + functional.softplus(self.preference_action_scale_raw)
+        )
+
+    def _direct_preference_logits(
+        self,
+        objectives: torch.Tensor,
+        feasible: torch.Tensor,
+        preference: torch.Tensor,
+    ) -> torch.Tensor:
+        if objectives.ndim != 2 or objectives.shape[1] not in {2, 3}:
+            raise ValueError(
+                "direct preference objectives must have two or three columns"
+            )
+        if preference.shape != (3,):
+            raise ValueError("direct preference weights must have shape (3,)")
+        standardized = self._standardize_candidate_features(
+            objectives, feasible
+        )
+        weights = preference[: objectives.shape[1]]
+        return self.preference_action_scale() * -torch.sum(
+            standardized * weights,
+            dim=-1,
+        )
 
     @staticmethod
     def _standardize_candidate_features(
@@ -2436,4 +2705,10 @@ def build_actor_critic(
         policy_head["worker_common_context_enabled"],
         policy_head["residual_scale_ratio"],
         config.get("preference_conditioning", "none"),
+        policy_head["preference_action_score_enabled"],
+        policy_head["preference_action_score_version"],
+        policy_head["preference_action_score_shared_scale"],
+        policy_head["preference_action_score_initial_scale"],
+        policy_head["preference_action_score_minimum_scale"],
+        policy_head["preference_action_score_standardization"],
     )

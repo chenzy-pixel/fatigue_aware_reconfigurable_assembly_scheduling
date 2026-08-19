@@ -19,6 +19,8 @@ from agent.ppo.parallel import (
     ParallelEpisodeRunner,
     TrainingRolloutBatch,
     forced_action_from_mask,
+    training_base_instance_count,
+    training_preference_group,
 )
 from configs import load_config, project_path
 from configs.config import public_config
@@ -30,10 +32,13 @@ from data.dataset import (
 from data.models import load_instance_yaml
 from environment import (
     AssemblySchedulingEnv,
+    CANONICAL_PREFERENCE,
+    PreferenceVector,
     derive_episode_action_seed,
     preference_enabled,
     proxy_return_from_metrics,
     sample_episode_preference,
+    simplex_lattice,
 )
 from eval import (
     evaluate_dataset,
@@ -54,6 +59,7 @@ from result.visdom_dashboard import (
     override_visdom_enabled,
     resolve_visdom_settings,
 )
+from pareto_analysis import hypervolume_3d, nondominated_indices, normalize_objectives
 from utils import set_seed
 
 
@@ -87,6 +93,229 @@ def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
     }
 
 
+def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
+    raw = config["training"]["two_stage"].get("pareto_promotion")
+    if not isinstance(raw, dict):
+        raise ValueError("two_stage.pareto_promotion must be an object")
+    settings: dict[str, float | int] = {
+        "anchor_validate_every_updates": int(
+            raw.get("anchor_validate_every_updates", 5)
+        ),
+        "full_grid_validate_every_updates": int(
+            raw.get("full_grid_validate_every_updates", 20)
+        ),
+        "minimum_hv_improvement": float(
+            raw.get("minimum_hv_improvement", 1e-4)
+        ),
+        "canonical_relative_tolerance": float(
+            raw.get("canonical_relative_tolerance", 0.01)
+        ),
+        "canonical_absolute_tolerance": float(
+            raw.get("canonical_absolute_tolerance", 1e-6)
+        ),
+        "fatigue_absolute_tolerance": float(
+            raw.get("fatigue_absolute_tolerance", 1e-9)
+        ),
+    }
+    for name in (
+        "anchor_validate_every_updates",
+        "full_grid_validate_every_updates",
+    ):
+        if int(settings[name]) < 1:
+            raise ValueError(f"pareto_promotion.{name} must be positive")
+    for name in (
+        "minimum_hv_improvement",
+        "canonical_relative_tolerance",
+        "canonical_absolute_tolerance",
+        "fatigue_absolute_tolerance",
+    ):
+        value = float(settings[name])
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"pareto_promotion.{name} must be finite and non-negative"
+            )
+    return settings
+
+
+def _pareto_anchor_preferences(config: dict) -> tuple[PreferenceVector, ...]:
+    grouping = training_preference_group(config)
+    if grouping is None:
+        raise ValueError("Pareto promotion requires grouped preference training")
+    anchors = tuple(grouping["anchors"])
+    if len(anchors) != 5:
+        raise ValueError("E2.1 Pareto promotion requires exactly five anchors")
+    return anchors
+
+
+def _preference_key(preference: PreferenceVector) -> str:
+    return "_".join(f"{value:.12g}" for value in preference.as_tuple())
+
+
+def _rows_are_safe(rows: list[dict], fatigue_tolerance: float) -> bool:
+    return bool(rows) and all(
+        bool(row.get("terminated", False))
+        and not bool(row.get("truncated", False))
+        and int(row.get("schedule_violation_count", 0)) == 0
+        and float(row.get("maximum_worker_fatigue", math.inf))
+        <= float(row.get("safe_fatigue_limit", -math.inf))
+        + float(fatigue_tolerance)
+        for row in rows
+    )
+
+
+def _pareto_snapshot(
+    rows: list[dict],
+    *,
+    config: dict,
+    scope: str,
+    update_id: int,
+    completed_episodes: int,
+    fatigue_tolerance: float,
+) -> dict[str, object]:
+    scales = tuple(
+        float(config["evaluation"]["quality_metric"][name])
+        for name in ("flow_scale", "cost_scale", "variance_scale")
+    )
+    by_instance: dict[str, list[dict]] = {}
+    for row in rows:
+        by_instance.setdefault(str(row["instance_id"]), []).append(row)
+    hypervolumes: list[float] = []
+    unique_counts: list[int] = []
+    nondominated_counts: list[int] = []
+    for instance_rows in by_instance.values():
+        unique: list[tuple[float, float, float]] = []
+        for row in instance_rows:
+            objectives = (
+                float(row["flow_time_objective"]),
+                float(row["reconfiguration_cost"]),
+                float(row["worker_load_variance"]),
+            )
+            if objectives not in unique:
+                unique.append(objectives)
+        normalized = [normalize_objectives(value, scales) for value in unique]
+        front_indices = nondominated_indices(normalized)
+        front = [normalized[index] for index in front_indices]
+        hypervolumes.append(hypervolume_3d(front))
+        unique_counts.append(len(unique))
+        nondominated_counts.append(len(front))
+    canonical_key = _preference_key(PreferenceVector(*CANONICAL_PREFERENCE))
+    canonical_rows = [
+        row for row in rows if str(row.get("preference_key")) == canonical_key
+    ]
+    canonical_values = [
+        float(row["preference_quality_score"])
+        for row in canonical_rows
+        if math.isfinite(float(row["preference_quality_score"]))
+    ]
+    fatigue_margins = [
+        float(row["safe_fatigue_limit"])
+        - float(row["maximum_worker_fatigue"])
+        for row in rows
+    ]
+    return {
+        "scope": scope,
+        "update_id": int(update_id),
+        "completed_episodes": int(completed_episodes),
+        "preference_count": len(
+            {str(row.get("preference_key")) for row in rows}
+        ),
+        "instance_count": len(by_instance),
+        "candidate_count": len(rows),
+        "all_safe": _rows_are_safe(rows, fatigue_tolerance),
+        "completion_rate": (
+            sum(
+                bool(row.get("terminated", False))
+                and not bool(row.get("truncated", False))
+                for row in rows
+            )
+            / len(rows)
+            if rows
+            else 0.0
+        ),
+        "schedule_violation_count": sum(
+            int(row.get("schedule_violation_count", 0)) for row in rows
+        ),
+        "minimum_fatigue_margin": min(fatigue_margins, default=-math.inf),
+        "mean_hypervolume": (
+            float(np.mean(hypervolumes)) if hypervolumes else 0.0
+        ),
+        "mean_unique_objective_count": (
+            float(np.mean(unique_counts)) if unique_counts else 0.0
+        ),
+        "mean_nondominated_count": (
+            float(np.mean(nondominated_counts))
+            if nondominated_counts
+            else 0.0
+        ),
+        "canonical_quality": (
+            float(np.mean(canonical_values)) if canonical_values else math.inf
+        ),
+    }
+
+
+def _evaluate_pareto_preferences(
+    config: dict,
+    *,
+    preferences: tuple[PreferenceVector, ...],
+    scope: str,
+    ppo_agent: PPOAgent,
+    runner: ParallelEpisodeRunner,
+    dataset_name: str,
+    instance_limit: int | None,
+    validation_parallel_envs: int,
+    update_id: int,
+    completed_episodes: int,
+    fatigue_tolerance: float,
+    canonical_rows: list[dict] | None = None,
+) -> tuple[list[dict], dict[str, object]]:
+    rows: list[dict] = []
+    canonical_key = _preference_key(PreferenceVector(*CANONICAL_PREFERENCE))
+    for preference in preferences:
+        key = _preference_key(preference)
+        if key == canonical_key and canonical_rows is not None:
+            preference_rows = [dict(row) for row in canonical_rows]
+        elif validation_parallel_envs > 1:
+            preference_rows, _ = evaluate_dataset_parallel(
+                config,
+                dataset_name=dataset_name,
+                ppo_agent=ppo_agent,
+                runner=runner,
+                instance_limit=instance_limit,
+                decode_mode="greedy",
+                preference=preference,
+            )
+        else:
+            preference_rows, _, _, _ = evaluate_dataset(
+                config,
+                dataset_name=dataset_name,
+                policy_name="ppo",
+                ppo_agent=ppo_agent,
+                instance_limit=instance_limit,
+                decode_mode="greedy",
+                preference=preference,
+            )
+        for row in preference_rows:
+            rows.append(
+                {
+                    **row,
+                    "preference_key": key,
+                    "pareto_scope": scope,
+                    "w_flow": preference.flow,
+                    "w_cost": preference.cost,
+                    "w_variance": preference.variance,
+                }
+            )
+    snapshot = _pareto_snapshot(
+        rows,
+        config=config,
+        scope=scope,
+        update_id=update_id,
+        completed_episodes=completed_episodes,
+        fatigue_tolerance=fatigue_tolerance,
+    )
+    return rows, snapshot
+
+
 @dataclass
 class TrainingPhaseController:
     enabled: bool
@@ -110,6 +339,8 @@ class TrainingPhaseController:
     pending_quality_score: tuple[float, float, float, float] | None = None
     pending_normalized_quality_score: float | None = None
     pending_quality_episode: int | None = None
+    accepted_pareto_hv: float | None = None
+    accepted_pareto_canonical_quality: float | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> "TrainingPhaseController":
@@ -146,12 +377,13 @@ class TrainingPhaseController:
             "constrained_weighted",
             "aligned_quality",
             "balanced_guarded_v7",
+            "pareto_guarded_e2_v1",
         }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
                 "'completion_only', 'score_improving', or "
-                "'constrained_weighted', 'aligned_quality', or "
-                "'balanced_guarded_v7'"
+                "'constrained_weighted', 'aligned_quality', "
+                "'balanced_guarded_v7', or 'pareto_guarded_e2_v1'"
             )
         constraints: dict[str, float] = {}
         if promotion in {"constrained_weighted", "balanced_guarded_v7"}:
@@ -191,6 +423,11 @@ class TrainingPhaseController:
                         f"{name} must be finite and non-negative"
                     )
                 constraints[name] = value
+        if promotion == "pareto_guarded_e2_v1":
+            constraints = {
+                name: float(value)
+                for name, value in _pareto_promotion_settings(config).items()
+            }
         if not bool(settings["quality_validate_every_update"]):
             raise ValueError(
                 "hierarchical constrained training requires validation "
@@ -229,11 +466,12 @@ class TrainingPhaseController:
             if self.consecutive_successes >= self.consecutive_required:
                 self.phase = "quality"
                 self.phase_transition_episode = int(completed_episodes)
-                self.accepted_quality_score = score
-                self.accepted_normalized_quality_score = (
-                    normalized_quality_score
-                )
-                self.accepted_quality_episode = int(completed_episodes)
+                if self.quality_checkpoint_promotion != "pareto_guarded_e2_v1":
+                    self.accepted_quality_score = score
+                    self.accepted_normalized_quality_score = (
+                        normalized_quality_score
+                    )
+                    self.accepted_quality_episode = int(completed_episodes)
                 self._record_constrained_promotion_diagnostics(
                     completion_rate=rate,
                     score=score,
@@ -246,6 +484,8 @@ class TrainingPhaseController:
                 )
                 return "transition"
             return "feasibility"
+        if self.quality_checkpoint_promotion == "pareto_guarded_e2_v1":
+            return "pareto_pending"
         if self.quality_checkpoint_promotion == "balanced_guarded_v7":
             return self._observe_balanced_greedy_candidate(
                 completion_rate=rate,
@@ -348,6 +588,81 @@ class TrainingPhaseController:
             anchor_episode=self.accepted_quality_episode,
         )
         return "rejected"
+
+    def observe_pareto_snapshot(
+        self,
+        snapshot: dict[str, object],
+        *,
+        completed_episodes: int,
+    ) -> str:
+        if self.quality_checkpoint_promotion != "pareto_guarded_e2_v1":
+            raise RuntimeError("Pareto snapshots require pareto_guarded_e2_v1")
+        constraints = self.quality_promotion_constraints
+        candidate_hv = float(snapshot["mean_hypervolume"])
+        candidate_canonical = float(snapshot["canonical_quality"])
+        safety_pass = bool(snapshot["all_safe"])
+        finite = math.isfinite(candidate_hv) and math.isfinite(
+            candidate_canonical
+        )
+        anchor_hv = self.accepted_pareto_hv
+        anchor_canonical = self.accepted_pareto_canonical_quality
+        baseline = anchor_hv is None or anchor_canonical is None
+        hv_pass = bool(
+            finite
+            and (
+                baseline
+                or candidate_hv
+                >= float(anchor_hv)
+                + constraints["minimum_hv_improvement"]
+                - 1e-12
+            )
+        )
+        canonical_pass = bool(
+            finite
+            and (
+                baseline
+                or candidate_canonical
+                <= float(anchor_canonical)
+                * (1.0 + constraints["canonical_relative_tolerance"])
+                + constraints["canonical_absolute_tolerance"]
+                + 1e-12
+            )
+        )
+        promoted = safety_pass and hv_pass and canonical_pass
+        if promoted:
+            event = "accepted" if baseline else "promoted"
+            reason = "pareto_baseline" if baseline else "pareto_hv_improved"
+            self.accepted_pareto_hv = candidate_hv
+            self.accepted_pareto_canonical_quality = candidate_canonical
+            self.accepted_quality_episode = int(completed_episodes)
+            self.accepted_quality_updates += 1
+        else:
+            event = "rejected" if not safety_pass else "not_promoted"
+            reason = (
+                "safety_failed"
+                if not safety_pass
+                else "hypervolume_not_improved"
+                if not hv_pass
+                else "canonical_quality_guard_failed"
+            )
+            if event == "rejected":
+                self.rejected_quality_updates += 1
+            else:
+                self.not_promoted_quality_updates += 1
+        self.last_promotion_diagnostics = {
+            "promotion_mode": "pareto_guarded_e2_v1",
+            "promotion_event": event,
+            "promotion_decision_reason": reason,
+            "promotion_safety_pass": safety_pass,
+            "promotion_hv_pass": hv_pass,
+            "promotion_canonical_guard_pass": canonical_pass,
+            "promotion_candidate_hv": candidate_hv,
+            "promotion_anchor_hv": anchor_hv,
+            "promotion_candidate_canonical_quality": candidate_canonical,
+            "promotion_anchor_canonical_quality": anchor_canonical,
+            "promotion_anchor_episode": self.accepted_quality_episode,
+        }
+        return event
 
     def _observe_balanced_greedy_candidate(
         self,
@@ -701,6 +1016,11 @@ class TrainingPhaseController:
             return "legacy_weighted_sum"
         if self.phase_transition_episode is None:
             return "feasibility_not_reached"
+        if (
+            self.quality_checkpoint_promotion == "pareto_guarded_e2_v1"
+            and self.accepted_pareto_hv is None
+        ):
+            return "pareto_baseline_not_reached"
         return "quality_constrained"
 
     def as_dict(self) -> dict:
@@ -725,6 +1045,7 @@ class TrainingPhaseController:
             "constrained_weighted",
             "aligned_quality",
             "balanced_guarded_v7",
+            "pareto_guarded_e2_v1",
         }:
             result.update(
                 {
@@ -743,6 +1064,10 @@ class TrainingPhaseController:
                     ),
                     "accepted_sampled_fatigue_cvar90": (
                         self.accepted_sampled_fatigue_cvar90
+                    ),
+                    "accepted_pareto_hv": self.accepted_pareto_hv,
+                    "accepted_pareto_canonical_quality": (
+                        self.accepted_pareto_canonical_quality
                     ),
                 }
             )
@@ -2215,6 +2540,18 @@ def train(
     )
     if effective_parallel_envs < 1:
         raise ValueError("parallel_envs must be positive")
+    preference_grouping = training_preference_group(config)
+    training_base_instance_count(config, episodes)
+    if preference_grouping is not None:
+        group_size = int(preference_grouping["group_size"])
+        if effective_parallel_envs == 1:
+            raise ValueError(
+                "grouped preference training requires parallel_envs >= group size"
+            )
+        if effective_parallel_envs % group_size:
+            raise ValueError(
+                "parallel_envs must be divisible by the preference group size"
+            )
     if not use_online_instances:
         if parallel_envs is not None and effective_parallel_envs != 1:
             raise ValueError(
@@ -2335,6 +2672,8 @@ def train(
     rows: list[dict] = []
     update_rows: list[dict] = []
     validation_rows: list[dict] = []
+    pareto_validation_rows: list[dict] = []
+    pareto_candidate_rows: list[dict] = []
     instance_ids: list[str] = []
     best_checkpoint = run_directory / "best_checkpoint.pt"
     best_feasibility_checkpoint = (
@@ -2552,7 +2891,7 @@ def train(
                 completed_episodes=completed_episodes,
             ) and (
                 phase_controller.quality_checkpoint_promotion
-                != "balanced_guarded_v7"
+                not in {"balanced_guarded_v7", "pareto_guarded_e2_v1"}
             ):
                 sampled_validation = _evaluate_sampled_validation(
                     config,
@@ -2826,12 +3165,19 @@ def train(
             stability_controller.sampled_validation_runs += 1
     formal_eligible = (
         not phase_controller.enabled
-        or phase_controller.phase_transition_episode is not None
+        or (
+            phase_controller.phase_transition_episode is not None
+            and (
+                phase_controller.quality_checkpoint_promotion
+                != "pareto_guarded_e2_v1"
+                or phase_controller.accepted_pareto_hv is not None
+            )
+        )
     )
     if (
         not formal_eligible
         and phase_controller.formal_training_status
-        != "feasibility_not_reached"
+        not in {"feasibility_not_reached", "pareto_baseline_not_reached"}
     ):
         raise RuntimeError("invalid hierarchical training state")
     if formal_eligible and (best_validation is None or best_score is None):
@@ -3114,6 +3460,8 @@ def _train_parallel(
     rows: list[dict] = []
     update_rows: list[dict] = []
     validation_rows: list[dict] = []
+    pareto_validation_rows: list[dict] = []
+    pareto_candidate_rows: list[dict] = []
     instance_ids: list[str] = []
     best_checkpoint = run_directory / "best_checkpoint.pt"
     best_feasibility_checkpoint = (
@@ -3143,10 +3491,18 @@ def _train_parallel(
     total_inference_time = 0.0
     total_update_time = 0.0
     update_id = 0
+    quality_update_id = 0
+    pareto_mode = (
+        phase_controller.quality_checkpoint_promotion
+        == "pareto_guarded_e2_v1"
+    )
+    pareto_settings = (
+        _pareto_promotion_settings(config) if pareto_mode else None
+    )
     with ParallelEpisodeRunner(
         config=config,
         template=template,
-        episode_count=episodes,
+        episode_count=training_base_instance_count(config, episodes),
         worker_count=runner_worker_count,
     ) as runner:
         for batch_start in range(0, episodes, parallel_envs):
@@ -3174,6 +3530,8 @@ def _train_parallel(
             losses = agent.update(rollout.buffer)
             update_time = time.perf_counter() - update_start
             update_id += 1
+            if reward_phase == "quality":
+                quality_update_id += 1
             transition_count = rollout.transition_count
             total_transitions += transition_count
             total_environment_steps += rollout.environment_step_count
@@ -3249,6 +3607,10 @@ def _train_parallel(
                 instance_ids.append(episode.instance_id)
                 row = {
                     "episode": episode.episode_index,
+                    "trajectory_index": episode.episode_index,
+                    "base_instance_index": episode.base_instance_index,
+                    "preference_slot": episode.preference_slot,
+                    "preference_group_id": episode.preference_group_id,
                     "update_id": update_id,
                     "instance_id": episode.instance_id,
                     "instance_seed": episode.metadata["seed"],
@@ -3386,7 +3748,7 @@ def _train_parallel(
                     completed_episodes=completed_episodes,
                 ) and (
                     phase_controller.quality_checkpoint_promotion
-                    != "balanced_guarded_v7"
+                    not in {"balanced_guarded_v7", "pareto_guarded_e2_v1"}
                 ):
                     sampled_validation = _evaluate_sampled_validation(
                         config,
@@ -3415,6 +3777,151 @@ def _train_parallel(
                     score=score,
                     normalized_quality_score=normalized_quality_score,
                 )
+                transitioned_now = validation_event == "transition"
+                if pareto_mode:
+                    if pareto_settings is None:
+                        raise RuntimeError("Pareto promotion settings are missing")
+                    anchor_due = bool(
+                        phase_controller.phase == "quality"
+                        and (
+                            validation_event == "transition"
+                            or completed_episodes == episodes
+                            or (
+                                reward_phase == "quality"
+                                and quality_update_id
+                                % int(
+                                    pareto_settings[
+                                        "anchor_validate_every_updates"
+                                    ]
+                                )
+                                == 0
+                            )
+                        )
+                    )
+                    if anchor_due:
+                        anchor_rows, anchor_snapshot = (
+                            _evaluate_pareto_preferences(
+                                config,
+                                preferences=_pareto_anchor_preferences(config),
+                                scope="anchors_5",
+                                ppo_agent=agent,
+                                runner=runner,
+                                dataset_name=validation_split,
+                                instance_limit=validation_limit,
+                                validation_parallel_envs=(
+                                    validation_parallel_envs
+                                ),
+                                update_id=update_id,
+                                completed_episodes=completed_episodes,
+                                fatigue_tolerance=float(
+                                    pareto_settings[
+                                        "fatigue_absolute_tolerance"
+                                    ]
+                                ),
+                                canonical_rows=validation_instance_rows,
+                            )
+                        )
+                        validation_event = (
+                            phase_controller.observe_pareto_snapshot(
+                                anchor_snapshot,
+                                completed_episodes=completed_episodes,
+                            )
+                        )
+                        anchor_snapshot.update(
+                            {
+                                "quality_update_id": quality_update_id,
+                                "promotion_event": validation_event,
+                                **phase_controller.last_promotion_diagnostics,
+                            }
+                        )
+                        pareto_validation_rows.append(anchor_snapshot)
+                        pareto_candidate_rows.extend(
+                            {
+                                **row,
+                                "update_id": update_id,
+                                "completed_episodes": completed_episodes,
+                            }
+                            for row in anchor_rows
+                        )
+                        validation_row.update(
+                            {
+                                "pareto_anchor_mean_hypervolume": (
+                                    anchor_snapshot["mean_hypervolume"]
+                                ),
+                                "pareto_anchor_canonical_quality": (
+                                    anchor_snapshot["canonical_quality"]
+                                ),
+                                "pareto_anchor_all_safe": (
+                                    anchor_snapshot["all_safe"]
+                                ),
+                            }
+                        )
+                    full_grid_due = bool(
+                        completed_episodes == episodes
+                        or (
+                            reward_phase == "quality"
+                            and quality_update_id
+                            % int(
+                                pareto_settings[
+                                    "full_grid_validate_every_updates"
+                                ]
+                            )
+                            == 0
+                        )
+                    )
+                    if full_grid_due:
+                        full_rows, full_snapshot = _evaluate_pareto_preferences(
+                            config,
+                            preferences=tuple(
+                                simplex_lattice(
+                                    5, include=(CANONICAL_PREFERENCE,)
+                                )
+                            ),
+                            scope="full_grid_22",
+                            ppo_agent=agent,
+                            runner=runner,
+                            dataset_name=validation_split,
+                            instance_limit=validation_limit,
+                            validation_parallel_envs=validation_parallel_envs,
+                            update_id=update_id,
+                            completed_episodes=completed_episodes,
+                            fatigue_tolerance=float(
+                                pareto_settings["fatigue_absolute_tolerance"]
+                            ),
+                            canonical_rows=validation_instance_rows,
+                        )
+                        full_snapshot.update(
+                            {
+                                "quality_update_id": quality_update_id,
+                                "promotion_event": "audit_only",
+                            }
+                        )
+                        pareto_validation_rows.append(full_snapshot)
+                        pareto_candidate_rows.extend(
+                            {
+                                **row,
+                                "update_id": update_id,
+                                "completed_episodes": completed_episodes,
+                            }
+                            for row in full_rows
+                        )
+                        validation_row.update(
+                            {
+                                "pareto_full_mean_hypervolume": (
+                                    full_snapshot["mean_hypervolume"]
+                                ),
+                                "pareto_full_mean_unique_objective_count": (
+                                    full_snapshot[
+                                        "mean_unique_objective_count"
+                                    ]
+                                ),
+                                "pareto_full_mean_nondominated_count": (
+                                    full_snapshot[
+                                        "mean_nondominated_count"
+                                    ]
+                                ),
+                            }
+                        )
                 if (
                     phase_controller.quality_checkpoint_promotion
                     == "balanced_guarded_v7"
@@ -3462,7 +3969,17 @@ def _train_parallel(
                     stability["rollback"]
                 )
                 validation_rows.append(validation_row)
-                if validation["completion_rate"] >= 1.0 - 1e-12:
+                canonical_safe = (
+                    _rows_are_safe(
+                        validation_instance_rows,
+                        float(
+                            pareto_settings["fatigue_absolute_tolerance"]
+                        ),
+                    )
+                    if pareto_mode and pareto_settings is not None
+                    else validation["completion_rate"] >= 1.0 - 1e-12
+                )
+                if canonical_safe:
                     agent.save(
                         safe_checkpoint,
                         metadata={
@@ -3509,7 +4026,7 @@ def _train_parallel(
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "feasibility_best"
                 is_new_best = False
-                if validation_event == "transition":
+                if transitioned_now:
                     transition_metadata = {
                         "feature_dimensions": (
                             bootstrap_observation.feature_dimensions
@@ -3578,7 +4095,7 @@ def _train_parallel(
                 agent.set_learning_rate(
                     stability_controller.current_learning_rate
                 )
-                if validation_event == "transition":
+                if transitioned_now:
                     stability_controller.reset_plateau()
                 if not phase_controller.enabled and (
                     best_score is None or score < best_score
@@ -3697,12 +4214,19 @@ def _train_parallel(
                 stability_controller.sampled_validation_runs += 1
     formal_eligible = (
         not phase_controller.enabled
-        or phase_controller.phase_transition_episode is not None
+        or (
+            phase_controller.phase_transition_episode is not None
+            and (
+                phase_controller.quality_checkpoint_promotion
+                != "pareto_guarded_e2_v1"
+                or phase_controller.accepted_pareto_hv is not None
+            )
+        )
     )
     if (
         not formal_eligible
         and phase_controller.formal_training_status
-        != "feasibility_not_reached"
+        not in {"feasibility_not_reached", "pareto_baseline_not_reached"}
     ):
         raise RuntimeError("invalid hierarchical training state")
     if formal_eligible and (best_validation is None or best_score is None):
@@ -3831,14 +4355,34 @@ def _train_parallel(
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
+    if pareto_validation_rows:
+        write_csv(
+            run_directory / "pareto_validation_log.csv",
+            pareto_validation_rows,
+        )
+    if pareto_candidate_rows:
+        write_csv(
+            run_directory / "pareto_validation_candidates.csv",
+            pareto_candidate_rows,
+        )
     total_training_time = total_sampling_time + total_update_time
     write_json(
         run_directory / "summary.json",
         {
             "episodes": episodes,
+            "trajectory_count": episodes,
+            "base_instance_count": training_base_instance_count(
+                config, episodes
+            ),
             "online_instances": True,
             "parallel_envs": parallel_envs,
             "validation_parallel_envs": validation_parallel_envs,
+            "pareto_validation_events": len(pareto_validation_rows),
+            "latest_pareto_validation": (
+                pareto_validation_rows[-1]
+                if pareto_validation_rows
+                else None
+            ),
             "updates": update_id,
             "transitions": total_transitions,
             "environment_steps": total_environment_steps,
