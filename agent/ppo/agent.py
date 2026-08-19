@@ -13,10 +13,11 @@ from torch.nn import functional as functional
 from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.network import (
     ActorCriticNetwork,
+    HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
     assert_network_config_matches_spec,
     infer_checkpoint_network_spec,
 )
-from environment import Observation, PolicyObservation
+from environment import DecisionType, Observation, PolicyObservation
 from result.provenance import (
     network_weights_sha256,
     provenance_with_network_weights,
@@ -154,7 +155,11 @@ class PPOAgent:
         )
         distribution = Categorical(logits=logits)
         if deterministic:
-            actions = torch.argmax(logits, dim=-1)
+            actions = self._deterministic_actions(
+                observations,
+                action_masks,
+                logits,
+            )
         elif generator is None:
             actions = distribution.sample()
         else:
@@ -172,6 +177,69 @@ class PPOAgent:
             ],
             [float(value) for value in values.cpu().tolist()],
         )
+
+    def _deterministic_actions(
+        self,
+        observations: Sequence[Observation | PolicyObservation],
+        action_masks: Sequence[np.ndarray],
+        logits: torch.Tensor,
+    ) -> torch.Tensor:
+        semantics = getattr(
+            self.network,
+            "production_action_semantics",
+            None,
+        )
+        if semantics != HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS:
+            return torch.argmax(logits, dim=-1)
+        actions: list[int] = []
+        for index, (observation, action_mask) in enumerate(
+            zip(observations, action_masks)
+        ):
+            action_count = int(np.asarray(action_mask).shape[0])
+            row = logits[index, :action_count]
+            if (
+                getattr(observation, "decision_type", None)
+                == DecisionType.PRODUCTION
+            ):
+                actions.append(
+                    self._hierarchical_greedy_action(row, action_mask)
+                )
+            else:
+                actions.append(int(torch.argmax(row).detach().cpu()))
+        return torch.as_tensor(actions, dtype=torch.long, device=logits.device)
+
+    @staticmethod
+    def _hierarchical_greedy_action(
+        joint_logits: torch.Tensor,
+        action_mask: np.ndarray | torch.Tensor,
+    ) -> int:
+        """Decode the gate first, then the conditional pair distribution."""
+
+        mask = torch.as_tensor(
+            action_mask,
+            dtype=torch.bool,
+            device=joint_logits.device,
+        )
+        if joint_logits.ndim != 1 or mask.shape != joint_logits.shape:
+            raise ValueError("hierarchical greedy logits and mask must align")
+        pair_legal = ~mask[:-1]
+        defer_legal = not bool(mask[-1])
+        if not bool(pair_legal.any()):
+            if not defer_legal:
+                raise ValueError("hierarchical greedy action set is empty")
+            return int(joint_logits.shape[0] - 1)
+        feasible_pair_indices = torch.nonzero(
+            pair_legal,
+            as_tuple=False,
+        ).flatten()
+        pair_values = joint_logits[feasible_pair_indices]
+        if defer_legal:
+            commit_log_mass = torch.logsumexp(pair_values, dim=0)
+            defer_value = joint_logits[-1]
+            if bool(commit_log_mass < defer_value):
+                return int(joint_logits.shape[0] - 1)
+        best_pair = feasible_pair_indices[torch.argmax(pair_values)]
+        return int(best_pair.detach().cpu())
 
     @torch.no_grad()
     def value(

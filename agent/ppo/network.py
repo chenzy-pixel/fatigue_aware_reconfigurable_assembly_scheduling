@@ -462,6 +462,10 @@ V6_WORKER_RELATIVE_WEIGHT_SHARING = "independent_softplus_v6"
 V7_BOUNDED_CONTEXT_MODE = "bounded_ranker_scale_v7"
 DIRECT_PREFERENCE_ACTION_SCORE_VERSION = "direct_main_rank_v1"
 DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION = "legal_candidate_zscore"
+FLAT_PRODUCTION_ACTION_SEMANTICS = "pair_plus_defer_v1"
+HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS = (
+    "hierarchical_commit_then_pair_v2"
+)
 PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
     "legal_candidate_count_norm",
     "configuration_match_rate",
@@ -515,11 +519,19 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             "are never converted"
         )
     semantics = str(
-        config.get("production_action_semantics", "pair_plus_defer_v1")
+        config.get(
+            "production_action_semantics",
+            FLAT_PRODUCTION_ACTION_SEMANTICS,
+        )
     )
-    if semantics != "pair_plus_defer_v1":
+    if semantics not in {
+        FLAT_PRODUCTION_ACTION_SEMANTICS,
+        HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+    }:
         raise ValueError(
-            "network.production_action_semantics must be 'pair_plus_defer_v1'"
+            "network.production_action_semantics must be "
+            f"{FLAT_PRODUCTION_ACTION_SEMANTICS!r} or "
+            f"{HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS!r}"
         )
     production_enabled = bool(
         config.get("production_candidate_relative_features", False)
@@ -698,14 +710,26 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
         if worker_names == V6_WORKER_RELATIVE_FEATURE_NAMES
         else tuple(0.30 if index < 2 else 0.20 for index in range(len(worker_names)))
     )
+    production_commit_set_scorer = bool(
+        config.get("production_commit_set_scorer", False)
+    )
+    if semantics == HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS:
+        if version != 7:
+            raise ValueError(
+                "hierarchical production actions require policy_head_version=7"
+            )
+        if not production_commit_set_scorer:
+            raise ValueError(
+                "hierarchical production actions require "
+                "network.production_commit_set_scorer=true"
+            )
     return {
         "policy_head_version": version,
+        "production_action_semantics": semantics,
         "production_relative_feature_names": production_names,
         "worker_relative_feature_names": worker_names,
         "candidate_context_mode": context_mode,
-        "production_commit_set_scorer": bool(
-            config.get("production_commit_set_scorer", False)
-        ),
+        "production_commit_set_scorer": production_commit_set_scorer,
         "future_value_features": bool(
             config.get("future_value_features", False)
         ),
@@ -1261,6 +1285,7 @@ class HeteroGraphActorCritic(nn.Module):
             DEFAULT_CONTEXT_GATE_INITIAL_LOGIT
         ),
         policy_head_version: int = POLICY_HEAD_VERSION,
+        production_action_semantics: str = FLAT_PRODUCTION_ACTION_SEMANTICS,
         production_relative_feature_names: Sequence[str] = (
             V6_PRODUCTION_RELATIVE_FEATURE_NAMES
         ),
@@ -1328,6 +1353,7 @@ class HeteroGraphActorCritic(nn.Module):
             residual_context_gate_initial_logit
         )
         self.policy_head_version = int(policy_head_version)
+        self.production_action_semantics = str(production_action_semantics)
         self.production_relative_feature_names = tuple(
             production_relative_feature_names
         )
@@ -1547,7 +1573,7 @@ class HeteroGraphActorCritic(nn.Module):
                 self.use_worker_candidate_relative_features
             ),
             "policy_head_version": self.policy_head_version,
-            "production_action_semantics": "pair_plus_defer_v1",
+            "production_action_semantics": self.production_action_semantics,
             "production_relative_feature_names": (
                 self.production_relative_feature_names
                 if self.use_production_candidate_relative_features
@@ -1761,7 +1787,7 @@ class HeteroGraphActorCritic(nn.Module):
                 graph_batch.node_slices["worker"][batch_index],
             )
             if observation.decision_type == DecisionType.PRODUCTION:
-                pair_logits = self._production_logits(
+                pair_logits, commit_set_logit = self._production_logits(
                     observation,
                     operation_embeddings,
                     machine_embeddings,
@@ -1774,6 +1800,18 @@ class HeteroGraphActorCritic(nn.Module):
                 terminal_logit = self.production_defer(
                     context[batch_index]
                 ).reshape(1)
+                if (
+                    self.production_action_semantics
+                    == HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+                ):
+                    unmasked_logits = self._hierarchical_production_logits(
+                        pair_logits,
+                        commit_set_logit,
+                        terminal_logit.reshape(()),
+                        masks[batch_index],
+                    )
+                else:
+                    unmasked_logits = torch.cat((pair_logits, terminal_logit))
             elif observation.decision_type == DecisionType.WORKER:
                 pair_logits = self._worker_logits(
                     observation,
@@ -1789,11 +1827,11 @@ class HeteroGraphActorCritic(nn.Module):
                 terminal_logit = self.worker_advance(
                     context[batch_index]
                 ).reshape(1)
+                unmasked_logits = torch.cat((pair_logits, terminal_logit))
             else:
                 raise ValueError(
                     f"unsupported decision type {observation.decision_type}"
                 )
-            unmasked_logits = torch.cat((pair_logits, terminal_logit))
             if unmasked_logits.shape[0] != action_counts[batch_index]:
                 raise ValueError(
                     f"{observation.decision_type.value.lower()} action mask "
@@ -1923,7 +1961,7 @@ class HeteroGraphActorCritic(nn.Module):
         action_mask: torch.Tensor,
         *,
         device: torch.device | str,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         operation_count = operation_embeddings.shape[0]
         machine_count = machine_embeddings.shape[0]
         operation_pairs = operation_embeddings[:, None, :].expand(
@@ -1995,8 +2033,30 @@ class HeteroGraphActorCritic(nn.Module):
                 dim=-1,
             )
         ).reshape(-1)
+        commit_set_logit = contextual_logits.new_zeros(())
+        if self.production_commit_set is not None:
+            if tuple(observation.action_set_feature_names) != (
+                PRODUCTION_ACTION_SET_FEATURE_NAMES
+            ):
+                raise ValueError(
+                    "production action-set feature schema does not match v7"
+                )
+            action_set_features = torch.as_tensor(
+                observation.action_set_features,
+                dtype=contextual_logits.dtype,
+                device=device,
+            )
+            commit_set_logit = self.production_commit_set(
+                action_set_features
+            ).squeeze(-1)
         if not self.use_production_candidate_relative_features:
-            return contextual_logits
+            pair_logits = contextual_logits
+            if (
+                self.production_action_semantics
+                == FLAT_PRODUCTION_ACTION_SEMANTICS
+            ):
+                pair_logits = pair_logits + commit_set_logit
+            return pair_logits, commit_set_logit
         if self.production_relative_ranker is None:
             raise RuntimeError("production relative ranker is not initialized")
         edge_names = capable.feature_names
@@ -2087,28 +2147,13 @@ class HeteroGraphActorCritic(nn.Module):
             ~action_mask[:pair_count],
             self.production_residual_context_gate,
         )
-        commit_set_logit = relative_logits.new_zeros(())
-        if self.production_commit_set is not None:
-            if tuple(observation.action_set_feature_names) != (
-                PRODUCTION_ACTION_SET_FEATURE_NAMES
-            ):
-                raise ValueError(
-                    "production action-set feature schema does not match v7"
-                )
-            action_set_features = torch.as_tensor(
-                observation.action_set_features,
-                dtype=relative_logits.dtype,
-                device=device,
-            )
-            commit_set_logit = self.production_commit_set(
-                action_set_features
-            ).squeeze(-1)
         final_logits = (
             primary_logits
             + torch.sigmoid(self.production_context_gate) * common_context
             + residual_context
-            + commit_set_logit
         )
+        if self.production_action_semantics == FLAT_PRODUCTION_ACTION_SEMANTICS:
+            final_logits = final_logits + commit_set_logit
         self._record_policy_components(
             DecisionType.PRODUCTION,
             relative_logits,
@@ -2117,7 +2162,58 @@ class HeteroGraphActorCritic(nn.Module):
             preference_logits=preference_logits,
             commit_set_logit=commit_set_logit,
         )
-        return final_logits
+        return final_logits, commit_set_logit
+
+    @staticmethod
+    def _hierarchical_production_logits(
+        pair_logits: torch.Tensor,
+        commit_logit: torch.Tensor,
+        defer_logit: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return flat joint log-probabilities for a two-stage production policy.
+
+        The commit/defer gate is normalized independently of the conditional
+        distribution over legal production pairs.  Returning the joint values
+        as logits keeps the existing PPO action and rollout interfaces intact.
+        """
+
+        if pair_logits.ndim != 1:
+            raise ValueError("production pair logits must be one-dimensional")
+        if commit_logit.ndim != 0 or defer_logit.ndim != 0:
+            raise ValueError("production gate logits must be scalar")
+        if action_mask.shape != (pair_logits.shape[0] + 1,):
+            raise ValueError("hierarchical production mask has the wrong shape")
+        if action_mask.dtype != torch.bool:
+            raise TypeError("hierarchical production mask must be boolean")
+        if bool(action_mask.all()):
+            raise ValueError("at least one hierarchical action must be feasible")
+
+        minimum_logit = torch.finfo(pair_logits.dtype).min
+        pair_legal = ~action_mask[:-1]
+        commit_legal = pair_legal.any()
+        defer_legal = ~action_mask[-1]
+        gate_logits = torch.stack((commit_logit, defer_logit))
+        gate_mask = torch.stack((~commit_legal, ~defer_legal))
+        gate_log_probabilities = functional.log_softmax(
+            gate_logits.masked_fill(gate_mask, minimum_logit),
+            dim=0,
+        )
+
+        pair_joint = pair_logits.new_full(pair_logits.shape, minimum_logit)
+        if bool(commit_legal):
+            conditional_log_probabilities = functional.log_softmax(
+                pair_logits.masked_fill(~pair_legal, minimum_logit),
+                dim=0,
+            )
+            pair_joint = (
+                conditional_log_probabilities + gate_log_probabilities[0]
+            ).masked_fill(~pair_legal, minimum_logit)
+        defer_joint = gate_log_probabilities[1].masked_fill(
+            ~defer_legal,
+            minimum_logit,
+        )
+        return torch.cat((pair_joint, defer_joint.reshape(1)))
 
     def _worker_logits(
         self,
@@ -2697,6 +2793,7 @@ def build_actor_critic(
         policy_head["common_context_gate_initial_logit"],
         policy_head["residual_context_gate_initial_logit"],
         policy_head["policy_head_version"],
+        policy_head["production_action_semantics"],
         policy_head["production_relative_feature_names"],
         policy_head["worker_relative_feature_names"],
         policy_head["candidate_context_mode"],

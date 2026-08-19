@@ -11,6 +11,7 @@ from typing import Any
 
 EVALUATION_SCHEMA_VERSION = "4.1.0"
 PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.2.0"
+HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.3.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,
@@ -35,6 +36,7 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
     if version not in {
         EVALUATION_SCHEMA_VERSION,
         PREFERENCE_EVALUATION_SCHEMA_VERSION,
+        HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {version!r}")
     return version
@@ -191,6 +193,39 @@ def summarize_values(
     }
 
 
+def aggregate_preference_diagnostics(
+    rows: Iterable[Mapping[str, Any]],
+) -> dict[str, float | int]:
+    """Aggregate top-1 preference diagnostics by ranked decision count."""
+
+    decision_count = 0
+    override_count = 0
+    weighted_logit_std = 0.0
+    for row in rows:
+        count = int(row.get("ranker_top_decision_count", 0) or 0)
+        overrides = int(row.get("preference_override_count", 0) or 0)
+        mean_logit_std = float(
+            row.get("mean_preference_logit_std", 0.0) or 0.0
+        )
+        if count < 0 or overrides < 0 or overrides > count:
+            raise ValueError("preference diagnostic counts are inconsistent")
+        if not math.isfinite(mean_logit_std) or mean_logit_std < 0.0:
+            raise ValueError("preference logit standard deviation is invalid")
+        decision_count += count
+        override_count += overrides
+        weighted_logit_std += count * mean_logit_std
+    return {
+        "ranker_top_decision_count": decision_count,
+        "preference_override_count": override_count,
+        "preference_override_rate": (
+            override_count / decision_count if decision_count else 0.0
+        ),
+        "mean_preference_logit_std": (
+            weighted_logit_std / decision_count if decision_count else 0.0
+        ),
+    }
+
+
 def summarize_upper_tail(
     values: Iterable[float | int | None],
     *,
@@ -228,6 +263,7 @@ def aggregate_evaluation_rows(
     if schema_version not in {
         EVALUATION_SCHEMA_VERSION,
         PREFERENCE_EVALUATION_SCHEMA_VERSION,
+        HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {schema_version!r}")
     normalized_metric = evaluation_quality_metric(
@@ -339,6 +375,9 @@ def aggregate_evaluation_rows(
             for name in (
                 "ranker_top_selection_rate",
                 "context_override_rate",
+                "preference_override_count",
+                "preference_override_rate",
+                "mean_preference_logit_std",
                 "production_pair_plus_defer_state_count",
                 "production_decision_state_count",
                 "production_pair_plus_defer_ratio",
@@ -446,6 +485,7 @@ def aggregate_evaluation_rows(
             tail_fraction=0.05,
         ),
     }
+    preference_diagnostics = aggregate_preference_diagnostics(rows)
     return {
         "evaluation_schema_version": schema_version,
         "quality_metric_version": normalized_metric["version"],
@@ -474,6 +514,7 @@ def aggregate_evaluation_rows(
         "all_instance_metrics": all_instance_metrics,
         "gap_metrics": gap_metrics,
         "tail_metrics": tail_metrics,
+        **preference_diagnostics,
     }
 
 

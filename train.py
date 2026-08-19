@@ -48,6 +48,7 @@ from eval import (
 )
 from result import (
     aggregate_evaluation_rows,
+    aggregate_preference_diagnostics,
     build_provenance,
     create_run_directory,
     evaluation_selection_key,
@@ -221,6 +222,7 @@ def _pareto_snapshot(
         ),
         "instance_count": len(by_instance),
         "candidate_count": len(rows),
+        **aggregate_preference_diagnostics(rows),
         "all_safe": _rows_are_safe(rows, fatigue_tolerance),
         "completion_rate": (
             sum(
@@ -1592,6 +1594,18 @@ def _validation_log_row(
         "truncated_count": validation["truncated_count"],
         "schedule_violation_count": validation.get(
             "schedule_violation_count", 0
+        ),
+        "ranker_top_decision_count": validation.get(
+            "ranker_top_decision_count", 0
+        ),
+        "preference_override_count": validation.get(
+            "preference_override_count", 0
+        ),
+        "preference_override_rate": validation.get(
+            "preference_override_rate", 0.0
+        ),
+        "mean_preference_logit_std": validation.get(
+            "mean_preference_logit_std", 0.0
         ),
         "mean_makespan": completed_summary["makespan"]["mean"],
         "std_makespan": completed_summary["makespan"]["std"],

@@ -167,6 +167,33 @@ E2 checkpoint 使用 observation schema 5，不能与 E1 部分加载。质量�
 episode 偏好标量化，但正式 `quality_score`、周期验证和 checkpoint 晋升仍固定
 使用 `0.5/0.3/0.2`。完整契约见 `E2_PREFERENCE_CONDITIONING.md`。
 
+### E2.2：分层 commit 与偏好候选选择
+
+`configs/v7/e2_2_hierarchical_preference.json` 保留 E2.1 的五锚点训练、
+22 点验证网格、Tchebycheff 标量化和 Pareto 晋升门槛，但把 production Actor
+改为两层分布。第一层独立决定 `commit/defer`，第二层只在 commit 后对合法
+production pair 做条件 softmax；`direct_main_rank_v1` 直接偏好分数只进入
+第二层，因此候选数量、候选 logit 公共偏移和偏好尺度不会改变 commit 总概率。
+sampled PPO 仍使用相同的扁平动作 ID 和联合 log-prob，greedy 则先解码门控、
+再选候选 top-1。E2.2 使用 `v7_e2_2_pareto_protocol_v1` 和结果 schema
+`4.3.0`，checkpoint 与 E2.1 明确不兼容。
+
+E2.2 结果持久化 `preference_override_count`、
+`preference_override_rate` 和 `mean_preference_logit_std`；跨实例汇总按
+`ranker_top_decision_count` 加权。本机只执行 pytest 契约验证，正式 seed 11
+训练应在远端运行：
+
+```powershell
+.\.venv\Scripts\python.exe train.py `
+  --config configs\v7\e2_2_hierarchical_preference.json `
+  --algorithm-seed 11 `
+  --run-name v7_2000_e2_2_hierarchical_seed11
+```
+
+远端验收要求 canonical validation 连续三次 100%、生成
+`accepted_checkpoint.pt`、最终 22 点 validation 440/440 完成且无截断、
+无调度违规并满足疲劳约束；在此之前不进行正式 test Pareto 分析。
+
 ## 运行
 
 ```powershell

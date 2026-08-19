@@ -4,9 +4,11 @@ from .io import create_run_directory, write_evaluation_outputs
 from .metrics import (
     CANONICAL_QUALITY_METRIC,
     EVALUATION_SCHEMA_VERSION,
+    HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
     PREFERENCE_EVALUATION_SCHEMA_VERSION,
     QUALITY_METRIC_VERSION,
     aggregate_evaluation_rows,
+    aggregate_preference_diagnostics,
     compare_lexicographic,
     evaluation_quality_metric,
     evaluation_selection_key,
@@ -31,10 +33,12 @@ from .visdom_dashboard import (
 
 __all__ = [
     "EVALUATION_SCHEMA_VERSION",
+    "HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION",
     "PREFERENCE_EVALUATION_SCHEMA_VERSION",
     "QUALITY_METRIC_VERSION",
     "CANONICAL_QUALITY_METRIC",
     "aggregate_evaluation_rows",
+    "aggregate_preference_diagnostics",
     "compare_lexicographic",
     "create_run_directory",
     "evaluation_selection_key",
