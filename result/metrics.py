@@ -12,6 +12,7 @@ from typing import Any
 EVALUATION_SCHEMA_VERSION = "4.1.0"
 PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.2.0"
 HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.3.0"
+SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.4.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,
@@ -37,6 +38,7 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         EVALUATION_SCHEMA_VERSION,
         PREFERENCE_EVALUATION_SCHEMA_VERSION,
         HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
+        SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {version!r}")
     return version
@@ -201,6 +203,10 @@ def aggregate_preference_diagnostics(
     decision_count = 0
     override_count = 0
     weighted_logit_std = 0.0
+    head_totals: dict[str, list[float | int]] = {
+        "production": [0, 0, 0.0],
+        "worker": [0, 0, 0.0],
+    }
     for row in rows:
         count = int(row.get("ranker_top_decision_count", 0) or 0)
         overrides = int(row.get("preference_override_count", 0) or 0)
@@ -214,7 +220,30 @@ def aggregate_preference_diagnostics(
         decision_count += count
         override_count += overrides
         weighted_logit_std += count * mean_logit_std
-    return {
+        for head in head_totals:
+            head_count = int(
+                row.get(f"{head}_ranker_top_decision_count", 0) or 0
+            )
+            head_overrides = int(
+                row.get(f"{head}_preference_override_count", 0) or 0
+            )
+            head_mean_std = float(
+                row.get(f"{head}_mean_preference_logit_std", 0.0) or 0.0
+            )
+            if (
+                head_count < 0
+                or head_overrides < 0
+                or head_overrides > head_count
+                or not math.isfinite(head_mean_std)
+                or head_mean_std < 0.0
+            ):
+                raise ValueError(
+                    f"{head} preference diagnostic values are inconsistent"
+                )
+            head_totals[head][0] += head_count
+            head_totals[head][1] += head_overrides
+            head_totals[head][2] += head_count * head_mean_std
+    result = {
         "ranker_top_decision_count": decision_count,
         "preference_override_count": override_count,
         "preference_override_rate": (
@@ -223,6 +252,83 @@ def aggregate_preference_diagnostics(
         "mean_preference_logit_std": (
             weighted_logit_std / decision_count if decision_count else 0.0
         ),
+    }
+    for head, totals in head_totals.items():
+        head_count = int(totals[0])
+        head_overrides = int(totals[1])
+        head_weighted_std = float(totals[2])
+        result[f"{head}_ranker_top_decision_count"] = head_count
+        result[f"{head}_preference_override_count"] = head_overrides
+        result[f"{head}_preference_override_rate"] = (
+            head_overrides / head_count if head_count else 0.0
+        )
+        result[f"{head}_mean_preference_logit_std"] = (
+            head_weighted_std / head_count if head_count else 0.0
+        )
+    return result
+
+
+def aggregate_matching_recovery_diagnostics(
+    rows: Iterable[Mapping[str, Any]],
+) -> dict[str, float | int]:
+    """Aggregate E2.3 matching diagnostics with count-weighted ratios."""
+
+    values = list(rows)
+
+    def total(name: str) -> int:
+        result = sum(int(row.get(name, 0) or 0) for row in values)
+        if result < 0:
+            raise ValueError(f"{name} must be non-negative")
+        return result
+
+    def maximum(name: str) -> int:
+        result = max(
+            (int(row.get(name, 0) or 0) for row in values),
+            default=0,
+        )
+        if result < 0:
+            raise ValueError(f"{name} must be non-negative")
+        return result
+
+    future_candidates = total(
+        "future_installation_admission_candidate_count"
+    )
+    future_masked = total(
+        "future_installation_admission_masked_action_count"
+    )
+    if future_masked > future_candidates:
+        raise ValueError(
+            "future installation admission counts are inconsistent"
+        )
+    maximum_projected = maximum("maximum_projected_installation_deficit")
+    return {
+        "current_worker_matching_deficit": maximum(
+            "current_worker_matching_deficit"
+        ),
+        "maximum_worker_matching_deficit": maximum(
+            "maximum_worker_matching_deficit"
+        ),
+        "deficit_reducing_worker_action_candidate_count": total(
+            "deficit_reducing_worker_action_candidate_count"
+        ),
+        "deficit_reducing_worker_action_count": total(
+            "deficit_reducing_worker_action_count"
+        ),
+        "matching_deficit_recovery_advance_count": total(
+            "matching_deficit_recovery_advance_count"
+        ),
+        "current_matching_admission_masked_action_count": total(
+            "current_matching_admission_masked_action_count"
+        ),
+        "future_installation_admission_candidate_count": future_candidates,
+        "future_installation_admission_masked_action_count": future_masked,
+        "future_installation_admission_masked_action_ratio": (
+            future_masked / future_candidates if future_candidates else 0.0
+        ),
+        "future_installation_matching_deficit_after_commit": (
+            maximum_projected
+        ),
+        "maximum_projected_installation_deficit": maximum_projected,
     }
 
 
@@ -264,6 +370,7 @@ def aggregate_evaluation_rows(
         EVALUATION_SCHEMA_VERSION,
         PREFERENCE_EVALUATION_SCHEMA_VERSION,
         HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
+        SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {schema_version!r}")
     normalized_metric = evaluation_quality_metric(
@@ -348,6 +455,22 @@ def aggregate_evaluation_rows(
         "worker_matching_deficit_event_count": summarize_values(
             row.get("worker_matching_deficit_event_count") for row in rows
         ),
+        **{
+            name: summarize_values(row.get(name) for row in rows)
+            for name in (
+                "maximum_worker_matching_deficit",
+                "current_worker_matching_deficit",
+                "deficit_reducing_worker_action_candidate_count",
+                "deficit_reducing_worker_action_count",
+                "matching_deficit_recovery_advance_count",
+                "current_matching_admission_masked_action_count",
+                "future_installation_admission_candidate_count",
+                "future_installation_admission_masked_action_count",
+                "future_installation_admission_masked_action_ratio",
+                "future_installation_matching_deficit_after_commit",
+                "maximum_projected_installation_deficit",
+            )
+        },
         "resource_admission_masked_action_count": summarize_values(
             row.get("resource_admission_masked_action_count") for row in rows
         ),
@@ -486,6 +609,9 @@ def aggregate_evaluation_rows(
         ),
     }
     preference_diagnostics = aggregate_preference_diagnostics(rows)
+    matching_recovery_diagnostics = (
+        aggregate_matching_recovery_diagnostics(rows)
+    )
     return {
         "evaluation_schema_version": schema_version,
         "quality_metric_version": normalized_metric["version"],
@@ -515,6 +641,7 @@ def aggregate_evaluation_rows(
         "gap_metrics": gap_metrics,
         "tail_metrics": tail_metrics,
         **preference_diagnostics,
+        **matching_recovery_diagnostics,
     }
 
 

@@ -249,12 +249,10 @@ def test_preference_diagnostics_are_weighted_and_persisted_in_aggregates() -> No
         ),
     ]
     diagnostics = aggregate_preference_diagnostics(rows)
-    assert diagnostics == {
-        "ranker_top_decision_count": 8,
-        "preference_override_count": 4,
-        "preference_override_rate": pytest.approx(0.5),
-        "mean_preference_logit_std": pytest.approx(0.35),
-    }
+    assert diagnostics["ranker_top_decision_count"] == 8
+    assert diagnostics["preference_override_count"] == 4
+    assert diagnostics["preference_override_rate"] == pytest.approx(0.5)
+    assert diagnostics["mean_preference_logit_std"] == pytest.approx(0.35)
 
     aggregate = aggregate_evaluation_rows(
         rows,

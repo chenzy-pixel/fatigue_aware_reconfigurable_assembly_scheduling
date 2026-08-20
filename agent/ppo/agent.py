@@ -29,11 +29,18 @@ def summarize_policy_decision_diagnostics(
 ) -> dict[str, float | int]:
     ranked = [row for row in rows if int(row.get("legal_pair_count", 0))]
     production = [
-        row for row in rows if row.get("decision_type") == "production"
+        row
+        for row in rows
+        if str(row.get("decision_type", "")).strip().lower()
+        == "production"
     ]
-    worker = [row for row in rows if row.get("decision_type") == "worker"]
+    worker = [
+        row
+        for row in rows
+        if str(row.get("decision_type", "")).strip().lower() == "worker"
+    ]
     commit_logits = [
-        float(row["commit_set_logit"])
+        float(row.get("commit_set_logit", 0.0))
         for row in production
         if math.isfinite(float(row.get("commit_set_logit", 0.0)))
     ]
@@ -50,6 +57,36 @@ def summarize_policy_decision_diagnostics(
     preference_logit_stds = [
         float(row.get("preference_logit_std", 0.0)) for row in ranked
     ]
+
+    def preference_summary(
+        selected_rows: Sequence[dict[str, Any]],
+    ) -> dict[str, float | int]:
+        selected_ranked = [
+            row
+            for row in selected_rows
+            if int(row.get("legal_pair_count", 0))
+        ]
+        overrides = sum(
+            bool(row.get("preference_overrode_relative_top", False))
+            for row in selected_ranked
+        )
+        logit_stds = [
+            float(row.get("preference_logit_std", 0.0))
+            for row in selected_ranked
+        ]
+        return {
+            "decision_count": len(selected_ranked),
+            "override_count": overrides,
+            "override_rate": (
+                overrides / len(selected_ranked) if selected_ranked else 0.0
+            ),
+            "mean_logit_std": (
+                sum(logit_stds) / len(logit_stds) if logit_stds else 0.0
+            ),
+        }
+
+    production_preference = preference_summary(production)
+    worker_preference = preference_summary(worker)
     production_terminal_count = sum(
         bool(row.get("terminal_legal", False)) for row in production
     )
@@ -75,6 +112,30 @@ def summarize_policy_decision_diagnostics(
             if preference_logit_stds
             else 0.0
         ),
+        "production_ranker_top_decision_count": production_preference[
+            "decision_count"
+        ],
+        "production_preference_override_count": production_preference[
+            "override_count"
+        ],
+        "production_preference_override_rate": production_preference[
+            "override_rate"
+        ],
+        "production_mean_preference_logit_std": production_preference[
+            "mean_logit_std"
+        ],
+        "worker_ranker_top_decision_count": worker_preference[
+            "decision_count"
+        ],
+        "worker_preference_override_count": worker_preference[
+            "override_count"
+        ],
+        "worker_preference_override_rate": worker_preference[
+            "override_rate"
+        ],
+        "worker_mean_preference_logit_std": worker_preference[
+            "mean_logit_std"
+        ],
         "production_pair_plus_defer_state_count": production_terminal_count,
         "production_decision_state_count": len(production),
         "production_pair_plus_defer_ratio": (

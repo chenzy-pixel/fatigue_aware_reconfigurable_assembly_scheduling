@@ -6,6 +6,7 @@ import json
 import math
 import shutil
 import time
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,7 @@ from eval import (
 )
 from result import (
     aggregate_evaluation_rows,
+    aggregate_matching_recovery_diagnostics,
     aggregate_preference_diagnostics,
     build_provenance,
     create_run_directory,
@@ -62,6 +64,18 @@ from result.visdom_dashboard import (
 )
 from pareto_analysis import hypervolume_3d, nondominated_indices, normalize_objectives
 from utils import set_seed
+
+
+PARETO_PROMOTION_MODES = frozenset(
+    {"pareto_guarded_e2_v1", "pareto_guarded_e2_3_v1"}
+)
+
+
+def _checkpoint_eligible_validation_event(event: str, promotion: str) -> bool:
+    return bool(
+        event in {"promoted", "accepted"}
+        or (event == "transition" and promotion != "pareto_guarded_e2_3_v1")
+    )
 
 
 def _validation_manifest_path(config: dict) -> Path:
@@ -117,6 +131,24 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         "fatigue_absolute_tolerance": float(
             raw.get("fatigue_absolute_tolerance", 1e-9)
         ),
+        "required_full_grid_instance_count": int(
+            raw.get("required_full_grid_instance_count", 0)
+        ),
+        "required_full_grid_preference_count": int(
+            raw.get("required_full_grid_preference_count", 0)
+        ),
+        "required_full_grid_candidate_count": int(
+            raw.get("required_full_grid_candidate_count", 0)
+        ),
+        "minimum_mean_unique_action_trace_count": float(
+            raw.get("minimum_mean_unique_action_trace_count", 0.0)
+        ),
+        "minimum_mean_unique_objective_count": float(
+            raw.get("minimum_mean_unique_objective_count", 0.0)
+        ),
+        "minimum_mean_nondominated_count": float(
+            raw.get("minimum_mean_nondominated_count", 0.0)
+        ),
     }
     for name in (
         "anchor_validate_every_updates",
@@ -125,10 +157,20 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         if int(settings[name]) < 1:
             raise ValueError(f"pareto_promotion.{name} must be positive")
     for name in (
+        "required_full_grid_instance_count",
+        "required_full_grid_preference_count",
+        "required_full_grid_candidate_count",
+    ):
+        if int(settings[name]) < 0:
+            raise ValueError(f"pareto_promotion.{name} must be non-negative")
+    for name in (
         "minimum_hv_improvement",
         "canonical_relative_tolerance",
         "canonical_absolute_tolerance",
         "fatigue_absolute_tolerance",
+        "minimum_mean_unique_action_trace_count",
+        "minimum_mean_unique_objective_count",
+        "minimum_mean_nondominated_count",
     ):
         value = float(settings[name])
         if not math.isfinite(value) or value < 0.0:
@@ -164,6 +206,32 @@ def _rows_are_safe(rows: list[dict], fatigue_tolerance: float) -> bool:
     )
 
 
+def _finite_spearman(left: list[float], right: list[float]) -> float:
+    """Return a finite tie-aware Spearman coefficient, or zero if undefined."""
+
+    if len(left) != len(right) or len(left) < 2:
+        return 0.0
+
+    def ranks(values: list[float]) -> np.ndarray:
+        order = np.argsort(np.asarray(values, dtype=np.float64), kind="mergesort")
+        result = np.empty(len(values), dtype=np.float64)
+        start = 0
+        while start < len(values):
+            end = start + 1
+            while end < len(values) and values[order[end]] == values[order[start]]:
+                end += 1
+            result[order[start:end]] = 0.5 * (start + end - 1) + 1.0
+            start = end
+        return result
+
+    left_ranks = ranks(left)
+    right_ranks = ranks(right)
+    if np.std(left_ranks) <= 0.0 or np.std(right_ranks) <= 0.0:
+        return 0.0
+    coefficient = float(np.corrcoef(left_ranks, right_ranks)[0, 1])
+    return coefficient if math.isfinite(coefficient) else 0.0
+
+
 def _pareto_snapshot(
     rows: list[dict],
     *,
@@ -172,6 +240,8 @@ def _pareto_snapshot(
     update_id: int,
     completed_episodes: int,
     fatigue_tolerance: float,
+    expected_instance_ids: tuple[str, ...] | None = None,
+    expected_preference_keys: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
     scales = tuple(
         float(config["evaluation"]["quality_metric"][name])
@@ -182,7 +252,13 @@ def _pareto_snapshot(
         by_instance.setdefault(str(row["instance_id"]), []).append(row)
     hypervolumes: list[float] = []
     unique_counts: list[int] = []
+    unique_action_trace_counts: list[int] = []
     nondominated_counts: list[int] = []
+    response_values: dict[str, list[float]] = {
+        "flow": [],
+        "cost": [],
+        "variance": [],
+    }
     for instance_rows in by_instance.values():
         unique: list[tuple[float, float, float]] = []
         for row in instance_rows:
@@ -198,7 +274,34 @@ def _pareto_snapshot(
         front = [normalized[index] for index in front_indices]
         hypervolumes.append(hypervolume_3d(front))
         unique_counts.append(len(unique))
+        unique_action_trace_counts.append(
+            len(
+                {
+                    str(row.get("action_trace_sha256"))
+                    for row in instance_rows
+                    if row.get("action_trace_sha256")
+                }
+            )
+        )
         nondominated_counts.append(len(front))
+        for objective_name, weight_name, objective_key in (
+            ("flow", "w_flow", "flow_time_objective"),
+            ("cost", "w_cost", "reconfiguration_cost"),
+            ("variance", "w_variance", "worker_load_variance"),
+        ):
+            weights = [
+                float(row[weight_name])
+                for row in instance_rows
+                if weight_name in row and objective_key in row
+            ]
+            objectives = [
+                float(row[objective_key])
+                for row in instance_rows
+                if weight_name in row and objective_key in row
+            ]
+            response_values[objective_name].append(
+                _finite_spearman(weights, objectives)
+            )
     canonical_key = _preference_key(PreferenceVector(*CANONICAL_PREFERENCE))
     canonical_rows = [
         row for row in rows if str(row.get("preference_key")) == canonical_key
@@ -213,6 +316,104 @@ def _pareto_snapshot(
         - float(row["maximum_worker_fatigue"])
         for row in rows
     ]
+    pair_counts = Counter(
+        (str(row.get("instance_id")), str(row.get("preference_key")))
+        for row in rows
+    )
+    observed_instance_ids = set(by_instance)
+    observed_preference_keys = {
+        str(row.get("preference_key")) for row in rows
+    }
+    expected_instances = set(
+        expected_instance_ids
+        if expected_instance_ids is not None
+        else tuple(observed_instance_ids)
+    )
+    expected_preferences = set(
+        expected_preference_keys
+        if expected_preference_keys is not None
+        else tuple(observed_preference_keys)
+    )
+    expected_pairs = {
+        (instance_id, preference_key)
+        for instance_id in expected_instances
+        for preference_key in expected_preferences
+    }
+    observed_pairs = set(pair_counts)
+    missing_candidate_count = len(expected_pairs - observed_pairs)
+    unexpected_candidate_count = len(observed_pairs - expected_pairs)
+    duplicate_candidate_count = sum(
+        max(0, count - 1) for count in pair_counts.values()
+    )
+    pareto_settings = _pareto_promotion_settings(config)
+    full_grid = scope == "full_grid_22"
+    required_instances = int(
+        pareto_settings["required_full_grid_instance_count"]
+    )
+    required_preferences = int(
+        pareto_settings["required_full_grid_preference_count"]
+    )
+    required_candidates = int(
+        pareto_settings["required_full_grid_candidate_count"]
+    )
+    coverage_pass = bool(
+        not full_grid
+        or (
+            (not required_instances or len(expected_instances) == required_instances)
+            and (
+                not required_preferences
+                or len(expected_preferences) == required_preferences
+            )
+            and (not required_candidates or len(rows) == required_candidates)
+            and observed_instance_ids == expected_instances
+            and observed_preference_keys == expected_preferences
+            and missing_candidate_count == 0
+            and unexpected_candidate_count == 0
+            and duplicate_candidate_count == 0
+        )
+    )
+    mean_unique_action_trace_count = (
+        float(np.mean(unique_action_trace_counts))
+        if unique_action_trace_counts
+        else 0.0
+    )
+    mean_unique_objective_count = (
+        float(np.mean(unique_counts)) if unique_counts else 0.0
+    )
+    mean_nondominated_count = (
+        float(np.mean(nondominated_counts)) if nondominated_counts else 0.0
+    )
+    action_trace_pass = bool(
+        mean_unique_action_trace_count
+        >= float(pareto_settings["minimum_mean_unique_action_trace_count"])
+        - 1e-12
+    )
+    unique_objective_pass = bool(
+        mean_unique_objective_count
+        >= float(pareto_settings["minimum_mean_unique_objective_count"])
+        - 1e-12
+    )
+    nondominated_pass = bool(
+        mean_nondominated_count
+        >= float(pareto_settings["minimum_mean_nondominated_count"])
+        - 1e-12
+    )
+    controllability_pass = bool(
+        not full_grid
+        or (action_trace_pass and unique_objective_pass and nondominated_pass)
+    )
+    preference_diagnostics = aggregate_preference_diagnostics(rows)
+    worker_direct_preference_pass = bool(
+        int(preference_diagnostics["worker_preference_override_count"]) == 0
+        and abs(
+            float(
+                preference_diagnostics[
+                    "worker_mean_preference_logit_std"
+                ]
+            )
+        )
+        <= 1e-12
+    )
     return {
         "scope": scope,
         "update_id": int(update_id),
@@ -222,7 +423,17 @@ def _pareto_snapshot(
         ),
         "instance_count": len(by_instance),
         "candidate_count": len(rows),
-        **aggregate_preference_diagnostics(rows),
+        "missing_candidate_count": missing_candidate_count,
+        "unexpected_candidate_count": unexpected_candidate_count,
+        "duplicate_candidate_count": duplicate_candidate_count,
+        "coverage_pass": coverage_pass,
+        "controllability_pass": controllability_pass,
+        "unique_action_trace_pass": action_trace_pass,
+        "unique_objective_pass": unique_objective_pass,
+        "nondominated_pass": nondominated_pass,
+        "worker_direct_preference_pass": worker_direct_preference_pass,
+        **preference_diagnostics,
+        **aggregate_matching_recovery_diagnostics(rows),
         "all_safe": _rows_are_safe(rows, fatigue_tolerance),
         "completion_rate": (
             sum(
@@ -241,14 +452,18 @@ def _pareto_snapshot(
         "mean_hypervolume": (
             float(np.mean(hypervolumes)) if hypervolumes else 0.0
         ),
-        "mean_unique_objective_count": (
-            float(np.mean(unique_counts)) if unique_counts else 0.0
-        ),
-        "mean_nondominated_count": (
-            float(np.mean(nondominated_counts))
-            if nondominated_counts
-            else 0.0
-        ),
+        "mean_unique_action_trace_count": mean_unique_action_trace_count,
+        "mean_unique_objective_count": mean_unique_objective_count,
+        "mean_nondominated_count": mean_nondominated_count,
+        "preference_response_spearman_flow": float(
+            np.mean(response_values["flow"])
+        ) if response_values["flow"] else 0.0,
+        "preference_response_spearman_cost": float(
+            np.mean(response_values["cost"])
+        ) if response_values["cost"] else 0.0,
+        "preference_response_spearman_variance": float(
+            np.mean(response_values["variance"])
+        ) if response_values["variance"] else 0.0,
         "canonical_quality": (
             float(np.mean(canonical_values)) if canonical_values else math.inf
         ),
@@ -314,6 +529,21 @@ def _evaluate_pareto_preferences(
         update_id=update_id,
         completed_episodes=completed_episodes,
         fatigue_tolerance=fatigue_tolerance,
+        expected_instance_ids=tuple(
+            str(row["instance_id"])
+            for row in (
+                canonical_rows
+                if canonical_rows is not None
+                else [
+                    row
+                    for row in rows
+                    if str(row.get("preference_key")) == canonical_key
+                ]
+            )
+        ),
+        expected_preference_keys=tuple(
+            _preference_key(preference) for preference in preferences
+        ),
     )
     return rows, snapshot
 
@@ -380,12 +610,14 @@ class TrainingPhaseController:
             "aligned_quality",
             "balanced_guarded_v7",
             "pareto_guarded_e2_v1",
+            "pareto_guarded_e2_3_v1",
         }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
                 "'completion_only', 'score_improving', or "
                 "'constrained_weighted', 'aligned_quality', "
-                "'balanced_guarded_v7', or 'pareto_guarded_e2_v1'"
+                "'balanced_guarded_v7', 'pareto_guarded_e2_v1', or "
+                "'pareto_guarded_e2_3_v1'"
             )
         constraints: dict[str, float] = {}
         if promotion in {"constrained_weighted", "balanced_guarded_v7"}:
@@ -425,7 +657,7 @@ class TrainingPhaseController:
                         f"{name} must be finite and non-negative"
                     )
                 constraints[name] = value
-        if promotion == "pareto_guarded_e2_v1":
+        if promotion in PARETO_PROMOTION_MODES:
             constraints = {
                 name: float(value)
                 for name, value in _pareto_promotion_settings(config).items()
@@ -468,7 +700,7 @@ class TrainingPhaseController:
             if self.consecutive_successes >= self.consecutive_required:
                 self.phase = "quality"
                 self.phase_transition_episode = int(completed_episodes)
-                if self.quality_checkpoint_promotion != "pareto_guarded_e2_v1":
+                if self.quality_checkpoint_promotion not in PARETO_PROMOTION_MODES:
                     self.accepted_quality_score = score
                     self.accepted_normalized_quality_score = (
                         normalized_quality_score
@@ -486,7 +718,7 @@ class TrainingPhaseController:
                 )
                 return "transition"
             return "feasibility"
-        if self.quality_checkpoint_promotion == "pareto_guarded_e2_v1":
+        if self.quality_checkpoint_promotion in PARETO_PROMOTION_MODES:
             return "pareto_pending"
         if self.quality_checkpoint_promotion == "balanced_guarded_v7":
             return self._observe_balanced_greedy_candidate(
@@ -597,12 +829,26 @@ class TrainingPhaseController:
         *,
         completed_episodes: int,
     ) -> str:
-        if self.quality_checkpoint_promotion != "pareto_guarded_e2_v1":
-            raise RuntimeError("Pareto snapshots require pareto_guarded_e2_v1")
+        if self.quality_checkpoint_promotion not in PARETO_PROMOTION_MODES:
+            raise RuntimeError("Pareto snapshots require a Pareto guard")
         constraints = self.quality_promotion_constraints
         candidate_hv = float(snapshot["mean_hypervolume"])
         candidate_canonical = float(snapshot["canonical_quality"])
         safety_pass = bool(snapshot["all_safe"])
+        coverage_pass = bool(snapshot.get("coverage_pass", True))
+        controllability_pass = bool(
+            snapshot.get("controllability_pass", True)
+        )
+        worker_direct_preference_pass = bool(
+            snapshot.get("worker_direct_preference_pass", True)
+        )
+        e2_3_mode = (
+            self.quality_checkpoint_promotion == "pareto_guarded_e2_3_v1"
+        )
+        if e2_3_mode:
+            coverage_pass = bool(
+                coverage_pass and snapshot.get("scope") == "full_grid_22"
+            )
         finite = math.isfinite(candidate_hv) and math.isfinite(
             candidate_canonical
         )
@@ -630,7 +876,14 @@ class TrainingPhaseController:
                 + 1e-12
             )
         )
-        promoted = safety_pass and hv_pass and canonical_pass
+        promoted = bool(
+            safety_pass
+            and (coverage_pass if e2_3_mode else True)
+            and (controllability_pass if e2_3_mode else True)
+            and (worker_direct_preference_pass if e2_3_mode else True)
+            and hv_pass
+            and canonical_pass
+        )
         if promoted:
             event = "accepted" if baseline else "promoted"
             reason = "pareto_baseline" if baseline else "pareto_hv_improved"
@@ -639,10 +892,22 @@ class TrainingPhaseController:
             self.accepted_quality_episode = int(completed_episodes)
             self.accepted_quality_updates += 1
         else:
-            event = "rejected" if not safety_pass else "not_promoted"
+            hard_rejection = bool(
+                not safety_pass
+                or (e2_3_mode and not coverage_pass)
+                or (e2_3_mode and not controllability_pass)
+                or (e2_3_mode and not worker_direct_preference_pass)
+            )
+            event = "rejected" if hard_rejection else "not_promoted"
             reason = (
                 "safety_failed"
                 if not safety_pass
+                else "coverage_failed"
+                if e2_3_mode and not coverage_pass
+                else "controllability_failed"
+                if e2_3_mode and not controllability_pass
+                else "worker_direct_preference_not_zero"
+                if e2_3_mode and not worker_direct_preference_pass
                 else "hypervolume_not_improved"
                 if not hv_pass
                 else "canonical_quality_guard_failed"
@@ -652,10 +917,42 @@ class TrainingPhaseController:
             else:
                 self.not_promoted_quality_updates += 1
         self.last_promotion_diagnostics = {
-            "promotion_mode": "pareto_guarded_e2_v1",
+            "promotion_mode": self.quality_checkpoint_promotion,
             "promotion_event": event,
             "promotion_decision_reason": reason,
             "promotion_safety_pass": safety_pass,
+            "promotion_coverage_pass": coverage_pass,
+            "promotion_controllability_pass": controllability_pass,
+            "promotion_worker_direct_preference_pass": (
+                worker_direct_preference_pass
+            ),
+            "promotion_unique_action_trace_pass": bool(
+                snapshot.get("unique_action_trace_pass", True)
+            ),
+            "promotion_unique_objective_pass": bool(
+                snapshot.get("unique_objective_pass", True)
+            ),
+            "promotion_nondominated_pass": bool(
+                snapshot.get("nondominated_pass", True)
+            ),
+            "promotion_missing_candidate_count": int(
+                snapshot.get("missing_candidate_count", 0)
+            ),
+            "promotion_unexpected_candidate_count": int(
+                snapshot.get("unexpected_candidate_count", 0)
+            ),
+            "promotion_duplicate_candidate_count": int(
+                snapshot.get("duplicate_candidate_count", 0)
+            ),
+            "promotion_mean_unique_action_trace_count": float(
+                snapshot.get("mean_unique_action_trace_count", 0.0)
+            ),
+            "promotion_mean_unique_objective_count": float(
+                snapshot.get("mean_unique_objective_count", 0.0)
+            ),
+            "promotion_mean_nondominated_count": float(
+                snapshot.get("mean_nondominated_count", 0.0)
+            ),
             "promotion_hv_pass": hv_pass,
             "promotion_canonical_guard_pass": canonical_pass,
             "promotion_candidate_hv": candidate_hv,
@@ -1019,7 +1316,7 @@ class TrainingPhaseController:
         if self.phase_transition_episode is None:
             return "feasibility_not_reached"
         if (
-            self.quality_checkpoint_promotion == "pareto_guarded_e2_v1"
+            self.quality_checkpoint_promotion in PARETO_PROMOTION_MODES
             and self.accepted_pareto_hv is None
         ):
             return "pareto_baseline_not_reached"
@@ -1048,6 +1345,7 @@ class TrainingPhaseController:
             "aligned_quality",
             "balanced_guarded_v7",
             "pareto_guarded_e2_v1",
+            "pareto_guarded_e2_3_v1",
         }:
             result.update(
                 {
@@ -1606,6 +1904,63 @@ def _validation_log_row(
         ),
         "mean_preference_logit_std": validation.get(
             "mean_preference_logit_std", 0.0
+        ),
+        "production_ranker_top_decision_count": validation.get(
+            "production_ranker_top_decision_count", 0
+        ),
+        "production_preference_override_count": validation.get(
+            "production_preference_override_count", 0
+        ),
+        "production_preference_override_rate": validation.get(
+            "production_preference_override_rate", 0.0
+        ),
+        "production_mean_preference_logit_std": validation.get(
+            "production_mean_preference_logit_std", 0.0
+        ),
+        "worker_ranker_top_decision_count": validation.get(
+            "worker_ranker_top_decision_count", 0
+        ),
+        "worker_preference_override_count": validation.get(
+            "worker_preference_override_count", 0
+        ),
+        "worker_preference_override_rate": validation.get(
+            "worker_preference_override_rate", 0.0
+        ),
+        "worker_mean_preference_logit_std": validation.get(
+            "worker_mean_preference_logit_std", 0.0
+        ),
+        "current_worker_matching_deficit": validation.get(
+            "current_worker_matching_deficit", 0
+        ),
+        "maximum_worker_matching_deficit": validation.get(
+            "maximum_worker_matching_deficit", 0
+        ),
+        "deficit_reducing_worker_action_candidate_count": validation.get(
+            "deficit_reducing_worker_action_candidate_count", 0
+        ),
+        "deficit_reducing_worker_action_count": validation.get(
+            "deficit_reducing_worker_action_count", 0
+        ),
+        "matching_deficit_recovery_advance_count": validation.get(
+            "matching_deficit_recovery_advance_count", 0
+        ),
+        "current_matching_admission_masked_action_count": validation.get(
+            "current_matching_admission_masked_action_count", 0
+        ),
+        "future_installation_admission_candidate_count": validation.get(
+            "future_installation_admission_candidate_count", 0
+        ),
+        "future_installation_admission_masked_action_count": validation.get(
+            "future_installation_admission_masked_action_count", 0
+        ),
+        "future_installation_admission_masked_action_ratio": validation.get(
+            "future_installation_admission_masked_action_ratio", 0.0
+        ),
+        "future_installation_matching_deficit_after_commit": validation.get(
+            "future_installation_matching_deficit_after_commit", 0
+        ),
+        "maximum_projected_installation_deficit": validation.get(
+            "maximum_projected_installation_deficit", 0
         ),
         "mean_makespan": completed_summary["makespan"]["mean"],
         "std_makespan": completed_summary["makespan"]["std"],
@@ -2905,7 +3260,7 @@ def train(
                 completed_episodes=completed_episodes,
             ) and (
                 phase_controller.quality_checkpoint_promotion
-                not in {"balanced_guarded_v7", "pareto_guarded_e2_v1"}
+                not in ({"balanced_guarded_v7"} | PARETO_PROMOTION_MODES)
             ):
                 sampled_validation = _evaluate_sampled_validation(
                     config,
@@ -3027,7 +3382,10 @@ def train(
                 agent.save(phase1_checkpoint, metadata=transition_metadata)
                 row["candidate_status"] = "phase_transition"
                 update_rows[-1]["candidate_status"] = "phase_transition"
-            if validation_event in {"transition", "promoted", "accepted"}:
+            if _checkpoint_eligible_validation_event(
+                validation_event,
+                phase_controller.quality_checkpoint_promotion,
+            ):
                 accepted_metadata = {
                     **_checkpoint_protocol_metadata(config),
                     "checkpoint_role": "shadow_best",
@@ -3183,7 +3541,7 @@ def train(
             phase_controller.phase_transition_episode is not None
             and (
                 phase_controller.quality_checkpoint_promotion
-                != "pareto_guarded_e2_v1"
+                not in PARETO_PROMOTION_MODES
                 or phase_controller.accepted_pareto_hv is not None
             )
         )
@@ -3508,7 +3866,7 @@ def _train_parallel(
     quality_update_id = 0
     pareto_mode = (
         phase_controller.quality_checkpoint_promotion
-        == "pareto_guarded_e2_v1"
+        in PARETO_PROMOTION_MODES
     )
     pareto_settings = (
         _pareto_promotion_settings(config) if pareto_mode else None
@@ -3762,7 +4120,7 @@ def _train_parallel(
                     completed_episodes=completed_episodes,
                 ) and (
                     phase_controller.quality_checkpoint_promotion
-                    not in {"balanced_guarded_v7", "pareto_guarded_e2_v1"}
+                    not in ({"balanced_guarded_v7"} | PARETO_PROMOTION_MODES)
                 ):
                     sampled_validation = _evaluate_sampled_validation(
                         config,
@@ -3835,17 +4193,28 @@ def _train_parallel(
                                 canonical_rows=validation_instance_rows,
                             )
                         )
-                        validation_event = (
-                            phase_controller.observe_pareto_snapshot(
-                                anchor_snapshot,
-                                completed_episodes=completed_episodes,
+                        if (
+                            phase_controller.quality_checkpoint_promotion
+                            == "pareto_guarded_e2_3_v1"
+                        ):
+                            anchor_event = "audit_only"
+                            anchor_diagnostics: dict[str, object] = {}
+                        else:
+                            validation_event = (
+                                phase_controller.observe_pareto_snapshot(
+                                    anchor_snapshot,
+                                    completed_episodes=completed_episodes,
+                                )
                             )
-                        )
+                            anchor_event = validation_event
+                            anchor_diagnostics = dict(
+                                phase_controller.last_promotion_diagnostics
+                            )
                         anchor_snapshot.update(
                             {
                                 "quality_update_id": quality_update_id,
-                                "promotion_event": validation_event,
-                                **phase_controller.last_promotion_diagnostics,
+                                "promotion_event": anchor_event,
+                                **anchor_diagnostics,
                             }
                         )
                         pareto_validation_rows.append(anchor_snapshot)
@@ -3904,10 +4273,29 @@ def _train_parallel(
                             ),
                             canonical_rows=validation_instance_rows,
                         )
+                        if (
+                            phase_controller.quality_checkpoint_promotion
+                            == "pareto_guarded_e2_3_v1"
+                            and phase_controller.phase == "quality"
+                        ):
+                            validation_event = (
+                                phase_controller.observe_pareto_snapshot(
+                                    full_snapshot,
+                                    completed_episodes=completed_episodes,
+                                )
+                            )
+                            full_event = validation_event
+                            full_diagnostics = dict(
+                                phase_controller.last_promotion_diagnostics
+                            )
+                        else:
+                            full_event = "audit_only"
+                            full_diagnostics = {}
                         full_snapshot.update(
                             {
                                 "quality_update_id": quality_update_id,
-                                "promotion_event": "audit_only",
+                                "promotion_event": full_event,
+                                **full_diagnostics,
                             }
                         )
                         pareto_validation_rows.append(full_snapshot)
@@ -3924,6 +4312,11 @@ def _train_parallel(
                                 "pareto_full_mean_hypervolume": (
                                     full_snapshot["mean_hypervolume"]
                                 ),
+                                "pareto_full_mean_unique_action_trace_count": (
+                                    full_snapshot[
+                                        "mean_unique_action_trace_count"
+                                    ]
+                                ),
                                 "pareto_full_mean_unique_objective_count": (
                                     full_snapshot[
                                         "mean_unique_objective_count"
@@ -3933,6 +4326,12 @@ def _train_parallel(
                                     full_snapshot[
                                         "mean_nondominated_count"
                                     ]
+                                ),
+                                "pareto_full_coverage_pass": full_snapshot[
+                                    "coverage_pass"
+                                ],
+                                "pareto_full_controllability_pass": (
+                                    full_snapshot["controllability_pass"]
                                 ),
                             }
                         )
@@ -4060,11 +4459,13 @@ def _train_parallel(
                     update_row["candidate_status"] = "phase_transition"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "phase_transition"
-                if validation_event in {
-                    "transition",
-                    "promoted",
-                    "accepted",
-                }:
+                checkpoint_eligible_event = (
+                    _checkpoint_eligible_validation_event(
+                        validation_event,
+                        phase_controller.quality_checkpoint_promotion,
+                    )
+                )
+                if checkpoint_eligible_event:
                     agent.save(
                         accepted_checkpoint,
                         metadata={
@@ -4232,7 +4633,7 @@ def _train_parallel(
             phase_controller.phase_transition_episode is not None
             and (
                 phase_controller.quality_checkpoint_promotion
-                != "pareto_guarded_e2_v1"
+                not in PARETO_PROMOTION_MODES
                 or phase_controller.accepted_pareto_hv is not None
             )
         )

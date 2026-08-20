@@ -4,7 +4,7 @@
 
 `data/instances/fixed_instance.yaml` 是固定标准算例的数值唯一事实源。运行时代码不依赖 `docs/dev_context/` 中的开发上下文或项目根目录下的 PDF；二者仅用于开发和论文背景参考，可独立删除。
 
-当前默认配置 `configs/default.json` 是 `M1_candidate_graph_v6` 稳定基线。主线同时提供通过 `extends` 继承默认配置的 v7 C0/E1/E2 实验：`configs/v7/c0_v6_control.json` 保持 v6 策略头，`configs/v7/e1_context_exception.json` 只加入 E1 有界上下文残差，`configs/v7/e2_preference_conditioned.json` 则在 E1 上加入 episode 级偏好条件。C0/E1 的正式协议与结果 schema 仍为 `v7_e1_protocol_v2`/`4.1.0`；E2 偏好评估使用 schema `4.2.0`，且不与 E1 checkpoint 互载。
+当前默认配置 `configs/default.json` 是 `M1_candidate_graph_v6` 稳定基线。主线同时提供通过 `extends` 继承默认配置的 v7 C0/E1/E2 系列实验：`configs/v7/c0_v6_control.json` 保持 v6 策略头，`configs/v7/e1_context_exception.json` 只加入 E1 有界上下文残差，E2 系列逐步验证偏好条件、Pareto 审计和匹配安全控制。C0/E1 的正式协议与结果 schema 仍为 `v7_e1_protocol_v2`/`4.1.0`；E2、E2.2、E2.3 分别使用 schema `4.2.0`、`4.3.0`、`4.4.0`，不跨实验迁移 checkpoint。
 
 ## 数据依赖
 
@@ -193,6 +193,42 @@ E2.2 结果持久化 `preference_override_count`、
 远端验收要求 canonical validation 连续三次 100%、生成
 `accepted_checkpoint.pt`、最终 22 点 validation 440/440 完成且无截断、
 无调度违规并满足疲劳约束；在此之前不进行正式 test Pareto 分析。
+
+### E2.3：安全生产偏好与可恢复匹配
+
+`configs/v7/e2_3_safe_production_preference.json` 是独立实验，不改写 E2、
+E2.1、E2.2 的配置或历史结论。它回到 E2.1 的扁平
+`pair_plus_defer_v1` production 动作语义；直接三目标偏好只进入 production
+候选排序，worker scorer 仍可学习偏好条件，但不再叠加直接偏好 logit。
+
+worker 动作使用 `matching_admission_recovery_v2`：零 matching deficit 时只
+保留仍为零的动作，正 deficit 时只保留严格减小 deficit 的恢复动作；有恢复
+pair 时屏蔽普通等待，没有即时恢复 pair 但存在未来事件或疲劳恢复时才允许
+推进。production commit 同时对当前拆装任务和所有未来安装任务做联合安全
+匹配，避免先选低成本重构、后续却无法形成完整工人匹配。
+
+canonical validation 连续三次 20/20 只保存 `phase1_checkpoint.pt` 并进入
+quality，不再直接接受。`accepted_checkpoint.pt` 只能由每 20 个 quality
+update 的完整 22 点审计产生，且必须精确覆盖 20×22=440 个候选、全部完成、
+零截断、零调度违规、满足疲劳线，并通过平均唯一动作轨迹数 8、唯一目标
+向量数 8、非支配点数 4 三项最低可控性门槛。后续晋升继续沿用 E2.1 的
+Hypervolume 改善与 canonical quality 容差。结果 schema 为 `4.4.0`，记录
+production/worker 分头偏好覆盖、matching deficit 与未来安装联合准入诊断；
+worker direct-preference override 必须为 0。
+
+本机只运行静态检查和 pytest 契约测试，不运行 smoke、训练或 validation
+rollout。远端 seed 11 启动命令为：
+
+```powershell
+python train.py `
+  --config configs\v7\e2_3_safe_production_preference.json `
+  --algorithm-seed 11 `
+  --run-name v7_2000_e2_3_safe_production_seed11
+```
+
+正式验收还要求 `validation_worker_bottleneck_2000003` 的 22 个偏好全部完成、
+matching deficit 不再形成不可恢复等待链，且三项反坍缩门槛全部通过。在这些
+条件满足前不开展正式 test Pareto 分析。
 
 ## 运行
 

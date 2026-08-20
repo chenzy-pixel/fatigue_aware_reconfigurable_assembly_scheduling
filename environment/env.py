@@ -166,6 +166,7 @@ class ProductionCandidateProfile:
     safe_disassembly_workers: int
     safe_installation_workers: int
     matching_deficit_after_commit: int
+    future_installation_matching_deficit_after_commit: int
     horizon_slack_ticks: int
     admissible: bool
 
@@ -179,6 +180,7 @@ class ProductionResourceProfile:
     safe_disassembly_workers: int
     safe_installation_workers: int
     matching_deficit_after_commit: int
+    future_installation_matching_deficit_after_commit: int
     base_admissible: bool
 
 
@@ -253,9 +255,27 @@ class AssemblySchedulingEnv:
         self._worker_matching_deficit_ticks: set[int] = set()
         self._resource_admission_candidates: set[tuple[int, int, int]] = set()
         self._resource_admission_masked: set[tuple[int, int, int]] = set()
+        self._current_matching_admission_masked: set[
+            tuple[int, int, int]
+        ] = set()
+        self._future_installation_admission_candidates: set[
+            tuple[int, int, int]
+        ] = set()
+        self._future_installation_admission_masked: set[
+            tuple[int, int, int]
+        ] = set()
         self._matching_preserving_worker_actions: set[
             tuple[int, str, str, str]
         ] = set()
+        self._deficit_reducing_worker_action_candidates: set[
+            tuple[int, str, str, str]
+        ] = set()
+        self._deficit_reducing_worker_actions: set[
+            tuple[int, str, str, str]
+        ] = set()
+        self._matching_deficit_recovery_advance_count = 0
+        self._maximum_worker_matching_deficit = 0
+        self._maximum_projected_installation_deficit = 0
         self._candidate_recovery_advance_count = 0
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
@@ -350,17 +370,28 @@ class AssemblySchedulingEnv:
         if not isinstance(settings, dict):
             raise TypeError("environment.worker_resource_control must be a mapping")
         mode = str(settings.get("mode", "legacy_postcheck"))
-        if mode not in {"legacy_postcheck", "matching_admission_v1"}:
+        if mode not in {
+            "legacy_postcheck",
+            "matching_admission_v1",
+            "matching_admission_recovery_v2",
+        }:
             raise ValueError(
-                "worker_resource_control.mode must be 'legacy_postcheck' or "
-                "'matching_admission_v1'"
+                "worker_resource_control.mode must be 'legacy_postcheck', "
+                "'matching_admission_v1', or 'matching_admission_recovery_v2'"
             )
         return settings
 
     @property
     def matching_admission_enabled(self) -> bool:
+        return str(self.worker_resource_control.get("mode")) in {
+            "matching_admission_v1",
+            "matching_admission_recovery_v2",
+        }
+
+    @property
+    def matching_recovery_enabled(self) -> bool:
         return str(self.worker_resource_control.get("mode")) == (
-            "matching_admission_v1"
+            "matching_admission_recovery_v2"
         )
 
     def _resource_setting(self, name: str, default: bool) -> bool:
@@ -504,7 +535,15 @@ class AssemblySchedulingEnv:
         self._worker_matching_deficit_ticks = set()
         self._resource_admission_candidates = set()
         self._resource_admission_masked = set()
+        self._current_matching_admission_masked = set()
+        self._future_installation_admission_candidates = set()
+        self._future_installation_admission_masked = set()
         self._matching_preserving_worker_actions = set()
+        self._deficit_reducing_worker_action_candidates = set()
+        self._deficit_reducing_worker_actions = set()
+        self._matching_deficit_recovery_advance_count = 0
+        self._maximum_worker_matching_deficit = 0
+        self._maximum_projected_installation_deficit = 0
         self._candidate_recovery_advance_count = 0
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
@@ -1894,10 +1933,26 @@ class AssemblySchedulingEnv:
                                 machine_index,
                             )
                             self._resource_admission_candidates.add(key)
-                            admissible = self._production_candidate_profile(
+                            profile = self._production_candidate_profile(
                                 operation_index,
                                 machine_index,
-                            ).admissible
+                            )
+                            admissible = profile.admissible
+                            if self.matching_recovery_enabled:
+                                self._future_installation_admission_candidates.add(
+                                    key
+                                )
+                                if profile.matching_deficit_after_commit > 0:
+                                    self._current_matching_admission_masked.add(
+                                        key
+                                    )
+                                if (
+                                    profile.future_installation_matching_deficit_after_commit
+                                    > 0
+                                ):
+                                    self._future_installation_admission_masked.add(
+                                        key
+                                    )
                             if not admissible:
                                 self._resource_admission_masked.add(key)
                         if admissible:
@@ -1932,13 +1987,43 @@ class AssemblySchedulingEnv:
             return mask
         mask = np.ones(self.worker_action_size, dtype=bool)
         legal_worker_pairs = 0
+        matching_deficit = 0
+        if self.matching_recovery_enabled:
+            snapshot = self._resource_feasibility_snapshot()
+            matching_deficit = len(snapshot.tasks) - snapshot.matching_size
+            self._maximum_worker_matching_deficit = max(
+                self._maximum_worker_matching_deficit,
+                matching_deficit,
+            )
         for machine_index, machine in enumerate(self.machines):
             reconfiguration = self._pending_reconfiguration(machine.spec.id)
             if reconfiguration is None:
                 continue
             for worker_index, worker in enumerate(self.workers):
                 legal = self._worker_can_start(reconfiguration, worker)
-                if (
+                after_deficit: int | None = None
+                if legal and self.matching_recovery_enabled:
+                    before_deficit, after_deficit = (
+                        self._worker_action_matching_deficits(
+                            reconfiguration,
+                            worker_index,
+                        )
+                    )
+                    legal = (
+                        after_deficit == 0
+                        if before_deficit == 0
+                        else after_deficit < before_deficit
+                    )
+                    if legal and before_deficit > 0:
+                        self._deficit_reducing_worker_action_candidates.add(
+                            (
+                                self.current_tick,
+                                reconfiguration.id,
+                                reconfiguration.stage.value,
+                                worker.spec.id,
+                            )
+                        )
+                elif (
                     legal
                     and self.matching_admission_enabled
                     and self._resource_setting(
@@ -1954,21 +2039,23 @@ class AssemblySchedulingEnv:
                         self.encode_worker_action(machine_index, worker_index)
                     ] = False
                     legal_worker_pairs += 1
-                    self._matching_preserving_worker_actions.add(
-                        (
-                            self.current_tick,
-                            reconfiguration.id,
-                            reconfiguration.stage.value,
-                            worker.spec.id,
+                    if after_deficit in {None, 0}:
+                        self._matching_preserving_worker_actions.add(
+                            (
+                                self.current_tick,
+                                reconfiguration.id,
+                                reconfiguration.stage.value,
+                                worker.spec.id,
+                            )
                         )
-                    )
         non_delay = bool(
             self.matching_admission_enabled
             and self._resource_setting("non_delay_worker_dispatch", True)
         )
         strict_future = self._has_strict_future()
         conditional_preview = None
-        if non_delay and legal_worker_pairs > 0:
+        recovering = self.matching_recovery_enabled and matching_deficit > 0
+        if non_delay and legal_worker_pairs > 0 and not recovering:
             conditional_preview = self._conditional_worker_wait_preview()
         if conditional_preview is not None:
             mask[-1] = False
@@ -1991,6 +2078,8 @@ class AssemblySchedulingEnv:
                 if conditional_preview is not None
                 else None
             ),
+            "matching_deficit": matching_deficit,
+            "matching_recovery": recovering,
         }
         return mask
 
@@ -2288,6 +2377,40 @@ class AssemblySchedulingEnv:
         )
         if phase == DecisionType.WORKER:
             self._record_worker_pressure_snapshot()
+            if action == self.worker_advance_action:
+                if (
+                    self.matching_recovery_enabled
+                    and self._last_action_mask_analysis is not None
+                    and int(
+                        self._last_action_mask_analysis.get(
+                            "matching_deficit", 0
+                        )
+                    )
+                    > 0
+                    and int(
+                        self._last_action_mask_analysis.get(
+                            "legal_pair_count", 0
+                        )
+                    )
+                    == 0
+                ):
+                    self._matching_deficit_recovery_advance_count += 1
+            else:
+                machine_index, worker_index = self.decode_worker_action(action)
+                reconfiguration = self._pending_reconfiguration(
+                    self.machines[machine_index].spec.id
+                )
+                if reconfiguration is not None:
+                    recovery_key = (
+                        self.current_tick,
+                        reconfiguration.id,
+                        reconfiguration.stage.value,
+                        self.workers[worker_index].spec.id,
+                    )
+                    if recovery_key in (
+                        self._deficit_reducing_worker_action_candidates
+                    ):
+                        self._deficit_reducing_worker_actions.add(recovery_key)
             if (
                 action != self.worker_advance_action
                 and self.future_value_features_enabled
@@ -2746,6 +2869,14 @@ class AssemblySchedulingEnv:
         switch_ratio = (
             float(sum(switches) / len(switches)) if switches else None
         )
+        resource_snapshot = self._resource_feasibility_snapshot()
+        current_matching_deficit = (
+            len(resource_snapshot.tasks) - resource_snapshot.matching_size
+        )
+        self._maximum_worker_matching_deficit = max(
+            self._maximum_worker_matching_deficit,
+            current_matching_deficit,
+        )
         return {
             "instance_id": self.instance.instance_id,
             "terminated": self.terminated,
@@ -2789,6 +2920,19 @@ class AssemblySchedulingEnv:
             "worker_matching_deficit_event_count": len(
                 self._worker_matching_deficit_ticks
             ),
+            "current_worker_matching_deficit": current_matching_deficit,
+            "maximum_worker_matching_deficit": (
+                self._maximum_worker_matching_deficit
+            ),
+            "deficit_reducing_worker_action_candidate_count": len(
+                self._deficit_reducing_worker_action_candidates
+            ),
+            "deficit_reducing_worker_action_count": len(
+                self._deficit_reducing_worker_actions
+            ),
+            "matching_deficit_recovery_advance_count": (
+                self._matching_deficit_recovery_advance_count
+            ),
             "resource_admission_masked_action_count": len(
                 self._resource_admission_masked
             ),
@@ -2797,6 +2941,27 @@ class AssemblySchedulingEnv:
                 / len(self._resource_admission_candidates)
                 if self._resource_admission_candidates
                 else 0.0
+            ),
+            "current_matching_admission_masked_action_count": len(
+                self._current_matching_admission_masked
+            ),
+            "future_installation_admission_candidate_count": len(
+                self._future_installation_admission_candidates
+            ),
+            "future_installation_admission_masked_action_count": len(
+                self._future_installation_admission_masked
+            ),
+            "future_installation_admission_masked_action_ratio": (
+                len(self._future_installation_admission_masked)
+                / len(self._future_installation_admission_candidates)
+                if self._future_installation_admission_candidates
+                else 0.0
+            ),
+            "maximum_projected_installation_deficit": (
+                self._maximum_projected_installation_deficit
+            ),
+            "future_installation_matching_deficit_after_commit": (
+                self._maximum_projected_installation_deficit
             ),
             "minimum_worker_alternatives": (
                 self._minimum_worker_alternatives_seen
@@ -3719,7 +3884,25 @@ class AssemblySchedulingEnv:
         reconfiguration: ReconfigurationRuntime,
         worker_index: int,
     ) -> bool:
+        _, after_deficit = self._worker_action_matching_deficits(
+            reconfiguration,
+            worker_index,
+        )
+        return after_deficit == 0
+
+    def _worker_action_matching_deficits(
+        self,
+        reconfiguration: ReconfigurationRuntime,
+        worker_index: int,
+    ) -> tuple[int, int]:
+        """Return matching deficits before and after assigning one worker."""
+
         snapshot = self._resource_feasibility_snapshot()
+        before_deficit = len(snapshot.tasks) - snapshot.matching_size
+        self._maximum_worker_matching_deficit = max(
+            self._maximum_worker_matching_deficit,
+            before_deficit,
+        )
         task_index = next(
             (
                 index
@@ -3729,16 +3912,28 @@ class AssemblySchedulingEnv:
             None,
         )
         if task_index is None or worker_index not in snapshot.safe_edges[task_index]:
-            return False
+            return before_deficit, len(snapshot.tasks)
+        # In an already-deficient state, the assigned task is resolved and the
+        # worker may serve another waiting task after this stage completes.  A
+        # zero-deficit state stays conservative and reserves the worker now.
         remaining_edges = [
-            [candidate for candidate in edge if candidate != worker_index]
+            (
+                list(edge)
+                if before_deficit > 0
+                else [
+                    candidate
+                    for candidate in edge
+                    if candidate != worker_index
+                ]
+            )
             for index, edge in enumerate(snapshot.safe_edges)
             if index != task_index
         ]
-        return _maximum_matching_size(
+        remaining_matching = _maximum_matching_size(
             remaining_edges,
             len(self.workers),
-        ) == len(remaining_edges)
+        )
+        return before_deficit, len(remaining_edges) - remaining_matching
 
     def _worker_fatigue_at_availability(
         self,
@@ -3918,6 +4113,113 @@ class AssemblySchedulingEnv:
         self._production_resource_profile_cache[key] = profile
         return profile
 
+    def _earliest_disassembly_completion_tick(
+        self,
+        machine_index: int,
+        module: str,
+    ) -> int | None:
+        projections = [
+            projection
+            for worker_index in range(len(self.workers))
+            if (
+                projection := self._earliest_safe_stage_projection(
+                    machine_index,
+                    worker_index,
+                    module,
+                    installation=False,
+                    earliest_tick=self.current_tick,
+                )
+            )
+            is not None
+        ]
+        if not projections:
+            return None
+        start_tick, duration_ticks = min(
+            projections,
+            key=lambda value: (value[0] + value[1], value[0]),
+        )
+        return start_tick + duration_ticks
+
+    def _projected_future_installation_matching(
+        self,
+        *,
+        candidate_machine_index: int,
+        candidate_target_module: str,
+        candidate_installation_ready_tick: int | None,
+    ) -> tuple[int, int]:
+        """Conservatively match all pending and candidate installations."""
+
+        projected: list[tuple[WorkerTaskSnapshot, int | None]] = []
+        for reconfiguration in sorted(
+            self.reconfigurations.values(), key=lambda value: value.id
+        ):
+            if reconfiguration.stage not in {
+                ReconfigurationStage.WAIT_DIS,
+                ReconfigurationStage.DIS,
+                ReconfigurationStage.WAIT_INS,
+            }:
+                continue
+            machine_index = self.instance.machine_index[
+                reconfiguration.machine_id
+            ]
+            if reconfiguration.stage == ReconfigurationStage.WAIT_DIS:
+                ready_tick = self._earliest_disassembly_completion_tick(
+                    machine_index,
+                    reconfiguration.source_module,
+                )
+            elif reconfiguration.stage == ReconfigurationStage.DIS:
+                ready_tick = reconfiguration.disassembly_end_tick
+            else:
+                ready_tick = self.current_tick
+            projected.append(
+                (
+                    WorkerTaskSnapshot(
+                        task_id=f"installation:{reconfiguration.id}",
+                        machine_index=machine_index,
+                        stage=ReconfigurationStage.WAIT_INS,
+                        module=reconfiguration.target_module,
+                    ),
+                    ready_tick,
+                )
+            )
+        projected.append(
+            (
+                WorkerTaskSnapshot(
+                    task_id=(
+                        "candidate-installation:"
+                        f"{candidate_machine_index}:{candidate_target_module}"
+                    ),
+                    machine_index=candidate_machine_index,
+                    stage=ReconfigurationStage.WAIT_INS,
+                    module=candidate_target_module,
+                ),
+                candidate_installation_ready_tick,
+            )
+        )
+        safe_edges: list[list[int]] = []
+        for task, ready_tick in projected:
+            if ready_tick is None or ready_tick > self.horizon_tick:
+                safe_edges.append([])
+                continue
+            edge = [
+                worker_index
+                for worker_index in range(len(self.workers))
+                if self._earliest_safe_stage_projection(
+                    task.machine_index,
+                    worker_index,
+                    task.module,
+                    installation=True,
+                    earliest_tick=ready_tick,
+                )
+                is not None
+            ]
+            safe_edges.append(edge)
+        matching_size = _maximum_matching_size(
+            safe_edges,
+            len(self.workers),
+        )
+        return len(projected) - matching_size, len(safe_edges[-1])
+
     def _compute_production_resource_profile(
         self,
         machine_index: int,
@@ -3933,6 +4235,7 @@ class AssemblySchedulingEnv:
                 safe_disassembly_workers=len(self.workers),
                 safe_installation_workers=len(self.workers),
                 matching_deficit_after_commit=0,
+                future_installation_matching_deficit_after_commit=0,
                 base_admissible=True,
             )
 
@@ -4005,12 +4308,33 @@ class AssemblySchedulingEnv:
             else:
                 processing_start_tick = None
 
+        future_installation_deficit = 0
+        if self.matching_recovery_enabled:
+            (
+                future_installation_deficit,
+                safe_installation_workers,
+            ) = self._projected_future_installation_matching(
+                candidate_machine_index=machine_index,
+                candidate_target_module=target_module,
+                candidate_installation_ready_tick=(
+                    disassembly_end if disassembly_projections else None
+                ),
+            )
+            self._maximum_projected_installation_deficit = max(
+                self._maximum_projected_installation_deficit,
+                future_installation_deficit,
+            )
         require_full_matching = self._resource_setting(
             "require_full_matching", True
         )
         base_admissible = bool(
             candidate_edges
             and (not require_full_matching or matching_deficit == 0)
+            and (
+                not self.matching_recovery_enabled
+                or not require_full_matching
+                or future_installation_deficit == 0
+            )
             and resource_ready_tick == self.current_tick
         )
         return ProductionResourceProfile(
@@ -4019,6 +4343,9 @@ class AssemblySchedulingEnv:
             safe_disassembly_workers=len(candidate_edges),
             safe_installation_workers=safe_installation_workers,
             matching_deficit_after_commit=matching_deficit,
+            future_installation_matching_deficit_after_commit=(
+                future_installation_deficit
+            ),
             base_admissible=base_admissible,
         )
 
@@ -4053,6 +4380,9 @@ class AssemblySchedulingEnv:
             ),
             matching_deficit_after_commit=(
                 resource_profile.matching_deficit_after_commit
+            ),
+            future_installation_matching_deficit_after_commit=(
+                resource_profile.future_installation_matching_deficit_after_commit
             ),
             horizon_slack_ticks=self.horizon_tick - predicted_finish_tick,
             admissible=(

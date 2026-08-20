@@ -462,6 +462,7 @@ V6_WORKER_RELATIVE_WEIGHT_SHARING = "independent_softplus_v6"
 V7_BOUNDED_CONTEXT_MODE = "bounded_ranker_scale_v7"
 DIRECT_PREFERENCE_ACTION_SCORE_VERSION = "direct_main_rank_v1"
 DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION = "legal_candidate_zscore"
+DIRECT_PREFERENCE_ACTION_SCORE_SCOPES = ("all", "production_only")
 FLAT_PRODUCTION_ACTION_SEMANTICS = "pair_plus_defer_v1"
 HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS = (
     "hierarchical_commit_then_pair_v2"
@@ -652,6 +653,9 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION,
         )
     )
+    preference_action_score_scope = str(
+        preference_action_score_raw.get("scope", "all")
+    ).strip().lower()
     if preference_action_score_enabled:
         if version != 7:
             raise ValueError(
@@ -684,6 +688,13 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "network.preference_action_score.standardization must be "
                 f"{DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION!r}"
+            )
+        if preference_action_score_scope not in (
+            DIRECT_PREFERENCE_ACTION_SCORE_SCOPES
+        ):
+            raise ValueError(
+                "network.preference_action_score.scope must be 'all' or "
+                "'production_only'"
             )
         if (
             not np.isfinite(preference_action_score_minimum_scale)
@@ -751,6 +762,7 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "preference_action_score_standardization": (
             preference_action_score_standardization
         ),
+        "preference_action_score_scope": preference_action_score_scope,
         "production_relative_initial_weights": (
             _positive_weight_tuple(
                 config,
@@ -995,6 +1007,10 @@ def assert_network_config_matches_spec(
             saved_preference_action = dict(
                 checkpoint_spec.get("preference_action_score", {})
             )
+            if configured_preference_action:
+                configured_preference_action.setdefault("scope", "all")
+            if saved_preference_action:
+                saved_preference_action.setdefault("scope", "all")
             if configured_preference_action != saved_preference_action:
                 raise ValueError(
                     "checkpoint preference_action_score is incompatible "
@@ -1308,6 +1324,7 @@ class HeteroGraphActorCritic(nn.Module):
         preference_action_score_standardization: str = (
             DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION
         ),
+        preference_action_score_scope: str = "all",
     ):
         super().__init__()
         self.feature_dimensions = {
@@ -1386,6 +1403,9 @@ class HeteroGraphActorCritic(nn.Module):
         self.preference_action_score_standardization = str(
             preference_action_score_standardization
         )
+        self.preference_action_score_scope = str(
+            preference_action_score_scope
+        )
         if self.preference_conditioning not in {
             "none",
             "separate_encoder_v1",
@@ -1403,6 +1423,10 @@ class HeteroGraphActorCritic(nn.Module):
                 "direct preference-action scoring requires preference "
                 "conditioning and both relative rankers"
             )
+        if self.preference_action_score_scope not in (
+            DIRECT_PREFERENCE_ACTION_SCORE_SCOPES
+        ):
+            raise ValueError("unsupported preference-action scoring scope")
         if (
             len(self.production_relative_initial_weights)
             != len(self.production_relative_feature_names)
@@ -1649,6 +1673,7 @@ class HeteroGraphActorCritic(nn.Module):
                             "standardization": (
                                 self.preference_action_score_standardization
                             ),
+                            "scope": self.preference_action_score_scope,
                         }
                         if self.preference_action_score_enabled
                         else {}
@@ -2415,7 +2440,10 @@ class HeteroGraphActorCritic(nn.Module):
             relative_features, effective_weights
         ).reshape(-1)
         preference_logits = relative_logits.new_zeros(relative_logits.shape)
-        if self.preference_action_score_enabled:
+        if (
+            self.preference_action_score_enabled
+            and self.preference_action_score_scope == "all"
+        ):
             preference_logits = self._direct_preference_logits(
                 torch.stack(
                     (
@@ -2808,4 +2836,5 @@ def build_actor_critic(
         policy_head["preference_action_score_initial_scale"],
         policy_head["preference_action_score_minimum_scale"],
         policy_head["preference_action_score_standardization"],
+        policy_head["preference_action_score_scope"],
     )
