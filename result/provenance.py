@@ -15,9 +15,9 @@ from configs.config import PROJECT_ROOT, project_path, public_config
 from data.dataset import canonical_json_bytes, sha256_file, template_sha256
 from data.models import load_instance_yaml
 from result.metrics import (
-    EVALUATION_SCHEMA_VERSION,
     evaluation_quality_metric,
     quality_metric_sha256,
+    result_schema_version,
 )
 from utils import SAMPLED_EVALUATION_RNG_VERSION
 
@@ -241,7 +241,7 @@ def build_provenance(
         "evaluator_protocol_version": config.get(
             "experiment_suite_version", "legacy"
         ),
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": result_schema_version(config),
         "quality_metric_version": quality_metric["version"],
         "quality_metric_sha256": quality_metric_sha256(quality_metric),
         "sampled_rng_version": SAMPLED_EVALUATION_RNG_VERSION,

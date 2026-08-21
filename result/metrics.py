@@ -13,6 +13,56 @@ EVALUATION_SCHEMA_VERSION = "4.1.0"
 PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.2.0"
 HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.3.0"
 SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.4.0"
+NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION = "4.5.0"
+
+# Scalar diagnostics intentionally shared by evaluation, training and Pareto
+# persistence.  Keeping the registry here prevents a new experiment field from
+# being silently defaulted to zero by one of the CSV writers.
+MATCHING_RECOVERY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
+    "current_worker_matching_deficit",
+    "maximum_worker_matching_deficit",
+    "deficit_reducing_worker_action_candidate_count",
+    "deficit_reducing_worker_action_count",
+    "matching_deficit_recovery_advance_count",
+    "current_matching_admission_masked_action_count",
+    "future_installation_admission_candidate_count",
+    "future_installation_admission_masked_action_count",
+    "future_installation_admission_masked_action_ratio",
+    "future_installation_matching_deficit_after_commit",
+    "maximum_projected_installation_deficit",
+)
+PREFERENCE_POLICY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
+    "ranker_top_decision_count",
+    "ranker_top_selected_count",
+    "ranker_top_selection_rate",
+    "context_override_count",
+    "context_override_rate",
+    "preference_override_count",
+    "preference_override_rate",
+    "mean_preference_logit_std",
+    "production_ranker_top_decision_count",
+    "production_preference_override_count",
+    "production_preference_override_rate",
+    "production_mean_preference_logit_std",
+    "worker_ranker_top_decision_count",
+    "worker_preference_override_count",
+    "worker_preference_override_rate",
+    "worker_mean_preference_logit_std",
+    "production_conditional_preference_override_count",
+    "production_conditional_preference_override_rate",
+    "worker_variance_preference_override_count",
+    "worker_variance_preference_override_rate",
+    "worker_direct_preference_flow_logit_max_abs",
+    "worker_direct_preference_cost_logit_max_abs",
+    "worker_direct_preference_variance_logit_max_abs",
+    "unsafe_worker_preference_selection_count",
+    "production_gate_state_count",
+    "production_gate_commit_selected_count",
+    "production_gate_defer_selected_count",
+    "mean_production_gate_commit_probability",
+    "mean_production_gate_defer_probability",
+    "mean_production_gate_logit_margin",
+)
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,
@@ -39,6 +89,7 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         PREFERENCE_EVALUATION_SCHEMA_VERSION,
         HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
         SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION,
+        NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {version!r}")
     return version
@@ -207,6 +258,18 @@ def aggregate_preference_diagnostics(
         "production": [0, 0, 0.0],
         "worker": [0, 0, 0.0],
     }
+    production_conditional_overrides = 0
+    worker_variance_overrides = 0
+    worker_direct_flow_max_abs = 0.0
+    worker_direct_cost_max_abs = 0.0
+    worker_direct_variance_max_abs = 0.0
+    unsafe_worker_preference_selection_count = 0
+    gate_state_count = 0
+    gate_commit_selected_count = 0
+    gate_defer_selected_count = 0
+    gate_commit_probability_sum = 0.0
+    gate_defer_probability_sum = 0.0
+    gate_logit_margin_sum = 0.0
     for row in rows:
         count = int(row.get("ranker_top_decision_count", 0) or 0)
         overrides = int(row.get("preference_override_count", 0) or 0)
@@ -243,6 +306,62 @@ def aggregate_preference_diagnostics(
             head_totals[head][0] += head_count
             head_totals[head][1] += head_overrides
             head_totals[head][2] += head_count * head_mean_std
+        production_conditional_overrides += int(
+            row.get("production_conditional_preference_override_count", 0)
+            or 0
+        )
+        worker_variance_overrides += int(
+            row.get("worker_variance_preference_override_count", 0) or 0
+        )
+        worker_direct_flow_max_abs = max(
+            worker_direct_flow_max_abs,
+            float(
+                row.get(
+                    "worker_direct_preference_flow_logit_max_abs", 0.0
+                )
+                or 0.0
+            ),
+        )
+        worker_direct_cost_max_abs = max(
+            worker_direct_cost_max_abs,
+            float(
+                row.get(
+                    "worker_direct_preference_cost_logit_max_abs", 0.0
+                )
+                or 0.0
+            ),
+        )
+        worker_direct_variance_max_abs = max(
+            worker_direct_variance_max_abs,
+            float(
+                row.get(
+                    "worker_direct_preference_variance_logit_max_abs", 0.0
+                )
+                or 0.0
+            ),
+        )
+        unsafe_worker_preference_selection_count += int(
+            row.get("unsafe_worker_preference_selection_count", 0) or 0
+        )
+        row_gate_count = int(row.get("production_gate_state_count", 0) or 0)
+        if row_gate_count < 0:
+            raise ValueError("production gate decision count is invalid")
+        gate_state_count += row_gate_count
+        gate_commit_selected_count += int(
+            row.get("production_gate_commit_selected_count", 0) or 0
+        )
+        gate_defer_selected_count += int(
+            row.get("production_gate_defer_selected_count", 0) or 0
+        )
+        gate_commit_probability_sum += row_gate_count * float(
+            row.get("mean_production_gate_commit_probability", 0.0) or 0.0
+        )
+        gate_defer_probability_sum += row_gate_count * float(
+            row.get("mean_production_gate_defer_probability", 0.0) or 0.0
+        )
+        gate_logit_margin_sum += row_gate_count * float(
+            row.get("mean_production_gate_logit_margin", 0.0) or 0.0
+        )
     result = {
         "ranker_top_decision_count": decision_count,
         "preference_override_count": override_count,
@@ -265,6 +384,60 @@ def aggregate_preference_diagnostics(
         result[f"{head}_mean_preference_logit_std"] = (
             head_weighted_std / head_count if head_count else 0.0
         )
+    production_count = int(head_totals["production"][0])
+    worker_count = int(head_totals["worker"][0])
+    result.update(
+        {
+            "production_conditional_preference_override_count": (
+                production_conditional_overrides
+            ),
+            "production_conditional_preference_override_rate": (
+                production_conditional_overrides / production_count
+                if production_count
+                else 0.0
+            ),
+            "worker_variance_preference_override_count": (
+                worker_variance_overrides
+            ),
+            "worker_variance_preference_override_rate": (
+                worker_variance_overrides / worker_count
+                if worker_count
+                else 0.0
+            ),
+            "worker_direct_preference_flow_logit_max_abs": (
+                worker_direct_flow_max_abs
+            ),
+            "worker_direct_preference_cost_logit_max_abs": (
+                worker_direct_cost_max_abs
+            ),
+            "worker_direct_preference_variance_logit_max_abs": (
+                worker_direct_variance_max_abs
+            ),
+            "unsafe_worker_preference_selection_count": (
+                unsafe_worker_preference_selection_count
+            ),
+            "production_gate_state_count": gate_state_count,
+            "production_gate_commit_selected_count": (
+                gate_commit_selected_count
+            ),
+            "production_gate_defer_selected_count": gate_defer_selected_count,
+            "mean_production_gate_commit_probability": (
+                gate_commit_probability_sum / gate_state_count
+                if gate_state_count
+                else 0.0
+            ),
+            "mean_production_gate_defer_probability": (
+                gate_defer_probability_sum / gate_state_count
+                if gate_state_count
+                else 0.0
+            ),
+            "mean_production_gate_logit_margin": (
+                gate_logit_margin_sum / gate_state_count
+                if gate_state_count
+                else 0.0
+            ),
+        }
+    )
     return result
 
 
@@ -371,6 +544,7 @@ def aggregate_evaluation_rows(
         PREFERENCE_EVALUATION_SCHEMA_VERSION,
         HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
         SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION,
+        NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {schema_version!r}")
     normalized_metric = evaluation_quality_metric(

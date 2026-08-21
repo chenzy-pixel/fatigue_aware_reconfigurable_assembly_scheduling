@@ -14,6 +14,7 @@ from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.network import (
     ActorCriticNetwork,
     HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+    STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
     assert_network_config_matches_spec,
     infer_checkpoint_network_spec,
 )
@@ -93,6 +94,65 @@ def summarize_policy_decision_diagnostics(
     worker_terminal_count = sum(
         bool(row.get("terminal_legal", False)) for row in worker
     )
+    production_conditional_overrides = sum(
+        bool(
+            row.get(
+                "production_conditional_preference_overrode_relative_top",
+                False,
+            )
+        )
+        for row in production
+        if int(row.get("legal_pair_count", 0))
+    )
+    worker_variance_overrides = sum(
+        bool(
+            row.get(
+                "worker_variance_preference_overrode_relative_top", False
+            )
+        )
+        for row in worker
+        if int(row.get("legal_pair_count", 0))
+    )
+    gate_rows = [
+        row
+        for row in production
+        if int(row.get("production_gate_state_count", 0))
+    ]
+    gate_commit_selected = sum(
+        int(row.get("selected_action", -1))
+        < int(row.get("action_count", 0) or 0) - 1
+        for row in gate_rows
+    )
+    gate_defer_selected = sum(
+        int(row.get("selected_action", -1))
+        == int(row.get("action_count", 0) or 0) - 1
+        for row in gate_rows
+    )
+    worker_direct_flow_max_abs = max(
+        (
+            float(row.get("worker_direct_preference_flow_logit_max_abs", 0.0))
+            for row in worker
+        ),
+        default=0.0,
+    )
+    worker_direct_cost_max_abs = max(
+        (
+            float(row.get("worker_direct_preference_cost_logit_max_abs", 0.0))
+            for row in worker
+        ),
+        default=0.0,
+    )
+    worker_direct_variance_max_abs = max(
+        (
+            float(
+                row.get(
+                    "worker_direct_preference_variance_logit_max_abs", 0.0
+                )
+            )
+            for row in worker
+        ),
+        default=0.0,
+    )
     return {
         "ranker_top_decision_count": len(ranked),
         "ranker_top_selected_count": ranker_top_count,
@@ -148,6 +208,64 @@ def summarize_policy_decision_diagnostics(
         ),
         "mean_commit_set_logit": (
             sum(commit_logits) / len(commit_logits) if commit_logits else 0.0
+        ),
+        "production_conditional_preference_override_count": (
+            production_conditional_overrides
+        ),
+        "production_conditional_preference_override_rate": (
+            production_conditional_overrides
+            / int(production_preference["decision_count"])
+            if production_preference["decision_count"]
+            else 0.0
+        ),
+        "worker_variance_preference_override_count": worker_variance_overrides,
+        "worker_variance_preference_override_rate": (
+            worker_variance_overrides / int(worker_preference["decision_count"])
+            if worker_preference["decision_count"]
+            else 0.0
+        ),
+        "worker_direct_preference_flow_logit_max_abs": (
+            worker_direct_flow_max_abs
+        ),
+        "worker_direct_preference_cost_logit_max_abs": (
+            worker_direct_cost_max_abs
+        ),
+        "worker_direct_preference_variance_logit_max_abs": (
+            worker_direct_variance_max_abs
+        ),
+        "unsafe_worker_preference_selection_count": sum(
+            bool(row.get("unsafe_worker_preference_selected", False))
+            for row in worker
+        ),
+        "production_gate_state_count": len(gate_rows),
+        "production_gate_commit_selected_count": gate_commit_selected,
+        "production_gate_defer_selected_count": gate_defer_selected,
+        "mean_production_gate_commit_probability": (
+            sum(
+                float(row.get("production_gate_commit_probability", 0.0))
+                for row in gate_rows
+            )
+            / len(gate_rows)
+            if gate_rows
+            else 0.0
+        ),
+        "mean_production_gate_defer_probability": (
+            sum(
+                float(row.get("production_gate_defer_probability", 0.0))
+                for row in gate_rows
+            )
+            / len(gate_rows)
+            if gate_rows
+            else 0.0
+        ),
+        "mean_production_gate_logit_margin": (
+            sum(
+                float(row.get("production_gate_logit_margin", 0.0))
+                for row in gate_rows
+            )
+            / len(gate_rows)
+            if gate_rows
+            else 0.0
         ),
     }
 
@@ -250,7 +368,10 @@ class PPOAgent:
             "production_action_semantics",
             None,
         )
-        if semantics != HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS:
+        if semantics not in {
+            HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+            STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+        }:
             return torch.argmax(logits, dim=-1)
         actions: list[int] = []
         for index, (observation, action_mask) in enumerate(

@@ -57,6 +57,7 @@ from result import (
     result_schema_version,
 )
 from result.io import write_config, write_csv, write_json
+from result.metrics import PREFERENCE_POLICY_DIAGNOSTIC_FIELDS
 from result.visdom_dashboard import (
     create_training_dashboard,
     override_visdom_enabled,
@@ -67,14 +68,22 @@ from utils import set_seed
 
 
 PARETO_PROMOTION_MODES = frozenset(
-    {"pareto_guarded_e2_v1", "pareto_guarded_e2_3_v1"}
+    {
+        "pareto_guarded_e2_v1",
+        "pareto_guarded_e2_3_v1",
+        "pareto_guarded_e2_4_v1",
+    }
 )
 
 
 def _checkpoint_eligible_validation_event(event: str, promotion: str) -> bool:
     return bool(
         event in {"promoted", "accepted"}
-        or (event == "transition" and promotion != "pareto_guarded_e2_3_v1")
+        or (
+            event == "transition"
+            and promotion
+            not in {"pareto_guarded_e2_3_v1", "pareto_guarded_e2_4_v1"}
+        )
     )
 
 
@@ -104,6 +113,9 @@ def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
         ),
         "algorithm_seed": int(config["seed"]),
         "result_schema_version": result_schema_version(config),
+        "worker_resource_control": dict(
+            config["environment"].get("worker_resource_control", {})
+        ),
         "provenance": provenance,
     }
 
@@ -149,6 +161,24 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         "minimum_mean_nondominated_count": float(
             raw.get("minimum_mean_nondominated_count", 0.0)
         ),
+        "maximum_preference_response_spearman_flow": float(
+            raw.get("maximum_preference_response_spearman_flow", 0.0)
+        ),
+        "maximum_preference_response_spearman_cost": float(
+            raw.get("maximum_preference_response_spearman_cost", 0.0)
+        ),
+        "maximum_preference_response_spearman_variance": float(
+            raw.get("maximum_preference_response_spearman_variance", 0.0)
+        ),
+        "safety_guard_consecutive_failures": int(
+            raw.get("safety_guard_consecutive_failures", 1)
+        ),
+        "safety_guard_learning_rate_decay_factor": float(
+            raw.get("safety_guard_learning_rate_decay_factor", 0.5)
+        ),
+        "safety_guard_minimum_learning_rate": float(
+            raw.get("safety_guard_minimum_learning_rate", 1e-5)
+        ),
     }
     for name in (
         "anchor_validate_every_updates",
@@ -177,6 +207,33 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
             raise ValueError(
                 f"pareto_promotion.{name} must be finite and non-negative"
             )
+    for name in (
+        "maximum_preference_response_spearman_flow",
+        "maximum_preference_response_spearman_cost",
+        "maximum_preference_response_spearman_variance",
+    ):
+        value = float(settings[name])
+        if not math.isfinite(value) or value < -1.0 or value > 1.0:
+            raise ValueError(
+                f"pareto_promotion.{name} must be finite and in [-1, 1]"
+            )
+    if int(settings["safety_guard_consecutive_failures"]) < 1:
+        raise ValueError(
+            "pareto_promotion.safety_guard_consecutive_failures must be positive"
+        )
+    for name in (
+        "safety_guard_learning_rate_decay_factor",
+        "safety_guard_minimum_learning_rate",
+    ):
+        value = float(settings[name])
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"pareto_promotion.{name} must be finite and positive"
+            )
+    if float(settings["safety_guard_learning_rate_decay_factor"]) > 1.0:
+        raise ValueError(
+            "pareto_promotion.safety_guard_learning_rate_decay_factor must be <= 1"
+        )
     return settings
 
 
@@ -347,6 +404,14 @@ def _pareto_snapshot(
     )
     pareto_settings = _pareto_promotion_settings(config)
     full_grid = scope == "full_grid_22"
+    e2_4_mode = (
+        str(
+            config["training"]["two_stage"].get(
+                "quality_checkpoint_promotion", ""
+            )
+        )
+        == "pareto_guarded_e2_4_v1"
+    )
     required_instances = int(
         pareto_settings["required_full_grid_instance_count"]
     )
@@ -356,20 +421,35 @@ def _pareto_snapshot(
     required_candidates = int(
         pareto_settings["required_full_grid_candidate_count"]
     )
+    exact_expected_coverage = bool(
+        len(rows) == len(expected_pairs)
+        and observed_instance_ids == expected_instances
+        and observed_preference_keys == expected_preferences
+        and missing_candidate_count == 0
+        and unexpected_candidate_count == 0
+        and duplicate_candidate_count == 0
+    )
     coverage_pass = bool(
-        not full_grid
+        not (full_grid or e2_4_mode)
         or (
-            (not required_instances or len(expected_instances) == required_instances)
+            exact_expected_coverage
             and (
-                not required_preferences
-                or len(expected_preferences) == required_preferences
+                not full_grid
+                or (
+                    (
+                        not required_instances
+                        or len(expected_instances) == required_instances
+                    )
+                    and (
+                        not required_preferences
+                        or len(expected_preferences) == required_preferences
+                    )
+                    and (
+                        not required_candidates
+                        or len(rows) == required_candidates
+                    )
+                )
             )
-            and (not required_candidates or len(rows) == required_candidates)
-            and observed_instance_ids == expected_instances
-            and observed_preference_keys == expected_preferences
-            and missing_candidate_count == 0
-            and unexpected_candidate_count == 0
-            and duplicate_candidate_count == 0
         )
     )
     mean_unique_action_trace_count = (
@@ -404,15 +484,69 @@ def _pareto_snapshot(
     )
     preference_diagnostics = aggregate_preference_diagnostics(rows)
     worker_direct_preference_pass = bool(
-        int(preference_diagnostics["worker_preference_override_count"]) == 0
-        and abs(
-            float(
+        (
+            abs(
+                float(
+                    preference_diagnostics[
+                        "worker_direct_preference_flow_logit_max_abs"
+                    ]
+                )
+            )
+            <= 1e-12
+            and abs(
+                float(
+                    preference_diagnostics[
+                        "worker_direct_preference_cost_logit_max_abs"
+                    ]
+                )
+            )
+            <= 1e-12
+            and int(
                 preference_diagnostics[
-                    "worker_mean_preference_logit_std"
+                    "unsafe_worker_preference_selection_count"
                 ]
             )
+            == 0
         )
-        <= 1e-12
+        if e2_4_mode
+        else (
+            int(preference_diagnostics["worker_preference_override_count"])
+            == 0
+            and abs(
+                float(
+                    preference_diagnostics[
+                        "worker_mean_preference_logit_std"
+                    ]
+                )
+            )
+            <= 1e-12
+        )
+    )
+    preference_response_pass = bool(
+        not e2_4_mode
+        or (
+            float(np.mean(response_values["flow"]))
+            <= float(
+                pareto_settings[
+                    "maximum_preference_response_spearman_flow"
+                ]
+            )
+            + 1e-12
+            and float(np.mean(response_values["cost"]))
+            <= float(
+                pareto_settings[
+                    "maximum_preference_response_spearman_cost"
+                ]
+            )
+            + 1e-12
+            and float(np.mean(response_values["variance"]))
+            <= float(
+                pareto_settings[
+                    "maximum_preference_response_spearman_variance"
+                ]
+            )
+            + 1e-12
+        )
     )
     return {
         "scope": scope,
@@ -432,6 +566,7 @@ def _pareto_snapshot(
         "unique_objective_pass": unique_objective_pass,
         "nondominated_pass": nondominated_pass,
         "worker_direct_preference_pass": worker_direct_preference_pass,
+        "preference_response_pass": preference_response_pass,
         **preference_diagnostics,
         **aggregate_matching_recovery_diagnostics(rows),
         "all_safe": _rows_are_safe(rows, fatigue_tolerance),
@@ -611,13 +746,14 @@ class TrainingPhaseController:
             "balanced_guarded_v7",
             "pareto_guarded_e2_v1",
             "pareto_guarded_e2_3_v1",
+            "pareto_guarded_e2_4_v1",
         }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
                 "'completion_only', 'score_improving', or "
                 "'constrained_weighted', 'aligned_quality', "
                 "'balanced_guarded_v7', 'pareto_guarded_e2_v1', or "
-                "'pareto_guarded_e2_3_v1'"
+                "'pareto_guarded_e2_3_v1', or 'pareto_guarded_e2_4_v1'"
             )
         constraints: dict[str, float] = {}
         if promotion in {"constrained_weighted", "balanced_guarded_v7"}:
@@ -662,6 +798,21 @@ class TrainingPhaseController:
                 name: float(value)
                 for name, value in _pareto_promotion_settings(config).items()
             }
+        if promotion == "pareto_guarded_e2_4_v1":
+            worker_control = config["environment"].get(
+                "worker_resource_control", {}
+            )
+            if (
+                not isinstance(worker_control, dict)
+                or worker_control.get("mode")
+                != "matching_admission_recovery_v2"
+                or not bool(worker_control.get("require_full_matching"))
+                or not bool(worker_control.get("preserve_matching_on_worker_action"))
+            ):
+                raise ValueError(
+                    "E2.4 requires matching_admission_recovery_v2 with "
+                    "full matching preservation"
+                )
         if not bool(settings["quality_validate_every_update"]):
             raise ValueError(
                 "hierarchical constrained training requires validation "
@@ -845,7 +996,14 @@ class TrainingPhaseController:
         e2_3_mode = (
             self.quality_checkpoint_promotion == "pareto_guarded_e2_3_v1"
         )
-        if e2_3_mode:
+        e2_4_mode = (
+            self.quality_checkpoint_promotion == "pareto_guarded_e2_4_v1"
+        )
+        strict_pareto_mode = e2_3_mode or e2_4_mode
+        preference_response_pass = bool(
+            snapshot.get("preference_response_pass", True)
+        )
+        if strict_pareto_mode:
             coverage_pass = bool(
                 coverage_pass and snapshot.get("scope") == "full_grid_22"
             )
@@ -878,9 +1036,10 @@ class TrainingPhaseController:
         )
         promoted = bool(
             safety_pass
-            and (coverage_pass if e2_3_mode else True)
-            and (controllability_pass if e2_3_mode else True)
-            and (worker_direct_preference_pass if e2_3_mode else True)
+            and (coverage_pass if strict_pareto_mode else True)
+            and (controllability_pass if strict_pareto_mode else True)
+            and (worker_direct_preference_pass if strict_pareto_mode else True)
+            and (preference_response_pass if e2_4_mode else True)
             and hv_pass
             and canonical_pass
         )
@@ -894,20 +1053,23 @@ class TrainingPhaseController:
         else:
             hard_rejection = bool(
                 not safety_pass
-                or (e2_3_mode and not coverage_pass)
-                or (e2_3_mode and not controllability_pass)
-                or (e2_3_mode and not worker_direct_preference_pass)
+                or (strict_pareto_mode and not coverage_pass)
+                or (strict_pareto_mode and not controllability_pass)
+                or (strict_pareto_mode and not worker_direct_preference_pass)
+                or (e2_4_mode and not preference_response_pass)
             )
             event = "rejected" if hard_rejection else "not_promoted"
             reason = (
                 "safety_failed"
                 if not safety_pass
                 else "coverage_failed"
-                if e2_3_mode and not coverage_pass
+                if strict_pareto_mode and not coverage_pass
                 else "controllability_failed"
-                if e2_3_mode and not controllability_pass
+                if strict_pareto_mode and not controllability_pass
                 else "worker_direct_preference_not_zero"
-                if e2_3_mode and not worker_direct_preference_pass
+                if strict_pareto_mode and not worker_direct_preference_pass
+                else "preference_response_direction_failed"
+                if e2_4_mode and not preference_response_pass
                 else "hypervolume_not_improved"
                 if not hv_pass
                 else "canonical_quality_guard_failed"
@@ -926,6 +1088,7 @@ class TrainingPhaseController:
             "promotion_worker_direct_preference_pass": (
                 worker_direct_preference_pass
             ),
+            "promotion_preference_response_pass": preference_response_pass,
             "promotion_unique_action_trace_pass": bool(
                 snapshot.get("unique_action_trace_pass", True)
             ),
@@ -1346,6 +1509,7 @@ class TrainingPhaseController:
             "balanced_guarded_v7",
             "pareto_guarded_e2_v1",
             "pareto_guarded_e2_3_v1",
+            "pareto_guarded_e2_4_v1",
         }:
             result.update(
                 {
@@ -1372,6 +1536,91 @@ class TrainingPhaseController:
                 }
             )
         return result
+
+
+@dataclass
+class ParetoSafetyGuard:
+    """Track E2.4 multi-preference safety failures independently of canonical validation."""
+
+    consecutive_failures_required: int
+    learning_rate_decay_factor: float
+    minimum_learning_rate: float
+    consecutive_failures: int = 0
+    warning_count: int = 0
+    rollback_count: int = 0
+    last_event: str = "not_started"
+    last_scope: str | None = None
+    last_failure_reason: str | None = None
+    last_rollback_source: str | None = None
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ParetoSafetyGuard | None":
+        promotion = str(
+            config["training"]["two_stage"].get(
+                "quality_checkpoint_promotion", ""
+            )
+        )
+        if promotion != "pareto_guarded_e2_4_v1":
+            return None
+        settings = _pareto_promotion_settings(config)
+        return cls(
+            consecutive_failures_required=int(
+                settings["safety_guard_consecutive_failures"]
+            ),
+            learning_rate_decay_factor=float(
+                settings["safety_guard_learning_rate_decay_factor"]
+            ),
+            minimum_learning_rate=float(
+                settings["safety_guard_minimum_learning_rate"]
+            ),
+        )
+
+    def observe(self, snapshot: dict[str, object]) -> str:
+        scope = str(snapshot.get("scope", ""))
+        safety_pass = bool(
+            snapshot.get("coverage_pass", False)
+            and snapshot.get("all_safe", False)
+        )
+        self.last_scope = scope
+        self.last_failure_reason = None
+        if safety_pass:
+            self.consecutive_failures = 0
+            self.last_event = "safe"
+            return self.last_event
+        self.consecutive_failures += 1
+        if not bool(snapshot.get("coverage_pass", False)):
+            self.last_failure_reason = "coverage_failed"
+        elif not bool(snapshot.get("all_safe", False)):
+            self.last_failure_reason = "safety_failed"
+        else:
+            self.last_failure_reason = "unknown_safety_guard_failure"
+        if self.consecutive_failures >= self.consecutive_failures_required:
+            self.rollback_count += 1
+            self.last_event = "rollback"
+            return self.last_event
+        self.warning_count += 1
+        self.last_event = "warning"
+        return self.last_event
+
+    def record_rollback(self, source: str) -> None:
+        self.last_rollback_source = str(source)
+        self.consecutive_failures = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "consecutive_failures_required": (
+                self.consecutive_failures_required
+            ),
+            "learning_rate_decay_factor": self.learning_rate_decay_factor,
+            "minimum_learning_rate": self.minimum_learning_rate,
+            "consecutive_failures": self.consecutive_failures,
+            "warning_count": self.warning_count,
+            "rollback_count": self.rollback_count,
+            "last_event": self.last_event,
+            "last_scope": self.last_scope,
+            "last_failure_reason": self.last_failure_reason,
+            "last_rollback_source": self.last_rollback_source,
+        }
 
 
 @dataclass
@@ -1962,6 +2211,10 @@ def _validation_log_row(
         "maximum_projected_installation_deficit": validation.get(
             "maximum_projected_installation_deficit", 0
         ),
+        **{
+            name: validation.get(name, 0)
+            for name in PREFERENCE_POLICY_DIAGNOSTIC_FIELDS
+        },
         "mean_makespan": completed_summary["makespan"]["mean"],
         "std_makespan": completed_summary["makespan"]["std"],
         "mean_total_flow_time": completed_summary[
@@ -3051,6 +3304,10 @@ def train(
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
     safe_checkpoint = run_directory / "safe_checkpoint.pt"
+    anchor_safe_checkpoint = run_directory / "anchor_safe_checkpoint.pt"
+    full_grid_safe_checkpoint = (
+        run_directory / "full_grid_safe_checkpoint.pt"
+    )
     last_checkpoint = run_directory / "last_checkpoint.pt"
     best_validation: dict | None = None
     best_feasibility_validation: dict | None = None
@@ -3842,6 +4099,10 @@ def _train_parallel(
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
     safe_checkpoint = run_directory / "safe_checkpoint.pt"
+    anchor_safe_checkpoint = run_directory / "anchor_safe_checkpoint.pt"
+    full_grid_safe_checkpoint = (
+        run_directory / "full_grid_safe_checkpoint.pt"
+    )
     last_checkpoint = run_directory / "last_checkpoint.pt"
     best_validation: dict | None = None
     best_feasibility_validation: dict | None = None
@@ -3871,6 +4132,7 @@ def _train_parallel(
     pareto_settings = (
         _pareto_promotion_settings(config) if pareto_mode else None
     )
+    pareto_safety_guard = ParetoSafetyGuard.from_config(config)
     with ParallelEpisodeRunner(
         config=config,
         template=template,
@@ -4150,9 +4412,11 @@ def _train_parallel(
                     normalized_quality_score=normalized_quality_score,
                 )
                 transitioned_now = validation_event == "transition"
+                pareto_guard_rollback_requested = False
                 if pareto_mode:
                     if pareto_settings is None:
                         raise RuntimeError("Pareto promotion settings are missing")
+                    guard_snapshot: dict[str, object] | None = None
                     anchor_due = bool(
                         phase_controller.phase == "quality"
                         and (
@@ -4195,7 +4459,10 @@ def _train_parallel(
                         )
                         if (
                             phase_controller.quality_checkpoint_promotion
-                            == "pareto_guarded_e2_3_v1"
+                            in {
+                                "pareto_guarded_e2_3_v1",
+                                "pareto_guarded_e2_4_v1",
+                            }
                         ):
                             anchor_event = "audit_only"
                             anchor_diagnostics: dict[str, object] = {}
@@ -4239,6 +4506,8 @@ def _train_parallel(
                                 ),
                             }
                         )
+                        if pareto_safety_guard is not None:
+                            guard_snapshot = anchor_snapshot
                     full_grid_due = bool(
                         completed_episodes == episodes
                         or (
@@ -4275,7 +4544,10 @@ def _train_parallel(
                         )
                         if (
                             phase_controller.quality_checkpoint_promotion
-                            == "pareto_guarded_e2_3_v1"
+                            in {
+                                "pareto_guarded_e2_3_v1",
+                                "pareto_guarded_e2_4_v1",
+                            }
                             and phase_controller.phase == "quality"
                         ):
                             validation_event = (
@@ -4335,6 +4607,71 @@ def _train_parallel(
                                 ),
                             }
                         )
+                        if pareto_safety_guard is not None:
+                            # A full-grid audit supersedes the anchor outcome
+                            # at the same update and therefore counts once.
+                            guard_snapshot = full_snapshot
+                    if (
+                        pareto_safety_guard is not None
+                        and guard_snapshot is not None
+                    ):
+                        guard_event = pareto_safety_guard.observe(guard_snapshot)
+                        guard_scope = str(guard_snapshot["scope"])
+                        guard_safe = bool(
+                            guard_snapshot["coverage_pass"]
+                            and guard_snapshot["all_safe"]
+                        )
+                        if guard_safe:
+                            safe_target = (
+                                full_grid_safe_checkpoint
+                                if guard_scope == "full_grid_22"
+                                else anchor_safe_checkpoint
+                            )
+                            agent.save(
+                                safe_target,
+                                metadata={
+                                    **_checkpoint_protocol_metadata(config),
+                                    "checkpoint_role": (
+                                        "full_grid_safe"
+                                        if guard_scope == "full_grid_22"
+                                        else "anchor_safe"
+                                    ),
+                                    "safe_episode": completed_episodes,
+                                    "pareto_snapshot": guard_snapshot,
+                                },
+                            )
+                        guard_snapshot.update(
+                            {
+                                "safety_guard_event": guard_event,
+                                "safety_guard_consecutive_failures": (
+                                    pareto_safety_guard.consecutive_failures
+                                ),
+                                "safety_guard_warning_count": (
+                                    pareto_safety_guard.warning_count
+                                ),
+                                "safety_guard_rollback_count": (
+                                    pareto_safety_guard.rollback_count
+                                ),
+                            }
+                        )
+                        validation_row.update(
+                            {
+                                "pareto_safety_guard_event": guard_event,
+                                "pareto_safety_guard_scope": guard_scope,
+                                "pareto_safety_guard_consecutive_failures": (
+                                    pareto_safety_guard.consecutive_failures
+                                ),
+                                "pareto_safety_guard_warning_count": (
+                                    pareto_safety_guard.warning_count
+                                ),
+                                "pareto_safety_guard_rollback_count": (
+                                    pareto_safety_guard.rollback_count
+                                ),
+                            }
+                        )
+                        pareto_guard_rollback_requested = (
+                            guard_event == "rollback"
+                        )
                 if (
                     phase_controller.quality_checkpoint_promotion
                     == "balanced_guarded_v7"
@@ -4380,6 +4717,10 @@ def _train_parallel(
                 validation_row.update(stability)
                 validation_row["feasibility_rollback_applied"] = bool(
                     stability["rollback"]
+                    and not (
+                        pareto_safety_guard is not None
+                        and reward_phase == "quality"
+                    )
                 )
                 validation_rows.append(validation_row)
                 canonical_safe = (
@@ -4490,7 +4831,68 @@ def _train_parallel(
                     update_row["candidate_status"] = "not_promoted"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "not_promoted"
-                if bool(stability["rollback"]):
+                if (
+                    pareto_guard_rollback_requested
+                    and pareto_safety_guard is not None
+                ):
+                    rollback_source: tuple[str, Path] | None = next(
+                        (
+                            (name, path)
+                            for name, path in (
+                                (
+                                    "full_grid_safe",
+                                    full_grid_safe_checkpoint,
+                                ),
+                                ("anchor_safe", anchor_safe_checkpoint),
+                                ("phase1", phase1_checkpoint),
+                            )
+                            if path.exists()
+                        ),
+                        None,
+                    )
+                    if rollback_source is None:
+                        raise RuntimeError(
+                            "Pareto safety rollback requested before a "
+                            "phase1 checkpoint was established"
+                        )
+                    failure_learning_rate = agent.learning_rate
+                    agent.load(rollback_source[1], load_optimizer=True)
+                    restored_learning_rate = agent.learning_rate
+                    guarded_learning_rate = max(
+                        pareto_safety_guard.minimum_learning_rate,
+                        pareto_safety_guard.learning_rate_decay_factor
+                        * min(failure_learning_rate, restored_learning_rate),
+                    )
+                    agent.set_learning_rate(guarded_learning_rate)
+                    stability_controller.current_learning_rate = (
+                        guarded_learning_rate
+                    )
+                    stability_controller.reset_plateau()
+                    pareto_safety_guard.record_rollback(rollback_source[0])
+                    validation_row.update(
+                        {
+                            "pareto_safety_guard_rollback_applied": True,
+                            "pareto_safety_guard_rollback_source": (
+                                rollback_source[0]
+                            ),
+                            "pareto_safety_guard_rollback_learning_rate": (
+                                guarded_learning_rate
+                            ),
+                            "pareto_safety_guard_consecutive_failures": (
+                                pareto_safety_guard.consecutive_failures
+                            ),
+                        }
+                    )
+                    update_row["candidate_status"] = "pareto_guard_rolled_back"
+                    for row in rows[-len(rollout.episodes) :]:
+                        row["candidate_status"] = "pareto_guard_rolled_back"
+                if (
+                    bool(stability["rollback"])
+                    and not (
+                        pareto_safety_guard is not None
+                        and reward_phase == "quality"
+                    )
+                ):
                     if not safe_checkpoint.exists():
                         raise RuntimeError(
                             "catastrophic rollback requested before a safe "
@@ -4792,6 +5194,11 @@ def _train_parallel(
             "online_instances": True,
             "parallel_envs": parallel_envs,
             "validation_parallel_envs": validation_parallel_envs,
+            "pareto_safety_guard": (
+                pareto_safety_guard.as_dict()
+                if pareto_safety_guard is not None
+                else None
+            ),
             "pareto_validation_events": len(pareto_validation_rows),
             "latest_pareto_validation": (
                 pareto_validation_rows[-1]
@@ -4847,6 +5254,16 @@ def _train_parallel(
             "last_checkpoint": str(last_checkpoint),
             "safe_checkpoint": (
                 str(safe_checkpoint) if safe_checkpoint.exists() else None
+            ),
+            "anchor_safe_checkpoint": (
+                str(anchor_safe_checkpoint)
+                if anchor_safe_checkpoint.exists()
+                else None
+            ),
+            "full_grid_safe_checkpoint": (
+                str(full_grid_safe_checkpoint)
+                if full_grid_safe_checkpoint.exists()
+                else None
             ),
             "last_candidate_checkpoint": (
                 str(last_candidate_checkpoint)

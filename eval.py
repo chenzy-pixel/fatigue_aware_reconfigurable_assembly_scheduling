@@ -44,6 +44,10 @@ from result import (
     result_schema_version,
 )
 from result.io import write_config, write_csv, write_json
+from result.metrics import (
+    MATCHING_RECOVERY_DIAGNOSTIC_FIELDS,
+    PREFERENCE_POLICY_DIAGNOSTIC_FIELDS,
+)
 from utils import (
     action_trace_sha256,
     capture_global_rng_state,
@@ -154,9 +158,10 @@ class EvaluationPolicy:
         environment: AssemblySchedulingEnv,
     ) -> int:
         if self.ppo_agent is not None:
+            action_mask = environment.get_action_mask()
             action, _, _ = self.ppo_agent.act(
                 observation,
-                environment.get_action_mask(),
+                action_mask,
                 deterministic=self.decode_mode == "greedy",
                 generator=self.generator,
             )
@@ -167,6 +172,11 @@ class EvaluationPolicy:
                 diagnostic["ranker_top_selected"] = bool(
                     int(action)
                     == int(diagnostic.get("relative_top_action", -1))
+                )
+                diagnostic["unsafe_worker_preference_selected"] = bool(
+                    str(diagnostic.get("decision_type", "")) == "WORKER"
+                    and int(action) < len(action_mask)
+                    and bool(action_mask[int(action)])
                 )
                 self._episode_policy_diagnostics.append(diagnostic)
             self._episode_actions.append(int(action))
@@ -431,6 +441,10 @@ def _evaluation_row(
         "w_variance": preference.variance,
         **{
             name: metrics.get(name, 0)
+            for name in MATCHING_RECOVERY_DIAGNOSTIC_FIELDS
+        },
+        **{
+            name: metrics.get(name, 0)
             for name in (
                 "forced_action_state_count",
                 "forced_production_count",
@@ -598,6 +612,10 @@ def _evaluation_row(
                 "qualification_scarcity_regret",
                 "qualification_scarcity_decision_count",
             )
+        },
+        **{
+            name: metrics.get(name, 0)
+            for name in PREFERENCE_POLICY_DIAGNOSTIC_FIELDS
         },
         "conditional_worker_wait_reason_counts": json.dumps(
             metrics.get("conditional_worker_wait_reason_counts", {}),

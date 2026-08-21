@@ -583,3 +583,42 @@ sampled-minus-greedy、平均未完成订单数和 feasibility proxy return。
 `summary.json` 记录最佳可行验证及来源 episode、可行性回滚/cooldown、学习率
 衰减、sampled 验证、后 500 episode 诊断均值、消融 gate、正式训练状态、
 checkpoint 哈希和最终从磁盘复评结果。
+
+## E2.4：偏好中立生产门控与安全方差偏好
+
+E2.4 是独立于 E2、E2.1、E2.2 和 E2.3 的 Pareto 实验。E2.3 已修复 worker
+bottleneck 的不可恢复 matching deficit；E2.4 进一步处理低 flow 偏好在扁平
+`pair_plus_defer_v1` 分布中诱发的 production defer 链。E2.2 虽使用分层
+commit/pair，但其 defer head 仍读取 preference embedding，因此不是偏好中立
+门控。
+
+E2.4 的 `hierarchical_state_only_gate_then_pair_v3` 先用 action-set 状态特征
+输出 `P(commit)` 与 `P(defer)`；该 gate 不读取 preference、pair logits 或
+直接偏好项。仅在 commit 后，条件 pair softmax 接收 production 偏好。PPO
+继续使用相同的扁平动作 ID 和联合 log-prob。worker 保留 E2.3 的
+`matching_admission_recovery_v2` 安全 mask，只在安全候选内加入直接的负载方差
+偏好；worker 的直接 flow/cost 项恒为零。
+
+Quality 阶段保存不同角色的 checkpoint：canonical 过渡点为
+`phase1_checkpoint.pt`，五锚点 100/100 安全点为
+`anchor_safe_checkpoint.pt`，完整网格 440/440 安全点为
+`full_grid_safe_checkpoint.pt`。连续两次多偏好安全审计失败时，按完整网格、
+锚点、phase1 的顺序恢复网络和 optimizer，并把学习率减半（下限 `1e-5`）；
+canonical-only `safe_checkpoint.pt` 不用于 E2.4 quality 回滚。
+
+`accepted_checkpoint.pt` 仍只能由完整 22 点网格产生：精确 440/440、0 截断、
+0 调度违规、疲劳安全、8/8/4 可控性门槛，以及 flow/cost/variance 三项平均
+Spearman 都不高于 `-0.05`。在 accepted 产生前，不做正式 test Pareto 分析。
+
+远端运行 seed11：
+
+```powershell
+python train.py `
+  --config configs\v7\e2_4_neutral_gate_safe_variance.json `
+  --algorithm-seed 11 `
+  --run-name v7_2000_e2_4_neutral_gate_seed11
+```
+
+E2.4 使用 result schema `4.5.0`。逐实例、validation、Pareto 和 summary 同时
+持久化 matching recovery、production/worker preference、state-only gate 和
+safety guard 字段；provenance 的 schema 版本来自生效配置，不再硬编码为 `4.1.0`。

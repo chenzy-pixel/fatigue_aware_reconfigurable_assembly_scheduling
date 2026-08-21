@@ -1395,13 +1395,19 @@ class ParallelEpisodeRunner:
                         raise RuntimeError(
                             "batched policy diagnostics do not match lanes"
                         )
-                    for lane, action, diagnostic in zip(
-                        lanes, actions, diagnostic_rows
+                    for lane, action, diagnostic, mask in zip(
+                        lanes, actions, diagnostic_rows, masks
                     ):
                         diagnostic["selected_action"] = int(action)
                         diagnostic["ranker_top_selected"] = bool(
                             int(action)
                             == int(diagnostic.get("relative_top_action", -1))
+                        )
+                        diagnostic["unsafe_worker_preference_selected"] = bool(
+                            str(diagnostic.get("decision_type", ""))
+                            == "WORKER"
+                            and int(action) < len(mask)
+                            and bool(mask[int(action)])
                         )
                         policy_diagnostics[lane].append(diagnostic)
                 else:
@@ -1430,6 +1436,14 @@ class ParallelEpisodeRunner:
                                 == int(
                                     diagnostic.get("relative_top_action", -1)
                                 )
+                            )
+                            diagnostic[
+                                "unsafe_worker_preference_selected"
+                            ] = bool(
+                                str(diagnostic.get("decision_type", ""))
+                                == "WORKER"
+                                and int(action) < len(mask)
+                                and bool(mask[int(action)])
                             )
                             policy_diagnostics[lane].append(diagnostic)
                 for lane, action in zip(lanes, actions):
