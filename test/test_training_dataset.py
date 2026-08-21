@@ -338,6 +338,16 @@ def test_non_smoke_fixed_instance_training_is_rejected(
 
 
 def test_parallel_training_configuration_contract(config):
+    assert config["training"]["episodes"] == 2000
+    assert config["training"]["parallel_envs"] == 20
+    assert config["training"]["validation_parallel_envs"] == 20
+    assert config["training"]["validation_interval_episodes"] == 20
+    assert (
+        config["training"]["episodes"]
+        // config["training"]["parallel_envs"]
+        == 100
+    )
+
     invalid = deepcopy(config)
     invalid["training"]["validation_interval_episodes"] = 10
     with pytest.raises(ValueError, match="must be divisible"):

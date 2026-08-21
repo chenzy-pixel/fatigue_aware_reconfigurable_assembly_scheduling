@@ -465,6 +465,8 @@ def test_ablation_variants_are_fixed_600_episode_seed11_runs(
     ]
     assert effective["seed"] == 11
     assert effective["training"]["episodes"] == 600
+    assert effective["training"]["parallel_envs"] == 10
+    assert effective["training"]["validation_parallel_envs"] == 10
     assert effective["training"]["validation_interval_episodes"] == 10
     assert effective["reward"]["feasibility_shaping"]["enabled"] is shaping
     assert rollback["consecutive_validations"] == consecutive
