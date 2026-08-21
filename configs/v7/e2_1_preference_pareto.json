@@ -4,7 +4,7 @@
   "experiment_suite_version": "v7_e2_1_pareto_protocol_v1",
   "training": {
     "episodes": 2000,
-    "parallel_envs": 10,
+    "parallel_envs": 20,
     "smoke_episodes": 10,
     "smoke_parallel_envs": 10,
     "preference_grouping": {

@@ -352,11 +352,12 @@ Spearman、单目标顶点相对 canonical 的变化、exact Wilcoxon、PDF/PNG 
 相互独立。使用 `--algorithm-seed` 选择算法种子，因此五次重复实验共享
 同一实例序列，只改变网络初始化和策略采样随机性。
 
-正式训练默认使用 10 个 Windows `spawn` worker 并行生成和推进完整 episode，
+正式训练默认使用 20 个 Windows `spawn` worker 并行生成和推进完整 episode，
 主进程将变长图按节点类型拼接、偏移关系边索引，只对最终动作 logits 做
 padding 后批量推理。策略在一批
 episode 完成前保持冻结，随后合并计算 GAE 并执行一次 PPO 更新；因此
-1000 个 episode 对应 100 次 on-policy 更新。可用 `--parallel-envs 1`
+2000 个 episode 对应 100 次 on-policy 更新（1000 个 episode 对应 50 次）。
+可用 `--parallel-envs 1`
 回退串行训练，或用 `--parallel-envs N` 覆盖并行度。正式训练要求
 `validation_interval_episodes` 能被并行度整除。
 
@@ -478,8 +479,8 @@ greedy 与三 seed sampled 验证。若训练预算内未满足阶段切换门�
 `best_checkpoint.pt` 均不生成。缺少 `reward.mode` 的历史配置仍按原三项
 归一化加权和解释。
 
-消融筛选使用同一入口，命令会固定 seed 11、600 episode 和每 10 episode
-greedy 验证；E0 不允许重训：
+消融筛选使用同一入口，命令会固定 seed 11、600 episode、10 个并行 worker
+和每 10 episode greedy 验证；E0 不允许重训：
 
 ```powershell
 .\.venv\Scripts\python.exe train.py --config configs\default.json --ablation E1 --run-name matching_e1
@@ -501,8 +502,8 @@ seed 11、600 episode 和 10-episode greedy 验证间隔。具体覆盖项由
 `train.py::_apply_ablation_variant` 集中定义，E0 始终只复用历史基线。
 
 ```powershell
-.\.venv\Scripts\python.exe train.py --config configs\default.json --parallel-envs 10 --run-name ppo_2000_parallel
-.\.venv\Scripts\python.exe benchmark_parallel.py --episodes 10 --steps 64 --workers 10
+.\.venv\Scripts\python.exe train.py --config configs\default.json --parallel-envs 20 --run-name ppo_2000_parallel
+.\.venv\Scripts\python.exe benchmark_parallel.py --episodes 20 --steps 64 --workers 20
 ```
 
 固定数据集评估：

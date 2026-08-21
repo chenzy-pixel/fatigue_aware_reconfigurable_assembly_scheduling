@@ -56,6 +56,18 @@ def test_e2_3_config_is_independent_and_production_only() -> None:
     e2_1 = load_config("configs/v7/e2_1_preference_pareto.json")
     e2_3 = load_config("configs/v7/e2_3_safe_production_preference.json")
 
+    for config in (e2_1, e2_3):
+        assert config["training"]["episodes"] == 2000
+        assert config["training"]["parallel_envs"] == 20
+        assert config["training"]["validation_parallel_envs"] == 20
+        assert config["training"]["validation_interval_episodes"] == 20
+        assert (
+            config["training"]["episodes"]
+            // config["training"]["parallel_envs"]
+            == 100
+        )
+    assert e2_3["training"]["smoke_episodes"] == 10
+    assert e2_3["training"]["smoke_parallel_envs"] == 10
     assert e2_3["experiment_name"] == "v7_e2_3_safe_production_preference"
     assert e2_3["experiment_suite_version"] == "v7_e2_3_pareto_protocol_v1"
     assert e2_3["network"]["production_action_semantics"] == "pair_plus_defer_v1"

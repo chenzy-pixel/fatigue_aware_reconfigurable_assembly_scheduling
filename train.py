@@ -3025,6 +3025,8 @@ def _apply_ablation_variant(config: dict, variant: str | None) -> None:
         )
     config["training"]["ablation_variant"] = normalized
     config["training"]["episodes"] = 600
+    config["training"]["parallel_envs"] = 10
+    config["training"]["validation_parallel_envs"] = 10
     config["training"]["validation_interval_episodes"] = 10
     config["seed"] = 11
     control = config["environment"]["worker_resource_control"]

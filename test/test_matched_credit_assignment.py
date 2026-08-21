@@ -81,6 +81,9 @@ def test_matched_configs_only_have_whitelisted_arm_differences():
     configs = matched.load_matched_configs()
     assert configs["baseline"]["training"]["episodes"] == 1000
     assert configs["treatment"]["training"]["episodes"] == 1000
+    assert configs["baseline"]["training"]["parallel_envs"] == 10
+    assert configs["baseline"]["training"]["validation_parallel_envs"] == 10
+    assert configs["baseline"]["training"]["validation_interval_episodes"] == 10
     assert configs["baseline"]["ppo"]["gae_lambda"] == 0.95
     assert configs["treatment"]["ppo"]["gae_lambda"] == 0.995
 
