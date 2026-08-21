@@ -583,6 +583,7 @@ def aggregate_evaluation_rows(
         HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
         SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION,
         NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION,
+        SAFE_MONOTONE_FLOW_GATE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {schema_version!r}")
     normalized_metric = evaluation_quality_metric(

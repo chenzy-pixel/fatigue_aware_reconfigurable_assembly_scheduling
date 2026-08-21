@@ -8,7 +8,7 @@ from configs import load_config, project_path
 from data import load_instance_pickle
 from data.dataset import validate_seed_configuration
 from environment import AssemblySchedulingEnv
-from result import result_schema_version
+from result import aggregate_evaluation_rows, result_schema_version
 from train import resolve_summary_checkpoint
 
 
@@ -113,3 +113,14 @@ def test_e2_5_summary_checkpoint_paths_support_relative_and_legacy_absolute(tmp_
     assert resolve_summary_checkpoint(summary, "accepted_checkpoint.pt") == tmp_path / "accepted_checkpoint.pt"
     absolute = tmp_path / "legacy.pt"
     assert resolve_summary_checkpoint(summary, str(absolute)) == absolute
+
+
+def test_e2_5_result_schema_is_accepted_by_evaluation_aggregation() -> None:
+    aggregate = aggregate_evaluation_rows(
+        [],
+        dataset="validation",
+        policy="ppo",
+        manifest="validation/manifest.json",
+        schema_version="4.6.0",
+    )
+    assert aggregate["evaluation_schema_version"] == "4.6.0"
