@@ -1,0 +1,47 @@
+{
+  "extends": "e2_4_neutral_gate_safe_variance.json",
+  "experiment_name": "v7_e2_5_safe_monotone_flow_gate",
+  "experiment_suite_version": "v7_e2_5_safe_monotone_gate_v1",
+  "network": {
+    "production_gate": {
+      "version": "state_only_monotone_flow_commit_gate_v2",
+      "preference_conditioning": false,
+      "tie_break": "commit",
+      "freeze_base_after_feasibility": true,
+      "flow_commit_residual": {
+        "enabled": true,
+        "activation_threshold": 0.2,
+        "scale": 2.0,
+        "apply_during_feasibility": false
+      }
+    },
+    "preference_action_score": {
+      "enabled": true,
+      "version": "direct_safe_worker_variance_rank_v3",
+      "shared_scale": false,
+      "initial_scale": 1.0,
+      "minimum_scale": 0.1,
+      "production_scale": {
+        "initial_scale": 1.5,
+        "minimum_scale": 0.5,
+        "maximum_scale": 3.0
+      },
+      "worker_scale": {
+        "initial_scale": 1.0,
+        "minimum_scale": 0.1,
+        "maximum_scale": 2.0
+      },
+      "standardization": "legal_candidate_zscore",
+      "scope": "production_plus_safe_worker_variance"
+    }
+  },
+  "training": {
+    "parallel_envs": 10,
+    "two_stage": {
+      "quality_checkpoint_promotion": "pareto_guarded_e2_5_v1"
+    }
+  },
+  "evaluation": {
+    "result_schema_version": "4.6.0"
+  }
+}

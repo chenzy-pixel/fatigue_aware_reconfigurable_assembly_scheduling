@@ -465,6 +465,9 @@ DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION = "legal_candidate_zscore"
 SAFE_WORKER_VARIANCE_PREFERENCE_ACTION_SCORE_VERSION = (
     "direct_safe_worker_variance_rank_v2"
 )
+SAFE_WORKER_VARIANCE_SEPARATE_SCALE_VERSION = (
+    "direct_safe_worker_variance_rank_v3"
+)
 DIRECT_PREFERENCE_ACTION_SCORE_SCOPES = (
     "all",
     "production_only",
@@ -478,6 +481,9 @@ STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS = (
     "hierarchical_state_only_gate_then_pair_v3"
 )
 STATE_ONLY_PRODUCTION_GATE_VERSION = "state_only_action_set_gate_v1"
+STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION = (
+    "state_only_monotone_flow_commit_gate_v2"
+)
 STATE_ONLY_PRODUCTION_GATE_TIE_BREAK = "commit"
 PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
     "legal_candidate_count_norm",
@@ -661,6 +667,12 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
     preference_action_score_minimum_scale = float(
         preference_action_score_raw.get("minimum_scale", 0.1)
     )
+    preference_action_score_production_scale = dict(
+        preference_action_score_raw.get("production_scale", {})
+    )
+    preference_action_score_worker_scale = dict(
+        preference_action_score_raw.get("worker_scale", {})
+    )
     preference_action_score_standardization = str(
         preference_action_score_raw.get(
             "standardization",
@@ -685,8 +697,11 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "direct preference-action scoring requires both relative rankers"
             )
+        uses_separate_scales = not preference_action_score_shared_scale
         expected_preference_version = (
-            SAFE_WORKER_VARIANCE_PREFERENCE_ACTION_SCORE_VERSION
+            SAFE_WORKER_VARIANCE_SEPARATE_SCALE_VERSION
+            if uses_separate_scales
+            else SAFE_WORKER_VARIANCE_PREFERENCE_ACTION_SCORE_VERSION
             if preference_action_score_scope
             == "production_plus_safe_worker_variance"
             else DIRECT_PREFERENCE_ACTION_SCORE_VERSION
@@ -696,9 +711,12 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "network.preference_action_score.version must be "
                 f"{expected_preference_version!r}"
             )
-        if not preference_action_score_shared_scale:
+        if uses_separate_scales and preference_action_score_scope != (
+            "production_plus_safe_worker_variance"
+        ):
             raise ValueError(
-                "E2.1 requires one shared preference-action scale"
+                "separate preference-action scales require the safe worker "
+                "variance scope"
             )
         if preference_action_score_standardization != (
             DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION
@@ -713,14 +731,14 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "'production_only', or "
                 "'production_plus_safe_worker_variance'"
             )
-        if (
+        if not uses_separate_scales and (
             not np.isfinite(preference_action_score_minimum_scale)
             or preference_action_score_minimum_scale < 0.0
         ):
             raise ValueError(
                 "preference-action minimum_scale must be finite and non-negative"
             )
-        if (
+        if not uses_separate_scales and (
             not np.isfinite(preference_action_score_initial_scale)
             or preference_action_score_initial_scale
             <= preference_action_score_minimum_scale
@@ -728,6 +746,36 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "preference-action initial_scale must exceed minimum_scale"
             )
+        if uses_separate_scales:
+            for label, raw, initial, minimum, maximum in (
+                (
+                    "production",
+                    preference_action_score_production_scale,
+                    1.5,
+                    0.5,
+                    3.0,
+                ),
+                (
+                    "worker",
+                    preference_action_score_worker_scale,
+                    1.0,
+                    0.1,
+                    2.0,
+                ),
+            ):
+                if set(raw) != {"initial_scale", "minimum_scale", "maximum_scale"}:
+                    raise ValueError(
+                        f"preference-action {label}_scale must contain "
+                        "initial_scale, minimum_scale, and maximum_scale"
+                    )
+                values = (float(raw["initial_scale"]), float(raw["minimum_scale"]), float(raw["maximum_scale"]))
+                if not all(np.isfinite(value) for value in values) or not (
+                    values[1] < values[0] < values[2]
+                ):
+                    raise ValueError(
+                        f"preference-action {label}_scale must satisfy "
+                        "minimum < initial < maximum"
+                    )
     production_defaults = (
         DEFAULT_PRODUCTION_RELATIVE_INITIAL_WEIGHTS
         if production_names == V6_PRODUCTION_RELATIVE_FEATURE_NAMES
@@ -753,6 +801,12 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
     production_gate_tie_break = str(
         production_gate_raw.get("tie_break", "none")
     )
+    production_gate_freeze_base_after_feasibility = bool(
+        production_gate_raw.get("freeze_base_after_feasibility", False)
+    )
+    flow_commit_residual = dict(
+        production_gate_raw.get("flow_commit_residual", {})
+    )
     if semantics in {
         HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
         STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
@@ -767,7 +821,10 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "network.production_commit_set_scorer=true"
             )
     if semantics == STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS:
-        if production_gate_version != STATE_ONLY_PRODUCTION_GATE_VERSION:
+        if production_gate_version not in {
+            STATE_ONLY_PRODUCTION_GATE_VERSION,
+            STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+        }:
             raise ValueError(
                 "state-only hierarchical production actions require "
                 "network.production_gate.version="
@@ -781,6 +838,23 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "state-only production gate tie_break must be 'commit'"
             )
+        if production_gate_version == STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION:
+            if not production_gate_freeze_base_after_feasibility:
+                raise ValueError("E2.5 requires freezing the base gate after feasibility")
+            if set(flow_commit_residual) != {
+                "enabled", "activation_threshold", "scale", "apply_during_feasibility"
+            }:
+                raise ValueError("E2.5 flow_commit_residual has an invalid schema")
+            threshold = float(flow_commit_residual["activation_threshold"])
+            scale = float(flow_commit_residual["scale"])
+            if not bool(flow_commit_residual["enabled"]) or threshold != 0.2:
+                raise ValueError("E2.5 residual must be enabled at threshold 0.2")
+            if not np.isfinite(scale) or scale <= 0.0:
+                raise ValueError("E2.5 residual scale must be finite and positive")
+            if bool(flow_commit_residual["apply_during_feasibility"]):
+                raise ValueError("E2.5 residual must be disabled during feasibility")
+        elif production_gate_freeze_base_after_feasibility or flow_commit_residual:
+            raise ValueError("E2.4 state-only gate does not accept E2.5 residual fields")
     elif production_gate_raw:
         raise ValueError(
             "network.production_gate is only valid for "
@@ -798,6 +872,10 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             production_gate_preference_conditioning
         ),
         "production_gate_tie_break": production_gate_tie_break,
+        "production_gate_freeze_base_after_feasibility": (
+            production_gate_freeze_base_after_feasibility
+        ),
+        "production_gate_flow_commit_residual": flow_commit_residual,
         "future_value_features": bool(
             config.get("future_value_features", False)
         ),
@@ -816,6 +894,8 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "preference_action_score_minimum_scale": (
             preference_action_score_minimum_scale
         ),
+        "preference_action_score_production_scale": preference_action_score_production_scale,
+        "preference_action_score_worker_scale": preference_action_score_worker_scale,
         "preference_action_score_standardization": (
             preference_action_score_standardization
         ),
@@ -1081,6 +1161,12 @@ def assert_network_config_matches_spec(
             saved_production_gate = dict(
                 checkpoint_spec.get("production_gate", {})
             )
+            # Frozen is runtime state, saved for recovery but not an
+            # architecture/configuration change.
+            saved_production_gate.pop("base_gate_frozen", None)
+            configured_production_gate.pop("base_gate_frozen", None)
+            saved_production_gate.pop("residual_active", None)
+            configured_production_gate.pop("residual_active", None)
             if configured_production_gate != saved_production_gate:
                 raise ValueError(
                     "checkpoint production_gate is incompatible with the "
@@ -1384,6 +1470,8 @@ class HeteroGraphActorCritic(nn.Module):
         production_gate_version: str = "none",
         production_gate_preference_conditioning: bool = False,
         production_gate_tie_break: str = "none",
+        production_gate_freeze_base_after_feasibility: bool = False,
+        production_gate_flow_commit_residual: Mapping[str, Any] | None = None,
         future_value_features: bool = False,
         worker_common_context_enabled: bool = True,
         residual_scale_ratio: float = 2.0,
@@ -1395,6 +1483,8 @@ class HeteroGraphActorCritic(nn.Module):
         preference_action_score_shared_scale: bool = True,
         preference_action_score_initial_scale: float = 1.0,
         preference_action_score_minimum_scale: float = 0.1,
+        preference_action_score_production_scale: Mapping[str, Any] | None = None,
+        preference_action_score_worker_scale: Mapping[str, Any] | None = None,
         preference_action_score_standardization: str = (
             DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION
         ),
@@ -1458,6 +1548,18 @@ class HeteroGraphActorCritic(nn.Module):
             production_gate_preference_conditioning
         )
         self.production_gate_tie_break = str(production_gate_tie_break)
+        self.production_gate_freeze_base_after_feasibility = bool(
+            production_gate_freeze_base_after_feasibility
+        )
+        self.production_gate_flow_commit_residual = dict(
+            production_gate_flow_commit_residual or {}
+        )
+        self.production_state_gate_frozen = False
+        self.production_flow_commit_residual_active = bool(
+            self.production_gate_flow_commit_residual.get(
+                "apply_during_feasibility", False
+            )
+        )
         self.use_future_value_features = bool(future_value_features)
         self.worker_common_context_enabled = bool(
             worker_common_context_enabled
@@ -1478,6 +1580,12 @@ class HeteroGraphActorCritic(nn.Module):
         )
         self.preference_action_score_minimum_scale = float(
             preference_action_score_minimum_scale
+        )
+        self.preference_action_score_production_scale = dict(
+            preference_action_score_production_scale or {}
+        )
+        self.preference_action_score_worker_scale = dict(
+            preference_action_score_worker_scale or {}
         )
         self.preference_action_score_standardization = str(
             preference_action_score_standardization
@@ -1510,8 +1618,10 @@ class HeteroGraphActorCritic(nn.Module):
             self.production_action_semantics
             == STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
             and (
-                self.production_gate_version
-                != STATE_ONLY_PRODUCTION_GATE_VERSION
+                self.production_gate_version not in {
+                    STATE_ONLY_PRODUCTION_GATE_VERSION,
+                    STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+                }
                 or self.production_gate_preference_conditioning
                 or self.production_gate_tie_break
                 != STATE_ONLY_PRODUCTION_GATE_TIE_BREAK
@@ -1559,7 +1669,7 @@ class HeteroGraphActorCritic(nn.Module):
             if self.use_preference_conditioning
             else None
         )
-        if self.preference_action_score_enabled:
+        if self.preference_action_score_enabled and self.preference_action_score_shared_scale:
             initial_magnitude = (
                 self.preference_action_score_initial_scale
                 - self.preference_action_score_minimum_scale
@@ -1569,6 +1679,20 @@ class HeteroGraphActorCritic(nn.Module):
             )
         else:
             self.register_parameter("preference_action_scale_raw", None)
+        if self.preference_action_score_enabled and not self.preference_action_score_shared_scale:
+            self.production_preference_action_scale_raw = nn.Parameter(
+                self._bounded_scale_raw(
+                    self.preference_action_score_production_scale
+                )
+            )
+            self.worker_preference_action_scale_raw = nn.Parameter(
+                self._bounded_scale_raw(
+                    self.preference_action_score_worker_scale
+                )
+            )
+        else:
+            self.register_parameter("production_preference_action_scale_raw", None)
+            self.register_parameter("worker_preference_action_scale_raw", None)
         self.message_layers = nn.ModuleList(
             [
                 HeterogeneousMessagePassingLayer(
@@ -1756,13 +1880,23 @@ class HeteroGraphActorCritic(nn.Module):
                         self.use_production_commit_set_scorer
                     ),
                     "production_gate": (
-                        {
-                            "version": self.production_gate_version,
-                            "preference_conditioning": (
-                                self.production_gate_preference_conditioning
-                            ),
-                            "tie_break": self.production_gate_tie_break,
-                        }
+                        (
+                            {
+                                "version": self.production_gate_version,
+                                "preference_conditioning": self.production_gate_preference_conditioning,
+                                "tie_break": self.production_gate_tie_break,
+                                "freeze_base_after_feasibility": self.production_gate_freeze_base_after_feasibility,
+                                "flow_commit_residual": dict(self.production_gate_flow_commit_residual),
+                                "base_gate_frozen": self.production_state_gate_frozen,
+                                "residual_active": self.production_flow_commit_residual_active,
+                            }
+                            if self.production_gate_version == STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION
+                            else {
+                                "version": self.production_gate_version,
+                                "preference_conditioning": self.production_gate_preference_conditioning,
+                                "tie_break": self.production_gate_tie_break,
+                            }
+                        )
                         if self.production_action_semantics
                         == STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
                         else {}
@@ -1789,6 +1923,14 @@ class HeteroGraphActorCritic(nn.Module):
                             ),
                             "minimum_scale": (
                                 self.preference_action_score_minimum_scale
+                            ),
+                            **(
+                                {
+                                    "production_scale": dict(self.preference_action_score_production_scale),
+                                    "worker_scale": dict(self.preference_action_score_worker_scale),
+                                }
+                                if not self.preference_action_score_shared_scale
+                                else {}
                             ),
                             "standardization": (
                                 self.preference_action_score_standardization
@@ -1933,15 +2075,23 @@ class HeteroGraphActorCritic(nn.Module):
             )
             if observation.decision_type == DecisionType.PRODUCTION:
                 production_gate_logits = None
+                production_gate_base_logits = None
+                production_gate_logit_boost = None
                 if (
                     self.production_action_semantics
                     == STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
                 ):
-                    production_gate_logits = (
+                    production_gate_base_logits = (
                         self._state_only_production_gate_logits(
                             observation,
                             dtype=global_embeddings.dtype,
                             device=device,
+                        )
+                    )
+                    production_gate_logits, production_gate_logit_boost = (
+                        self._final_production_gate_logits(
+                            production_gate_base_logits,
+                            preference_values[batch_index],
                         )
                     )
                 pair_logits, commit_set_logit = self._production_logits(
@@ -1953,6 +2103,8 @@ class HeteroGraphActorCritic(nn.Module):
                     preference_values[batch_index],
                     masks[batch_index],
                     production_gate_logits=production_gate_logits,
+                    production_gate_base_logits=production_gate_base_logits,
+                    production_gate_logit_boost=production_gate_logit_boost,
                     device=device,
                 )
                 if (
@@ -2151,6 +2303,45 @@ class HeteroGraphActorCritic(nn.Module):
             raise ValueError("production action-set feature vector has wrong width")
         return self.production_state_gate(action_set_features).reshape(2)
 
+    def _final_production_gate_logits(
+        self,
+        base_logits: torch.Tensor,
+        preference: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply E2.5's positive-only flow residual to the commit logit."""
+
+        if base_logits.shape != (2,) or preference.shape != (3,):
+            raise ValueError("production gate logits or preference shape is invalid")
+        boost = base_logits.new_zeros(())
+        if (
+            self.production_gate_version
+            == STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION
+            and self.production_flow_commit_residual_active
+        ):
+            threshold = float(
+                self.production_gate_flow_commit_residual["activation_threshold"]
+            )
+            scale = float(self.production_gate_flow_commit_residual["scale"])
+            boost = scale * torch.clamp(preference[0] - threshold, min=0.0)
+        return base_logits + torch.stack((boost, boost.new_zeros(()))), boost
+
+    def set_production_state_gate_frozen(self, frozen: bool) -> None:
+        """Freeze the E2.5 state-only base gate without changing its value."""
+
+        self.production_state_gate_frozen = bool(frozen)
+        if self.production_state_gate is not None:
+            for parameter in self.production_state_gate.parameters():
+                parameter.requires_grad_(not frozen)
+
+    def set_production_flow_commit_residual_enabled(self, enabled: bool) -> None:
+        """Enable the E2.5 residual only after the feasibility transition."""
+
+        if self.production_gate_version != STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION:
+            if enabled:
+                raise ValueError("only E2.5 has a flow commit residual")
+            return
+        self.production_flow_commit_residual_active = bool(enabled)
+
     def _production_logits(
         self,
         observation: HeterogeneousGraphObservation,
@@ -2162,6 +2353,8 @@ class HeteroGraphActorCritic(nn.Module):
         action_mask: torch.Tensor,
         *,
         production_gate_logits: torch.Tensor | None = None,
+        production_gate_base_logits: torch.Tensor | None = None,
+        production_gate_logit_boost: torch.Tensor | None = None,
         device: torch.device | str,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         operation_count = operation_embeddings.shape[0]
@@ -2335,6 +2528,7 @@ class HeteroGraphActorCritic(nn.Module):
                 ),
                 ~action_mask[:pair_count],
                 preference,
+                scale=self.production_preference_action_scale(),
             )
         primary_logits = relative_logits + preference_logits
         common_context, raw_residual_context = self._candidate_context_components(
@@ -2364,6 +2558,8 @@ class HeteroGraphActorCritic(nn.Module):
             preference_logits=preference_logits,
             commit_set_logit=commit_set_logit,
             production_gate_logits=production_gate_logits,
+            production_gate_base_logits=production_gate_base_logits,
+            production_gate_logit_boost=production_gate_logit_boost,
         )
         return final_logits, commit_set_logit
 
@@ -2635,6 +2831,7 @@ class HeteroGraphActorCritic(nn.Module):
                     ),
                     ~action_mask[:pair_count],
                     preference,
+                    scale=self.worker_preference_action_scale(),
                 )
             )
             preference_logits = direct_preference_components.sum(dim=-1)
@@ -2765,6 +2962,8 @@ class HeteroGraphActorCritic(nn.Module):
         preference_logits: torch.Tensor | None = None,
         commit_set_logit: torch.Tensor | None = None,
         production_gate_logits: torch.Tensor | None = None,
+        production_gate_base_logits: torch.Tensor | None = None,
+        production_gate_logit_boost: torch.Tensor | None = None,
         direct_preference_components: torch.Tensor | None = None,
     ) -> None:
         feasible = ~action_mask[:-1]
@@ -2802,6 +3001,10 @@ class HeteroGraphActorCritic(nn.Module):
         gate_commit_probability = 0.0
         gate_defer_probability = 0.0
         gate_logit_margin = 0.0
+        gate_base_commit_probability = 0.0
+        gate_base_defer_probability = 0.0
+        gate_defer_to_commit_flip = False
+        gate_logit_boost = 0.0
         if production_gate_logits is not None:
             if production_gate_logits.shape != (2,):
                 raise ValueError("production gate logits must have shape (2,)")
@@ -2827,6 +3030,21 @@ class HeteroGraphActorCritic(nn.Module):
                 .detach()
                 .cpu()
             )
+            if production_gate_base_logits is not None:
+                if production_gate_base_logits.shape != (2,):
+                    raise ValueError("base production gate logits must have shape (2,)")
+                base_probabilities = functional.softmax(
+                    production_gate_base_logits.masked_fill(gate_mask, minimum_logit),
+                    dim=0,
+                )
+                gate_base_commit_probability = float(base_probabilities[0].detach().cpu())
+                gate_base_defer_probability = float(base_probabilities[1].detach().cpu())
+                gate_defer_to_commit_flip = bool(
+                    torch.argmax(base_probabilities).detach().cpu() == 1
+                    and torch.argmax(gate_probabilities).detach().cpu() == 0
+                )
+            if production_gate_logit_boost is not None:
+                gate_logit_boost = float(production_gate_logit_boost.detach().cpu())
 
         direct_component_max_abs = [0.0, 0.0, 0.0]
         if direct_preference_components is not None:
@@ -2877,6 +3095,15 @@ class HeteroGraphActorCritic(nn.Module):
                 ),
                 "production_gate_defer_probability": gate_defer_probability,
                 "production_gate_logit_margin": gate_logit_margin,
+                "production_gate_base_commit_probability": gate_base_commit_probability,
+                "production_gate_base_defer_probability": gate_base_defer_probability,
+                "production_gate_commit_logit_boost": gate_logit_boost,
+                "production_gate_residual_active": (
+                    decision_type == DecisionType.PRODUCTION and gate_logit_boost > 0.0
+                ),
+                "production_gate_base_defer_to_final_commit_flip": (
+                    decision_type == DecisionType.PRODUCTION and gate_defer_to_commit_flip
+                ),
                 "production_conditional_preference_overrode_relative_top": (
                     decision_type == DecisionType.PRODUCTION
                     and relative_top != preference_top
@@ -2967,7 +3194,21 @@ class HeteroGraphActorCritic(nn.Module):
             diagnostics["policy_head_preference_action_scale"] = float(
                 self.preference_action_scale().detach().cpu()
             )
+            diagnostics["policy_head_preference_action_scale_production"] = float(
+                self.production_preference_action_scale().detach().cpu()
+            )
+            diagnostics["policy_head_preference_action_scale_worker"] = float(
+                self.worker_preference_action_scale().detach().cpu()
+            )
         return diagnostics
+
+    @staticmethod
+    def _bounded_scale_raw(spec: Mapping[str, Any]) -> torch.Tensor:
+        initial = float(spec["initial_scale"])
+        minimum = float(spec["minimum_scale"])
+        maximum = float(spec["maximum_scale"])
+        probability = (initial - minimum) / (maximum - minimum)
+        return torch.tensor(math.log(probability / (1.0 - probability)))
 
     def preference_action_scale(self) -> torch.Tensor:
         if self.preference_action_scale_raw is None:
@@ -2979,16 +3220,47 @@ class HeteroGraphActorCritic(nn.Module):
             + functional.softplus(self.preference_action_scale_raw)
         )
 
+    def _bounded_preference_action_scale(
+        self,
+        raw: torch.Tensor | None,
+        spec: Mapping[str, Any],
+    ) -> torch.Tensor:
+        if raw is None:
+            return self.preference_action_scale()
+        return raw.new_tensor(float(spec["minimum_scale"])) + (
+            raw.new_tensor(float(spec["maximum_scale"]))
+            - raw.new_tensor(float(spec["minimum_scale"]))
+        ) * torch.sigmoid(raw)
+
+    def production_preference_action_scale(self) -> torch.Tensor:
+        if self.preference_action_score_shared_scale:
+            return self.preference_action_scale()
+        return self._bounded_preference_action_scale(
+            self.production_preference_action_scale_raw,
+            self.preference_action_score_production_scale,
+        )
+
+    def worker_preference_action_scale(self) -> torch.Tensor:
+        if self.preference_action_score_shared_scale:
+            return self.preference_action_scale()
+        return self._bounded_preference_action_scale(
+            self.worker_preference_action_scale_raw,
+            self.preference_action_score_worker_scale,
+        )
+
     def _direct_preference_logits(
         self,
         objectives: torch.Tensor,
         feasible: torch.Tensor,
         preference: torch.Tensor,
+        *,
+        scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self._direct_preference_logit_components(
             objectives,
             feasible,
             preference,
+            scale=scale,
         ).sum(dim=-1)
 
     def _direct_preference_logit_components(
@@ -2996,6 +3268,8 @@ class HeteroGraphActorCritic(nn.Module):
         objectives: torch.Tensor,
         feasible: torch.Tensor,
         preference: torch.Tensor,
+        *,
+        scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if objectives.ndim != 2 or objectives.shape[1] not in {2, 3}:
             raise ValueError(
@@ -3007,7 +3281,8 @@ class HeteroGraphActorCritic(nn.Module):
             objectives, feasible
         )
         weights = preference[: objectives.shape[1]]
-        return self.preference_action_scale() * -(standardized * weights)
+        multiplier = self.preference_action_scale() if scale is None else scale
+        return multiplier * -(standardized * weights)
 
     def _safe_worker_variance_preference_logit_components(
         self,
@@ -3030,7 +3305,7 @@ class HeteroGraphActorCritic(nn.Module):
             (incremental_variance.shape[0], 3)
         )
         result[:, 2] = (
-            -self.preference_action_scale()
+            -self.worker_preference_action_scale()
             * preference[2]
             * standardized_variance
         )
@@ -3141,6 +3416,8 @@ def build_actor_critic(
         policy_head["production_gate_version"],
         policy_head["production_gate_preference_conditioning"],
         policy_head["production_gate_tie_break"],
+        policy_head["production_gate_freeze_base_after_feasibility"],
+        policy_head["production_gate_flow_commit_residual"],
         policy_head["future_value_features"],
         policy_head["worker_common_context_enabled"],
         policy_head["residual_scale_ratio"],
@@ -3150,6 +3427,8 @@ def build_actor_critic(
         policy_head["preference_action_score_shared_scale"],
         policy_head["preference_action_score_initial_scale"],
         policy_head["preference_action_score_minimum_scale"],
+        policy_head["preference_action_score_production_scale"],
+        policy_head["preference_action_score_worker_scale"],
         policy_head["preference_action_score_standardization"],
         policy_head["preference_action_score_scope"],
     )

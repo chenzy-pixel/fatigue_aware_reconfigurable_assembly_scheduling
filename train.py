@@ -72,6 +72,7 @@ PARETO_PROMOTION_MODES = frozenset(
         "pareto_guarded_e2_v1",
         "pareto_guarded_e2_3_v1",
         "pareto_guarded_e2_4_v1",
+        "pareto_guarded_e2_5_v1",
     }
 )
 
@@ -82,7 +83,7 @@ def _checkpoint_eligible_validation_event(event: str, promotion: str) -> bool:
         or (
             event == "transition"
             and promotion
-            not in {"pareto_guarded_e2_3_v1", "pareto_guarded_e2_4_v1"}
+            not in {"pareto_guarded_e2_3_v1", "pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}
         )
     )
 
@@ -118,6 +119,26 @@ def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
         ),
         "provenance": provenance,
     }
+
+
+def _run_relative_checkpoint(path: Path | None, run_directory: Path) -> str | None:
+    """Persist portable checkpoint references while retaining old absolute readers."""
+
+    if path is None:
+        return None
+    try:
+        return str(path.relative_to(run_directory))
+    except ValueError:
+        return str(path)
+
+
+def resolve_summary_checkpoint(summary_path: str | Path, value: str | None) -> Path | None:
+    """Resolve E2.5 run-relative paths and legacy absolute summary paths."""
+
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else Path(summary_path).parent / path
 
 
 def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
@@ -410,7 +431,7 @@ def _pareto_snapshot(
                 "quality_checkpoint_promotion", ""
             )
         )
-        == "pareto_guarded_e2_4_v1"
+        in {"pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}
     )
     required_instances = int(
         pareto_settings["required_full_grid_instance_count"]
@@ -548,6 +569,8 @@ def _pareto_snapshot(
             + 1e-12
         )
     )
+    low_flow_rows = [row for row in rows if float(row.get("w_flow", 1.0)) <= 0.2]
+    low_flow_safety_pass = _rows_are_safe(low_flow_rows, fatigue_tolerance)
     return {
         "scope": scope,
         "update_id": int(update_id),
@@ -567,6 +590,12 @@ def _pareto_snapshot(
         "nondominated_pass": nondominated_pass,
         "worker_direct_preference_pass": worker_direct_preference_pass,
         "preference_response_pass": preference_response_pass,
+        "low_flow_candidate_count": len(low_flow_rows),
+        "low_flow_completion_rate": (
+            sum(bool(row.get("terminated", False)) and not bool(row.get("truncated", False)) for row in low_flow_rows) / len(low_flow_rows)
+            if low_flow_rows else 0.0
+        ),
+        "low_flow_safety_pass": low_flow_safety_pass,
         **preference_diagnostics,
         **aggregate_matching_recovery_diagnostics(rows),
         "all_safe": _rows_are_safe(rows, fatigue_tolerance),
@@ -747,13 +776,14 @@ class TrainingPhaseController:
             "pareto_guarded_e2_v1",
             "pareto_guarded_e2_3_v1",
             "pareto_guarded_e2_4_v1",
+            "pareto_guarded_e2_5_v1",
         }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
                 "'completion_only', 'score_improving', or "
                 "'constrained_weighted', 'aligned_quality', "
                 "'balanced_guarded_v7', 'pareto_guarded_e2_v1', or "
-                "'pareto_guarded_e2_3_v1', or 'pareto_guarded_e2_4_v1'"
+                "'pareto_guarded_e2_3_v1', 'pareto_guarded_e2_4_v1', or 'pareto_guarded_e2_5_v1'"
             )
         constraints: dict[str, float] = {}
         if promotion in {"constrained_weighted", "balanced_guarded_v7"}:
@@ -798,7 +828,7 @@ class TrainingPhaseController:
                 name: float(value)
                 for name, value in _pareto_promotion_settings(config).items()
             }
-        if promotion == "pareto_guarded_e2_4_v1":
+        if promotion in {"pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}:
             worker_control = config["environment"].get(
                 "worker_resource_control", {}
             )
@@ -810,7 +840,7 @@ class TrainingPhaseController:
                 or not bool(worker_control.get("preserve_matching_on_worker_action"))
             ):
                 raise ValueError(
-                    "E2.4 requires matching_admission_recovery_v2 with "
+                    "E2.4/E2.5 requires matching_admission_recovery_v2 with "
                     "full matching preservation"
                 )
         if not bool(settings["quality_validate_every_update"]):
@@ -999,7 +1029,10 @@ class TrainingPhaseController:
         e2_4_mode = (
             self.quality_checkpoint_promotion == "pareto_guarded_e2_4_v1"
         )
-        strict_pareto_mode = e2_3_mode or e2_4_mode
+        e2_5_mode = (
+            self.quality_checkpoint_promotion == "pareto_guarded_e2_5_v1"
+        )
+        strict_pareto_mode = e2_3_mode or e2_4_mode or e2_5_mode
         preference_response_pass = bool(
             snapshot.get("preference_response_pass", True)
         )
@@ -1039,7 +1072,8 @@ class TrainingPhaseController:
             and (coverage_pass if strict_pareto_mode else True)
             and (controllability_pass if strict_pareto_mode else True)
             and (worker_direct_preference_pass if strict_pareto_mode else True)
-            and (preference_response_pass if e2_4_mode else True)
+            and (preference_response_pass if (e2_4_mode or e2_5_mode) else True)
+            and (bool(snapshot.get("low_flow_safety_pass", True)) if e2_5_mode else True)
             and hv_pass
             and canonical_pass
         )
@@ -1056,7 +1090,8 @@ class TrainingPhaseController:
                 or (strict_pareto_mode and not coverage_pass)
                 or (strict_pareto_mode and not controllability_pass)
                 or (strict_pareto_mode and not worker_direct_preference_pass)
-                or (e2_4_mode and not preference_response_pass)
+                or ((e2_4_mode or e2_5_mode) and not preference_response_pass)
+                or (e2_5_mode and not bool(snapshot.get("low_flow_safety_pass", False)))
             )
             event = "rejected" if hard_rejection else "not_promoted"
             reason = (
@@ -1069,7 +1104,9 @@ class TrainingPhaseController:
                 else "worker_direct_preference_not_zero"
                 if strict_pareto_mode and not worker_direct_preference_pass
                 else "preference_response_direction_failed"
-                if e2_4_mode and not preference_response_pass
+                if (e2_4_mode or e2_5_mode) and not preference_response_pass
+                else "low_flow_safety_failed"
+                if e2_5_mode and not bool(snapshot.get("low_flow_safety_pass", False))
                 else "hypervolume_not_improved"
                 if not hv_pass
                 else "canonical_quality_guard_failed"
@@ -1089,6 +1126,7 @@ class TrainingPhaseController:
                 worker_direct_preference_pass
             ),
             "promotion_preference_response_pass": preference_response_pass,
+            "promotion_low_flow_safety_pass": bool(snapshot.get("low_flow_safety_pass", True)),
             "promotion_unique_action_trace_pass": bool(
                 snapshot.get("unique_action_trace_pass", True)
             ),
@@ -1510,6 +1548,7 @@ class TrainingPhaseController:
             "pareto_guarded_e2_v1",
             "pareto_guarded_e2_3_v1",
             "pareto_guarded_e2_4_v1",
+            "pareto_guarded_e2_5_v1",
         }:
             result.update(
                 {
@@ -1560,7 +1599,7 @@ class ParetoSafetyGuard:
                 "quality_checkpoint_promotion", ""
             )
         )
-        if promotion != "pareto_guarded_e2_4_v1":
+        if promotion not in {"pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}:
             return None
         settings = _pareto_promotion_settings(config)
         return cls(
@@ -3629,6 +3668,12 @@ def train(
                 update_rows[-1]["candidate_status"] = "feasibility_best"
             is_new_best = False
             if validation_event == "transition":
+                if (
+                    getattr(agent.network, "production_gate_version", "none")
+                    == "state_only_monotone_flow_commit_gate_v2"
+                ):
+                    agent.network.set_production_state_gate_frozen(True)
+                    agent.network.set_production_flow_commit_residual_enabled(True)
                 transition_metadata = {
                     "feature_dimensions": observation.feature_dimensions,
                     "edge_feature_dimensions": (
@@ -3677,6 +3722,12 @@ def train(
                     safe_checkpoint,
                     load_optimizer=True,
                 )
+                if (
+                    getattr(agent.network, "production_gate_version", "none")
+                    == "state_only_monotone_flow_commit_gate_v2"
+                ):
+                    agent.network.set_production_state_gate_frozen(True)
+                    agent.network.set_production_flow_commit_residual_enabled(True)
                 row["candidate_status"] = "catastrophic_rolled_back"
                 update_rows[-1]["candidate_status"] = (
                     "catastrophic_rolled_back"
@@ -3941,18 +3992,18 @@ def train(
                 else 0.0
             ),
             "unique_instance_count": len(set(instance_ids)),
-            "checkpoint": str(checkpoint) if checkpoint is not None else None,
+            "checkpoint": _run_relative_checkpoint(checkpoint, run_directory),
             "checkpoint_sha256": checkpoint_sha256,
             "provenance": summary_provenance,
             "final_checkpoint_evaluation": final_checkpoint_evaluation,
             "accepted_checkpoint": (
-                str(accepted_checkpoint)
+                _run_relative_checkpoint(accepted_checkpoint, run_directory)
                 if accepted_checkpoint.exists()
                 else None
             ),
-            "last_checkpoint": str(last_checkpoint),
+            "last_checkpoint": _run_relative_checkpoint(last_checkpoint, run_directory),
             "safe_checkpoint": (
-                str(safe_checkpoint) if safe_checkpoint.exists() else None
+                _run_relative_checkpoint(safe_checkpoint, run_directory) if safe_checkpoint.exists() else None
             ),
             "last_candidate_checkpoint": (
                 str(last_candidate_checkpoint)
@@ -4464,6 +4515,7 @@ def _train_parallel(
                             in {
                                 "pareto_guarded_e2_3_v1",
                                 "pareto_guarded_e2_4_v1",
+                                "pareto_guarded_e2_5_v1",
                             }
                         ):
                             anchor_event = "audit_only"
@@ -4549,6 +4601,7 @@ def _train_parallel(
                             in {
                                 "pareto_guarded_e2_3_v1",
                                 "pareto_guarded_e2_4_v1",
+                                "pareto_guarded_e2_5_v1",
                             }
                             and phase_controller.phase == "quality"
                         ):
@@ -4783,6 +4836,10 @@ def _train_parallel(
                         row["candidate_status"] = "feasibility_best"
                 is_new_best = False
                 if transitioned_now:
+                    gate = getattr(agent.network, "production_gate_version", "none")
+                    if gate == "state_only_monotone_flow_commit_gate_v2":
+                        agent.network.set_production_state_gate_frozen(True)
+                        agent.network.set_production_flow_commit_residual_enabled(True)
                     transition_metadata = {
                         "feature_dimensions": (
                             bootstrap_observation.feature_dimensions
@@ -4859,6 +4916,12 @@ def _train_parallel(
                         )
                     failure_learning_rate = agent.learning_rate
                     agent.load(rollback_source[1], load_optimizer=True)
+                    if (
+                        getattr(agent.network, "production_gate_version", "none")
+                        == "state_only_monotone_flow_commit_gate_v2"
+                    ):
+                        agent.network.set_production_state_gate_frozen(True)
+                        agent.network.set_production_flow_commit_residual_enabled(True)
                     restored_learning_rate = agent.learning_rate
                     guarded_learning_rate = max(
                         pareto_safety_guard.minimum_learning_rate,
@@ -5244,16 +5307,16 @@ def _train_parallel(
                 if total_training_time > 0
                 else 0.0
             ),
-            "checkpoint": str(checkpoint) if checkpoint is not None else None,
+            "checkpoint": _run_relative_checkpoint(checkpoint, run_directory),
             "checkpoint_sha256": checkpoint_sha256,
             "provenance": summary_provenance,
             "final_checkpoint_evaluation": final_checkpoint_evaluation,
             "accepted_checkpoint": (
-                str(accepted_checkpoint)
+                _run_relative_checkpoint(accepted_checkpoint, run_directory)
                 if accepted_checkpoint.exists()
                 else None
             ),
-            "last_checkpoint": str(last_checkpoint),
+            "last_checkpoint": _run_relative_checkpoint(last_checkpoint, run_directory),
             "safe_checkpoint": (
                 str(safe_checkpoint) if safe_checkpoint.exists() else None
             ),

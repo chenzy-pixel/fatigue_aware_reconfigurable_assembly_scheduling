@@ -267,6 +267,24 @@ def summarize_policy_decision_diagnostics(
             if gate_rows
             else 0.0
         ),
+        "mean_production_gate_base_commit_probability": (
+            sum(float(row.get("production_gate_base_commit_probability", 0.0)) for row in gate_rows) / len(gate_rows)
+            if gate_rows else 0.0
+        ),
+        "mean_production_gate_base_defer_probability": (
+            sum(float(row.get("production_gate_base_defer_probability", 0.0)) for row in gate_rows) / len(gate_rows)
+            if gate_rows else 0.0
+        ),
+        "mean_production_gate_commit_logit_boost": (
+            sum(float(row.get("production_gate_commit_logit_boost", 0.0)) for row in gate_rows) / len(gate_rows)
+            if gate_rows else 0.0
+        ),
+        "production_gate_residual_active_count": sum(
+            bool(row.get("production_gate_residual_active", False)) for row in gate_rows
+        ),
+        "production_gate_base_defer_to_final_commit_flip_count": sum(
+            bool(row.get("production_gate_base_defer_to_final_commit_flip", False)) for row in gate_rows
+        ),
     }
 
 
@@ -699,6 +717,22 @@ class PPOAgent:
             checkpoint_spec,
         )
         self.network.load_state_dict(checkpoint["network"])
+        saved_gate = checkpoint_spec.get("production_gate", {})
+        if (
+            isinstance(saved_gate, dict)
+            and hasattr(self.network, "set_production_state_gate_frozen")
+        ):
+            self.network.set_production_state_gate_frozen(
+                bool(saved_gate.get("base_gate_frozen", False))
+            )
+        if (
+            isinstance(saved_gate, dict)
+            and hasattr(self.network, "set_production_flow_commit_residual_enabled")
+            and "residual_active" in saved_gate
+        ):
+            self.network.set_production_flow_commit_residual_enabled(
+                bool(saved_gate["residual_active"])
+            )
         if load_optimizer and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         return dict(checkpoint.get("metadata", {}))

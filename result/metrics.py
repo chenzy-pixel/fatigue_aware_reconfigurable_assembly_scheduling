@@ -14,6 +14,7 @@ PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.2.0"
 HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.3.0"
 SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.4.0"
 NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION = "4.5.0"
+SAFE_MONOTONE_FLOW_GATE_EVALUATION_SCHEMA_VERSION = "4.6.0"
 
 # Scalar diagnostics intentionally shared by evaluation, training and Pareto
 # persistence.  Keeping the registry here prevents a new experiment field from
@@ -62,6 +63,11 @@ PREFERENCE_POLICY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "mean_production_gate_commit_probability",
     "mean_production_gate_defer_probability",
     "mean_production_gate_logit_margin",
+    "mean_production_gate_base_commit_probability",
+    "mean_production_gate_base_defer_probability",
+    "mean_production_gate_commit_logit_boost",
+    "production_gate_residual_active_count",
+    "production_gate_base_defer_to_final_commit_flip_count",
 )
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
@@ -90,6 +96,7 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
         SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION,
         NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION,
+        SAFE_MONOTONE_FLOW_GATE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {version!r}")
     return version
@@ -270,6 +277,11 @@ def aggregate_preference_diagnostics(
     gate_commit_probability_sum = 0.0
     gate_defer_probability_sum = 0.0
     gate_logit_margin_sum = 0.0
+    gate_base_commit_probability_sum = 0.0
+    gate_base_defer_probability_sum = 0.0
+    gate_commit_logit_boost_sum = 0.0
+    gate_residual_active_count = 0
+    gate_flip_count = 0
     for row in rows:
         count = int(row.get("ranker_top_decision_count", 0) or 0)
         overrides = int(row.get("preference_override_count", 0) or 0)
@@ -362,6 +374,21 @@ def aggregate_preference_diagnostics(
         gate_logit_margin_sum += row_gate_count * float(
             row.get("mean_production_gate_logit_margin", 0.0) or 0.0
         )
+        gate_base_commit_probability_sum += row_gate_count * float(
+            row.get("mean_production_gate_base_commit_probability", 0.0) or 0.0
+        )
+        gate_base_defer_probability_sum += row_gate_count * float(
+            row.get("mean_production_gate_base_defer_probability", 0.0) or 0.0
+        )
+        gate_commit_logit_boost_sum += row_gate_count * float(
+            row.get("mean_production_gate_commit_logit_boost", 0.0) or 0.0
+        )
+        gate_residual_active_count += int(
+            row.get("production_gate_residual_active_count", 0) or 0
+        )
+        gate_flip_count += int(
+            row.get("production_gate_base_defer_to_final_commit_flip_count", 0) or 0
+        )
     result = {
         "ranker_top_decision_count": decision_count,
         "preference_override_count": override_count,
@@ -436,6 +463,17 @@ def aggregate_preference_diagnostics(
                 if gate_state_count
                 else 0.0
             ),
+            "mean_production_gate_base_commit_probability": (
+                gate_base_commit_probability_sum / gate_state_count if gate_state_count else 0.0
+            ),
+            "mean_production_gate_base_defer_probability": (
+                gate_base_defer_probability_sum / gate_state_count if gate_state_count else 0.0
+            ),
+            "mean_production_gate_commit_logit_boost": (
+                gate_commit_logit_boost_sum / gate_state_count if gate_state_count else 0.0
+            ),
+            "production_gate_residual_active_count": gate_residual_active_count,
+            "production_gate_base_defer_to_final_commit_flip_count": gate_flip_count,
         }
     )
     return result

@@ -1,0 +1,6 @@
+{
+  "extends": "e2_5_safe_monotone_flow_gate.json",
+  "experiment_name": "v7_e2_5_calibration_k2_seed101",
+  "seed": 101,
+  "training": {"episodes": 500}
+}

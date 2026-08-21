@@ -69,3 +69,21 @@ test/OOD/stress splits with:
 The generated fronts are empirical rollout fronts, not certified true Pareto
 fronts.  Hypervolume/diversity/controllability and canonical single-point
 quality are reported separately.
+
+## E2.5 safe monotone gate
+
+`configs/v7/e2_5_safe_monotone_flow_gate.json` is a from-scratch E2.5
+configuration (schema `4.6.0`, `parallel_envs=10`).  Its state-only base gate
+is exactly E2.4 for `w_flow <= 0.2`.  Only after three canonical feasibility
+successes is that base gate frozen and a positive-only
+`kappa * max(w_flow - 0.2, 0)` commit-logit residual enabled.  The defer logit
+and legal-action masks are unchanged.
+
+The preregistered calibration configurations are
+`e2_4_calibration_control_seed101.json` and
+`e2_5_calibration_k{1,2,3}_seed101.json`; run each at 500 episodes with the
+same final full-grid audit.  Select the smallest kappa satisfying both final
+audits, 440-candidate safety/coverage, 8/8/4 diversity, all three Spearman
+limits, and the 1% canonical-quality guard.  Do not expose test/OOD/stress
+sets during this selection.  Summary checkpoint references are run-relative;
+`train.resolve_summary_checkpoint` also accepts legacy absolute values.
