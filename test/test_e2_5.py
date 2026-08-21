@@ -6,6 +6,7 @@ import pytest
 from agent.ppo import PPOAgent, build_actor_critic
 from configs import load_config, project_path
 from data import load_instance_pickle
+from data.dataset import validate_seed_configuration
 from environment import AssemblySchedulingEnv
 from result import result_schema_version
 from train import resolve_summary_checkpoint
@@ -29,8 +30,13 @@ def test_e2_5_config_and_scales_are_bounded() -> None:
     for name, scale in (("k1", 1.0), ("k2", 2.0), ("k3", 3.0)):
         calibration = load_config(f"configs/v7/e2_5_calibration_{name}_seed101.json")
         assert calibration["seed"] == 101
+        assert calibration["algorithm_seeds"] == [101]
         assert calibration["training"]["episodes"] == 500
         assert calibration["network"]["production_gate"]["flow_commit_residual"]["scale"] == scale
+        validate_seed_configuration(calibration)
+    control = load_config("configs/v7/e2_4_calibration_control_seed101.json")
+    assert control["algorithm_seeds"] == [101]
+    validate_seed_configuration(control)
 
 
 def test_e2_5_gate_is_identical_at_low_flow_and_monotone_above_threshold() -> None:

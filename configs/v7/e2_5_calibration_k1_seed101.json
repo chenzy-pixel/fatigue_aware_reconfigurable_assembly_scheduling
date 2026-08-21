@@ -2,6 +2,7 @@
   "extends": "e2_5_safe_monotone_flow_gate.json",
   "experiment_name": "v7_e2_5_calibration_k1_seed101",
   "seed": 101,
+  "algorithm_seeds": [101],
   "training": {"episodes": 500},
   "network": {"production_gate": {"version": "state_only_monotone_flow_commit_gate_v2", "preference_conditioning": false, "tie_break": "commit", "freeze_base_after_feasibility": true, "flow_commit_residual": {"enabled": true, "activation_threshold": 0.2, "scale": 1.0, "apply_during_feasibility": false}}}
 }

@@ -2,5 +2,6 @@
   "extends": "e2_4_neutral_gate_safe_variance.json",
   "experiment_name": "v7_e2_4_calibration_control_seed101",
   "seed": 101,
+  "algorithm_seeds": [101],
   "training": {"parallel_envs": 10, "episodes": 500}
 }
