@@ -48,7 +48,9 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
+        # Result CSVs use a UTF-8 BOM for Excel/PowerShell interoperability.
+        # ``utf-8-sig`` also accepts BOM-free UTF-8 files.
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
             return list(csv.DictReader(handle))
     except FileNotFoundError as error:
         raise ValueError(f"missing required file: {path}") from error

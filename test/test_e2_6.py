@@ -226,7 +226,9 @@ def _write_audit_run(tmp_path, name, *, coefficient=None, quality=1.0):
         encoding="utf-8",
     )
     rows = [_audit_row(quality=quality), _audit_row(quality=quality)]
-    with (run / "pareto_validation_log.csv").open("w", newline="", encoding="utf-8") as handle:
+    with (run / "pareto_validation_log.csv").open(
+        "w", newline="", encoding="utf-8-sig"
+    ) as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
