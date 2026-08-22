@@ -227,9 +227,11 @@ def audit_manifest(manifest_path: Path) -> dict[str, Any]:
     control_value = manifest.get("e2_4_control_run")
     control: RunAudit | None = None
     if control_value not in (None, ""):
-        control = _audit_run(
-            Path(str(control_value)), coefficient=None, is_control=True
-        )
+        control_path = Path(str(control_value))
+        if control_path.exists():
+            control = _audit_run(
+                control_path, coefficient=None, is_control=True
+            )
     if not base_passing:
         status = "stopped"
         selected = None

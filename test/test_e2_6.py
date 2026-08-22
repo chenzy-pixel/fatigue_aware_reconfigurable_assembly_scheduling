@@ -257,6 +257,21 @@ def test_e2_6_auditor_selects_smallest_and_waits_for_control(tmp_path) -> None:
     assert pending["status"] == "guard_pending"
     assert not pending["formal_seed_training_authorized"]
 
+    manifest.write_text(
+        json.dumps(
+            {
+                "e2_4_control_run": str(tmp_path / "not_synced"),
+                "candidates": {
+                    key: str(value) for key, value in candidates.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    missing = audit_manifest(manifest)
+    assert missing["status"] == "guard_pending"
+    assert not missing["control_available"]
+
 
 def test_e2_6_auditor_stops_on_guard_failure_and_rejects_hidden_data(tmp_path) -> None:
     control = _write_audit_run(tmp_path, "control", quality=1.0)
