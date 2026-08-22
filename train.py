@@ -73,6 +73,13 @@ PARETO_PROMOTION_MODES = frozenset(
         "pareto_guarded_e2_3_v1",
         "pareto_guarded_e2_4_v1",
         "pareto_guarded_e2_5_v1",
+        "pareto_guarded_e2_6_v1",
+    }
+)
+POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS = frozenset(
+    {
+        "state_only_monotone_flow_commit_gate_v2",
+        "state_only_counterfactual_monotone_flow_commit_gate_v3",
     }
 )
 
@@ -83,7 +90,12 @@ def _checkpoint_eligible_validation_event(event: str, promotion: str) -> bool:
         or (
             event == "transition"
             and promotion
-            not in {"pareto_guarded_e2_3_v1", "pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}
+            not in {
+                "pareto_guarded_e2_3_v1",
+                "pareto_guarded_e2_4_v1",
+                "pareto_guarded_e2_5_v1",
+                "pareto_guarded_e2_6_v1",
+            }
         )
     )
 
@@ -182,6 +194,12 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         "minimum_mean_nondominated_count": float(
             raw.get("minimum_mean_nondominated_count", 0.0)
         ),
+        "required_counterfactual_instance_coverage": int(
+            raw.get("required_counterfactual_instance_coverage", 0)
+        ),
+        "minimum_counterfactual_high_flow_flip_rate": float(
+            raw.get("minimum_counterfactual_high_flow_flip_rate", 0.0)
+        ),
         "maximum_preference_response_spearman_flow": float(
             raw.get("maximum_preference_response_spearman_flow", 0.0)
         ),
@@ -211,6 +229,7 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         "required_full_grid_instance_count",
         "required_full_grid_preference_count",
         "required_full_grid_candidate_count",
+        "required_counterfactual_instance_coverage",
     ):
         if int(settings[name]) < 0:
             raise ValueError(f"pareto_promotion.{name} must be non-negative")
@@ -222,6 +241,7 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         "minimum_mean_unique_action_trace_count",
         "minimum_mean_unique_objective_count",
         "minimum_mean_nondominated_count",
+        "minimum_counterfactual_high_flow_flip_rate",
     ):
         value = float(settings[name])
         if not math.isfinite(value) or value < 0.0:
@@ -431,7 +451,19 @@ def _pareto_snapshot(
                 "quality_checkpoint_promotion", ""
             )
         )
-        in {"pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}
+        in {
+            "pareto_guarded_e2_4_v1",
+            "pareto_guarded_e2_5_v1",
+            "pareto_guarded_e2_6_v1",
+        }
+    )
+    e2_6_mode = (
+        str(
+            config["training"]["two_stage"].get(
+                "quality_checkpoint_promotion", ""
+            )
+        )
+        == "pareto_guarded_e2_6_v1"
     )
     required_instances = int(
         pareto_settings["required_full_grid_instance_count"]
@@ -571,6 +603,71 @@ def _pareto_snapshot(
     )
     low_flow_rows = [row for row in rows if float(row.get("w_flow", 1.0)) <= 0.2]
     low_flow_safety_pass = _rows_are_safe(low_flow_rows, fatigue_tolerance)
+    counterfactual_key = _preference_key(
+        PreferenceVector(0.2, 0.4, 0.4)
+    )
+    counterfactual_rows = [
+        row
+        for row in rows
+        if str(row.get("preference_key")) == counterfactual_key
+    ]
+    counterfactual_eligible_by_instance = {
+        instance_id: sum(
+            int(row.get("counterfactual_eligible_state_count", 0) or 0)
+            for row in instance_rows
+        )
+        for instance_id, instance_rows in (
+            (
+                instance_id,
+                [
+                    row
+                    for row in counterfactual_rows
+                    if str(row.get("instance_id")) == instance_id
+                ],
+            )
+            for instance_id in expected_instances
+        )
+    }
+    counterfactual_eligible_count = sum(
+        counterfactual_eligible_by_instance.values()
+    )
+    counterfactual_flip_count = sum(
+        int(row.get("counterfactual_high_flow_commit_flip_count", 0) or 0)
+        for row in counterfactual_rows
+    )
+    counterfactual_instance_coverage = sum(
+        count > 0 for count in counterfactual_eligible_by_instance.values()
+    )
+    counterfactual_flip_rate = (
+        counterfactual_flip_count / counterfactual_eligible_count
+        if counterfactual_eligible_count
+        else 0.0
+    )
+    counterfactual_identity_violation_count = sum(
+        int(row.get("counterfactual_low_flow_identity_violation_count", 0) or 0)
+        for row in counterfactual_rows
+    )
+    counterfactual_monotonicity_violation_count = sum(
+        int(row.get("counterfactual_monotonicity_violation_count", 0) or 0)
+        for row in counterfactual_rows
+    )
+    counterfactual_gate_pass = bool(
+        not e2_6_mode
+        or (
+            full_grid
+            and counterfactual_instance_coverage
+            >= int(pareto_settings["required_counterfactual_instance_coverage"])
+            and counterfactual_flip_rate
+            >= float(
+                pareto_settings[
+                    "minimum_counterfactual_high_flow_flip_rate"
+                ]
+            )
+            - 1e-12
+            and counterfactual_identity_violation_count == 0
+            and counterfactual_monotonicity_violation_count == 0
+        )
+    )
     return {
         "scope": scope,
         "update_id": int(update_id),
@@ -596,6 +693,18 @@ def _pareto_snapshot(
             if low_flow_rows else 0.0
         ),
         "low_flow_safety_pass": low_flow_safety_pass,
+        "counterfactual_preference_key": counterfactual_key,
+        "counterfactual_eligible_state_count": counterfactual_eligible_count,
+        "counterfactual_high_flow_commit_flip_count": counterfactual_flip_count,
+        "counterfactual_high_flow_commit_flip_rate": counterfactual_flip_rate,
+        "counterfactual_instance_coverage": counterfactual_instance_coverage,
+        "counterfactual_low_flow_identity_violation_count": (
+            counterfactual_identity_violation_count
+        ),
+        "counterfactual_monotonicity_violation_count": (
+            counterfactual_monotonicity_violation_count
+        ),
+        "counterfactual_gate_pass": counterfactual_gate_pass,
         **preference_diagnostics,
         **aggregate_matching_recovery_diagnostics(rows),
         "all_safe": _rows_are_safe(rows, fatigue_tolerance),
@@ -777,13 +886,15 @@ class TrainingPhaseController:
             "pareto_guarded_e2_3_v1",
             "pareto_guarded_e2_4_v1",
             "pareto_guarded_e2_5_v1",
+            "pareto_guarded_e2_6_v1",
         }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
                 "'completion_only', 'score_improving', or "
                 "'constrained_weighted', 'aligned_quality', "
                 "'balanced_guarded_v7', 'pareto_guarded_e2_v1', or "
-                "'pareto_guarded_e2_3_v1', 'pareto_guarded_e2_4_v1', or 'pareto_guarded_e2_5_v1'"
+                "'pareto_guarded_e2_3_v1', 'pareto_guarded_e2_4_v1', "
+                "'pareto_guarded_e2_5_v1', or 'pareto_guarded_e2_6_v1'"
             )
         constraints: dict[str, float] = {}
         if promotion in {"constrained_weighted", "balanced_guarded_v7"}:
@@ -828,7 +939,11 @@ class TrainingPhaseController:
                 name: float(value)
                 for name, value in _pareto_promotion_settings(config).items()
             }
-        if promotion in {"pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}:
+        if promotion in {
+            "pareto_guarded_e2_4_v1",
+            "pareto_guarded_e2_5_v1",
+            "pareto_guarded_e2_6_v1",
+        }:
             worker_control = config["environment"].get(
                 "worker_resource_control", {}
             )
@@ -840,7 +955,7 @@ class TrainingPhaseController:
                 or not bool(worker_control.get("preserve_matching_on_worker_action"))
             ):
                 raise ValueError(
-                    "E2.4/E2.5 requires matching_admission_recovery_v2 with "
+                    "E2.4/E2.5/E2.6 requires matching_admission_recovery_v2 with "
                     "full matching preservation"
                 )
         if not bool(settings["quality_validate_every_update"]):
@@ -1032,7 +1147,10 @@ class TrainingPhaseController:
         e2_5_mode = (
             self.quality_checkpoint_promotion == "pareto_guarded_e2_5_v1"
         )
-        strict_pareto_mode = e2_3_mode or e2_4_mode or e2_5_mode
+        e2_6_mode = (
+            self.quality_checkpoint_promotion == "pareto_guarded_e2_6_v1"
+        )
+        strict_pareto_mode = e2_3_mode or e2_4_mode or e2_5_mode or e2_6_mode
         preference_response_pass = bool(
             snapshot.get("preference_response_pass", True)
         )
@@ -1072,8 +1190,9 @@ class TrainingPhaseController:
             and (coverage_pass if strict_pareto_mode else True)
             and (controllability_pass if strict_pareto_mode else True)
             and (worker_direct_preference_pass if strict_pareto_mode else True)
-            and (preference_response_pass if (e2_4_mode or e2_5_mode) else True)
-            and (bool(snapshot.get("low_flow_safety_pass", True)) if e2_5_mode else True)
+            and (preference_response_pass if (e2_4_mode or e2_5_mode or e2_6_mode) else True)
+            and (bool(snapshot.get("low_flow_safety_pass", True)) if (e2_5_mode or e2_6_mode) else True)
+            and (bool(snapshot.get("counterfactual_gate_pass", True)) if e2_6_mode else True)
             and hv_pass
             and canonical_pass
         )
@@ -1090,8 +1209,9 @@ class TrainingPhaseController:
                 or (strict_pareto_mode and not coverage_pass)
                 or (strict_pareto_mode and not controllability_pass)
                 or (strict_pareto_mode and not worker_direct_preference_pass)
-                or ((e2_4_mode or e2_5_mode) and not preference_response_pass)
-                or (e2_5_mode and not bool(snapshot.get("low_flow_safety_pass", False)))
+                or ((e2_4_mode or e2_5_mode or e2_6_mode) and not preference_response_pass)
+                or ((e2_5_mode or e2_6_mode) and not bool(snapshot.get("low_flow_safety_pass", False)))
+                or (e2_6_mode and not bool(snapshot.get("counterfactual_gate_pass", False)))
             )
             event = "rejected" if hard_rejection else "not_promoted"
             reason = (
@@ -1104,9 +1224,11 @@ class TrainingPhaseController:
                 else "worker_direct_preference_not_zero"
                 if strict_pareto_mode and not worker_direct_preference_pass
                 else "preference_response_direction_failed"
-                if (e2_4_mode or e2_5_mode) and not preference_response_pass
+                if (e2_4_mode or e2_5_mode or e2_6_mode) and not preference_response_pass
                 else "low_flow_safety_failed"
-                if e2_5_mode and not bool(snapshot.get("low_flow_safety_pass", False))
+                if (e2_5_mode or e2_6_mode) and not bool(snapshot.get("low_flow_safety_pass", False))
+                else "counterfactual_gate_failed"
+                if e2_6_mode and not bool(snapshot.get("counterfactual_gate_pass", False))
                 else "hypervolume_not_improved"
                 if not hv_pass
                 else "canonical_quality_guard_failed"
@@ -1127,6 +1249,15 @@ class TrainingPhaseController:
             ),
             "promotion_preference_response_pass": preference_response_pass,
             "promotion_low_flow_safety_pass": bool(snapshot.get("low_flow_safety_pass", True)),
+            "promotion_counterfactual_gate_pass": bool(
+                snapshot.get("counterfactual_gate_pass", True)
+            ),
+            "promotion_counterfactual_instance_coverage": int(
+                snapshot.get("counterfactual_instance_coverage", 0)
+            ),
+            "promotion_counterfactual_high_flow_flip_rate": float(
+                snapshot.get("counterfactual_high_flow_commit_flip_rate", 0.0)
+            ),
             "promotion_unique_action_trace_pass": bool(
                 snapshot.get("unique_action_trace_pass", True)
             ),
@@ -1549,6 +1680,7 @@ class TrainingPhaseController:
             "pareto_guarded_e2_3_v1",
             "pareto_guarded_e2_4_v1",
             "pareto_guarded_e2_5_v1",
+            "pareto_guarded_e2_6_v1",
         }:
             result.update(
                 {
@@ -1599,7 +1731,11 @@ class ParetoSafetyGuard:
                 "quality_checkpoint_promotion", ""
             )
         )
-        if promotion not in {"pareto_guarded_e2_4_v1", "pareto_guarded_e2_5_v1"}:
+        if promotion not in {
+            "pareto_guarded_e2_4_v1",
+            "pareto_guarded_e2_5_v1",
+            "pareto_guarded_e2_6_v1",
+        }:
             return None
         settings = _pareto_promotion_settings(config)
         return cls(
@@ -3409,7 +3545,7 @@ def train(
                 "training batch contains no policy transitions after "
                 "forced action compression"
             )
-        losses = agent.update(buffer)
+        losses = agent.update(buffer, reward_phase=reward_phase)
         update_time = time.perf_counter() - update_start
         metrics = episode_rollout.metrics
         expected_reward = episode_rollout.expected_reward
@@ -3670,7 +3806,7 @@ def train(
             if validation_event == "transition":
                 if (
                     getattr(agent.network, "production_gate_version", "none")
-                    == "state_only_monotone_flow_commit_gate_v2"
+                    in POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS
                 ):
                     agent.network.set_production_state_gate_frozen(True)
                     agent.network.set_production_flow_commit_residual_enabled(True)
@@ -3724,7 +3860,7 @@ def train(
                 )
                 if (
                     getattr(agent.network, "production_gate_version", "none")
-                    == "state_only_monotone_flow_commit_gate_v2"
+                    in POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS
                 ):
                     agent.network.set_production_state_gate_frozen(True)
                     agent.network.set_production_flow_commit_residual_enabled(True)
@@ -4214,7 +4350,7 @@ def _train_parallel(
                     "training batch contains no policy transitions after "
                     "forced action compression"
                 )
-            losses = agent.update(rollout.buffer)
+            losses = agent.update(rollout.buffer, reward_phase=reward_phase)
             update_time = time.perf_counter() - update_start
             update_id += 1
             if reward_phase == "quality":
@@ -4516,6 +4652,7 @@ def _train_parallel(
                                 "pareto_guarded_e2_3_v1",
                                 "pareto_guarded_e2_4_v1",
                                 "pareto_guarded_e2_5_v1",
+                                "pareto_guarded_e2_6_v1",
                             }
                         ):
                             anchor_event = "audit_only"
@@ -4602,6 +4739,7 @@ def _train_parallel(
                                 "pareto_guarded_e2_3_v1",
                                 "pareto_guarded_e2_4_v1",
                                 "pareto_guarded_e2_5_v1",
+                                "pareto_guarded_e2_6_v1",
                             }
                             and phase_controller.phase == "quality"
                         ):
@@ -4837,7 +4975,7 @@ def _train_parallel(
                 is_new_best = False
                 if transitioned_now:
                     gate = getattr(agent.network, "production_gate_version", "none")
-                    if gate == "state_only_monotone_flow_commit_gate_v2":
+                    if gate in POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS:
                         agent.network.set_production_state_gate_frozen(True)
                         agent.network.set_production_flow_commit_residual_enabled(True)
                     transition_metadata = {
@@ -4918,7 +5056,7 @@ def _train_parallel(
                     agent.load(rollback_source[1], load_optimizer=True)
                     if (
                         getattr(agent.network, "production_gate_version", "none")
-                        == "state_only_monotone_flow_commit_gate_v2"
+                        in POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS
                     ):
                         agent.network.set_production_state_gate_frozen(True)
                         agent.network.set_production_flow_commit_residual_enabled(True)

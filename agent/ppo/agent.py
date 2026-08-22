@@ -14,6 +14,7 @@ from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.network import (
     ActorCriticNetwork,
     HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+    STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION,
     STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
     assert_network_config_matches_spec,
     infer_checkpoint_network_spec,
@@ -128,6 +129,18 @@ def summarize_policy_decision_diagnostics(
         == int(row.get("action_count", 0) or 0) - 1
         for row in gate_rows
     )
+    counterfactual_eligible_count = sum(
+        int(row.get("counterfactual_eligible_state", 0) or 0)
+        for row in gate_rows
+    )
+    counterfactual_flip_count = sum(
+        int(row.get("counterfactual_high_flow_commit_flip", 0) or 0)
+        for row in gate_rows
+    )
+    counterfactual_state_scales = [
+        float(row.get("counterfactual_state_residual_scale", 0.0) or 0.0)
+        for row in gate_rows
+    ]
     worker_direct_flow_max_abs = max(
         (
             float(row.get("worker_direct_preference_flow_logit_max_abs", 0.0))
@@ -285,6 +298,29 @@ def summarize_policy_decision_diagnostics(
         "production_gate_base_defer_to_final_commit_flip_count": sum(
             bool(row.get("production_gate_base_defer_to_final_commit_flip", False)) for row in gate_rows
         ),
+        "counterfactual_eligible_state_count": counterfactual_eligible_count,
+        "counterfactual_high_flow_commit_flip_count": counterfactual_flip_count,
+        "counterfactual_high_flow_commit_flip_rate": (
+            counterfactual_flip_count / counterfactual_eligible_count
+            if counterfactual_eligible_count
+            else 0.0
+        ),
+        "mean_counterfactual_state_residual_scale": (
+            sum(counterfactual_state_scales) / len(counterfactual_state_scales)
+            if counterfactual_state_scales
+            else 0.0
+        ),
+        "max_counterfactual_state_residual_scale": max(
+            counterfactual_state_scales, default=0.0
+        ),
+        "counterfactual_low_flow_identity_violation_count": sum(
+            int(row.get("counterfactual_low_flow_identity_violation", 0) or 0)
+            for row in gate_rows
+        ),
+        "counterfactual_monotonicity_violation_count": sum(
+            int(row.get("counterfactual_monotonicity_violation", 0) or 0)
+            for row in gate_rows
+        ),
     }
 
 
@@ -314,10 +350,58 @@ class PPOAgent:
         self.optimizer = torch.optim.Adam(
             self.network.parameters(), lr=config["learning_rate"]
         )
+        self.counterfactual_preference_consistency = (
+            self._validate_counterfactual_preference_consistency(config)
+        )
 
     @property
     def requires_graph_observation(self) -> bool:
         return bool(self.network.requires_graph_observation)
+
+    def _validate_counterfactual_preference_consistency(
+        self,
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw = config.get("counterfactual_preference_consistency", {})
+        if not isinstance(raw, dict):
+            raise TypeError("ppo.counterfactual_preference_consistency must be an object")
+        if not raw:
+            return {"enabled": False}
+        enabled = bool(raw.get("enabled", False))
+        if not enabled:
+            return {"enabled": False}
+        expected = {
+            "enabled",
+            "version",
+            "apply_during_phase",
+            "low_preference",
+            "high_preference",
+            "loss_coefficient",
+        }
+        if set(raw) != expected:
+            raise ValueError(
+                "E2.6 counterfactual preference consistency has an invalid schema"
+            )
+        if str(raw["version"]) != "production_gate_cross_zero_v1":
+            raise ValueError("E2.6 counterfactual preference consistency has an invalid version")
+        if str(raw["apply_during_phase"]) != "quality":
+            raise ValueError("E2.6 counterfactual loss must run only during quality")
+        if tuple(float(value) for value in raw["low_preference"]) != (0.2, 0.4, 0.4):
+            raise ValueError("E2.6 low counterfactual preference must be (0.2, 0.4, 0.4)")
+        if tuple(float(value) for value in raw["high_preference"]) != (1.0, 0.0, 0.0):
+            raise ValueError("E2.6 high counterfactual preference must be (1, 0, 0)")
+        coefficient = float(raw["loss_coefficient"])
+        if not math.isfinite(coefficient) or coefficient <= 0.0:
+            raise ValueError("E2.6 counterfactual loss coefficient must be finite and positive")
+        if getattr(self.network, "production_gate_version", None) != (
+            STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION
+        ):
+            raise ValueError("E2.6 counterfactual loss requires the E2.6 production gate")
+        return {
+            "enabled": True,
+            "loss_coefficient": coefficient,
+            "apply_during_phase": "quality",
+        }
 
     @torch.no_grad()
     def act(
@@ -462,7 +546,102 @@ class PPOAgent:
         )
         return [float(value) for value in values.cpu().tolist()]
 
-    def update(self, buffer: RolloutBuffer) -> dict[str, float]:
+    def _counterfactual_loss(
+        self,
+        transitions: Sequence[Any],
+        *,
+        reward_phase: str,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Return E2.6's quality-only cross-zero auxiliary loss.
+
+        ``counterfactual_production_gate_batch`` is deliberately restricted to
+        the frozen base gate and the E2.6 state residual head.  Consequently
+        this term cannot create gradients in the pair scorer, worker scorer,
+        critic, or graph encoder.
+        """
+
+        zero = next(self.network.parameters()).new_zeros(())
+        disabled_metrics = {
+            "counterfactual_eligible_count": 0.0,
+            "counterfactual_high_flow_commit_flip_count": 0.0,
+            "counterfactual_high_flow_commit_flip_rate": 0.0,
+            "counterfactual_state_scale_mean": 0.0,
+            "counterfactual_state_scale_max": 0.0,
+            "counterfactual_low_flow_identity_violation_count": 0.0,
+            "counterfactual_monotonicity_violation_count": 0.0,
+        }
+        settings = self.counterfactual_preference_consistency
+        if not settings["enabled"] or reward_phase != "quality":
+            return zero, disabled_metrics
+        if not bool(
+            getattr(self.network, "production_state_gate_frozen", False)
+        ) or not bool(
+            getattr(self.network, "production_flow_commit_residual_active", False)
+        ):
+            raise RuntimeError(
+                "E2.6 counterfactual loss requires a frozen active quality gate"
+            )
+        evaluator = getattr(
+            self.network, "counterfactual_production_gate_batch", None
+        )
+        if evaluator is None:
+            raise RuntimeError("E2.6 network lacks counterfactual gate support")
+        diagnostics = evaluator(
+            [transition.observation for transition in transitions],
+            [transition.action_mask for transition in transitions],
+            device=self.device,
+        )
+        eligible = diagnostics["eligible"]
+        if bool(eligible.any()):
+            loss = torch.relu(-diagnostics["high_margin"][eligible]).square().mean()
+        else:
+            loss = zero
+        production = torch.as_tensor(
+            [
+                getattr(transition.observation, "decision_type", None)
+                == DecisionType.PRODUCTION
+                for transition in transitions
+            ],
+            dtype=torch.bool,
+            device=self.device,
+        )
+        state_scales = diagnostics["state_scale"][production]
+        eligible_count = int(eligible.sum().detach().cpu())
+        flip_count = int(
+            diagnostics["high_flow_flip"].sum().detach().cpu()
+        )
+        return loss, {
+            "counterfactual_eligible_count": float(eligible_count),
+            "counterfactual_high_flow_commit_flip_count": float(flip_count),
+            "counterfactual_high_flow_commit_flip_rate": (
+                float(flip_count / eligible_count) if eligible_count else 0.0
+            ),
+            "counterfactual_state_scale_mean": (
+                float(state_scales.detach().mean().cpu())
+                if state_scales.numel()
+                else 0.0
+            ),
+            "counterfactual_state_scale_max": (
+                float(state_scales.detach().max().cpu())
+                if state_scales.numel()
+                else 0.0
+            ),
+            "counterfactual_low_flow_identity_violation_count": float(
+                diagnostics["low_flow_identity_violation"].sum()
+                .detach()
+                .cpu()
+            ),
+            "counterfactual_monotonicity_violation_count": float(
+                diagnostics["monotonicity_violation"].sum().detach().cpu()
+            ),
+        }
+
+    def update(
+        self,
+        buffer: RolloutBuffer,
+        *,
+        reward_phase: str = "legacy",
+    ) -> dict[str, float]:
         if not buffer.transitions:
             raise ValueError("cannot update PPO with an empty buffer")
         raw_advantages = torch.as_tensor(
@@ -508,6 +687,14 @@ class PPOAgent:
             "ratio_mean",
             "gradient_norm",
             "gradient_clipped_fraction",
+            "counterfactual_loss",
+            "counterfactual_eligible_count",
+            "counterfactual_high_flow_commit_flip_count",
+            "counterfactual_high_flow_commit_flip_rate",
+            "counterfactual_state_scale_mean",
+            "counterfactual_state_scale_max",
+            "counterfactual_low_flow_identity_violation_count",
+            "counterfactual_monotonicity_violation_count",
         )
         metrics: list[tuple[float, ...]] = []
         for _ in range(epochs):
@@ -581,10 +768,22 @@ class PPOAgent:
                 value_loss = functional.mse_loss(
                     value_prediction, return_values
                 )
+                counterfactual_loss, counterfactual_metrics = (
+                    self._counterfactual_loss(
+                        transitions,
+                        reward_phase=reward_phase,
+                    )
+                )
                 loss = (
                     policy_loss
                     + self.config["value_coefficient"] * value_loss
                     - self.config["entropy_coefficient"] * entropy
+                    + float(
+                        self.counterfactual_preference_consistency.get(
+                            "loss_coefficient", 0.0
+                        )
+                    )
+                    * counterfactual_loss
                 )
                 if not bool(torch.isfinite(loss)):
                     raise FloatingPointError("non-finite PPO loss")
@@ -611,6 +810,22 @@ class PPOAgent:
                                 > float(self.config["max_grad_norm"])
                             ).item()
                         ),
+                        float(counterfactual_loss.detach().item()),
+                        counterfactual_metrics["counterfactual_eligible_count"],
+                        counterfactual_metrics[
+                            "counterfactual_high_flow_commit_flip_count"
+                        ],
+                        counterfactual_metrics[
+                            "counterfactual_high_flow_commit_flip_rate"
+                        ],
+                        counterfactual_metrics["counterfactual_state_scale_mean"],
+                        counterfactual_metrics["counterfactual_state_scale_max"],
+                        counterfactual_metrics[
+                            "counterfactual_low_flow_identity_violation_count"
+                        ],
+                        counterfactual_metrics[
+                            "counterfactual_monotonicity_violation_count"
+                        ],
                     )
                 )
         metric_array = np.asarray(metrics, dtype=np.float64)

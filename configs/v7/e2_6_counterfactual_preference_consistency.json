@@ -1,0 +1,61 @@
+{
+  "extends": "e2_4_neutral_gate_safe_variance.json",
+  "experiment_name": "v7_e2_6_counterfactual_preference_consistency",
+  "experiment_suite_version": "v7_e2_6_counterfactual_preference_protocol_v1",
+  "network": {
+    "production_gate": {
+      "version": "state_only_counterfactual_monotone_flow_commit_gate_v3",
+      "preference_conditioning": false,
+      "tie_break": "commit",
+      "freeze_base_after_feasibility": true,
+      "flow_commit_residual": {
+        "enabled": true,
+        "version": "bounded_state_scale_v1",
+        "activation_threshold": 0.2,
+        "initial_scale": 2.0,
+        "maximum_scale": 8.0,
+        "apply_during_feasibility": false
+      }
+    }
+  },
+  "ppo": {
+    "counterfactual_preference_consistency": {
+      "enabled": true,
+      "version": "production_gate_cross_zero_v1",
+      "apply_during_phase": "quality",
+      "low_preference": [0.2, 0.4, 0.4],
+      "high_preference": [1.0, 0.0, 0.0],
+      "loss_coefficient": 0.1
+    }
+  },
+  "training": {
+    "two_stage": {
+      "quality_checkpoint_promotion": "pareto_guarded_e2_6_v1",
+      "pareto_promotion": {
+        "anchor_validate_every_updates": 5,
+        "full_grid_validate_every_updates": 20,
+        "minimum_hv_improvement": 0.0001,
+        "canonical_relative_tolerance": 0.01,
+        "canonical_absolute_tolerance": 0.000001,
+        "fatigue_absolute_tolerance": 1e-9,
+        "required_full_grid_instance_count": 20,
+        "required_full_grid_preference_count": 22,
+        "required_full_grid_candidate_count": 440,
+        "minimum_mean_unique_action_trace_count": 8.0,
+        "minimum_mean_unique_objective_count": 8.0,
+        "minimum_mean_nondominated_count": 4.0,
+        "maximum_preference_response_spearman_flow": -0.05,
+        "maximum_preference_response_spearman_cost": -0.05,
+        "maximum_preference_response_spearman_variance": -0.05,
+        "required_counterfactual_instance_coverage": 20,
+        "minimum_counterfactual_high_flow_flip_rate": 0.25,
+        "safety_guard_consecutive_failures": 2,
+        "safety_guard_learning_rate_decay_factor": 0.5,
+        "safety_guard_minimum_learning_rate": 0.00001
+      }
+    }
+  },
+  "evaluation": {
+    "result_schema_version": "4.7.0"
+  }
+}

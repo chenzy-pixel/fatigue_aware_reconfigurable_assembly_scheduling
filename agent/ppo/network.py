@@ -484,6 +484,9 @@ STATE_ONLY_PRODUCTION_GATE_VERSION = "state_only_action_set_gate_v1"
 STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION = (
     "state_only_monotone_flow_commit_gate_v2"
 )
+STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION = (
+    "state_only_counterfactual_monotone_flow_commit_gate_v3"
+)
 STATE_ONLY_PRODUCTION_GATE_TIE_BREAK = "commit"
 PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
     "legal_candidate_count_norm",
@@ -824,6 +827,7 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
         if production_gate_version not in {
             STATE_ONLY_PRODUCTION_GATE_VERSION,
             STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+            STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION,
         }:
             raise ValueError(
                 "state-only hierarchical production actions require "
@@ -853,6 +857,38 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("E2.5 residual scale must be finite and positive")
             if bool(flow_commit_residual["apply_during_feasibility"]):
                 raise ValueError("E2.5 residual must be disabled during feasibility")
+        elif (
+            production_gate_version
+            == STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION
+        ):
+            if not production_gate_freeze_base_after_feasibility:
+                raise ValueError("E2.6 requires freezing the base gate after feasibility")
+            if set(flow_commit_residual) != {
+                "enabled",
+                "version",
+                "activation_threshold",
+                "initial_scale",
+                "maximum_scale",
+                "apply_during_feasibility",
+            }:
+                raise ValueError("E2.6 flow_commit_residual has an invalid schema")
+            threshold = float(flow_commit_residual["activation_threshold"])
+            initial_scale = float(flow_commit_residual["initial_scale"])
+            maximum_scale = float(flow_commit_residual["maximum_scale"])
+            if not bool(flow_commit_residual["enabled"]) or threshold != 0.2:
+                raise ValueError("E2.6 residual must be enabled at threshold 0.2")
+            if str(flow_commit_residual["version"]) != "bounded_state_scale_v1":
+                raise ValueError("E2.6 residual has an unsupported version")
+            if not (
+                np.isfinite(initial_scale)
+                and np.isfinite(maximum_scale)
+                and 0.0 < initial_scale < maximum_scale
+            ):
+                raise ValueError(
+                    "E2.6 residual scales must satisfy 0 < initial < maximum"
+                )
+            if bool(flow_commit_residual["apply_during_feasibility"]):
+                raise ValueError("E2.6 residual must be disabled during feasibility")
         elif production_gate_freeze_base_after_feasibility or flow_commit_residual:
             raise ValueError("E2.4 state-only gate does not accept E2.5 residual fields")
     elif production_gate_raw:
@@ -1621,6 +1657,7 @@ class HeteroGraphActorCritic(nn.Module):
                 self.production_gate_version not in {
                     STATE_ONLY_PRODUCTION_GATE_VERSION,
                     STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+                    STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION,
                 }
                 or self.production_gate_preference_conditioning
                 or self.production_gate_tie_break
@@ -1810,6 +1847,26 @@ class HeteroGraphActorCritic(nn.Module):
         )
         if self.production_state_gate is not None:
             self._initialize_zero_context_output(self.production_state_gate)
+        self.production_flow_commit_residual_state = (
+            _head(
+                len(PRODUCTION_ACTION_SET_FEATURE_NAMES),
+                self.hidden_dim,
+                self.dropout_probability,
+            )
+            if self.production_gate_version
+            == STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION
+            else None
+        )
+        if self.production_flow_commit_residual_state is not None:
+            self._initialize_bounded_state_scale_output(
+                self.production_flow_commit_residual_state,
+                initial_scale=float(
+                    self.production_gate_flow_commit_residual["initial_scale"]
+                ),
+                maximum_scale=float(
+                    self.production_gate_flow_commit_residual["maximum_scale"]
+                ),
+            )
         self._latest_policy_decision_diagnostics: list[dict[str, Any]] = []
 
     def network_spec(self) -> dict[str, Any]:
@@ -1890,7 +1947,11 @@ class HeteroGraphActorCritic(nn.Module):
                                 "base_gate_frozen": self.production_state_gate_frozen,
                                 "residual_active": self.production_flow_commit_residual_active,
                             }
-                            if self.production_gate_version == STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION
+                            if self.production_gate_version
+                            in {
+                                STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+                                STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+                            }
                             else {
                                 "version": self.production_gate_version,
                                 "preference_conditioning": self.production_gate_preference_conditioning,
@@ -2077,6 +2138,7 @@ class HeteroGraphActorCritic(nn.Module):
                 production_gate_logits = None
                 production_gate_base_logits = None
                 production_gate_logit_boost = None
+                production_gate_state_scale = None
                 if (
                     self.production_action_semantics
                     == STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
@@ -2088,10 +2150,18 @@ class HeteroGraphActorCritic(nn.Module):
                             device=device,
                         )
                     )
+                    production_gate_state_scale = (
+                        self._production_flow_commit_residual_scale(
+                            observation,
+                            dtype=global_embeddings.dtype,
+                            device=device,
+                        )
+                    )
                     production_gate_logits, production_gate_logit_boost = (
                         self._final_production_gate_logits(
                             production_gate_base_logits,
                             preference_values[batch_index],
+                            state_scale=production_gate_state_scale,
                         )
                     )
                 pair_logits, commit_set_logit = self._production_logits(
@@ -2105,6 +2175,7 @@ class HeteroGraphActorCritic(nn.Module):
                     production_gate_logits=production_gate_logits,
                     production_gate_base_logits=production_gate_base_logits,
                     production_gate_logit_boost=production_gate_logit_boost,
+                    production_gate_state_scale=production_gate_state_scale,
                     device=device,
                 )
                 if (
@@ -2307,8 +2378,10 @@ class HeteroGraphActorCritic(nn.Module):
         self,
         base_logits: torch.Tensor,
         preference: torch.Tensor,
+        *,
+        state_scale: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply E2.5's positive-only flow residual to the commit logit."""
+        """Apply E2.5/E2.6's positive-only flow residual to commit."""
 
         if base_logits.shape != (2,) or preference.shape != (3,):
             raise ValueError("production gate logits or preference shape is invalid")
@@ -2323,7 +2396,174 @@ class HeteroGraphActorCritic(nn.Module):
             )
             scale = float(self.production_gate_flow_commit_residual["scale"])
             boost = scale * torch.clamp(preference[0] - threshold, min=0.0)
+        elif (
+            self.production_gate_version
+            == STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION
+            and self.production_flow_commit_residual_active
+        ):
+            if state_scale is None or state_scale.ndim != 0:
+                raise ValueError("E2.6 requires a scalar state residual scale")
+            threshold = float(
+                self.production_gate_flow_commit_residual["activation_threshold"]
+            )
+            boost = state_scale * torch.clamp(preference[0] - threshold, min=0.0)
         return base_logits + torch.stack((boost, boost.new_zeros(()))), boost
+
+    def _production_flow_commit_residual_scale(
+        self,
+        observation: HeterogeneousGraphObservation,
+        *,
+        dtype: torch.dtype,
+        device: torch.device | str,
+    ) -> torch.Tensor:
+        """Return E2.6's bounded non-negative state-dependent scale."""
+
+        if (
+            self.production_gate_version
+            != STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION
+        ):
+            return torch.zeros((), dtype=dtype, device=device)
+        if self.production_flow_commit_residual_state is None:
+            raise RuntimeError("E2.6 state residual head is not initialized")
+        if tuple(observation.action_set_feature_names) != (
+            PRODUCTION_ACTION_SET_FEATURE_NAMES
+        ):
+            raise ValueError(
+                "production action-set feature schema does not match v7"
+            )
+        features = torch.as_tensor(
+            observation.action_set_features,
+            dtype=dtype,
+            device=device,
+        )
+        if features.shape != (len(PRODUCTION_ACTION_SET_FEATURE_NAMES),):
+            raise ValueError("production action-set feature vector has wrong width")
+        maximum_scale = float(
+            self.production_gate_flow_commit_residual["maximum_scale"]
+        )
+        return maximum_scale * torch.sigmoid(
+            self.production_flow_commit_residual_state(features).reshape(())
+        )
+
+    def counterfactual_production_gate_batch(
+        self,
+        observations: Sequence[HeterogeneousGraphObservation],
+        action_masks: Sequence[np.ndarray | torch.Tensor],
+        *,
+        device: torch.device | str,
+    ) -> dict[str, torch.Tensor]:
+        """Evaluate E2.6 low/high-flow gates on identical production states.
+
+        The returned tensors align with ``observations``.  An entry is eligible
+        exactly when both gate choices are legal and the frozen base gate would
+        greedily defer.  The helper deliberately touches only the base/state
+        gate path, so its auxiliary loss cannot update pair, worker, critic or
+        graph-encoder parameters.
+        """
+
+        count = len(observations)
+        if count != len(action_masks):
+            raise ValueError("counterfactual observations and masks must align")
+        if (
+            self.production_gate_version
+            != STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION
+        ):
+            zeros = torch.zeros((count,), dtype=torch.float32, device=device)
+            return {
+                "base_margin": zeros,
+                "low_margin": zeros,
+                "high_margin": zeros,
+                "state_scale": zeros,
+                "eligible": torch.zeros((count,), dtype=torch.bool, device=device),
+                "high_flow_commit": torch.zeros((count,), dtype=torch.bool, device=device),
+                "high_flow_flip": torch.zeros((count,), dtype=torch.bool, device=device),
+                "low_flow_identity_violation": torch.zeros((count,), dtype=torch.bool, device=device),
+                "monotonicity_violation": torch.zeros((count,), dtype=torch.bool, device=device),
+            }
+        parameter = next(self.parameters())
+        low_preference = parameter.new_tensor((0.2, 0.4, 0.4))
+        high_preference = parameter.new_tensor((1.0, 0.0, 0.0))
+        base_margins: list[torch.Tensor] = []
+        low_margins: list[torch.Tensor] = []
+        high_margins: list[torch.Tensor] = []
+        scales: list[torch.Tensor] = []
+        eligible_values: list[bool] = []
+        high_commit_values: list[bool] = []
+        identity_values: list[bool] = []
+        monotonicity_values: list[bool] = []
+        for observation, action_mask in zip(observations, action_masks):
+            if observation.decision_type != DecisionType.PRODUCTION:
+                zero = parameter.new_zeros(())
+                base_margins.append(zero)
+                low_margins.append(zero)
+                high_margins.append(zero)
+                scales.append(zero)
+                eligible_values.append(False)
+                high_commit_values.append(False)
+                identity_values.append(False)
+                monotonicity_values.append(False)
+                continue
+            mask = self._validate_action_mask(action_mask, device=device)
+            base_logits = self._state_only_production_gate_logits(
+                observation,
+                dtype=parameter.dtype,
+                device=device,
+            )
+            state_scale = self._production_flow_commit_residual_scale(
+                observation,
+                dtype=parameter.dtype,
+                device=device,
+            )
+            low_logits, _ = self._final_production_gate_logits(
+                base_logits,
+                low_preference,
+                state_scale=state_scale,
+            )
+            high_logits, _ = self._final_production_gate_logits(
+                base_logits,
+                high_preference,
+                state_scale=state_scale,
+            )
+            base_margin = base_logits[0] - base_logits[1]
+            low_margin = low_logits[0] - low_logits[1]
+            high_margin = high_logits[0] - high_logits[1]
+            commit_legal = bool((~mask[:-1]).any().detach().cpu())
+            defer_legal = not bool(mask[-1].detach().cpu())
+            eligible = commit_legal and defer_legal and bool(
+                (base_margin < 0.0).detach().cpu()
+            )
+            high_commit = bool((high_margin >= 0.0).detach().cpu())
+            base_margins.append(base_margin)
+            low_margins.append(low_margin)
+            high_margins.append(high_margin)
+            scales.append(state_scale)
+            eligible_values.append(eligible)
+            high_commit_values.append(high_commit)
+            identity_values.append(
+                bool((low_margin - base_margin).abs().gt(1e-7).detach().cpu())
+            )
+            monotonicity_values.append(
+                bool((high_margin < low_margin - 1e-7).detach().cpu())
+            )
+        eligible = torch.as_tensor(eligible_values, dtype=torch.bool, device=device)
+        high_commit = torch.as_tensor(
+            high_commit_values, dtype=torch.bool, device=device
+        )
+        return {
+            "base_margin": torch.stack(base_margins),
+            "low_margin": torch.stack(low_margins),
+            "high_margin": torch.stack(high_margins),
+            "state_scale": torch.stack(scales),
+            "eligible": eligible,
+            "high_flow_commit": high_commit,
+            "high_flow_flip": eligible & high_commit,
+            "low_flow_identity_violation": torch.as_tensor(
+                identity_values, dtype=torch.bool, device=device
+            ),
+            "monotonicity_violation": torch.as_tensor(
+                monotonicity_values, dtype=torch.bool, device=device
+            ),
+        }
 
     def set_production_state_gate_frozen(self, frozen: bool) -> None:
         """Freeze the E2.5 state-only base gate without changing its value."""
@@ -2336,7 +2576,10 @@ class HeteroGraphActorCritic(nn.Module):
     def set_production_flow_commit_residual_enabled(self, enabled: bool) -> None:
         """Enable the E2.5 residual only after the feasibility transition."""
 
-        if self.production_gate_version != STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION:
+        if self.production_gate_version not in {
+            STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+            STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION,
+        }:
             if enabled:
                 raise ValueError("only E2.5 has a flow commit residual")
             return
@@ -2355,6 +2598,7 @@ class HeteroGraphActorCritic(nn.Module):
         production_gate_logits: torch.Tensor | None = None,
         production_gate_base_logits: torch.Tensor | None = None,
         production_gate_logit_boost: torch.Tensor | None = None,
+        production_gate_state_scale: torch.Tensor | None = None,
         device: torch.device | str,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         operation_count = operation_embeddings.shape[0]
@@ -2560,6 +2804,7 @@ class HeteroGraphActorCritic(nn.Module):
             production_gate_logits=production_gate_logits,
             production_gate_base_logits=production_gate_base_logits,
             production_gate_logit_boost=production_gate_logit_boost,
+            production_gate_state_scale=production_gate_state_scale,
         )
         return final_logits, commit_set_logit
 
@@ -2915,6 +3160,25 @@ class HeteroGraphActorCritic(nn.Module):
         nn.init.zeros_(output.bias)
 
     @staticmethod
+    def _initialize_bounded_state_scale_output(
+        scorer: nn.Sequential,
+        *,
+        initial_scale: float,
+        maximum_scale: float,
+    ) -> None:
+        """Initialize a state-scale head to the preregistered constant value."""
+
+        output = scorer[-1]
+        if not isinstance(output, nn.Linear):
+            raise TypeError("state-scale scorer must end in nn.Linear")
+        probability = float(initial_scale) / float(maximum_scale)
+        if not 0.0 < probability < 1.0:
+            raise ValueError("state-scale initialization must be strictly bounded")
+        with torch.no_grad():
+            nn.init.zeros_(output.weight)
+            output.bias.fill_(math.log(probability / (1.0 - probability)))
+
+    @staticmethod
     def _candidate_context_components(
         contextual_logits: torch.Tensor,
         feasible: torch.Tensor,
@@ -2964,6 +3228,7 @@ class HeteroGraphActorCritic(nn.Module):
         production_gate_logits: torch.Tensor | None = None,
         production_gate_base_logits: torch.Tensor | None = None,
         production_gate_logit_boost: torch.Tensor | None = None,
+        production_gate_state_scale: torch.Tensor | None = None,
         direct_preference_components: torch.Tensor | None = None,
     ) -> None:
         feasible = ~action_mask[:-1]
@@ -3005,6 +3270,12 @@ class HeteroGraphActorCritic(nn.Module):
         gate_base_defer_probability = 0.0
         gate_defer_to_commit_flip = False
         gate_logit_boost = 0.0
+        counterfactual_eligible = False
+        counterfactual_high_flow_flip = False
+        counterfactual_low_flow_identity_violation = False
+        counterfactual_monotonicity_violation = False
+        counterfactual_high_flow_margin = 0.0
+        counterfactual_state_scale = 0.0
         if production_gate_logits is not None:
             if production_gate_logits.shape != (2,):
                 raise ValueError("production gate logits must have shape (2,)")
@@ -3045,6 +3316,50 @@ class HeteroGraphActorCritic(nn.Module):
                 )
             if production_gate_logit_boost is not None:
                 gate_logit_boost = float(production_gate_logit_boost.detach().cpu())
+            if (
+                self.production_gate_version
+                == STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION
+                and production_gate_base_logits is not None
+            ):
+                if production_gate_state_scale is None:
+                    raise ValueError("E2.6 gate diagnostics require a state scale")
+                base_margin = (
+                    production_gate_base_logits[0]
+                    - production_gate_base_logits[1]
+                )
+                low_gate_logits, _ = self._final_production_gate_logits(
+                    production_gate_base_logits,
+                    production_gate_base_logits.new_tensor((0.2, 0.4, 0.4)),
+                    state_scale=production_gate_state_scale,
+                )
+                high_gate_logits, _ = self._final_production_gate_logits(
+                    production_gate_base_logits,
+                    production_gate_base_logits.new_tensor((1.0, 0.0, 0.0)),
+                    state_scale=production_gate_state_scale,
+                )
+                low_margin = low_gate_logits[0] - low_gate_logits[1]
+                high_margin = high_gate_logits[0] - high_gate_logits[1]
+                counterfactual_state_scale = float(
+                    production_gate_state_scale.detach().cpu()
+                )
+                counterfactual_high_flow_margin = float(
+                    high_margin.detach().cpu()
+                )
+                counterfactual_eligible = bool(
+                    feasible.any().detach().cpu()
+                    and (~action_mask[-1]).detach().cpu()
+                    and (base_margin < 0.0).detach().cpu()
+                )
+                counterfactual_high_flow_flip = bool(
+                    counterfactual_eligible
+                    and (high_margin >= 0.0).detach().cpu()
+                )
+                counterfactual_low_flow_identity_violation = bool(
+                    (low_margin - base_margin).abs().gt(1e-7).detach().cpu()
+                )
+                counterfactual_monotonicity_violation = bool(
+                    (high_margin < low_margin - 1e-7).detach().cpu()
+                )
 
         direct_component_max_abs = [0.0, 0.0, 0.0]
         if direct_preference_components is not None:
@@ -3103,6 +3418,18 @@ class HeteroGraphActorCritic(nn.Module):
                 ),
                 "production_gate_base_defer_to_final_commit_flip": (
                     decision_type == DecisionType.PRODUCTION and gate_defer_to_commit_flip
+                ),
+                "counterfactual_eligible_state": int(counterfactual_eligible),
+                "counterfactual_high_flow_commit_flip": int(
+                    counterfactual_high_flow_flip
+                ),
+                "counterfactual_high_flow_margin": counterfactual_high_flow_margin,
+                "counterfactual_state_residual_scale": counterfactual_state_scale,
+                "counterfactual_low_flow_identity_violation": int(
+                    counterfactual_low_flow_identity_violation
+                ),
+                "counterfactual_monotonicity_violation": int(
+                    counterfactual_monotonicity_violation
                 ),
                 "production_conditional_preference_overrode_relative_top": (
                     decision_type == DecisionType.PRODUCTION
