@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import math
 import time
 import traceback
 from collections.abc import Mapping, Sequence
@@ -18,6 +19,7 @@ from data.dataset import GeneratedInstanceRecord, OnlineInstanceDataset
 from data.models import AssemblyInstance
 from environment import (
     AssemblySchedulingEnv,
+    DecisionType,
     Observation,
     PolicyObservation,
     PreferenceInput,
@@ -193,7 +195,7 @@ class EpisodeRollout:
     def base_reward_sum(self) -> float:
         return self.reward_sum - float(
             self.reward_components.get("feasibility_shaping", 0.0)
-        )
+        ) - float(self.reward_components.get("defer_risk_shaping", 0.0))
 
     @property
     def policy_step_count(self) -> int:
@@ -882,6 +884,16 @@ class ParallelEpisodeRunner:
                     "truncation": 0.0,
                     "unfinished": 0.0,
                     "feasibility_shaping": 0.0,
+                    **(
+                        {"defer_risk_shaping": 0.0}
+                        if bool(
+                            self.config.get("environment", {})
+                            .get("production_defer", {})
+                            .get("shield", {})
+                            .get("enabled", False)
+                        )
+                        else {}
+                    ),
                 },
                 "step_count": response.environment_step_count,
                 "policy_step_count": 0,
@@ -1311,6 +1323,8 @@ class ParallelEpisodeRunner:
         deterministic: bool = True,
         sampling_seed: int | None = None,
         preference: PreferenceInput | None = None,
+        dual_legal_state_sink: list[tuple[Any, np.ndarray]] | None = None,
+        maximum_captured_dual_legal_states: int | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1377,6 +1391,29 @@ class ParallelEpisodeRunner:
                 masks = [
                     states[lane].action_mask for lane in lanes
                 ]
+                if dual_legal_state_sink is not None:
+                    limit = (
+                        math.inf
+                        if maximum_captured_dual_legal_states is None
+                        else int(maximum_captured_dual_legal_states)
+                    )
+                    if limit < 1:
+                        raise ValueError(
+                            "maximum_captured_dual_legal_states must be positive"
+                        )
+                    for observation, mask in zip(observations, masks):
+                        if len(dual_legal_state_sink) >= limit:
+                            break
+                        if (
+                            getattr(observation, "decision_type", None)
+                            == DecisionType.PRODUCTION
+                            and mask.size >= 2
+                            and bool((~mask[:-1]).any())
+                            and not bool(mask[-1])
+                        ):
+                            dual_legal_state_sink.append(
+                                (observation.copy(), mask.copy())
+                            )
                 if deterministic:
                     inference_start = time.perf_counter()
                     actions, _, _ = agent.act_batch(

@@ -10,6 +10,7 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -28,6 +29,7 @@ from configs.config import public_config
 from data.dataset import (
     GeneratedInstanceRecord,
     OnlineInstanceDataset,
+    load_dataset_split,
     validate_algorithm_seed,
 )
 from data.models import load_instance_yaml
@@ -74,6 +76,7 @@ PARETO_PROMOTION_MODES = frozenset(
         "pareto_guarded_e2_4_v1",
         "pareto_guarded_e2_5_v1",
         "pareto_guarded_e2_6_v1",
+        "pareto_guarded_e2_7_development_v1",
     }
 )
 POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS = frozenset(
@@ -95,6 +98,7 @@ def _checkpoint_eligible_validation_event(event: str, promotion: str) -> bool:
                 "pareto_guarded_e2_4_v1",
                 "pareto_guarded_e2_5_v1",
                 "pareto_guarded_e2_6_v1",
+                "pareto_guarded_e2_7_development_v1",
             }
         )
     )
@@ -200,6 +204,12 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         "minimum_counterfactual_high_flow_flip_rate": float(
             raw.get("minimum_counterfactual_high_flow_flip_rate", 0.0)
         ),
+        "minimum_centered_gate_extreme_flip_rate": float(
+            raw.get("minimum_centered_gate_extreme_flip_rate", 0.0)
+        ),
+        "maximum_canonical_heuristic_relative_gap": float(
+            raw.get("maximum_canonical_heuristic_relative_gap", 1.0)
+        ),
         "maximum_preference_response_spearman_flow": float(
             raw.get("maximum_preference_response_spearman_flow", 0.0)
         ),
@@ -242,6 +252,7 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
         "minimum_mean_unique_objective_count",
         "minimum_mean_nondominated_count",
         "minimum_counterfactual_high_flow_flip_rate",
+        "minimum_centered_gate_extreme_flip_rate",
     ):
         value = float(settings[name])
         if not math.isfinite(value) or value < 0.0:
@@ -280,12 +291,291 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
 
 def _pareto_anchor_preferences(config: dict) -> tuple[PreferenceVector, ...]:
     grouping = training_preference_group(config)
-    if grouping is None:
-        raise ValueError("Pareto promotion requires grouped preference training")
-    anchors = tuple(grouping["anchors"])
+    if grouping is not None:
+        anchors = tuple(grouping["anchors"])
+    else:
+        sampler = config.get("preference", {}).get("sampler", {})
+        raw_anchors = sampler.get("anchors") if isinstance(sampler, dict) else None
+        if not isinstance(raw_anchors, list):
+            raise ValueError(
+                "Pareto promotion without grouped training requires "
+                "preference.sampler.anchors"
+            )
+    heuristic_gap = float(settings["maximum_canonical_heuristic_relative_gap"])
+    if not math.isfinite(heuristic_gap) or not -1.0 <= heuristic_gap <= 1.0:
+        raise ValueError(
+            "pareto_promotion.maximum_canonical_heuristic_relative_gap must "
+            "be finite and in [-1, 1]"
+        )
+        anchors = tuple(PreferenceVector(*map(float, values)) for values in raw_anchors)
     if len(anchors) != 5:
-        raise ValueError("E2.1 Pareto promotion requires exactly five anchors")
+        raise ValueError("Pareto anchor validation requires exactly five anchors")
     return anchors
+
+
+def _e2_7_preference_stage(config: dict, update_number: int) -> str | None:
+    raw = config["training"].get("preference_stage_schedule")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError("training.preference_stage_schedule must be an object")
+    required = {
+        "enabled",
+        "version",
+        "gate_end_update",
+        "production_pair_end_update",
+        "final_update",
+    }
+    if set(raw) != required:
+        raise ValueError(
+            "training.preference_stage_schedule must contain exactly "
+            f"{sorted(required)}"
+        )
+    if not bool(raw["enabled"]):
+        return None
+    if str(raw["version"]) != "e1_centered_adapter_40_80_80_v1":
+        raise ValueError(
+            "training.preference_stage_schedule.version must be "
+            "'e1_centered_adapter_40_80_80_v1'"
+        )
+    gate_end = int(raw["gate_end_update"])
+    production_end = int(raw["production_pair_end_update"])
+    final_update = int(raw["final_update"])
+    if (gate_end, production_end, final_update) != (40, 120, 200):
+        raise ValueError("E2.7 stage schedule must be exactly 40/80/80 updates")
+    update_number = int(update_number)
+    if not 1 <= update_number <= final_update:
+        raise ValueError(
+            f"E2.7 update {update_number} is outside the configured 1..{final_update} budget"
+        )
+    if update_number <= gate_end:
+        return "gate"
+    if update_number <= production_end:
+        return "production_pair"
+    return "worker_variance"
+
+
+def _set_e2_7_preference_stage(agent: PPOAgent, config: dict, update_number: int) -> str | None:
+    stage = _e2_7_preference_stage(config, update_number)
+    if stage is not None:
+        setter = getattr(agent.network, "set_centered_preference_stage", None)
+        if setter is None:
+            raise RuntimeError("E2.7 stage schedule requires a centered preference adapter")
+        setter(stage)
+    return stage
+
+
+def _development_acceptance_enabled(config: dict) -> bool:
+    raw = config["training"].get("development_acceptance", {})
+    if not isinstance(raw, dict):
+        raise TypeError("training.development_acceptance must be an object")
+    return bool(raw.get("enabled", False))
+
+
+def _accepted_checkpoint_path(run_directory: Path, config: dict) -> Path:
+    if _development_acceptance_enabled(config):
+        return run_directory / "development_accepted_pareto_checkpoint.pt"
+    return run_directory / "accepted_checkpoint.pt"
+
+
+def _restore_e2_7_resume_provenance(
+    agent: PPOAgent,
+    metadata: dict[str, Any],
+    config: dict,
+) -> dict[str, Any] | None:
+    if not _development_acceptance_enabled(config):
+        return None
+    report = metadata.get("warm_start")
+    if not isinstance(report, dict):
+        raise ValueError("E2.7 resume checkpoint lacks warm-start provenance")
+    warm_settings = config["training"].get("warm_start", {})
+    required_source = project_path(
+        warm_settings["required_source_checkpoint"]
+    ).resolve()
+    reported_source = Path(str(report.get("source_checkpoint", ""))).resolve()
+    if reported_source != required_source:
+        raise ValueError("E2.7 resume checkpoint has the wrong E1 source")
+    expected_count = int(warm_settings["expected_shared_parameter_count"])
+    if int(report.get("loaded_shared_parameter_count", -1)) != expected_count:
+        raise ValueError("E2.7 resume checkpoint has invalid shared-parameter provenance")
+    agent.restore_e1_teacher_from_warm_start_report(report)
+    return dict(report)
+
+
+def _e2_3_failure_replay_cells(
+    config: dict,
+) -> tuple[tuple[str, PreferenceVector], ...]:
+    raw = config["training"].get("e2_3_failure_replay")
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise TypeError("training.e2_3_failure_replay must be an object")
+    if not bool(raw.get("enabled", False)):
+        return ()
+    if str(raw.get("version")) != "e2_3_update200_low_flow_10_v1":
+        raise ValueError("unsupported E2.3 failure replay version")
+    if int(raw.get("every_updates", 0)) != 5:
+        raise ValueError("E2.3 failure replay must run every five updates")
+    cells = raw.get("cells")
+    if not isinstance(cells, list) or len(cells) != 10:
+        raise ValueError("E2.3 failure replay requires exactly ten cells")
+    normalized = tuple(
+        (str(cell[0]), PreferenceVector(*map(float, cell[1])))
+        for cell in cells
+    )
+    if any(preference.flow > 0.2 + 1e-12 for _, preference in normalized):
+        raise ValueError("E2.3 failure replay cells must all be low-flow")
+    return normalized
+
+
+def _evaluate_e2_3_failure_replay(
+    config: dict,
+    *,
+    agent: PPOAgent,
+    runner: ParallelEpisodeRunner,
+    update_id: int,
+) -> tuple[list[dict], dict[str, object]]:
+    cells = _e2_3_failure_replay_cells(config)
+    if not cells:
+        return [], {"enabled": False, "pass": True}
+    dataset = load_dataset_split(config, "validation")
+    records_by_id = {record.instance.instance_id: record for record in dataset}
+    rows: list[dict] = []
+    for instance_id, preference in cells:
+        if instance_id not in records_by_id:
+            raise ValueError(f"E2.3 replay instance is missing: {instance_id}")
+        rollout = runner.evaluate_records(
+            agent,
+            [records_by_id[instance_id]],
+            max_parallelism=1,
+            deterministic=True,
+            preference=preference,
+        )[0]
+        metrics = rollout.metrics
+        safe = bool(
+            metrics.get("terminated", False)
+            and not metrics.get("truncated", False)
+            and not metrics.get("schedule_violations", [])
+            and float(metrics.get("maximum_worker_fatigue", math.inf))
+            <= float(metrics.get("safe_fatigue_limit", -math.inf)) + 1e-9
+        )
+        rows.append(
+            {
+                "update_id": int(update_id),
+                "instance_id": instance_id,
+                "preference_key": _preference_key(preference),
+                "w_flow": preference.flow,
+                "w_cost": preference.cost,
+                "w_variance": preference.variance,
+                "terminated": bool(metrics.get("terminated", False)),
+                "truncated": bool(metrics.get("truncated", False)),
+                "terminal_reason": metrics.get("terminal_reason"),
+                "maximum_worker_fatigue": metrics.get(
+                    "maximum_worker_fatigue"
+                ),
+                "schedule_violation_count": len(
+                    metrics.get("schedule_violations", [])
+                ),
+                "production_defer_shield_masked_count": metrics.get(
+                    "production_defer_shield_masked_count", 0
+                ),
+                "production_defer_shield_reason_counts": json.dumps(
+                    metrics.get("production_defer_shield_reason_counts", {}),
+                    sort_keys=True,
+                ),
+                "production_defer_shield_max_risk": metrics.get(
+                    "production_defer_shield_max_risk", 0.0
+                ),
+                "production_defer_shield_max_wait_ticks": metrics.get(
+                    "production_defer_shield_max_wait_ticks", 0
+                ),
+                "production_defer_shield_max_work_lower_bound_ticks": (
+                    metrics.get(
+                        "production_defer_shield_max_work_lower_bound_ticks", 0
+                    )
+                ),
+                "production_defer_shield_min_deadline_slack_ticks": (
+                    metrics.get(
+                        "production_defer_shield_min_deadline_slack_ticks"
+                    )
+                ),
+                "pass": safe,
+                "action_trace_sha256": rollout.action_trace_sha256,
+            }
+        )
+    return rows, {
+        "enabled": True,
+        "update_id": int(update_id),
+        "candidate_count": len(rows),
+        "completed_count": sum(bool(row["pass"]) for row in rows),
+        "pass": all(bool(row["pass"]) for row in rows),
+    }
+
+
+def _build_e2_7_safe_state_pool(
+    config: dict,
+    *,
+    agent: PPOAgent,
+    runner: ParallelEpisodeRunner,
+) -> dict[str, Any] | None:
+    cells = _e2_3_failure_replay_cells(config)
+    if not cells:
+        return None
+    validation_records = list(load_dataset_split(config, "validation"))
+    records_by_id = {
+        record.instance.instance_id: record for record in validation_records
+    }
+    states: list[tuple[Any, np.ndarray]] = []
+    runner.evaluate_records(
+        agent,
+        validation_records,
+        max_parallelism=min(runner.worker_count, len(validation_records)),
+        deterministic=True,
+        preference=PreferenceVector(*CANONICAL_PREFERENCE),
+        dual_legal_state_sink=states,
+        maximum_captured_dual_legal_states=128,
+    )
+    canonical_count = len(states)
+    for instance_id, preference in cells:
+        if instance_id not in records_by_id:
+            raise ValueError(f"E2.3 replay instance is missing: {instance_id}")
+        runner.evaluate_records(
+            agent,
+            [records_by_id[instance_id]],
+            max_parallelism=1,
+            deterministic=True,
+            preference=preference,
+            dual_legal_state_sink=states,
+            maximum_captured_dual_legal_states=256,
+        )
+    e2_3_count = len(states) - canonical_count
+    diagnostic_checkpoint = project_path(
+        "result/runs/v7_2000_e2_3_safe_production_seed11/last_checkpoint.pt"
+    )
+    provenance = {
+        "e1_validation_state_count": canonical_count,
+        "e2_3_failure_cell_state_count": e2_3_count,
+        "e2_3_failure_cell_count": len(cells),
+        "e1_checkpoint": (
+            agent.warm_start_report.get("source_checkpoint")
+            if agent.warm_start_report
+            else None
+        ),
+        "e1_checkpoint_sha256": (
+            agent.warm_start_report.get("source_checkpoint_sha256")
+            if agent.warm_start_report
+            else None
+        ),
+        "e2_3_diagnostic_checkpoint": str(diagnostic_checkpoint.resolve()),
+        "e2_3_diagnostic_checkpoint_sha256": _checkpoint_sha256(
+            diagnostic_checkpoint
+        ),
+        "e2_3_weights_loaded": False,
+    }
+    return agent.set_safe_dual_legal_state_pool(
+        states,
+        provenance=provenance,
+    )
 
 
 def _preference_key(preference: PreferenceVector) -> str:
@@ -348,6 +638,16 @@ def _pareto_snapshot(
     by_instance: dict[str, list[dict]] = {}
     for row in rows:
         by_instance.setdefault(str(row["instance_id"]), []).append(row)
+    safe_rows = [
+        row
+        for row in rows
+        if bool(row.get("terminated", False))
+        and not bool(row.get("truncated", False))
+        and int(row.get("schedule_violation_count", 0)) == 0
+        and float(row.get("maximum_worker_fatigue", math.inf))
+        <= float(row.get("safe_fatigue_limit", -math.inf))
+        + float(fatigue_tolerance)
+    ]
     hypervolumes: list[float] = []
     unique_counts: list[int] = []
     unique_action_trace_counts: list[int] = []
@@ -357,7 +657,8 @@ def _pareto_snapshot(
         "cost": [],
         "variance": [],
     }
-    for instance_rows in by_instance.values():
+    for all_instance_rows in by_instance.values():
+        instance_rows = [row for row in all_instance_rows if row in safe_rows]
         unique: list[tuple[float, float, float]] = []
         for row in instance_rows:
             objectives = (
@@ -402,7 +703,7 @@ def _pareto_snapshot(
             )
     canonical_key = _preference_key(PreferenceVector(*CANONICAL_PREFERENCE))
     canonical_rows = [
-        row for row in rows if str(row.get("preference_key")) == canonical_key
+        row for row in safe_rows if str(row.get("preference_key")) == canonical_key
     ]
     canonical_values = [
         float(row["preference_quality_score"])
@@ -455,6 +756,7 @@ def _pareto_snapshot(
             "pareto_guarded_e2_4_v1",
             "pareto_guarded_e2_5_v1",
             "pareto_guarded_e2_6_v1",
+            "pareto_guarded_e2_7_development_v1",
         }
     )
     e2_6_mode = (
@@ -464,6 +766,14 @@ def _pareto_snapshot(
             )
         )
         == "pareto_guarded_e2_6_v1"
+    )
+    e2_7_mode = (
+        str(
+            config["training"]["two_stage"].get(
+                "quality_checkpoint_promotion", ""
+            )
+        )
+        == "pareto_guarded_e2_7_development_v1"
     )
     required_instances = int(
         pareto_settings["required_full_grid_instance_count"]
@@ -611,6 +921,12 @@ def _pareto_snapshot(
         for row in rows
         if str(row.get("preference_key")) == counterfactual_key
     ]
+    canonical_heuristic_values = [
+        float(row["heuristic_quality_score"])
+        for row in canonical_rows
+        if "heuristic_quality_score" in row
+        and math.isfinite(float(row["heuristic_quality_score"]))
+    ]
     counterfactual_eligible_by_instance = {
         instance_id: sum(
             int(row.get("counterfactual_eligible_state_count", 0) or 0)
@@ -668,6 +984,75 @@ def _pareto_snapshot(
             and counterfactual_monotonicity_violation_count == 0
         )
     )
+    centered_dual_legal_count = sum(
+        int(row.get("centered_gate_dual_legal_state_count", 0) or 0)
+        for row in rows
+    )
+    centered_flow_cost_flip_count = sum(
+        int(row.get("centered_gate_flow_cost_flip_count", 0) or 0)
+        for row in rows
+    )
+    centered_flow_variance_flip_count = sum(
+        int(row.get("centered_gate_flow_variance_flip_count", 0) or 0)
+        for row in rows
+    )
+    centered_flow_cost_flip_rate = (
+        centered_flow_cost_flip_count / centered_dual_legal_count
+        if centered_dual_legal_count
+        else 0.0
+    )
+    centered_flow_variance_flip_rate = (
+        centered_flow_variance_flip_count / centered_dual_legal_count
+        if centered_dual_legal_count
+        else 0.0
+    )
+    # The development gate requires both cost- and variance-heavy extremes to
+    # differ from the flow-heavy decision on a material fraction of the same
+    # safe dual-legal states.  Taking the minimum prevents one responsive
+    # contrast from hiding a collapsed second contrast.
+    centered_extreme_flip_rate = min(
+        centered_flow_cost_flip_rate,
+        centered_flow_variance_flip_rate,
+    )
+    centered_monotonicity_violation_count = sum(
+        int(row.get("centered_gate_monotonicity_violation_count", 0) or 0)
+        for row in rows
+    )
+    centered_gate_pass = bool(
+        not e2_7_mode
+        or (
+            full_grid
+            and centered_dual_legal_count > 0
+            and centered_extreme_flip_rate
+            >= float(
+                pareto_settings["minimum_centered_gate_extreme_flip_rate"]
+            )
+            - 1e-12
+            and centered_monotonicity_violation_count == 0
+        )
+    )
+    canonical_quality = (
+        float(np.mean(canonical_values)) if canonical_values else math.inf
+    )
+    canonical_heuristic_quality = (
+        float(np.mean(canonical_heuristic_values))
+        if canonical_heuristic_values
+        else math.inf
+    )
+    canonical_heuristic_relative_gap = (
+        (canonical_quality - canonical_heuristic_quality)
+        / canonical_heuristic_quality
+        if math.isfinite(canonical_quality)
+        and math.isfinite(canonical_heuristic_quality)
+        and canonical_heuristic_quality > 0.0
+        else math.inf
+    )
+    canonical_development_quality_pass = bool(
+        not e2_7_mode
+        or canonical_heuristic_relative_gap
+        <= float(pareto_settings["maximum_canonical_heuristic_relative_gap"])
+        + 1e-12
+    )
     return {
         "scope": scope,
         "update_id": int(update_id),
@@ -677,6 +1062,9 @@ def _pareto_snapshot(
         ),
         "instance_count": len(by_instance),
         "candidate_count": len(rows),
+        "feasible_candidate_count": len(safe_rows),
+        "filtered_candidate_count": len(rows) - len(safe_rows),
+        "pareto_filter_version": "safe_completed_candidates_v1",
         "missing_candidate_count": missing_candidate_count,
         "unexpected_candidate_count": unexpected_candidate_count,
         "duplicate_candidate_count": duplicate_candidate_count,
@@ -705,6 +1093,25 @@ def _pareto_snapshot(
             counterfactual_monotonicity_violation_count
         ),
         "counterfactual_gate_pass": counterfactual_gate_pass,
+        "centered_gate_dual_legal_state_count": centered_dual_legal_count,
+        "centered_gate_flow_cost_flip_count": centered_flow_cost_flip_count,
+        "centered_gate_flow_variance_flip_count": (
+            centered_flow_variance_flip_count
+        ),
+        "centered_gate_flow_cost_flip_rate": centered_flow_cost_flip_rate,
+        "centered_gate_flow_variance_flip_rate": (
+            centered_flow_variance_flip_rate
+        ),
+        "centered_gate_extreme_flip_rate": centered_extreme_flip_rate,
+        "centered_gate_monotonicity_violation_count": (
+            centered_monotonicity_violation_count
+        ),
+        "centered_gate_pass": centered_gate_pass,
+        "canonical_heuristic_quality": canonical_heuristic_quality,
+        "canonical_heuristic_relative_gap": canonical_heuristic_relative_gap,
+        "canonical_development_quality_pass": (
+            canonical_development_quality_pass
+        ),
         **preference_diagnostics,
         **aggregate_matching_recovery_diagnostics(rows),
         "all_safe": _rows_are_safe(rows, fatigue_tolerance),
@@ -737,9 +1144,7 @@ def _pareto_snapshot(
         "preference_response_spearman_variance": float(
             np.mean(response_values["variance"])
         ) if response_values["variance"] else 0.0,
-        "canonical_quality": (
-            float(np.mean(canonical_values)) if canonical_values else math.inf
-        ),
+        "canonical_quality": canonical_quality,
     }
 
 
@@ -821,6 +1226,135 @@ def _evaluate_pareto_preferences(
     return rows, snapshot
 
 
+def _e2_7_local_development_gate_pass(
+    config: dict,
+    snapshot: dict[str, object],
+    controller: "TrainingPhaseController",
+) -> bool:
+    if not _development_acceptance_enabled(config):
+        return False
+    constraints = controller.quality_promotion_constraints
+    reference_hv = controller.reference_e1_pareto_hv
+    reference_canonical = controller.reference_e1_canonical_quality
+    if reference_hv is None or reference_canonical is None:
+        return False
+    candidate_hv = float(snapshot.get("mean_hypervolume", -math.inf))
+    candidate_canonical = float(snapshot.get("canonical_quality", math.inf))
+    return bool(
+        snapshot.get("scope") == "full_grid_22"
+        and bool(snapshot.get("all_safe", False))
+        and bool(snapshot.get("coverage_pass", False))
+        and bool(snapshot.get("controllability_pass", False))
+        and bool(snapshot.get("worker_direct_preference_pass", False))
+        and bool(snapshot.get("preference_response_pass", False))
+        and bool(snapshot.get("low_flow_safety_pass", False))
+        and bool(snapshot.get("centered_gate_pass", False))
+        and bool(snapshot.get("e2_3_failure_replay_pass", False))
+        and bool(snapshot.get("canonical_development_quality_pass", False))
+        and math.isfinite(candidate_hv)
+        and candidate_hv
+        >= float(reference_hv)
+        + constraints["minimum_hv_improvement"]
+        - 1e-12
+        and math.isfinite(candidate_canonical)
+        and candidate_canonical
+        <= float(reference_canonical)
+        * (1.0 + constraints["canonical_relative_tolerance"])
+        + constraints["canonical_absolute_tolerance"]
+        + 1e-12
+    )
+
+
+def _evaluate_e2_7_heldout_hv(
+    config: dict,
+    *,
+    validation_snapshot: dict[str, object],
+    ppo_agent: PPOAgent,
+    runner: ParallelEpisodeRunner,
+    validation_parallel_envs: int,
+    update_id: int,
+    completed_episodes: int,
+    fatigue_tolerance: float,
+) -> tuple[dict[str, object], list[dict]]:
+    development = config["training"]["development_acceptance"]
+    references = development["reference_e1_seed11"]
+    preferences = tuple(simplex_lattice(5, include=(CANONICAL_PREFERENCE,)))
+    comparisons: dict[str, dict[str, object]] = {}
+    candidate_rows: list[dict] = []
+
+    def comparison(
+        split: str,
+        snapshot: dict[str, object],
+        reference_hv: float,
+    ) -> dict[str, object]:
+        candidate_hv = float(snapshot["mean_hypervolume"])
+        split_pass = bool(
+            snapshot.get("all_safe", False)
+            and snapshot.get("coverage_pass", False)
+            and float(snapshot.get("completion_rate", 0.0)) >= 1.0 - 1e-12
+            and int(snapshot.get("schedule_violation_count", 0)) == 0
+            and int(snapshot.get("filtered_candidate_count", 0)) == 0
+            and candidate_hv > float(reference_hv) + 1e-12
+        )
+        return {
+            "split": split,
+            "candidate_mean_hypervolume": candidate_hv,
+            "reference_e1_seed11_mean_hypervolume": float(reference_hv),
+            "strict_improvement": candidate_hv - float(reference_hv),
+            "candidate_count": int(snapshot.get("candidate_count", 0)),
+            "feasible_candidate_count": int(
+                snapshot.get("feasible_candidate_count", 0)
+            ),
+            "completion_rate": float(snapshot.get("completion_rate", 0.0)),
+            "all_safe": bool(snapshot.get("all_safe", False)),
+            "coverage_pass": bool(snapshot.get("coverage_pass", False)),
+            "schedule_violation_count": int(
+                snapshot.get("schedule_violation_count", 0)
+            ),
+            "pass": split_pass,
+        }
+
+    comparisons["validation"] = comparison(
+        "validation",
+        validation_snapshot,
+        float(references["validation_mean_hypervolume"]),
+    )
+    for split in ("test", "ood", "stress"):
+        rows, snapshot = _evaluate_pareto_preferences(
+            config,
+            preferences=preferences,
+            scope="full_grid_22",
+            ppo_agent=ppo_agent,
+            runner=runner,
+            dataset_name=split,
+            instance_limit=20,
+            validation_parallel_envs=validation_parallel_envs,
+            update_id=update_id,
+            completed_episodes=completed_episodes,
+            fatigue_tolerance=fatigue_tolerance,
+        )
+        candidate_rows.extend(
+            {**row, "heldout_split": split} for row in rows
+        )
+        comparisons[split] = comparison(
+            split,
+            snapshot,
+            float(references[f"{split}_mean_hypervolume"]),
+        )
+    report = {
+        "version": "e2_7_equal_budget_heldout_hv_v1",
+        "update_id": int(update_id),
+        "completed_episodes": int(completed_episodes),
+        "instance_count_per_split": 20,
+        "preference_count_per_instance": len(preferences),
+        "candidate_count_per_split": 20 * len(preferences),
+        "pareto_filter_version": "safe_completed_candidates_v1",
+        "splits": comparisons,
+        "pass": all(bool(value["pass"]) for value in comparisons.values()),
+    }
+    return report, candidate_rows
+
+
 @dataclass
 class TrainingPhaseController:
     enabled: bool
@@ -846,6 +1380,9 @@ class TrainingPhaseController:
     pending_quality_episode: int | None = None
     accepted_pareto_hv: float | None = None
     accepted_pareto_canonical_quality: float | None = None
+    reference_e1_pareto_hv: float | None = None
+    reference_e1_canonical_quality: float | None = None
+    development_consecutive_full_grid_passes: int = 0
 
     @classmethod
     def from_config(cls, config: dict) -> "TrainingPhaseController":
@@ -887,6 +1424,7 @@ class TrainingPhaseController:
             "pareto_guarded_e2_4_v1",
             "pareto_guarded_e2_5_v1",
             "pareto_guarded_e2_6_v1",
+            "pareto_guarded_e2_7_development_v1",
         }:
             raise ValueError(
                 "two_stage.quality_checkpoint_promotion must be "
@@ -894,7 +1432,8 @@ class TrainingPhaseController:
                 "'constrained_weighted', 'aligned_quality', "
                 "'balanced_guarded_v7', 'pareto_guarded_e2_v1', or "
                 "'pareto_guarded_e2_3_v1', 'pareto_guarded_e2_4_v1', "
-                "'pareto_guarded_e2_5_v1', or 'pareto_guarded_e2_6_v1'"
+                "'pareto_guarded_e2_5_v1', 'pareto_guarded_e2_6_v1', or "
+                "'pareto_guarded_e2_7_development_v1'"
             )
         constraints: dict[str, float] = {}
         if promotion in {"constrained_weighted", "balanced_guarded_v7"}:
@@ -943,6 +1482,7 @@ class TrainingPhaseController:
             "pareto_guarded_e2_4_v1",
             "pareto_guarded_e2_5_v1",
             "pareto_guarded_e2_6_v1",
+            "pareto_guarded_e2_7_development_v1",
         }:
             worker_control = config["environment"].get(
                 "worker_resource_control", {}
@@ -955,7 +1495,7 @@ class TrainingPhaseController:
                 or not bool(worker_control.get("preserve_matching_on_worker_action"))
             ):
                 raise ValueError(
-                    "E2.4/E2.5/E2.6 requires matching_admission_recovery_v2 with "
+                    "E2.4-E2.7 requires matching_admission_recovery_v2 with "
                     "full matching preservation"
                 )
         if not bool(settings["quality_validate_every_update"]):
@@ -963,7 +1503,7 @@ class TrainingPhaseController:
                 "hierarchical constrained training requires validation "
                 "after every quality-phase update"
             )
-        return cls(
+        controller = cls(
             enabled=True,
             completion_target=target,
             consecutive_required=required,
@@ -972,6 +1512,44 @@ class TrainingPhaseController:
             quality_promotion_constraints=constraints,
             phase="feasibility",
         )
+        if promotion == "pareto_guarded_e2_7_development_v1":
+            development = config["training"].get("development_acceptance")
+            if not isinstance(development, dict) or not bool(
+                development.get("enabled", False)
+            ):
+                raise ValueError(
+                    "E2.7 promotion requires training.development_acceptance"
+                )
+            reference = development.get("reference_e1_seed11")
+            if not isinstance(reference, dict):
+                raise ValueError(
+                    "E2.7 development acceptance requires reference_e1_seed11"
+                )
+            controller.reference_e1_pareto_hv = float(
+                reference["validation_mean_hypervolume"]
+            )
+            controller.reference_e1_canonical_quality = float(
+                reference["validation_canonical_quality"]
+            )
+            for key in (
+                "validation_mean_hypervolume",
+                "test_mean_hypervolume",
+                "ood_mean_hypervolume",
+                "stress_mean_hypervolume",
+            ):
+                value = float(reference[key])
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError(
+                        f"E2.7 E1 reference metric {key} must be finite and positive"
+                    )
+            if (
+                not math.isfinite(controller.reference_e1_pareto_hv)
+                or controller.reference_e1_pareto_hv <= 0.0
+                or not math.isfinite(controller.reference_e1_canonical_quality)
+                or controller.reference_e1_canonical_quality <= 0.0
+            ):
+                raise ValueError("E2.7 E1 reference metrics must be finite and positive")
+        return controller
 
     def should_validate(self, regular_due: bool) -> bool:
         return self.phase == "quality" or regular_due
@@ -1150,7 +1728,13 @@ class TrainingPhaseController:
         e2_6_mode = (
             self.quality_checkpoint_promotion == "pareto_guarded_e2_6_v1"
         )
-        strict_pareto_mode = e2_3_mode or e2_4_mode or e2_5_mode or e2_6_mode
+        e2_7_mode = (
+            self.quality_checkpoint_promotion
+            == "pareto_guarded_e2_7_development_v1"
+        )
+        strict_pareto_mode = (
+            e2_3_mode or e2_4_mode or e2_5_mode or e2_6_mode or e2_7_mode
+        )
         preference_response_pass = bool(
             snapshot.get("preference_response_pass", True)
         )
@@ -1161,8 +1745,16 @@ class TrainingPhaseController:
         finite = math.isfinite(candidate_hv) and math.isfinite(
             candidate_canonical
         )
-        anchor_hv = self.accepted_pareto_hv
-        anchor_canonical = self.accepted_pareto_canonical_quality
+        anchor_hv = (
+            self.accepted_pareto_hv
+            if self.accepted_pareto_hv is not None
+            else self.reference_e1_pareto_hv
+        )
+        anchor_canonical = (
+            self.accepted_pareto_canonical_quality
+            if self.accepted_pareto_canonical_quality is not None
+            else self.reference_e1_canonical_quality
+        )
         baseline = anchor_hv is None or anchor_canonical is None
         hv_pass = bool(
             finite
@@ -1190,12 +1782,34 @@ class TrainingPhaseController:
             and (coverage_pass if strict_pareto_mode else True)
             and (controllability_pass if strict_pareto_mode else True)
             and (worker_direct_preference_pass if strict_pareto_mode else True)
-            and (preference_response_pass if (e2_4_mode or e2_5_mode or e2_6_mode) else True)
-            and (bool(snapshot.get("low_flow_safety_pass", True)) if (e2_5_mode or e2_6_mode) else True)
+            and (preference_response_pass if (e2_4_mode or e2_5_mode or e2_6_mode or e2_7_mode) else True)
+            and (bool(snapshot.get("low_flow_safety_pass", True)) if (e2_5_mode or e2_6_mode or e2_7_mode) else True)
             and (bool(snapshot.get("counterfactual_gate_pass", True)) if e2_6_mode else True)
+            and (bool(snapshot.get("centered_gate_pass", True)) if e2_7_mode else True)
+            and (
+                bool(snapshot.get("e2_3_failure_replay_pass", False))
+                if e2_7_mode
+                else True
+            )
+            and (
+                bool(snapshot.get("canonical_development_quality_pass", True))
+                if e2_7_mode
+                else True
+            )
+            and (
+                bool(snapshot.get("heldout_hv_pass", False))
+                if e2_7_mode
+                else True
+            )
             and hv_pass
             and canonical_pass
         )
+        if e2_7_mode:
+            if promoted:
+                self.development_consecutive_full_grid_passes += 1
+                promoted = self.development_consecutive_full_grid_passes >= 2
+            else:
+                self.development_consecutive_full_grid_passes = 0
         if promoted:
             event = "accepted" if baseline else "promoted"
             reason = "pareto_baseline" if baseline else "pareto_hv_improved"
@@ -1209,9 +1823,24 @@ class TrainingPhaseController:
                 or (strict_pareto_mode and not coverage_pass)
                 or (strict_pareto_mode and not controllability_pass)
                 or (strict_pareto_mode and not worker_direct_preference_pass)
-                or ((e2_4_mode or e2_5_mode or e2_6_mode) and not preference_response_pass)
-                or ((e2_5_mode or e2_6_mode) and not bool(snapshot.get("low_flow_safety_pass", False)))
+                or ((e2_4_mode or e2_5_mode or e2_6_mode or e2_7_mode) and not preference_response_pass)
+                or ((e2_5_mode or e2_6_mode or e2_7_mode) and not bool(snapshot.get("low_flow_safety_pass", False)))
                 or (e2_6_mode and not bool(snapshot.get("counterfactual_gate_pass", False)))
+                or (e2_7_mode and not bool(snapshot.get("centered_gate_pass", False)))
+                or (
+                    e2_7_mode
+                    and not bool(snapshot.get("e2_3_failure_replay_pass", False))
+                )
+                or (
+                    e2_7_mode
+                    and not bool(
+                        snapshot.get("canonical_development_quality_pass", False)
+                    )
+                )
+                or (
+                    e2_7_mode
+                    and not bool(snapshot.get("heldout_hv_pass", False))
+                )
             )
             event = "rejected" if hard_rejection else "not_promoted"
             reason = (
@@ -1224,11 +1853,25 @@ class TrainingPhaseController:
                 else "worker_direct_preference_not_zero"
                 if strict_pareto_mode and not worker_direct_preference_pass
                 else "preference_response_direction_failed"
-                if (e2_4_mode or e2_5_mode or e2_6_mode) and not preference_response_pass
+                if (e2_4_mode or e2_5_mode or e2_6_mode or e2_7_mode) and not preference_response_pass
                 else "low_flow_safety_failed"
-                if (e2_5_mode or e2_6_mode) and not bool(snapshot.get("low_flow_safety_pass", False))
+                if (e2_5_mode or e2_6_mode or e2_7_mode) and not bool(snapshot.get("low_flow_safety_pass", False))
                 else "counterfactual_gate_failed"
                 if e2_6_mode and not bool(snapshot.get("counterfactual_gate_pass", False))
+                else "centered_gate_failed"
+                if e2_7_mode and not bool(snapshot.get("centered_gate_pass", False))
+                else "e2_3_failure_replay_failed"
+                if e2_7_mode
+                and not bool(snapshot.get("e2_3_failure_replay_pass", False))
+                else "canonical_heuristic_guard_failed"
+                if e2_7_mode
+                and not bool(snapshot.get("canonical_development_quality_pass", False))
+                else "heldout_hv_guard_failed"
+                if e2_7_mode
+                and not bool(snapshot.get("heldout_hv_pass", False))
+                else "awaiting_second_consecutive_full_grid"
+                if e2_7_mode
+                and self.development_consecutive_full_grid_passes == 1
                 else "hypervolume_not_improved"
                 if not hv_pass
                 else "canonical_quality_guard_failed"
@@ -1251,6 +1894,21 @@ class TrainingPhaseController:
             "promotion_low_flow_safety_pass": bool(snapshot.get("low_flow_safety_pass", True)),
             "promotion_counterfactual_gate_pass": bool(
                 snapshot.get("counterfactual_gate_pass", True)
+            ),
+            "promotion_centered_gate_pass": bool(
+                snapshot.get("centered_gate_pass", True)
+            ),
+            "promotion_e2_3_failure_replay_pass": bool(
+                snapshot.get("e2_3_failure_replay_pass", True)
+            ),
+            "promotion_canonical_development_quality_pass": bool(
+                snapshot.get("canonical_development_quality_pass", True)
+            ),
+            "promotion_heldout_hv_pass": bool(
+                snapshot.get("heldout_hv_pass", True)
+            ),
+            "development_consecutive_full_grid_passes": (
+                self.development_consecutive_full_grid_passes
             ),
             "promotion_counterfactual_instance_coverage": int(
                 snapshot.get("counterfactual_instance_coverage", 0)
@@ -1681,6 +2339,7 @@ class TrainingPhaseController:
             "pareto_guarded_e2_4_v1",
             "pareto_guarded_e2_5_v1",
             "pareto_guarded_e2_6_v1",
+            "pareto_guarded_e2_7_development_v1",
         }:
             result.update(
                 {
@@ -1703,6 +2362,13 @@ class TrainingPhaseController:
                     "accepted_pareto_hv": self.accepted_pareto_hv,
                     "accepted_pareto_canonical_quality": (
                         self.accepted_pareto_canonical_quality
+                    ),
+                    "reference_e1_pareto_hv": self.reference_e1_pareto_hv,
+                    "reference_e1_canonical_quality": (
+                        self.reference_e1_canonical_quality
+                    ),
+                    "development_consecutive_full_grid_passes": (
+                        self.development_consecutive_full_grid_passes
                     ),
                 }
             )
@@ -1735,6 +2401,7 @@ class ParetoSafetyGuard:
             "pareto_guarded_e2_4_v1",
             "pareto_guarded_e2_5_v1",
             "pareto_guarded_e2_6_v1",
+            "pareto_guarded_e2_7_development_v1",
         }:
             return None
         settings = _pareto_promotion_settings(config)
@@ -2117,6 +2784,16 @@ def _collect_serial_batch(
         "truncation": 0.0,
         "unfinished": 0.0,
         "feasibility_shaping": 0.0,
+        **(
+            {"defer_risk_shaping": 0.0}
+            if bool(
+                config.get("environment", {})
+                .get("production_defer", {})
+                .get("shield", {})
+                .get("enabled", False)
+            )
+            else {}
+        ),
     }
     inference_time = 0.0
     environment_step_time = 0.0
@@ -2893,6 +3570,29 @@ def _training_effect_fields(metrics: dict) -> dict:
         "production_defer_wait_time": metrics.get(
             "production_defer_wait_time"
         ),
+        "production_defer_shield_candidate_count": metrics.get(
+            "production_defer_shield_candidate_count", 0
+        ),
+        "production_defer_shield_masked_count": metrics.get(
+            "production_defer_shield_masked_count", 0
+        ),
+        "production_defer_shield_max_risk": metrics.get(
+            "production_defer_shield_max_risk", 0.0
+        ),
+        "production_defer_shield_max_wait_ticks": metrics.get(
+            "production_defer_shield_max_wait_ticks", 0
+        ),
+        "production_defer_shield_max_work_lower_bound_ticks": metrics.get(
+            "production_defer_shield_max_work_lower_bound_ticks", 0
+        ),
+        "production_defer_shield_min_deadline_slack_ticks": metrics.get(
+            "production_defer_shield_min_deadline_slack_ticks"
+        ),
+        "production_defer_shield_reason_counts": json.dumps(
+            metrics.get("production_defer_shield_reason_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
         **{
             name: metrics.get(name, 0)
             for name in (
@@ -3274,6 +3974,7 @@ def train(
     visdom_enabled: bool | None = None,
     ablation_variant: str | None = None,
     initial_checkpoint: str | Path | None = None,
+    warm_start_checkpoint: str | Path | None = None,
 ) -> Path:
     config = deepcopy(config)
     _apply_ablation_variant(config, ablation_variant)
@@ -3308,10 +4009,44 @@ def train(
         int(config["seed"]) if algorithm_seed is None else algorithm_seed,
     )
     config["seed"] = effective_algorithm_seed
+    configured_warm_start = config["training"].get("warm_start")
+    if configured_warm_start is not None and not isinstance(
+        configured_warm_start, dict
+    ):
+        raise TypeError("training.warm_start must be an object")
+    configured_warm_path = (
+        configured_warm_start.get("checkpoint")
+        if isinstance(configured_warm_start, dict)
+        else None
+    )
+    if initial_checkpoint is not None and warm_start_checkpoint is not None:
+        raise ValueError(
+            "--initial-checkpoint and --warm-start-checkpoint are mutually exclusive"
+        )
+    effective_warm_start = (
+        None
+        if initial_checkpoint is not None
+        else warm_start_checkpoint or configured_warm_path
+    )
     if initial_checkpoint is not None:
         config["training"]["initial_checkpoint"] = str(
             Path(initial_checkpoint).resolve()
         )
+    if effective_warm_start is not None:
+        warm_path = project_path(effective_warm_start).resolve()
+        required_source = (
+            configured_warm_start.get("required_source_checkpoint")
+            if isinstance(configured_warm_start, dict)
+            else None
+        )
+        if required_source is not None and warm_path != project_path(
+            required_source
+        ).resolve():
+            raise ValueError(
+                "warm-start source is not the configured E1 accepted checkpoint"
+            )
+        effective_warm_start = warm_path
+        config["training"]["warm_start_checkpoint"] = str(warm_path)
     set_seed(effective_algorithm_seed)
     use_online_instances = (
         bool(config["training"]["online_instances"])
@@ -3339,8 +4074,29 @@ def train(
     )
     if effective_parallel_envs < 1:
         raise ValueError("parallel_envs must be positive")
+    if not smoke and config["training"].get("preference_stage_schedule"):
+        expected_updates = math.ceil(episodes / effective_parallel_envs)
+        configured_final_update = int(
+            config["training"]["preference_stage_schedule"]["final_update"]
+        )
+        if expected_updates != configured_final_update:
+            raise ValueError(
+                "E2.7 trajectory/parallel budget must produce exactly 200 PPO updates"
+            )
     preference_grouping = training_preference_group(config)
     training_base_instance_count(config, episodes)
+    development_mode = _development_acceptance_enabled(config)
+    if development_mode:
+        if effective_algorithm_seed != 11:
+            raise ValueError("E2.7 development acceptance is fixed to seed 11")
+        if preference_grouping is not None:
+            raise ValueError(
+                "E2.7 requires one independently generated instance per trajectory"
+            )
+        if effective_warm_start is None and initial_checkpoint is None:
+            raise ValueError(
+                "E2.7 requires either the E1 warm-start or a strict E2.7 resume"
+            )
     if preference_grouping is not None:
         group_size = int(preference_grouping["group_size"])
         if effective_parallel_envs == 1:
@@ -3404,6 +4160,7 @@ def train(
             parallel_envs=min(effective_parallel_envs, episodes),
             validation_parallel_envs=validation_parallel_envs,
             initial_checkpoint=initial_checkpoint,
+            warm_start_checkpoint=effective_warm_start,
         )
     serial_parallel_key = (
         "smoke_parallel_envs" if smoke else "parallel_envs"
@@ -3435,14 +4192,35 @@ def train(
     bootstrap_observation = observation.copy()
     network = build_actor_critic(observation, config["network"])
     agent = PPOAgent(network, config["ppo"], device=config["device"])
+    warm_start_report = None
     if initial_checkpoint is not None:
-        agent.load(initial_checkpoint, load_optimizer=True)
+        initial_metadata = agent.load(initial_checkpoint, load_optimizer=True)
+        warm_start_report = _restore_e2_7_resume_provenance(
+            agent, initial_metadata, config
+        )
+    elif effective_warm_start is not None:
+        expected_count = int(
+            (configured_warm_start or {}).get(
+                "expected_shared_parameter_count", 116
+            )
+        )
+        warm_start_report = agent.warm_start_from_e1(
+            effective_warm_start,
+            expected_shared_parameter_count=expected_count,
+        )
+        warm_start_report = agent.verify_warm_start_canonical_identity(
+            bootstrap_observation,
+            environment.get_action_mask(),
+            source_checkpoint=effective_warm_start,
+        )
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label="train_smoke" if smoke else "train",
         run_name=run_name,
     )
     write_config(run_directory, config)
+    if warm_start_report is not None:
+        write_json(run_directory / "warm_start_mapping.json", warm_start_report)
     visdom_settings = resolve_visdom_settings(config)
     dashboard = create_training_dashboard(
         config=config,
@@ -3479,7 +4257,7 @@ def train(
         run_directory / "best_feasibility_checkpoint.pt"
     )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
-    accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
+    accepted_checkpoint = _accepted_checkpoint_path(run_directory, config)
     safe_checkpoint = run_directory / "safe_checkpoint.pt"
     anchor_safe_checkpoint = run_directory / "anchor_safe_checkpoint.pt"
     full_grid_safe_checkpoint = (
@@ -3545,11 +4323,17 @@ def train(
                 "training batch contains no policy transitions after "
                 "forced action compression"
             )
+        preference_stage = _set_e2_7_preference_stage(
+            agent, config, episode + 1
+        )
         losses = agent.update(buffer, reward_phase=reward_phase)
         update_time = time.perf_counter() - update_start
         metrics = episode_rollout.metrics
         expected_reward = episode_rollout.expected_reward
-        shaping_reward = reward_components["feasibility_shaping"]
+        shaping_reward = (
+            reward_components["feasibility_shaping"]
+            + reward_components.get("defer_risk_shaping", 0.0)
+        )
         base_reward = reward_sum - shaping_reward
         row = {
             "episode": episode,
@@ -3586,6 +4370,7 @@ def train(
             "expected_reward": expected_reward,
             "reward_identity_error": base_reward - expected_reward,
             "reward_phase": reward_phase,
+            "preference_stage": preference_stage,
             **{
                 f"reward_{name}": value
                 for name, value in reward_components.items()
@@ -3636,6 +4421,7 @@ def train(
                     else 0.0
                 ),
                 "reward_phase": reward_phase,
+                "preference_stage": preference_stage,
                 "candidate_status": (
                     "pending"
                     if reward_phase == "quality"
@@ -3828,7 +4614,20 @@ def train(
             ):
                 accepted_metadata = {
                     **_checkpoint_protocol_metadata(config),
-                    "checkpoint_role": "shadow_best",
+                    "checkpoint_role": (
+                        "single_seed_development_pareto"
+                        if _development_acceptance_enabled(config)
+                        else "shadow_best"
+                    ),
+                    "development_scope": (
+                        "single_seed_development"
+                        if _development_acceptance_enabled(config)
+                        else None
+                    ),
+                    "formal_eligible": False
+                    if _development_acceptance_enabled(config)
+                    else True,
+                    "warm_start": warm_start_report,
                     "seed": config["seed"],
                     "accepted_episode": completed_episodes,
                     "quality_score": normalized_quality_score,
@@ -3838,7 +4637,8 @@ def train(
                     accepted_checkpoint,
                     metadata=accepted_metadata,
                 )
-                shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                if not _development_acceptance_enabled(config):
+                    shutil.copyfile(accepted_checkpoint, best_checkpoint)
                 best_score = score
                 best_validation = validation_row
                 is_new_best = True
@@ -3991,9 +4791,15 @@ def train(
                 or phase_controller.accepted_pareto_hv is not None
             )
         )
+    ) and not _development_acceptance_enabled(config)
+    development_accepted = bool(
+        _development_acceptance_enabled(config)
+        and accepted_checkpoint.exists()
+        and phase_controller.accepted_pareto_hv is not None
     )
     if (
         not formal_eligible
+        and not _development_acceptance_enabled(config)
         and phase_controller.formal_training_status
         not in {"feasibility_not_reached", "pareto_baseline_not_reached"}
     ):
@@ -4048,6 +4854,13 @@ def train(
             ),
             "training_phase": phase_controller.as_dict(),
             "formal_eligible": formal_eligible,
+            "development_accepted": development_accepted,
+            "development_scope": (
+                "single_seed_development"
+                if _development_acceptance_enabled(config)
+                else None
+            ),
+            "warm_start": warm_start_report,
             **q13_final_sampled_metadata,
         }
     checkpoint: Path | None
@@ -4135,8 +4948,30 @@ def train(
             "accepted_checkpoint": (
                 _run_relative_checkpoint(accepted_checkpoint, run_directory)
                 if accepted_checkpoint.exists()
+                and not _development_acceptance_enabled(config)
                 else None
             ),
+            "development_accepted_pareto_checkpoint": (
+                _run_relative_checkpoint(accepted_checkpoint, run_directory)
+                if development_accepted
+                else None
+            ),
+            "development_accepted": development_accepted,
+            "development_failure_reason": (
+                None
+                if development_accepted
+                else phase_controller.last_promotion_diagnostics.get(
+                    "promotion_decision_reason",
+                    phase_controller.formal_training_status,
+                )
+            ),
+            "development_scope": (
+                "single_seed_development"
+                if _development_acceptance_enabled(config)
+                else None
+            ),
+            "formal_eligible": formal_eligible,
+            "warm_start": warm_start_report,
             "last_checkpoint": _run_relative_checkpoint(last_checkpoint, run_directory),
             "safe_checkpoint": (
                 _run_relative_checkpoint(safe_checkpoint, run_directory) if safe_checkpoint.exists() else None
@@ -4227,6 +5062,7 @@ def _train_parallel(
     parallel_envs: int,
     validation_parallel_envs: int,
     initial_checkpoint: str | Path | None = None,
+    warm_start_checkpoint: str | Path | None = None,
 ) -> Path:
     template = load_instance_yaml(
         project_path(config["paths"]["fixed_instance"])
@@ -4238,14 +5074,33 @@ def _train_parallel(
         config["network"],
     )
     agent = PPOAgent(network, config["ppo"], device=config["device"])
+    warm_start_report = None
     if initial_checkpoint is not None:
-        agent.load(initial_checkpoint, load_optimizer=True)
+        initial_metadata = agent.load(initial_checkpoint, load_optimizer=True)
+        warm_start_report = _restore_e2_7_resume_provenance(
+            agent, initial_metadata, config
+        )
+    elif warm_start_checkpoint is not None:
+        warm_start_settings = config["training"].get("warm_start", {})
+        warm_start_report = agent.warm_start_from_e1(
+            warm_start_checkpoint,
+            expected_shared_parameter_count=int(
+                warm_start_settings.get("expected_shared_parameter_count", 116)
+            ),
+        )
+        warm_start_report = agent.verify_warm_start_canonical_identity(
+            bootstrap_observation,
+            bootstrap_environment.get_action_mask(),
+            source_checkpoint=warm_start_checkpoint,
+        )
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label="train_smoke_parallel" if smoke else "train_parallel",
         run_name=run_name,
     )
     write_config(run_directory, config)
+    if warm_start_report is not None:
+        write_json(run_directory / "warm_start_mapping.json", warm_start_report)
     visdom_settings = resolve_visdom_settings(config)
     dashboard = create_training_dashboard(
         config=config,
@@ -4280,13 +5135,17 @@ def _train_parallel(
     validation_rows: list[dict] = []
     pareto_validation_rows: list[dict] = []
     pareto_candidate_rows: list[dict] = []
+    e2_3_failure_replay_rows: list[dict] = []
+    latest_e2_3_failure_replay: dict[str, object] | None = None
+    e2_7_heldout_candidate_rows: list[dict] = []
+    latest_e2_7_heldout_report: dict[str, object] | None = None
     instance_ids: list[str] = []
     best_checkpoint = run_directory / "best_checkpoint.pt"
     best_feasibility_checkpoint = (
         run_directory / "best_feasibility_checkpoint.pt"
     )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
-    accepted_checkpoint = run_directory / "accepted_checkpoint.pt"
+    accepted_checkpoint = _accepted_checkpoint_path(run_directory, config)
     safe_checkpoint = run_directory / "safe_checkpoint.pt"
     anchor_safe_checkpoint = run_directory / "anchor_safe_checkpoint.pt"
     full_grid_safe_checkpoint = (
@@ -4328,6 +5187,16 @@ def _train_parallel(
         episode_count=training_base_instance_count(config, episodes),
         worker_count=runner_worker_count,
     ) as runner:
+        safe_state_pool_report = _build_e2_7_safe_state_pool(
+            config,
+            agent=agent,
+            runner=runner,
+        )
+        if safe_state_pool_report is not None:
+            write_json(
+                run_directory / "safe_dual_legal_state_pool.json",
+                safe_state_pool_report,
+            )
         for batch_start in range(0, episodes, parallel_envs):
             reward_phase = phase_controller.phase
             episode_indices = list(
@@ -4350,11 +5219,27 @@ def _train_parallel(
                     "training batch contains no policy transitions after "
                     "forced action compression"
                 )
+            preference_stage = _set_e2_7_preference_stage(
+                agent, config, update_id + 1
+            )
             losses = agent.update(rollout.buffer, reward_phase=reward_phase)
             update_time = time.perf_counter() - update_start
             update_id += 1
             if reward_phase == "quality":
                 quality_update_id += 1
+            if (
+                _e2_3_failure_replay_cells(config)
+                and update_id % 5 == 0
+            ):
+                replay_rows, latest_e2_3_failure_replay = (
+                    _evaluate_e2_3_failure_replay(
+                        config,
+                        agent=agent,
+                        runner=runner,
+                        update_id=update_id,
+                    )
+                )
+                e2_3_failure_replay_rows.extend(replay_rows)
             transition_count = rollout.transition_count
             total_transitions += transition_count
             total_environment_steps += rollout.environment_step_count
@@ -4418,6 +5303,7 @@ def _train_parallel(
                     else 0.0
                 ),
                 "reward_phase": reward_phase,
+                "preference_stage": preference_stage,
                 "candidate_status": (
                     "pending"
                     if reward_phase == "quality"
@@ -4468,6 +5354,9 @@ def _train_parallel(
                     "reward_base": episode.base_reward_sum,
                     "reward_shaping": episode.reward_components.get(
                         "feasibility_shaping", 0.0
+                    )
+                    + episode.reward_components.get(
+                        "defer_risk_shaping", 0.0
                     ),
                     "reward_training": episode.reward_sum,
                     "expected_reward": episode.expected_reward,
@@ -4653,6 +5542,7 @@ def _train_parallel(
                                 "pareto_guarded_e2_4_v1",
                                 "pareto_guarded_e2_5_v1",
                                 "pareto_guarded_e2_6_v1",
+                                "pareto_guarded_e2_7_development_v1",
                             }
                         ):
                             anchor_event = "audit_only"
@@ -4700,8 +5590,13 @@ def _train_parallel(
                         if pareto_safety_guard is not None:
                             guard_snapshot = anchor_snapshot
                     full_grid_due = bool(
-                        completed_episodes == episodes
-                        or (
+                        not (
+                            smoke
+                            and _development_acceptance_enabled(config)
+                        )
+                        and (
+                            completed_episodes == episodes
+                            or (
                             reward_phase == "quality"
                             and quality_update_id
                             % int(
@@ -4709,7 +5604,8 @@ def _train_parallel(
                                     "full_grid_validate_every_updates"
                                 ]
                             )
-                            == 0
+                                == 0
+                            )
                         )
                     )
                     if full_grid_due:
@@ -4733,6 +5629,113 @@ def _train_parallel(
                             ),
                             canonical_rows=validation_instance_rows,
                         )
+                        full_snapshot["e2_3_failure_replay_pass"] = bool(
+                            latest_e2_3_failure_replay
+                            and latest_e2_3_failure_replay.get("pass", False)
+                        ) if _e2_3_failure_replay_cells(config) else True
+                        full_snapshot["e2_3_failure_replay"] = (
+                            latest_e2_3_failure_replay
+                        )
+                        if (
+                            phase_controller.quality_checkpoint_promotion
+                            == "pareto_guarded_e2_7_development_v1"
+                            and phase_controller.phase == "quality"
+                            and _e2_7_local_development_gate_pass(
+                                config, full_snapshot, phase_controller
+                            )
+                        ):
+                            (
+                                latest_e2_7_heldout_report,
+                                heldout_rows,
+                            ) = _evaluate_e2_7_heldout_hv(
+                                config,
+                                validation_snapshot=full_snapshot,
+                                ppo_agent=agent,
+                                runner=runner,
+                                validation_parallel_envs=(
+                                    validation_parallel_envs
+                                ),
+                                update_id=update_id,
+                                completed_episodes=completed_episodes,
+                                fatigue_tolerance=float(
+                                    pareto_settings[
+                                        "fatigue_absolute_tolerance"
+                                    ]
+                                ),
+                            )
+                            e2_7_heldout_candidate_rows.extend(heldout_rows)
+                            full_snapshot["heldout_hv_pass"] = bool(
+                                latest_e2_7_heldout_report["pass"]
+                            )
+                            full_snapshot["heldout_hv_report"] = (
+                                latest_e2_7_heldout_report
+                            )
+                            write_json(
+                                run_directory
+                                / "e2_7_heldout_comparison.json",
+                                latest_e2_7_heldout_report,
+                            )
+                        elif (
+                            phase_controller.quality_checkpoint_promotion
+                            == "pareto_guarded_e2_7_development_v1"
+                        ):
+                            full_snapshot["heldout_hv_pass"] = False
+                            full_snapshot["heldout_hv_report"] = {
+                                "version": "e2_7_equal_budget_heldout_hv_v1",
+                                "pass": False,
+                                "reason": "local_development_gate_not_ready",
+                            }
+                            latest_e2_7_heldout_report = dict(
+                                full_snapshot["heldout_hv_report"]
+                            )
+                            write_json(
+                                run_directory
+                                / "e2_7_heldout_comparison.json",
+                                latest_e2_7_heldout_report,
+                            )
+                        if (
+                            phase_controller.quality_checkpoint_promotion
+                            == "pareto_guarded_e2_7_development_v1"
+                        ):
+                            write_json(
+                                run_directory / "e2_7_full_grid_report.json",
+                                full_snapshot,
+                            )
+                            write_json(
+                                run_directory / "e2_7_gate_flip_report.json",
+                                {
+                                    "version": "centered_gate_flip_report_v1",
+                                    "update_id": update_id,
+                                    "completed_episodes": completed_episodes,
+                                    "dual_legal_state_count": full_snapshot.get(
+                                        "centered_gate_dual_legal_state_count", 0
+                                    ),
+                                    "flow_cost_flip_count": full_snapshot.get(
+                                        "centered_gate_flow_cost_flip_count", 0
+                                    ),
+                                    "flow_variance_flip_count": full_snapshot.get(
+                                        "centered_gate_flow_variance_flip_count", 0
+                                    ),
+                                    "flow_cost_flip_rate": full_snapshot.get(
+                                        "centered_gate_flow_cost_flip_rate", 0.0
+                                    ),
+                                    "flow_variance_flip_rate": full_snapshot.get(
+                                        "centered_gate_flow_variance_flip_rate", 0.0
+                                    ),
+                                    "extreme_flip_rate": full_snapshot.get(
+                                        "centered_gate_extreme_flip_rate", 0.0
+                                    ),
+                                    "monotonicity_violation_count": (
+                                        full_snapshot.get(
+                                            "centered_gate_monotonicity_violation_count",
+                                            0,
+                                        )
+                                    ),
+                                    "pass": full_snapshot.get(
+                                        "centered_gate_pass", False
+                                    ),
+                                },
+                            )
                         if (
                             phase_controller.quality_checkpoint_promotion
                             in {
@@ -4740,6 +5743,7 @@ def _train_parallel(
                                 "pareto_guarded_e2_4_v1",
                                 "pareto_guarded_e2_5_v1",
                                 "pareto_guarded_e2_6_v1",
+                                "pareto_guarded_e2_7_development_v1",
                             }
                             and phase_controller.phase == "quality"
                         ):
@@ -4862,9 +5866,29 @@ def _train_parallel(
                                 ),
                             }
                         )
-                        pareto_guard_rollback_requested = (
-                            guard_event == "rollback"
+                        rollback_anchor_available = any(
+                            path.exists()
+                            for path in (
+                                full_grid_safe_checkpoint,
+                                anchor_safe_checkpoint,
+                                phase1_checkpoint,
+                            )
                         )
+                        pareto_guard_rollback_requested = bool(
+                            guard_event == "rollback"
+                            and rollback_anchor_available
+                        )
+                        if (
+                            guard_event == "rollback"
+                            and not rollback_anchor_available
+                            and _development_acceptance_enabled(config)
+                        ):
+                            guard_snapshot[
+                                "safety_guard_rollback_skipped_reason"
+                            ] = "no_safe_or_phase_checkpoint"
+                            validation_row[
+                                "pareto_safety_guard_rollback_skipped_reason"
+                            ] = "no_safe_or_phase_checkpoint"
                 if (
                     phase_controller.quality_checkpoint_promotion
                     == "balanced_guarded_v7"
@@ -5008,7 +6032,23 @@ def _train_parallel(
                         accepted_checkpoint,
                         metadata={
                             **_checkpoint_protocol_metadata(config),
-                            "checkpoint_role": "shadow_best",
+                            "checkpoint_role": (
+                                "single_seed_development_pareto"
+                                if _development_acceptance_enabled(config)
+                                else "shadow_best"
+                            ),
+                            "development_scope": (
+                                "single_seed_development"
+                                if _development_acceptance_enabled(config)
+                                else None
+                            ),
+                            "formal_eligible": False
+                            if _development_acceptance_enabled(config)
+                            else True,
+                            "warm_start": warm_start_report,
+                            "heldout_comparison": (
+                                latest_e2_7_heldout_report
+                            ),
                             "seed": config["seed"],
                             "parallel_envs": parallel_envs,
                             "accepted_episode": completed_episodes,
@@ -5016,7 +6056,8 @@ def _train_parallel(
                             "validation": validation_row,
                         },
                     )
-                    shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                    if not _development_acceptance_enabled(config):
+                        shutil.copyfile(accepted_checkpoint, best_checkpoint)
                     best_score = score
                     best_validation = validation_row
                     is_new_best = True
@@ -5242,9 +6283,15 @@ def _train_parallel(
                 or phase_controller.accepted_pareto_hv is not None
             )
         )
+    ) and not _development_acceptance_enabled(config)
+    development_accepted = bool(
+        _development_acceptance_enabled(config)
+        and accepted_checkpoint.exists()
+        and phase_controller.accepted_pareto_hv is not None
     )
     if (
         not formal_eligible
+        and not _development_acceptance_enabled(config)
         and phase_controller.formal_training_status
         not in {"feasibility_not_reached", "pareto_baseline_not_reached"}
     ):
@@ -5279,6 +6326,7 @@ def _train_parallel(
             "online_instances": True,
             "generator_version": config["generator"]["version"],
             "parallel_envs": parallel_envs,
+            "safe_dual_legal_state_pool": safe_state_pool_report,
             "updates": update_id,
             "transitions": total_transitions,
             "environment_steps": total_environment_steps,
@@ -5324,6 +6372,14 @@ def _train_parallel(
             ),
             "training_phase": phase_controller.as_dict(),
             "formal_eligible": formal_eligible,
+            "development_accepted": development_accepted,
+            "development_scope": (
+                "single_seed_development"
+                if _development_acceptance_enabled(config)
+                else None
+            ),
+            "warm_start": warm_start_report,
+            "heldout_comparison": latest_e2_7_heldout_report,
             **q13_final_sampled_metadata,
         }
     checkpoint: Path | None
@@ -5385,6 +6441,85 @@ def _train_parallel(
             run_directory / "pareto_validation_candidates.csv",
             pareto_candidate_rows,
         )
+    if e2_3_failure_replay_rows:
+        write_csv(
+            run_directory / "e2_3_failure_replay.csv",
+            e2_3_failure_replay_rows,
+        )
+    if e2_7_heldout_candidate_rows:
+        write_csv(
+            run_directory / "e2_7_heldout_candidates.csv",
+            e2_7_heldout_candidate_rows,
+        )
+    if _development_acceptance_enabled(config):
+        shield_reasons: Counter[str] = Counter()
+        for row in rows:
+            raw_reasons = row.get("production_defer_shield_reason_counts", "{}")
+            try:
+                reasons = (
+                    json.loads(raw_reasons)
+                    if isinstance(raw_reasons, str)
+                    else dict(raw_reasons or {})
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                reasons = {"invalid_serialized_reason_counts": 1}
+            shield_reasons.update(
+                {str(key): int(value) for key, value in reasons.items()}
+            )
+        write_json(
+            run_directory / "e2_7_defer_shield_report.json",
+            {
+                "version": "deadline_progress_shield_report_v1",
+                "trajectory_count": len(rows),
+                "candidate_count": sum(
+                    int(row.get("production_defer_shield_candidate_count", 0) or 0)
+                    for row in rows
+                ),
+                "masked_count": sum(
+                    int(row.get("production_defer_shield_masked_count", 0) or 0)
+                    for row in rows
+                ),
+                "maximum_risk": max(
+                    (
+                        float(row.get("production_defer_shield_max_risk", 0.0) or 0.0)
+                        for row in rows
+                    ),
+                    default=0.0,
+                ),
+                "maximum_wait_ticks": max(
+                    (
+                        int(row.get("production_defer_shield_max_wait_ticks", 0) or 0)
+                        for row in rows
+                    ),
+                    default=0,
+                ),
+                "maximum_remaining_work_lower_bound_ticks": max(
+                    (
+                        int(
+                            row.get(
+                                "production_defer_shield_max_work_lower_bound_ticks",
+                                0,
+                            )
+                            or 0
+                        )
+                        for row in rows
+                    ),
+                    default=0,
+                ),
+                "minimum_deadline_slack_ticks": min(
+                    (
+                        int(row["production_defer_shield_min_deadline_slack_ticks"])
+                        for row in rows
+                        if row.get(
+                            "production_defer_shield_min_deadline_slack_ticks"
+                        )
+                        is not None
+                    ),
+                    default=None,
+                ),
+                "reason_counts": dict(shield_reasons),
+            },
+        )
     total_training_time = total_sampling_time + total_update_time
     write_json(
         run_directory / "summary.json",
@@ -5394,6 +6529,7 @@ def _train_parallel(
             "base_instance_count": training_base_instance_count(
                 config, episodes
             ),
+            "safe_dual_legal_state_pool": safe_state_pool_report,
             "online_instances": True,
             "parallel_envs": parallel_envs,
             "validation_parallel_envs": validation_parallel_envs,
@@ -5452,8 +6588,37 @@ def _train_parallel(
             "accepted_checkpoint": (
                 _run_relative_checkpoint(accepted_checkpoint, run_directory)
                 if accepted_checkpoint.exists()
+                and not _development_acceptance_enabled(config)
                 else None
             ),
+            "latest_e2_3_failure_replay": latest_e2_3_failure_replay,
+            "latest_e2_7_heldout_comparison": latest_e2_7_heldout_report,
+            "e2_3_failure_replay_event_count": (
+                len(e2_3_failure_replay_rows) // 10
+                if e2_3_failure_replay_rows
+                else 0
+            ),
+            "development_accepted_pareto_checkpoint": (
+                _run_relative_checkpoint(accepted_checkpoint, run_directory)
+                if development_accepted
+                else None
+            ),
+            "development_accepted": development_accepted,
+            "development_failure_reason": (
+                None
+                if development_accepted
+                else phase_controller.last_promotion_diagnostics.get(
+                    "promotion_decision_reason",
+                    phase_controller.formal_training_status,
+                )
+            ),
+            "development_scope": (
+                "single_seed_development"
+                if _development_acceptance_enabled(config)
+                else None
+            ),
+            "formal_eligible": formal_eligible,
+            "warm_start": warm_start_report,
             "last_checkpoint": _run_relative_checkpoint(last_checkpoint, run_directory),
             "safe_checkpoint": (
                 str(safe_checkpoint) if safe_checkpoint.exists() else None
@@ -5554,10 +6719,18 @@ def main() -> None:
         type=int,
         help="override training.episodes for this run",
     )
-    parser.add_argument(
+    checkpoint_group = parser.add_mutually_exclusive_group()
+    checkpoint_group.add_argument(
         "--initial-checkpoint",
         help=(
             "initialize policy and optimizer from a compatible checkpoint"
+        ),
+    )
+    checkpoint_group.add_argument(
+        "--warm-start-checkpoint",
+        help=(
+            "load every E1 shared network tensor strictly, initialize only new "
+            "adapter parameters, and create a fresh optimizer"
         ),
     )
     instance_group = parser.add_mutually_exclusive_group()
@@ -5614,6 +6787,7 @@ def main() -> None:
         visdom_enabled=args.visdom_enabled,
         ablation_variant=args.ablation,
         initial_checkpoint=args.initial_checkpoint,
+        warm_start_checkpoint=args.warm_start_checkpoint,
     )
     print(f"training artifacts: {run_directory}")
 

@@ -117,12 +117,13 @@ class RewardVector:
     truncation: float = 0.0
     unfinished: float = 0.0
     feasibility_shaping: float = 0.0
+    defer_risk_shaping: float = 0.0
 
     def scalarize(self, config: dict, phase: str | None = None) -> float:
         base = self.base_scalarize(config, phase)
         mode = str(config.get("mode", "legacy_weighted_sum"))
         if mode == "hierarchical_constrained_v1":
-            return base + self.feasibility_shaping
+            return base + self.feasibility_shaping + self.defer_risk_shaping
         return base
 
     def base_scalarize(self, config: dict, phase: str | None = None) -> float:
@@ -163,7 +164,7 @@ class RewardVector:
         )
 
     def as_dict(self) -> dict[str, float]:
-        return {
+        result = {
             "flow": self.flow,
             "cost": self.cost,
             "variance": self.variance,
@@ -174,6 +175,9 @@ class RewardVector:
             "unfinished": self.unfinished,
             "feasibility_shaping": self.feasibility_shaping,
         }
+        if self.defer_risk_shaping != 0.0:
+            result["defer_risk_shaping"] = self.defer_risk_shaping
+        return result
 
 
 def bounded_quality_score(

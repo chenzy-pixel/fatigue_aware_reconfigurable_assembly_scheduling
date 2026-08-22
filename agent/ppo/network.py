@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -487,6 +487,18 @@ STATE_ONLY_MONOTONE_FLOW_COMMIT_GATE_VERSION = (
 STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION = (
     "state_only_counterfactual_monotone_flow_commit_gate_v3"
 )
+E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS = (
+    "hierarchical_e1_logsumexp_gate_then_pair_v4"
+)
+E1_CENTERED_THREE_OBJECTIVE_GATE_VERSION = (
+    "e1_logsumexp_centered_three_objective_gate_v4"
+)
+E1_CENTERED_PREFERENCE_ADAPTER_VERSION = "centered_parallel_adapter_v1"
+E1_CENTERED_PREFERENCE_STAGES = (
+    "gate",
+    "production_pair",
+    "worker_variance",
+)
 STATE_ONLY_PRODUCTION_GATE_TIE_BREAK = "commit"
 PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
     "legal_candidate_count_norm",
@@ -498,6 +510,12 @@ PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
     "minimum_horizon_slack_norm",
     "next_defer_event_distance_norm",
     "projected_legal_candidate_gain_norm",
+)
+E1_CENTERED_PRODUCTION_ACTION_SET_FEATURE_NAMES: tuple[str, ...] = (
+    *PRODUCTION_ACTION_SET_FEATURE_NAMES,
+    "defer_remaining_work_lower_bound_norm",
+    "defer_deadline_slack_norm",
+    "defer_risk",
 )
 
 
@@ -550,12 +568,14 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
         FLAT_PRODUCTION_ACTION_SEMANTICS,
         HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
         STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+        E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
     }:
         raise ValueError(
             "network.production_action_semantics must be "
             f"{FLAT_PRODUCTION_ACTION_SEMANTICS!r} or "
             f"{HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS!r} or "
-            f"{STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS!r}"
+            f"{STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS!r} or "
+            f"{E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS!r}"
         )
     production_enabled = bool(
         config.get("production_candidate_relative_features", False)
@@ -813,6 +833,7 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if semantics in {
         HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
         STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+        E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
     }:
         if version != 7:
             raise ValueError(
@@ -823,6 +844,67 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "hierarchical production actions require "
                 "network.production_commit_set_scorer=true"
             )
+    centered_preference_adapter = dict(
+        config.get("centered_preference_adapter", {})
+    )
+    if semantics == E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS:
+        if production_gate_version != E1_CENTERED_THREE_OBJECTIVE_GATE_VERSION:
+            raise ValueError(
+                "E2.7 requires the E1-centered three-objective production gate"
+            )
+        if production_gate_preference_conditioning:
+            raise ValueError("E2.7 gate must not concatenate preference embeddings")
+        if set(flow_commit_residual):
+            raise ValueError("E2.7 gate does not use E2.5/E2.6 flow residuals")
+        canonical = tuple(
+            float(value)
+            for value in production_gate_raw.get(
+                "canonical_preference", (0.5, 0.3, 0.2)
+            )
+        )
+        maximum_shift = float(
+            production_gate_raw.get("maximum_logit_shift", 3.0)
+        )
+        if canonical != (0.5, 0.3, 0.2):
+            raise ValueError("E2.7 canonical preference must be (0.5, 0.3, 0.2)")
+        if not np.isfinite(maximum_shift) or maximum_shift <= 0.0:
+            raise ValueError("E2.7 maximum_logit_shift must be positive")
+        expected_adapter_fields = {
+            "enabled",
+            "version",
+            "production_pair_maximum_scale",
+            "worker_variance_maximum_scale",
+            "initial_stage",
+        }
+        if set(centered_preference_adapter) != expected_adapter_fields:
+            raise ValueError(
+                "network.centered_preference_adapter has an invalid schema"
+            )
+        if not bool(centered_preference_adapter["enabled"]):
+            raise ValueError("E2.7 centered preference adapter must be enabled")
+        if str(centered_preference_adapter["version"]) != (
+            E1_CENTERED_PREFERENCE_ADAPTER_VERSION
+        ):
+            raise ValueError("unsupported E2.7 centered preference adapter")
+        initial_stage = str(centered_preference_adapter["initial_stage"])
+        if initial_stage not in E1_CENTERED_PREFERENCE_STAGES:
+            raise ValueError("E2.7 initial preference stage is invalid")
+        for field in (
+            "production_pair_maximum_scale",
+            "worker_variance_maximum_scale",
+        ):
+            value = float(centered_preference_adapter[field])
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"E2.7 {field} must be positive")
+        production_gate_raw = {
+            **production_gate_raw,
+            "canonical_preference": canonical,
+            "maximum_logit_shift": maximum_shift,
+        }
+    elif centered_preference_adapter:
+        raise ValueError(
+            "network.centered_preference_adapter is only valid for E2.7"
+        )
     if semantics == STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS:
         if production_gate_version not in {
             STATE_ONLY_PRODUCTION_GATE_VERSION,
@@ -891,7 +973,10 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("E2.6 residual must be disabled during feasibility")
         elif production_gate_freeze_base_after_feasibility or flow_commit_residual:
             raise ValueError("E2.4 state-only gate does not accept E2.5 residual fields")
-    elif production_gate_raw:
+    elif (
+        production_gate_raw
+        and semantics != E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+    ):
         raise ValueError(
             "network.production_gate is only valid for "
             "hierarchical_state_only_gate_then_pair_v3"
@@ -912,6 +997,12 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             production_gate_freeze_base_after_feasibility
         ),
         "production_gate_flow_commit_residual": flow_commit_residual,
+        "production_gate_centered": (
+            dict(production_gate_raw)
+            if semantics == E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+            else {}
+        ),
+        "centered_preference_adapter": centered_preference_adapter,
         "future_value_features": bool(
             config.get("future_value_features", False)
         ),
@@ -1153,15 +1244,22 @@ def assert_network_config_matches_spec(
                     "residual_scale_ratio": 2.0,
                 }
                 if field == "action_set_feature_names":
-                    configured_value = (
-                        PRODUCTION_ACTION_SET_FEATURE_NAMES
-                        if bool(
-                            config.get(
-                                "production_commit_set_scorer", False
-                            )
+                    if configured_semantics == (
+                        E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+                    ):
+                        configured_value = (
+                            E1_CENTERED_PRODUCTION_ACTION_SET_FEATURE_NAMES
                         )
-                        else ()
-                    )
+                    else:
+                        configured_value = (
+                            PRODUCTION_ACTION_SET_FEATURE_NAMES
+                            if bool(
+                                config.get(
+                                    "production_commit_set_scorer", False
+                                )
+                            )
+                            else ()
+                        )
                 else:
                     configured_value = config.get(
                         field, configured_defaults[field]
@@ -1209,6 +1307,20 @@ def assert_network_config_matches_spec(
                     "current network: "
                     f"configured={configured_production_gate}, "
                     f"checkpoint={saved_production_gate}"
+                )
+            configured_centered = dict(
+                config.get("centered_preference_adapter", {})
+            )
+            saved_centered = dict(
+                checkpoint_spec.get("centered_preference_adapter", {})
+            )
+            saved_centered.pop("active_stage", None)
+            configured_centered.pop("active_stage", None)
+            if configured_centered != saved_centered:
+                raise ValueError(
+                    "checkpoint centered_preference_adapter is incompatible "
+                    f"with the current network: configured={configured_centered}, "
+                    f"checkpoint={saved_centered}"
                 )
     configured_features = config.get("feature_dimensions")
     saved_features = checkpoint_spec.get("feature_dimensions")
@@ -1525,6 +1637,8 @@ class HeteroGraphActorCritic(nn.Module):
             DIRECT_PREFERENCE_ACTION_SCORE_STANDARDIZATION
         ),
         preference_action_score_scope: str = "all",
+        production_gate_centered: Mapping[str, Any] | None = None,
+        centered_preference_adapter: Mapping[str, Any] | None = None,
     ):
         super().__init__()
         self.feature_dimensions = {
@@ -1590,6 +1704,16 @@ class HeteroGraphActorCritic(nn.Module):
         self.production_gate_flow_commit_residual = dict(
             production_gate_flow_commit_residual or {}
         )
+        self.production_gate_centered = dict(production_gate_centered or {})
+        self.centered_preference_adapter = dict(
+            centered_preference_adapter or {}
+        )
+        self.use_centered_preference_adapter = bool(
+            self.centered_preference_adapter.get("enabled", False)
+        )
+        self.centered_preference_stage = str(
+            self.centered_preference_adapter.get("initial_stage", "gate")
+        )
         self.production_state_gate_frozen = False
         self.production_flow_commit_residual_active = bool(
             self.production_gate_flow_commit_residual.get(
@@ -1629,6 +1753,17 @@ class HeteroGraphActorCritic(nn.Module):
         self.preference_action_score_scope = str(
             preference_action_score_scope
         )
+        if self.use_centered_preference_adapter:
+            if self.preference_conditioning != "none":
+                raise ValueError(
+                    "E2.7 centered adapter must preserve E1 scorer widths"
+                )
+            if self.preference_action_score_enabled:
+                raise ValueError(
+                    "E2.7 centered adapter cannot use absolute preference scores"
+                )
+            if self.centered_preference_stage not in E1_CENTERED_PREFERENCE_STAGES:
+                raise ValueError("invalid E2.7 centered preference stage")
         if self.preference_conditioning not in {
             "none",
             "separate_encoder_v1",
@@ -1821,14 +1956,22 @@ class HeteroGraphActorCritic(nn.Module):
         )
         self.production_commit_set = (
             _head(
-                len(PRODUCTION_ACTION_SET_FEATURE_NAMES),
+                len(
+                    E1_CENTERED_PRODUCTION_ACTION_SET_FEATURE_NAMES
+                    if self.production_action_semantics
+                    == E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+                    else PRODUCTION_ACTION_SET_FEATURE_NAMES
+                ),
                 self.hidden_dim,
                 self.dropout_probability,
             )
             if (
                 self.use_production_commit_set_scorer
                 and self.production_action_semantics
-                != STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+                not in {
+                    STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+                    E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+                }
             )
             else None
         )
@@ -1867,7 +2010,42 @@ class HeteroGraphActorCritic(nn.Module):
                     self.production_gate_flow_commit_residual["maximum_scale"]
                 ),
             )
+        self.centered_gate_coefficients = (
+            _head(
+                len(E1_CENTERED_PRODUCTION_ACTION_SET_FEATURE_NAMES),
+                self.hidden_dim,
+                self.dropout_probability,
+                output_dim=3,
+            )
+            if self.use_centered_preference_adapter
+            else None
+        )
+        self.centered_value_adapter = (
+            _head(
+                context_dim + len(PREFERENCE_NAMES),
+                self.hidden_dim,
+                self.dropout_probability,
+            )
+            if self.use_centered_preference_adapter
+            else None
+        )
+        if self.centered_gate_coefficients is not None:
+            self._initialize_zero_context_output(self.centered_gate_coefficients)
+        if self.centered_value_adapter is not None:
+            self._initialize_zero_context_output(self.centered_value_adapter)
+        if self.use_centered_preference_adapter:
+            self.centered_production_pair_scale_raw = nn.Parameter(
+                torch.zeros(())
+            )
+            self.centered_worker_variance_scale_raw = nn.Parameter(
+                torch.zeros(())
+            )
+        else:
+            self.register_parameter("centered_production_pair_scale_raw", None)
+            self.register_parameter("centered_worker_variance_scale_raw", None)
         self._latest_policy_decision_diagnostics: list[dict[str, Any]] = []
+        if self.use_centered_preference_adapter:
+            self.set_centered_preference_stage(self.centered_preference_stage)
 
     def network_spec(self) -> dict[str, Any]:
         spec = {
@@ -1937,6 +2115,10 @@ class HeteroGraphActorCritic(nn.Module):
                         self.use_production_commit_set_scorer
                     ),
                     "production_gate": (
+                        dict(self.production_gate_centered)
+                        if self.production_action_semantics
+                        == E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+                        else
                         (
                             {
                                 "version": self.production_gate_version,
@@ -1968,7 +2150,10 @@ class HeteroGraphActorCritic(nn.Module):
                     ),
                     "residual_scale_ratio": self.residual_scale_ratio,
                     "action_set_feature_names": (
-                        PRODUCTION_ACTION_SET_FEATURE_NAMES
+                        E1_CENTERED_PRODUCTION_ACTION_SET_FEATURE_NAMES
+                        if self.production_action_semantics
+                        == E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+                        else PRODUCTION_ACTION_SET_FEATURE_NAMES
                         if self.use_production_commit_set_scorer
                         else ()
                     ),
@@ -2003,6 +2188,11 @@ class HeteroGraphActorCritic(nn.Module):
                     ),
                 }
             )
+            if self.use_centered_preference_adapter:
+                spec["centered_preference_adapter"] = {
+                    **self.centered_preference_adapter,
+                    "active_stage": self.centered_preference_stage,
+                }
         if self.use_preference_conditioning:
             spec.update(
                 {
@@ -2109,6 +2299,12 @@ class HeteroGraphActorCritic(nn.Module):
             dim=-1,
         )
         values = self.critic(context).squeeze(-1)
+        if self.centered_value_adapter is not None:
+            canonical = preference_values.new_tensor((0.5, 0.3, 0.2))
+            centered_preference = preference_values - canonical
+            values = values + self.centered_value_adapter(
+                torch.cat((context, centered_preference), dim=-1)
+            ).squeeze(-1) * centered_preference.abs().sum(dim=-1)
 
         masks = [
             self._validate_action_mask(mask, device=device)
@@ -2202,6 +2398,123 @@ class HeteroGraphActorCritic(nn.Module):
                         production_gate_logits[0],
                         production_gate_logits[1],
                         masks[batch_index],
+                    )
+                elif (
+                    self.production_action_semantics
+                    == E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS
+                ):
+                    terminal_logit = self.production_defer(
+                        context[batch_index]
+                    ).reshape(())
+                    unmasked_logits, centered_gate = (
+                        self._centered_production_gate(
+                            observation,
+                            pair_logits,
+                            terminal_logit,
+                            preference_values[batch_index],
+                            masks[batch_index],
+                            device=device,
+                        )
+                    )
+                    if not self._latest_policy_decision_diagnostics:
+                        raise RuntimeError("E2.7 pair diagnostics are missing")
+                    gate_probabilities = torch.softmax(
+                        torch.stack(
+                            (
+                                centered_gate["base_commit_logit"]
+                                + centered_gate["residual"],
+                                centered_gate["defer_logit"],
+                            )
+                        ),
+                        dim=0,
+                    )
+                    base_gate_probabilities = torch.softmax(
+                        torch.stack(
+                            (
+                                centered_gate["base_commit_logit"],
+                                centered_gate["defer_logit"],
+                            )
+                        ),
+                        dim=0,
+                    )
+                    coefficients = centered_gate["coefficients"]
+                    maximum_shift = float(
+                        self.production_gate_centered["maximum_logit_shift"]
+                    )
+                    anchor_signed_deltas = coefficients.new_tensor(
+                        (
+                            (0.5, 0.3, 0.2),
+                            (-0.5, -0.7, 0.2),
+                            (-0.5, 0.3, -0.8),
+                        )
+                    )
+                    anchor_margins = centered_gate["base_margin"] + (
+                        maximum_shift
+                        * torch.tanh(anchor_signed_deltas @ coefficients)
+                    )
+                    dual_legal = bool(
+                        (~masks[batch_index][:-1]).any().detach().cpu()
+                        and (~masks[batch_index][-1]).detach().cpu()
+                    )
+                    flow_commit = bool((anchor_margins[0] >= 0.0).detach().cpu())
+                    cost_commit = bool((anchor_margins[1] >= 0.0).detach().cpu())
+                    variance_commit = bool(
+                        (anchor_margins[2] >= 0.0).detach().cpu()
+                    )
+                    self._latest_policy_decision_diagnostics[-1].update(
+                        {
+                            "decision_type": DecisionType.PRODUCTION.value,
+                            "production_gate_state_count": 1,
+                            "production_gate_commit_probability": float(
+                                gate_probabilities[0].detach().cpu()
+                            ),
+                            "production_gate_defer_probability": float(
+                                gate_probabilities[1].detach().cpu()
+                            ),
+                            "production_gate_logit_margin": float(
+                                centered_gate["final_margin"].detach().cpu()
+                            ),
+                            "production_gate_base_commit_probability": float(
+                                base_gate_probabilities[0].detach().cpu()
+                            ),
+                            "production_gate_base_defer_probability": float(
+                                base_gate_probabilities[1].detach().cpu()
+                            ),
+                            "production_gate_commit_logit_boost": float(
+                                centered_gate["residual"].detach().cpu()
+                            ),
+                            "production_gate_residual_active": bool(
+                                abs(float(centered_gate["residual"].detach().cpu()))
+                                > 1e-12
+                            ),
+                            "centered_gate_base_margin": float(
+                                centered_gate["base_margin"].detach().cpu()
+                            ),
+                            "centered_gate_residual": float(
+                                centered_gate["residual"].detach().cpu()
+                            ),
+                            "centered_gate_final_margin": float(
+                                centered_gate["final_margin"].detach().cpu()
+                            ),
+                            "centered_gate_dual_legal_state": int(dual_legal),
+                            "centered_gate_flow_cost_flip": int(
+                                dual_legal and flow_commit != cost_commit
+                            ),
+                            "centered_gate_flow_variance_flip": int(
+                                dual_legal and flow_commit != variance_commit
+                            ),
+                            "centered_gate_monotonicity_violation": int(
+                                bool((coefficients < -1e-12).any().detach().cpu())
+                            ),
+                            **{
+                                f"centered_gate_coefficient_{name}": float(
+                                    centered_gate["coefficients"][index]
+                                    .detach()
+                                    .cpu()
+                                )
+                                for index, name in enumerate(PREFERENCE_NAMES)
+                            },
+                        }
                     )
                 else:
                     terminal_logit = self.production_defer(
@@ -2373,6 +2686,72 @@ class HeteroGraphActorCritic(nn.Module):
         ):
             raise ValueError("production action-set feature vector has wrong width")
         return self.production_state_gate(action_set_features).reshape(2)
+
+    def _centered_production_gate(
+        self,
+        observation: HeterogeneousGraphObservation,
+        pair_logits: torch.Tensor,
+        defer_logit: torch.Tensor,
+        preference: torch.Tensor,
+        action_mask: torch.Tensor,
+        *,
+        device: torch.device | str,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Apply an E1-equivalent log-mass gate plus a centered residual."""
+
+        if self.centered_gate_coefficients is None:
+            raise RuntimeError("E2.7 centered gate is not initialized")
+        if tuple(observation.action_set_feature_names) != (
+            E1_CENTERED_PRODUCTION_ACTION_SET_FEATURE_NAMES
+        ):
+            raise ValueError("E2.7 production action-set schema is invalid")
+        features = torch.as_tensor(
+            observation.action_set_features,
+            dtype=pair_logits.dtype,
+            device=device,
+        )
+        if features.shape != (
+            len(E1_CENTERED_PRODUCTION_ACTION_SET_FEATURE_NAMES),
+        ):
+            raise ValueError("E2.7 action-set feature vector has wrong width")
+        legal_pairs = ~action_mask[:-1]
+        if bool(legal_pairs.any()):
+            base_commit_logit = torch.logsumexp(
+                pair_logits[legal_pairs], dim=0
+            )
+        else:
+            base_commit_logit = pair_logits.new_tensor(
+                torch.finfo(pair_logits.dtype).min
+            )
+        raw_coefficients = self.centered_gate_coefficients(features).reshape(3)
+        coefficients = self._zero_initialized_nonnegative(
+            raw_coefficients
+        )
+        canonical = preference.new_tensor((0.5, 0.3, 0.2))
+        centered = preference - canonical
+        signed_centered = centered * centered.new_tensor((1.0, -1.0, -1.0))
+        maximum_shift = float(
+            self.production_gate_centered["maximum_logit_shift"]
+        )
+        residual = maximum_shift * torch.tanh(
+            torch.dot(coefficients, signed_centered)
+        )
+        commit_logit = base_commit_logit + residual
+        # A uniform residual on every pair changes the commit log-mass while
+        # preserving the E1 conditional pair distribution.  At w0 residual is
+        # exactly zero, so even the raw flat logits (not merely probabilities)
+        # are bitwise inherited from E1.
+        joint_logits = torch.cat(
+            (pair_logits + residual, defer_logit.reshape(1))
+        )
+        return joint_logits, {
+            "base_commit_logit": base_commit_logit,
+            "defer_logit": defer_logit,
+            "base_margin": base_commit_logit - defer_logit,
+            "residual": residual,
+            "final_margin": commit_logit - defer_logit,
+            "coefficients": coefficients,
+        }
 
     def _final_production_gate_logits(
         self,
@@ -2565,6 +2944,113 @@ class HeteroGraphActorCritic(nn.Module):
             ),
         }
 
+    def centered_gate_counterfactual_batch(
+        self,
+        observations: Sequence[HeterogeneousGraphObservation],
+        action_masks: Sequence[np.ndarray | torch.Tensor],
+        *,
+        device: torch.device | str,
+    ) -> dict[str, torch.Tensor]:
+        """Evaluate E2.7 gate anchors on identical safe dual-legal states."""
+
+        if not self.use_centered_preference_adapter:
+            raise RuntimeError("centered counterfactuals require E2.7")
+        canonical_observations = [
+            replace(
+                observation,
+                preference=np.asarray((0.5, 0.3, 0.2), dtype=np.float32),
+            )
+            for observation in observations
+        ]
+        canonical_logits, _ = self.forward_batch(
+            canonical_observations,
+            action_masks,
+            device=device,
+        )
+        parameter = next(self.parameters())
+        base_margins: list[torch.Tensor] = []
+        flow_margins: list[torch.Tensor] = []
+        cost_margins: list[torch.Tensor] = []
+        variance_margins: list[torch.Tensor] = []
+        eligible_values: list[bool] = []
+        coefficient_values: list[torch.Tensor] = []
+        maximum_shift = float(
+            self.production_gate_centered["maximum_logit_shift"]
+        )
+        anchors = parameter.new_tensor(
+            (
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        )
+        canonical = parameter.new_tensor((0.5, 0.3, 0.2))
+        signs = parameter.new_tensor((1.0, -1.0, -1.0))
+        for index, (observation, raw_mask) in enumerate(
+            zip(observations, action_masks)
+        ):
+            mask = self._validate_action_mask(raw_mask, device=device)
+            zero = parameter.new_zeros(())
+            if observation.decision_type != DecisionType.PRODUCTION:
+                base_margins.append(zero)
+                flow_margins.append(zero)
+                cost_margins.append(zero)
+                variance_margins.append(zero)
+                coefficient_values.append(parameter.new_zeros((3,)))
+                eligible_values.append(False)
+                continue
+            action_count = int(mask.shape[0])
+            row = canonical_logits[index, :action_count]
+            pair_legal = ~mask[:-1]
+            defer_legal = not bool(mask[-1])
+            base_margin = (
+                torch.logsumexp(row[:-1][pair_legal], dim=0) - row[-1]
+                if bool(pair_legal.any()) and defer_legal
+                else zero
+            )
+            features = torch.as_tensor(
+                observation.action_set_features,
+                dtype=parameter.dtype,
+                device=device,
+            )
+            raw_coefficients = self.centered_gate_coefficients(features).reshape(3)
+            coefficients = self._zero_initialized_nonnegative(
+                raw_coefficients
+            )
+            residuals = maximum_shift * torch.tanh(
+                ((anchors - canonical) * signs * coefficients).sum(dim=-1)
+            )
+            base_margins.append(base_margin)
+            flow_margins.append(base_margin + residuals[0])
+            cost_margins.append(base_margin + residuals[1])
+            variance_margins.append(base_margin + residuals[2])
+            coefficient_values.append(coefficients)
+            eligible_values.append(bool(pair_legal.any()) and defer_legal)
+        eligible = torch.as_tensor(
+            eligible_values, dtype=torch.bool, device=device
+        )
+        base = torch.stack(base_margins)
+        flow = torch.stack(flow_margins)
+        cost = torch.stack(cost_margins)
+        variance = torch.stack(variance_margins)
+        coefficients = torch.stack(coefficient_values)
+        return {
+            "base_margin": base,
+            "flow_margin": flow,
+            "cost_margin": cost,
+            "variance_margin": variance,
+            "coefficients": coefficients,
+            "eligible": eligible,
+            "flow_cost_flip": eligible & (flow >= 0.0) & (cost < 0.0),
+            "flow_variance_flip": eligible & (flow >= 0.0) & (variance < 0.0),
+            # Directional monotonicity is a partial-derivative invariant of
+            # the signed non-negative coefficients.  Comparing simplex
+            # extremes to w0 would mix all three coordinates and is not a
+            # valid monotonicity test.
+            "monotonicity_violation": eligible
+            & (coefficients < -1e-12).any(dim=-1),
+        }
+
     def set_production_state_gate_frozen(self, frozen: bool) -> None:
         """Freeze the E2.5 state-only base gate without changing its value."""
 
@@ -2584,6 +3070,48 @@ class HeteroGraphActorCritic(nn.Module):
                 raise ValueError("only E2.5 has a flow commit residual")
             return
         self.production_flow_commit_residual_active = bool(enabled)
+
+    def set_centered_preference_stage(self, stage: str) -> None:
+        """Apply E2.7's staged freeze policy without rebuilding the optimizer."""
+
+        if not self.use_centered_preference_adapter:
+            if stage:
+                raise ValueError("centered preference stages require E2.7")
+            return
+        normalized = str(stage).strip().lower()
+        if normalized not in E1_CENTERED_PREFERENCE_STAGES:
+            raise ValueError(f"unsupported centered preference stage {stage!r}")
+        self.centered_preference_stage = normalized
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+
+        def enable(module: nn.Module | None) -> None:
+            if module is not None:
+                for parameter in module.parameters():
+                    parameter.requires_grad_(True)
+
+        enable(self.centered_gate_coefficients)
+        if normalized in {"production_pair", "worker_variance"}:
+            enable(self.centered_value_adapter)
+            if self.centered_production_pair_scale_raw is not None:
+                self.centered_production_pair_scale_raw.requires_grad_(True)
+            enable(self.production_action_edge_encoder)
+            enable(self.production_scorer)
+            enable(self.production_relative_ranker)
+            if self.production_context_gate is not None:
+                self.production_context_gate.requires_grad_(True)
+            if self.production_residual_context_gate is not None:
+                self.production_residual_context_gate.requires_grad_(True)
+        if normalized == "worker_variance":
+            if self.centered_worker_variance_scale_raw is not None:
+                self.centered_worker_variance_scale_raw.requires_grad_(True)
+            enable(self.worker_action_edge_encoder)
+            enable(self.worker_scorer)
+            enable(self.worker_relative_ranker)
+            if self.worker_context_gate is not None:
+                self.worker_context_gate.requires_grad_(True)
+            if self.worker_residual_context_gate is not None:
+                self.worker_residual_context_gate.requires_grad_(True)
 
     def _production_logits(
         self,
@@ -2773,6 +3301,25 @@ class HeteroGraphActorCritic(nn.Module):
                 ~action_mask[:pair_count],
                 preference,
                 scale=self.production_preference_action_scale(),
+            )
+        elif (
+            self.use_centered_preference_adapter
+            and self.centered_preference_stage
+            in {"production_pair", "worker_variance"}
+        ):
+            preference_logits = self._centered_direct_preference_logits(
+                torch.stack(
+                    (
+                        processing + reconfiguration,
+                        production_columns[
+                            "total_reconfiguration_cost_norm"
+                        ],
+                    ),
+                    dim=-1,
+                ),
+                ~action_mask[:pair_count],
+                preference,
+                scale=self.centered_production_pair_scale(),
             )
         primary_logits = relative_logits + preference_logits
         common_context, raw_residual_context = self._candidate_context_components(
@@ -3093,6 +3640,20 @@ class HeteroGraphActorCritic(nn.Module):
                 )
             )
             preference_logits = direct_preference_components.sum(dim=-1)
+        elif (
+            self.use_centered_preference_adapter
+            and self.centered_preference_stage == "worker_variance"
+        ):
+            standardized_variance = self._standardize_candidate_features(
+                incremental_variance.reshape(-1, 1),
+                ~action_mask[:pair_count],
+            ).reshape(-1)
+            centered_variance = preference[2] - preference.new_tensor(0.2)
+            preference_logits = (
+                -self.centered_worker_variance_scale()
+                * centered_variance
+                * standardized_variance
+            )
         primary_logits = relative_logits + preference_logits
         common_context, raw_residual_context = self._candidate_context_components(
             contextual_logits,
@@ -3527,6 +4088,18 @@ class HeteroGraphActorCritic(nn.Module):
             diagnostics["policy_head_preference_action_scale_worker"] = float(
                 self.worker_preference_action_scale().detach().cpu()
             )
+        if self.use_centered_preference_adapter:
+            diagnostics["policy_head_centered_production_pair_scale"] = float(
+                self.centered_production_pair_scale().detach().cpu()
+            )
+            diagnostics["policy_head_centered_worker_variance_scale"] = float(
+                self.centered_worker_variance_scale().detach().cpu()
+            )
+            diagnostics["policy_head_centered_stage_index"] = float(
+                E1_CENTERED_PREFERENCE_STAGES.index(
+                    self.centered_preference_stage
+                )
+            )
         return diagnostics
 
     @staticmethod
@@ -3574,6 +4147,65 @@ class HeteroGraphActorCritic(nn.Module):
             self.worker_preference_action_scale_raw,
             self.preference_action_score_worker_scale,
         )
+
+    def _zero_initialized_positive_scale(
+        self,
+        raw: torch.Tensor,
+        maximum: float,
+    ) -> torch.Tensor:
+        """Map a zero-initialized scalar to an exact zero trainable scale."""
+
+        positive = self._zero_initialized_nonnegative(raw)
+        return float(maximum) * positive / (1.0 + positive)
+
+    @staticmethod
+    def _zero_initialized_nonnegative(raw: torch.Tensor) -> torch.Tensor:
+        """Exact-zero non-negative forward value with a live boundary gradient."""
+
+        centered = functional.softplus(raw) - math.log(2.0)
+        projected = torch.clamp(centered, min=0.0)
+        return centered + (projected - centered).detach()
+
+    def centered_production_pair_scale(self) -> torch.Tensor:
+        if self.centered_production_pair_scale_raw is None:
+            return next(self.parameters()).new_zeros(())
+        return self._zero_initialized_positive_scale(
+            self.centered_production_pair_scale_raw,
+            float(
+                self.centered_preference_adapter[
+                    "production_pair_maximum_scale"
+                ]
+            ),
+        )
+
+    def centered_worker_variance_scale(self) -> torch.Tensor:
+        if self.centered_worker_variance_scale_raw is None:
+            return next(self.parameters()).new_zeros(())
+        return self._zero_initialized_positive_scale(
+            self.centered_worker_variance_scale_raw,
+            float(
+                self.centered_preference_adapter[
+                    "worker_variance_maximum_scale"
+                ]
+            ),
+        )
+
+    def _centered_direct_preference_logits(
+        self,
+        objectives: torch.Tensor,
+        feasible: torch.Tensor,
+        preference: torch.Tensor,
+        *,
+        scale: torch.Tensor,
+    ) -> torch.Tensor:
+        standardized = self._standardize_candidate_features(
+            objectives, feasible
+        )
+        canonical = preference.new_tensor((0.5, 0.3, 0.2))
+        centered = preference - canonical
+        return -scale * (
+            standardized * centered[: objectives.shape[1]]
+        ).sum(dim=-1)
 
     def _direct_preference_logits(
         self,
@@ -3758,4 +4390,6 @@ def build_actor_critic(
         policy_head["preference_action_score_worker_scale"],
         policy_head["preference_action_score_standardization"],
         policy_head["preference_action_score_scope"],
+        policy_head["production_gate_centered"],
+        policy_head["centered_preference_adapter"],
     )

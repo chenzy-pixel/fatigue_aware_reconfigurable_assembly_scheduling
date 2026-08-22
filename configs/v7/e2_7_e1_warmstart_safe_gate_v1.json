@@ -1,0 +1,135 @@
+{
+  "extends": "e2_3_safe_production_preference.json",
+  "experiment_name": "v7_e2_7_e1_warmstart_safe_gate_v1",
+  "experiment_suite_version": "v7_e2_7_e1_warmstart_safe_gate_protocol_v1",
+  "environment": {
+    "production_defer": {
+      "allow_recovery_improvement": true,
+      "shield": {
+        "enabled": true,
+        "version": "deadline_progress_shield_v1",
+        "deadline_reserve_ticks": 1,
+        "soft_risk_threshold": 0.8,
+        "soft_risk_coefficient": 0.05
+      }
+    }
+  },
+  "network": {
+    "preference_conditioning": "none",
+    "production_action_semantics": "hierarchical_e1_logsumexp_gate_then_pair_v4",
+    "production_commit_set_scorer": true,
+    "production_gate": {
+      "version": "e1_logsumexp_centered_three_objective_gate_v4",
+      "preference_conditioning": false,
+      "tie_break": "commit",
+      "canonical_preference": [0.5, 0.3, 0.2],
+      "maximum_logit_shift": 3.0
+    },
+    "preference_action_score": {
+      "enabled": false
+    },
+    "centered_preference_adapter": {
+      "enabled": true,
+      "version": "centered_parallel_adapter_v1",
+      "production_pair_maximum_scale": 2.0,
+      "worker_variance_maximum_scale": 1.5,
+      "initial_stage": "gate"
+    }
+  },
+  "ppo": {
+    "counterfactual_preference_consistency": {
+      "enabled": true,
+      "version": "centered_three_objective_gate_v2",
+      "apply_during_phase": "all",
+      "minimum_margin_gap": 0.05,
+      "minimum_eligible_states": 64,
+      "loss_coefficient": 0.1
+    },
+    "canonical_teacher_kl": {
+      "enabled": true,
+      "version": "e1_canonical_policy_kl_v1",
+      "coefficient": 0.05,
+      "canonical_preference": [0.5, 0.3, 0.2]
+    }
+  },
+  "training": {
+    "episodes": 2000,
+    "parallel_envs": 10,
+    "smoke_episodes": 10,
+    "smoke_parallel_envs": 10,
+    "preference_grouping": {
+      "enabled": false
+    },
+    "warm_start": {
+      "checkpoint": "result/runs/v7_2000_e1_seed11/accepted_checkpoint.pt",
+      "required_source_checkpoint": "result/runs/v7_2000_e1_seed11/accepted_checkpoint.pt",
+      "expected_shared_parameter_count": 116
+    },
+    "preference_stage_schedule": {
+      "enabled": true,
+      "version": "e1_centered_adapter_40_80_80_v1",
+      "gate_end_update": 40,
+      "production_pair_end_update": 120,
+      "final_update": 200
+    },
+    "development_acceptance": {
+      "enabled": true,
+      "scope": "single_seed_development",
+      "formal_eligible": false,
+      "required_consecutive_full_grids": 2,
+      "reference_e1_seed11": {
+        "validation_canonical_quality": 0.32409136631649565,
+        "validation_mean_hypervolume": 0.37940407052132497,
+        "test_mean_hypervolume": 0.37900184680581905,
+        "ood_mean_hypervolume": 0.4561739973397871,
+        "stress_mean_hypervolume": 0.4435562022499796
+      }
+    },
+    "e2_3_failure_replay": {
+      "enabled": true,
+      "version": "e2_3_update200_low_flow_10_v1",
+      "every_updates": 5,
+      "cells": [
+        ["validation_machine_bottleneck_2000008", [0.0, 0.0, 1.0]],
+        ["validation_fatigue_bottleneck_2000011", [0.0, 0.0, 1.0]],
+        ["validation_machine_bottleneck_2000008", [0.0, 0.2, 0.8]],
+        ["validation_fatigue_bottleneck_2000011", [0.0, 0.2, 0.8]],
+        ["validation_machine_bottleneck_2000014", [0.0, 0.6, 0.4]],
+        ["validation_machine_bottleneck_2000014", [0.2, 0.0, 0.8]],
+        ["validation_machine_bottleneck_2000014", [0.2, 0.2, 0.6]],
+        ["validation_machine_bottleneck_2000014", [0.2, 0.4, 0.4]],
+        ["validation_machine_bottleneck_2000014", [0.2, 0.6, 0.2]],
+        ["validation_machine_bottleneck_2000014", [0.2, 0.8, 0.0]]
+      ]
+    },
+    "two_stage": {
+      "quality_checkpoint_promotion": "pareto_guarded_e2_7_development_v1",
+      "quality_validate_every_update": true,
+      "pareto_promotion": {
+        "anchor_validate_every_updates": 5,
+        "full_grid_validate_every_updates": 20,
+        "minimum_hv_improvement": 0.0001,
+        "canonical_relative_tolerance": 0.01,
+        "canonical_absolute_tolerance": 0.000001,
+        "fatigue_absolute_tolerance": 1e-9,
+        "required_full_grid_instance_count": 20,
+        "required_full_grid_preference_count": 22,
+        "required_full_grid_candidate_count": 440,
+        "minimum_mean_unique_action_trace_count": 8.0,
+        "minimum_mean_unique_objective_count": 8.0,
+        "minimum_mean_nondominated_count": 4.0,
+        "maximum_preference_response_spearman_flow": -0.05,
+        "maximum_preference_response_spearman_cost": -0.05,
+        "maximum_preference_response_spearman_variance": -0.05,
+        "minimum_centered_gate_extreme_flip_rate": 0.05,
+        "maximum_canonical_heuristic_relative_gap": -0.10,
+        "safety_guard_consecutive_failures": 1,
+        "safety_guard_learning_rate_decay_factor": 0.5,
+        "safety_guard_minimum_learning_rate": 0.00001
+      }
+    }
+  },
+  "evaluation": {
+    "result_schema_version": "4.8.0"
+  }
+}

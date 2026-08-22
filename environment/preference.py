@@ -95,10 +95,17 @@ def preference_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(network, Mapping):
         raise TypeError("config.network must be an object")
     conditioning = str(network.get("preference_conditioning", "none"))
-    if enabled and conditioning != "separate_encoder_v1":
+    centered_adapter = bool(
+        network.get("production_action_semantics")
+        == "hierarchical_e1_logsumexp_gate_then_pair_v4"
+        and isinstance(network.get("centered_preference_adapter"), Mapping)
+        and network["centered_preference_adapter"].get("enabled", False)
+    )
+    if enabled and conditioning != "separate_encoder_v1" and not centered_adapter:
         raise ValueError(
             "enabled preferences require "
-            "network.preference_conditioning='separate_encoder_v1'"
+            "network.preference_conditioning='separate_encoder_v1' or the "
+            "E1-centered parallel adapter"
         )
     if not enabled and conditioning != "none":
         raise ValueError(

@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import math
+import hashlib
+from copy import deepcopy
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from torch.distributions import Categorical
+from torch.distributions import Categorical, kl_divergence
 from torch.nn import functional as functional
 
 from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.network import (
     ActorCriticNetwork,
+    E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+    E1_CENTERED_THREE_OBJECTIVE_GATE_VERSION,
     HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
     STATE_ONLY_COUNTERFACTUAL_MONOTONE_FLOW_COMMIT_GATE_VERSION,
     STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
     assert_network_config_matches_spec,
+    build_actor_critic,
     infer_checkpoint_network_spec,
 )
 from environment import DecisionType, Observation, PolicyObservation
@@ -141,6 +147,18 @@ def summarize_policy_decision_diagnostics(
         float(row.get("counterfactual_state_residual_scale", 0.0) or 0.0)
         for row in gate_rows
     ]
+    centered_dual_legal_count = sum(
+        int(row.get("centered_gate_dual_legal_state", 0) or 0)
+        for row in gate_rows
+    )
+    centered_flow_cost_flip_count = sum(
+        int(row.get("centered_gate_flow_cost_flip", 0) or 0)
+        for row in gate_rows
+    )
+    centered_flow_variance_flip_count = sum(
+        int(row.get("centered_gate_flow_variance_flip", 0) or 0)
+        for row in gate_rows
+    )
     worker_direct_flow_max_abs = max(
         (
             float(row.get("worker_direct_preference_flow_logit_max_abs", 0.0))
@@ -321,6 +339,21 @@ def summarize_policy_decision_diagnostics(
             int(row.get("counterfactual_monotonicity_violation", 0) or 0)
             for row in gate_rows
         ),
+        "centered_gate_dual_legal_state_count": centered_dual_legal_count,
+        "centered_gate_flow_cost_flip_count": centered_flow_cost_flip_count,
+        "centered_gate_flow_variance_flip_count": (
+            centered_flow_variance_flip_count
+        ),
+        "centered_gate_extreme_flip_rate": (
+            max(centered_flow_cost_flip_count, centered_flow_variance_flip_count)
+            / centered_dual_legal_count
+            if centered_dual_legal_count
+            else 0.0
+        ),
+        "centered_gate_monotonicity_violation_count": sum(
+            int(row.get("centered_gate_monotonicity_violation", 0) or 0)
+            for row in gate_rows
+        ),
     }
 
 
@@ -353,6 +386,111 @@ class PPOAgent:
         self.counterfactual_preference_consistency = (
             self._validate_counterfactual_preference_consistency(config)
         )
+        self.canonical_teacher_kl = self._validate_canonical_teacher_kl(config)
+        self.canonical_teacher: ActorCriticNetwork | None = None
+        self.warm_start_report: dict[str, Any] | None = None
+        self.safe_dual_legal_state_pool: list[
+            tuple[Observation | PolicyObservation, np.ndarray]
+        ] = []
+        self.safe_dual_legal_state_pool_report: dict[str, Any] | None = None
+        self._safe_pool_gradient_preflight_complete = False
+
+    def set_safe_dual_legal_state_pool(
+        self,
+        states: Sequence[
+            tuple[Observation | PolicyObservation, np.ndarray]
+        ],
+        *,
+        provenance: dict[str, Any],
+    ) -> dict[str, Any]:
+        minimum = int(
+            self.counterfactual_preference_consistency.get(
+                "minimum_eligible_states", 0
+            )
+        )
+        if minimum < 1:
+            raise RuntimeError("safe state pools require E2.7 counterfactual training")
+        normalized = [
+            (observation.copy(), np.asarray(mask, dtype=bool).copy())
+            for observation, mask in states
+        ]
+        if len(normalized) < minimum:
+            raise RuntimeError(
+                "E2.7 safe dual-legal state pool is too small: "
+                f"eligible={len(normalized)}, required={minimum}"
+            )
+        for observation, mask in normalized:
+            if (
+                getattr(observation, "decision_type", None)
+                != DecisionType.PRODUCTION
+                or mask.ndim != 1
+                or mask.size < 2
+                or not bool((~mask[:-1]).any())
+                or bool(mask[-1])
+            ):
+                raise ValueError("safe state pool contains a non-dual-legal state")
+        digest = hashlib.sha256()
+
+        def update_array(name: str, value: Any) -> None:
+            array = np.ascontiguousarray(np.asarray(value))
+            digest.update(name.encode("utf-8"))
+            digest.update(str(array.dtype).encode("ascii"))
+            digest.update(str(tuple(array.shape)).encode("ascii"))
+            digest.update(array.tobytes())
+
+        for index, (observation, mask) in enumerate(normalized):
+            digest.update(f"state:{index}".encode("ascii"))
+            digest.update(str(observation.decision_type.value).encode("utf-8"))
+            update_array("mask", mask)
+            update_array("global", observation.global_features)
+            update_array("action_set", observation.action_set_features)
+            update_array("preference", observation.preference)
+            for node_type in sorted(observation.node_features):
+                update_array(
+                    f"node:{node_type}", observation.node_features[node_type]
+                )
+            for edge_type in sorted(observation.relations, key=str):
+                edge = observation.relations[edge_type]
+                update_array(f"edge_index:{edge_type}", edge.edge_index)
+                update_array(f"edge_features:{edge_type}", edge.edge_features)
+        self.safe_dual_legal_state_pool = normalized
+        self._safe_pool_gradient_preflight_complete = False
+        report = {
+            "version": "fixed_e1_validation_e2_3_failure_pool_v1",
+            "state_count": len(normalized),
+            "minimum_required_state_count": minimum,
+            "fixed_sampling_count_per_auxiliary_update": minimum,
+            "state_pool_sha256": digest.hexdigest(),
+            "provenance": dict(provenance),
+        }
+        self.safe_dual_legal_state_pool_report = report
+        return dict(report)
+
+    @staticmethod
+    def _validate_canonical_teacher_kl(
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw = config.get("canonical_teacher_kl", {})
+        if not isinstance(raw, dict):
+            raise TypeError("ppo.canonical_teacher_kl must be an object")
+        if not raw or not bool(raw.get("enabled", False)):
+            return {"enabled": False, "coefficient": 0.0}
+        expected = {"enabled", "version", "coefficient", "canonical_preference"}
+        if set(raw) != expected:
+            raise ValueError("canonical teacher KL has an invalid schema")
+        if str(raw["version"]) != "e1_canonical_policy_kl_v1":
+            raise ValueError("unsupported canonical teacher KL version")
+        canonical = tuple(float(value) for value in raw["canonical_preference"])
+        if canonical != (0.5, 0.3, 0.2):
+            raise ValueError("canonical teacher preference must be (0.5, 0.3, 0.2)")
+        coefficient = float(raw["coefficient"])
+        if not math.isfinite(coefficient) or coefficient <= 0.0:
+            raise ValueError("canonical teacher KL coefficient must be positive")
+        return {
+            "enabled": True,
+            "coefficient": coefficient,
+            "canonical_preference": canonical,
+        }
 
     @property
     def requires_graph_observation(self) -> bool:
@@ -370,6 +508,43 @@ class PPOAgent:
         enabled = bool(raw.get("enabled", False))
         if not enabled:
             return {"enabled": False}
+        version = str(raw.get("version", ""))
+        if version == "centered_three_objective_gate_v2":
+            expected = {
+                "enabled",
+                "version",
+                "apply_during_phase",
+                "minimum_margin_gap",
+                "minimum_eligible_states",
+                "loss_coefficient",
+            }
+            if set(raw) != expected:
+                raise ValueError(
+                    "E2.7 counterfactual preference consistency has an invalid schema"
+                )
+            if str(raw["apply_during_phase"]) != "all":
+                raise ValueError("E2.7 counterfactual loss must run in all stages")
+            gap = float(raw["minimum_margin_gap"])
+            minimum = int(raw["minimum_eligible_states"])
+            coefficient = float(raw["loss_coefficient"])
+            if not math.isfinite(gap) or gap <= 0.0:
+                raise ValueError("E2.7 minimum margin gap must be positive")
+            if minimum < 1:
+                raise ValueError("E2.7 minimum eligible states must be positive")
+            if not math.isfinite(coefficient) or coefficient <= 0.0:
+                raise ValueError("E2.7 counterfactual coefficient must be positive")
+            if getattr(self.network, "production_gate_version", None) != (
+                E1_CENTERED_THREE_OBJECTIVE_GATE_VERSION
+            ):
+                raise ValueError("E2.7 loss requires the centered production gate")
+            return {
+                "enabled": True,
+                "version": version,
+                "loss_coefficient": coefficient,
+                "minimum_margin_gap": gap,
+                "minimum_eligible_states": minimum,
+                "apply_during_phase": "all",
+            }
         expected = {
             "enabled",
             "version",
@@ -382,7 +557,7 @@ class PPOAgent:
             raise ValueError(
                 "E2.6 counterfactual preference consistency has an invalid schema"
             )
-        if str(raw["version"]) != "production_gate_cross_zero_v1":
+        if version != "production_gate_cross_zero_v1":
             raise ValueError("E2.6 counterfactual preference consistency has an invalid version")
         if str(raw["apply_during_phase"]) != "quality":
             raise ValueError("E2.6 counterfactual loss must run only during quality")
@@ -399,6 +574,7 @@ class PPOAgent:
             raise ValueError("E2.6 counterfactual loss requires the E2.6 production gate")
         return {
             "enabled": True,
+            "version": version,
             "loss_coefficient": coefficient,
             "apply_during_phase": "quality",
         }
@@ -473,6 +649,7 @@ class PPOAgent:
         if semantics not in {
             HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
             STATE_ONLY_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
+            E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS,
         }:
             return torch.argmax(logits, dim=-1)
         actions: list[int] = []
@@ -552,12 +729,11 @@ class PPOAgent:
         *,
         reward_phase: str,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Return E2.6's quality-only cross-zero auxiliary loss.
+        """Return the configured same-state gate counterfactual loss.
 
-        ``counterfactual_production_gate_batch`` is deliberately restricted to
-        the frozen base gate and the E2.6 state residual head.  Consequently
-        this term cannot create gradients in the pair scorer, worker scorer,
-        critic, or graph encoder.
+        E2.7 evaluates all three preference anchors on a fixed safe dual-legal
+        state pool.  The legacy E2.6 branch remains quality-only and restricted
+        to its frozen base gate plus state residual head.
         """
 
         zero = next(self.network.parameters()).new_zeros(())
@@ -569,9 +745,84 @@ class PPOAgent:
             "counterfactual_state_scale_max": 0.0,
             "counterfactual_low_flow_identity_violation_count": 0.0,
             "counterfactual_monotonicity_violation_count": 0.0,
+            "counterfactual_flow_cost_flip_count": 0.0,
+            "counterfactual_flow_variance_flip_count": 0.0,
+            "counterfactual_coefficient_mean": 0.0,
         }
         settings = self.counterfactual_preference_consistency
-        if not settings["enabled"] or reward_phase != "quality":
+        if not settings["enabled"]:
+            return zero, disabled_metrics
+        if settings.get("version") == "centered_three_objective_gate_v2":
+            evaluator = getattr(
+                self.network, "centered_gate_counterfactual_batch", None
+            )
+            if evaluator is None:
+                raise RuntimeError("E2.7 network lacks centered counterfactuals")
+            pool = self.safe_dual_legal_state_pool
+            minimum = int(settings["minimum_eligible_states"])
+            selected_pool = pool[:minimum]
+            observations = (
+                [observation for observation, _ in selected_pool]
+                if selected_pool
+                else [transition.observation for transition in transitions]
+            )
+            masks = (
+                [mask for _, mask in selected_pool]
+                if selected_pool
+                else [transition.action_mask for transition in transitions]
+            )
+            diagnostics = evaluator(
+                observations,
+                masks,
+                device=self.device,
+            )
+            eligible = diagnostics["eligible"]
+            gap = float(settings["minimum_margin_gap"])
+            if bool(eligible.any()):
+                flow = diagnostics["flow_margin"][eligible]
+                cost = diagnostics["cost_margin"][eligible]
+                variance = diagnostics["variance_margin"][eligible]
+                loss = 0.5 * (
+                    torch.relu(gap - (flow - cost)).square().mean()
+                    + torch.relu(gap - (flow - variance)).square().mean()
+                )
+                coefficient_mean = float(
+                    diagnostics["coefficients"][eligible]
+                    .detach()
+                    .mean()
+                    .cpu()
+                )
+            else:
+                loss = zero
+                coefficient_mean = 0.0
+            eligible_count = int(eligible.sum().detach().cpu())
+            flow_cost_flips = int(
+                diagnostics["flow_cost_flip"].sum().detach().cpu()
+            )
+            flow_variance_flips = int(
+                diagnostics["flow_variance_flip"].sum().detach().cpu()
+            )
+            return loss, {
+                **disabled_metrics,
+                "counterfactual_eligible_count": float(eligible_count),
+                "counterfactual_high_flow_commit_flip_count": float(
+                    max(flow_cost_flips, flow_variance_flips)
+                ),
+                "counterfactual_high_flow_commit_flip_rate": (
+                    max(flow_cost_flips, flow_variance_flips) / eligible_count
+                    if eligible_count
+                    else 0.0
+                ),
+                "counterfactual_monotonicity_violation_count": float(
+                    diagnostics["monotonicity_violation"].sum().detach().cpu()
+                ),
+                "counterfactual_flow_cost_flip_count": float(flow_cost_flips),
+                "counterfactual_flow_variance_flip_count": float(
+                    flow_variance_flips
+                ),
+                "counterfactual_coefficient_mean": coefficient_mean,
+            }
+        if reward_phase != "quality":
             return zero, disabled_metrics
         if not bool(
             getattr(self.network, "production_state_gate_frozen", False)
@@ -611,6 +862,7 @@ class PPOAgent:
             diagnostics["high_flow_flip"].sum().detach().cpu()
         )
         return loss, {
+            **disabled_metrics,
             "counterfactual_eligible_count": float(eligible_count),
             "counterfactual_high_flow_commit_flip_count": float(flip_count),
             "counterfactual_high_flow_commit_flip_rate": (
@@ -636,6 +888,38 @@ class PPOAgent:
             ),
         }
 
+    def _canonical_teacher_loss(
+        self,
+        transitions: Sequence[Any],
+    ) -> torch.Tensor:
+        zero = next(self.network.parameters()).new_zeros(())
+        if not self.canonical_teacher_kl["enabled"]:
+            return zero
+        if self.canonical_teacher is None:
+            raise RuntimeError(
+                "canonical teacher KL is enabled before E1 warm-start"
+            )
+        canonical = np.asarray((0.5, 0.3, 0.2), dtype=np.float32)
+        observations = [
+            replace(
+                transition.observation,
+                preference=canonical.copy(),
+            )
+            for transition in transitions
+        ]
+        masks = [transition.action_mask for transition in transitions]
+        current_logits, _ = self.network.forward_batch(
+            observations, masks, device=self.device
+        )
+        with torch.no_grad():
+            teacher_logits, _ = self.canonical_teacher.forward_batch(
+                observations, masks, device=self.device
+            )
+        return kl_divergence(
+            Categorical(logits=teacher_logits),
+            Categorical(logits=current_logits),
+        ).mean()
+
     def update(
         self,
         buffer: RolloutBuffer,
@@ -644,6 +928,69 @@ class PPOAgent:
     ) -> dict[str, float]:
         if not buffer.transitions:
             raise ValueError("cannot update PPO with an empty buffer")
+        if (
+            self.counterfactual_preference_consistency.get("version")
+            == "centered_three_objective_gate_v2"
+        ):
+            if not self.safe_dual_legal_state_pool:
+                raise RuntimeError(
+                    "E2.7 fixed safe dual-legal state pool was not initialized"
+                )
+            evaluator = getattr(
+                self.network, "centered_gate_counterfactual_batch"
+            )
+            with torch.no_grad():
+                preflight = evaluator(
+                    [
+                        observation
+                        for observation, _ in self.safe_dual_legal_state_pool
+                    ],
+                    [mask for _, mask in self.safe_dual_legal_state_pool],
+                    device=self.device,
+                )
+            eligible_count = int(preflight["eligible"].sum().cpu())
+            minimum = int(
+                self.counterfactual_preference_consistency[
+                    "minimum_eligible_states"
+                ]
+            )
+            if eligible_count < minimum:
+                raise RuntimeError(
+                    "E2.7 safe dual-legal state pool is too small: "
+                    f"eligible={eligible_count}, required={minimum}"
+                )
+            probe_transitions = [
+                type(
+                    "SafePoolTransition",
+                    (),
+                    {"observation": observation, "action_mask": mask},
+                )()
+                for observation, mask in self.safe_dual_legal_state_pool[:minimum]
+            ]
+            self.optimizer.zero_grad()
+            probe_loss, _ = self._counterfactual_loss(
+                probe_transitions,
+                reward_phase=reward_phase,
+            )
+            if not bool(torch.isfinite(probe_loss)) or float(
+                probe_loss.detach().cpu()
+            ) <= 0.0:
+                raise RuntimeError(
+                    "E2.7 counterfactual preflight loss is zero or non-finite"
+                )
+            probe_loss.backward()
+            gate = getattr(self.network, "centered_gate_coefficients", None)
+            gradient_total = sum(
+                float(parameter.grad.detach().abs().sum().cpu())
+                for parameter in gate.parameters()
+                if parameter.grad is not None
+            ) if gate is not None else 0.0
+            self.optimizer.zero_grad()
+            if not math.isfinite(gradient_total) or gradient_total <= 0.0:
+                raise RuntimeError(
+                    "E2.7 centered gate adapter gradient is zero"
+                )
+            self._safe_pool_gradient_preflight_complete = True
         raw_advantages = torch.as_tensor(
             [transition.advantage for transition in buffer.transitions],
             dtype=torch.float32,
@@ -695,6 +1042,10 @@ class PPOAgent:
             "counterfactual_state_scale_max",
             "counterfactual_low_flow_identity_violation_count",
             "counterfactual_monotonicity_violation_count",
+            "counterfactual_flow_cost_flip_count",
+            "counterfactual_flow_variance_flip_count",
+            "counterfactual_coefficient_mean",
+            "canonical_teacher_kl",
         )
         metrics: list[tuple[float, ...]] = []
         for _ in range(epochs):
@@ -774,6 +1125,9 @@ class PPOAgent:
                         reward_phase=reward_phase,
                     )
                 )
+                canonical_teacher_loss = self._canonical_teacher_loss(
+                    transitions
+                )
                 loss = (
                     policy_loss
                     + self.config["value_coefficient"] * value_loss
@@ -784,6 +1138,8 @@ class PPOAgent:
                         )
                     )
                     * counterfactual_loss
+                    + float(self.canonical_teacher_kl["coefficient"])
+                    * canonical_teacher_loss
                 )
                 if not bool(torch.isfinite(loss)):
                     raise FloatingPointError("non-finite PPO loss")
@@ -826,6 +1182,16 @@ class PPOAgent:
                         counterfactual_metrics[
                             "counterfactual_monotonicity_violation_count"
                         ],
+                        counterfactual_metrics[
+                            "counterfactual_flow_cost_flip_count"
+                        ],
+                        counterfactual_metrics[
+                            "counterfactual_flow_variance_flip_count"
+                        ],
+                        counterfactual_metrics[
+                            "counterfactual_coefficient_mean"
+                        ],
+                        float(canonical_teacher_loss.detach().item()),
                     )
                 )
         metric_array = np.asarray(metrics, dtype=np.float64)
@@ -900,6 +1266,10 @@ class PPOAgent:
         output = Path(path)
         output.parent.mkdir(parents=True, exist_ok=True)
         saved_metadata = dict(metadata or {})
+        if self.warm_start_report:
+            saved_metadata.setdefault(
+                "warm_start", dict(self.warm_start_report)
+            )
         network_state = self.network.state_dict()
         weights_hash = network_weights_sha256(network_state)
         saved_metadata["network_weights_sha256"] = weights_hash
@@ -948,6 +1318,226 @@ class PPOAgent:
             self.network.set_production_flow_commit_residual_enabled(
                 bool(saved_gate["residual_active"])
             )
+        saved_centered = checkpoint_spec.get(
+            "centered_preference_adapter", {}
+        )
+        if (
+            isinstance(saved_centered, dict)
+            and "active_stage" in saved_centered
+            and hasattr(self.network, "set_centered_preference_stage")
+        ):
+            self.network.set_centered_preference_stage(
+                str(saved_centered["active_stage"])
+            )
         if load_optimizer and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         return dict(checkpoint.get("metadata", {}))
+
+    def restore_e1_teacher_from_warm_start_report(
+        self,
+        report: dict[str, Any],
+    ) -> None:
+        """Restore E1 provenance and the frozen canonical teacher on resume."""
+
+        if not isinstance(report, dict):
+            raise TypeError("warm-start report must be an object")
+        source_path = Path(str(report.get("source_checkpoint", "")))
+        if not source_path.is_file():
+            raise ValueError("warm-start source checkpoint is unavailable on resume")
+        actual_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        if actual_hash != str(report.get("source_checkpoint_sha256", "")):
+            raise ValueError("warm-start source checkpoint hash changed on resume")
+        source_checkpoint = torch.load(
+            source_path, map_location=self.device, weights_only=False
+        )
+        source = source_checkpoint.get("network")
+        if not isinstance(source, dict):
+            raise ValueError("warm-start source checkpoint has no network state")
+        source_metadata = source_checkpoint.get("metadata", {})
+        if "accepted_episode" not in source_metadata:
+            raise ValueError("warm-start source is no longer an accepted checkpoint")
+        if len(source) != int(report.get("loaded_shared_parameter_count", -1)):
+            raise ValueError("warm-start shared parameter count changed on resume")
+        teacher = deepcopy(self.network).to(self.device)
+        teacher_state = teacher.state_dict()
+        missing = sorted(set(source) - set(teacher_state))
+        mismatched = sorted(
+            key
+            for key in set(source) & set(teacher_state)
+            if tuple(source[key].shape) != tuple(teacher_state[key].shape)
+        )
+        if missing or mismatched:
+            raise ValueError(
+                "cannot reconstruct E1 canonical teacher: "
+                f"missing={missing}, shape_mismatches={mismatched}"
+            )
+        for key in teacher_state:
+            if key in source:
+                teacher_state[key] = source[key]
+            else:
+                teacher_state[key] = torch.zeros_like(teacher_state[key])
+        teacher.load_state_dict(teacher_state, strict=True)
+        teacher.eval()
+        for parameter in teacher.parameters():
+            parameter.requires_grad_(False)
+        self.canonical_teacher = teacher
+        self.warm_start_report = dict(report)
+
+    def warm_start_from_e1(
+        self,
+        path: str | Path,
+        *,
+        expected_shared_parameter_count: int = 116,
+    ) -> dict[str, Any]:
+        """Load every E1 tensor exactly while leaving E2.7 adapters fresh."""
+
+        checkpoint_path = Path(path)
+        checkpoint = torch.load(
+            checkpoint_path, map_location=self.device, weights_only=False
+        )
+        if not isinstance(checkpoint, dict):
+            raise ValueError("E1 warm-start checkpoint root must be a mapping")
+        source = checkpoint.get("network")
+        if not isinstance(source, dict):
+            raise ValueError("E1 warm-start checkpoint has no network state")
+        source_spec = infer_checkpoint_network_spec(checkpoint)
+        if str(source_spec.get("production_action_semantics")) != (
+            "pair_plus_defer_v1"
+        ):
+            raise ValueError("E1 warm-start source must use flat pair+defer semantics")
+        if source_spec.get("preference_conditioning") not in {None, "none"}:
+            raise ValueError("E1 warm-start source must be preference independent")
+        metadata = dict(checkpoint.get("metadata", {}))
+        if "accepted_episode" not in metadata:
+            raise ValueError("E1 warm-start source is not an accepted checkpoint")
+        if len(source) != int(expected_shared_parameter_count):
+            raise ValueError(
+                "E1 warm-start shared parameter count changed: "
+                f"expected={expected_shared_parameter_count}, actual={len(source)}"
+            )
+        target = self.network.state_dict()
+        missing = sorted(set(source) - set(target))
+        shape_mismatches = sorted(
+            key
+            for key in set(source) & set(target)
+            if tuple(source[key].shape) != tuple(target[key].shape)
+        )
+        if missing or shape_mismatches:
+            raise ValueError(
+                "E1 warm-start is not lossless: "
+                f"missing={missing}, shape_mismatches={shape_mismatches}"
+            )
+        merged = dict(target)
+        for key, value in source.items():
+            merged[key] = value
+        self.network.load_state_dict(merged, strict=True)
+        loaded = self.network.state_dict()
+        unequal = [
+            key
+            for key, value in source.items()
+            if not torch.equal(loaded[key].detach().cpu(), value.detach().cpu())
+        ]
+        if unequal:
+            raise RuntimeError(f"E1 warm-start tensor verification failed: {unequal}")
+        # Warm-start is transfer, never optimizer resume.
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(), lr=self.config["learning_rate"]
+        )
+        self.canonical_teacher = deepcopy(self.network).to(self.device)
+        self.canonical_teacher.eval()
+        for parameter in self.canonical_teacher.parameters():
+            parameter.requires_grad_(False)
+        new_keys = sorted(set(target) - set(source))
+        report = {
+            "mode": "e1_to_e2_7_lossless_warm_start_v1",
+            "source_checkpoint": str(checkpoint_path.resolve()),
+            "source_checkpoint_sha256": hashlib.sha256(
+                checkpoint_path.read_bytes()
+            ).hexdigest(),
+            "source_network_weights_sha256": network_weights_sha256(source),
+            "source_accepted_episode": int(metadata["accepted_episode"]),
+            "loaded_shared_parameter_count": len(source),
+            "new_parameter_count": len(new_keys),
+            "new_parameter_keys": new_keys,
+            "shape_mismatch_count": 0,
+            "missing_shared_parameter_count": 0,
+            "optimizer_restored": False,
+            "optimizer_state_entry_count": len(self.optimizer.state),
+            "canonical_identity_contract": (
+                "exact E1 shared tensors; centered residuals are zero at "
+                "w=(0.5,0.3,0.2)"
+            ),
+        }
+        self.warm_start_report = report
+        return dict(report)
+
+    def verify_warm_start_canonical_identity(
+        self,
+        observation: Observation | PolicyObservation,
+        action_mask: np.ndarray,
+        *,
+        source_checkpoint: str | Path,
+    ) -> dict[str, Any]:
+        """Numerically prove E2.7 is exactly E1 at canonical preference."""
+
+        checkpoint = torch.load(
+            Path(source_checkpoint), map_location=self.device, weights_only=False
+        )
+        metadata = checkpoint.get("metadata", {})
+        effective_config = metadata.get("effective_config", {})
+        source_network_config = effective_config.get("network")
+        if not isinstance(source_network_config, dict):
+            raise ValueError(
+                "E1 checkpoint lacks effective_config.network for identity check"
+            )
+        canonical = np.asarray((0.5, 0.3, 0.2), dtype=np.float32)
+        canonical_observation = replace(
+            observation,
+            preference=canonical,
+        )
+        source_network = build_actor_critic(
+            canonical_observation, source_network_config
+        ).to(self.device)
+        source_network.load_state_dict(checkpoint["network"], strict=True)
+        source_network.eval()
+        target_was_training = self.network.training
+        self.network.eval()
+        with torch.no_grad():
+            source_logits, source_value = source_network.forward_batch(
+                [canonical_observation], [action_mask], device=self.device
+            )
+            target_logits, target_value = self.network.forward_batch(
+                [canonical_observation], [action_mask], device=self.device
+            )
+        self.network.train(target_was_training)
+        action_count = int(np.asarray(action_mask).shape[0])
+        source_row = source_logits[0, :action_count]
+        target_row = target_logits[0, :action_count]
+        source_probability = torch.softmax(source_row, dim=0)
+        target_probability = torch.softmax(target_row, dim=0)
+        raw_equal = torch.equal(source_row, target_row)
+        probability_equal = torch.equal(source_probability, target_probability)
+        value_equal = torch.equal(source_value, target_value)
+        result = {
+            "preference": [0.5, 0.3, 0.2],
+            "raw_logits_exact": bool(raw_equal),
+            "probabilities_exact": bool(probability_equal),
+            "value_exact": bool(value_equal),
+            "raw_logits_max_abs_error": float(
+                (source_row - target_row).abs().max().cpu()
+            ),
+            "probability_max_abs_error": float(
+                (source_probability - target_probability).abs().max().cpu()
+            ),
+            "value_max_abs_error": float(
+                (source_value - target_value).abs().max().cpu()
+            ),
+            "pass": bool(raw_equal and probability_equal and value_equal),
+        }
+        if not result["pass"]:
+            raise RuntimeError(
+                "E1 warm-start canonical identity verification failed: "
+                f"{result}"
+            )
+        self.warm_start_report["canonical_identity_result"] = result
+        return dict(self.warm_start_report)

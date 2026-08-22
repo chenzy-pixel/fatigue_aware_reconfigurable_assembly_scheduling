@@ -280,6 +280,14 @@ class AssemblySchedulingEnv:
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
         self._production_defer_reason_counts: dict[str, int] = {}
+        self._production_defer_shield_candidates: set[int] = set()
+        self._production_defer_shield_masked: set[int] = set()
+        self._production_defer_shield_reason_counts: dict[str, int] = {}
+        self._production_defer_shield_max_risk = 0.0
+        self._production_defer_shield_max_wait_ticks = 0
+        self._production_defer_shield_max_work_lower_bound_ticks = 0
+        self._production_defer_shield_min_deadline_slack_ticks: int | None = None
+        self._last_production_defer_certificate: dict[str, Any] | None = None
         self._conditional_wait_opportunity_count = 0
         self._conditional_wait_selected_count = 0
         self._conditional_wait_total_ticks = 0
@@ -362,6 +370,43 @@ class AssemblySchedulingEnv:
         return settings
 
     @property
+    def production_defer_shield(self) -> dict[str, Any]:
+        raw = self.production_defer.get("shield", {})
+        if not isinstance(raw, dict):
+            raise TypeError("environment.production_defer.shield must be a mapping")
+        if not raw:
+            return {"enabled": False}
+        enabled = bool(raw.get("enabled", False))
+        if not enabled:
+            return {"enabled": False}
+        expected = {
+            "enabled",
+            "version",
+            "deadline_reserve_ticks",
+            "soft_risk_threshold",
+            "soft_risk_coefficient",
+        }
+        if set(raw) != expected:
+            raise ValueError("production defer shield has an invalid schema")
+        if str(raw["version"]) != "deadline_progress_shield_v1":
+            raise ValueError("unsupported production defer shield version")
+        reserve = int(raw["deadline_reserve_ticks"])
+        threshold = float(raw["soft_risk_threshold"])
+        coefficient = float(raw["soft_risk_coefficient"])
+        if reserve < 1:
+            raise ValueError("defer shield deadline reserve must be positive")
+        if not 0.0 <= threshold < 1.0:
+            raise ValueError("defer shield soft risk threshold must be in [0, 1)")
+        if not math.isfinite(coefficient) or coefficient < 0.0:
+            raise ValueError("defer shield soft risk coefficient must be non-negative")
+        return {
+            **raw,
+            "deadline_reserve_ticks": reserve,
+            "soft_risk_threshold": threshold,
+            "soft_risk_coefficient": coefficient,
+        }
+
+    @property
     def worker_resource_control(self) -> dict[str, Any]:
         settings = self.config.get("environment", {}).get(
             "worker_resource_control",
@@ -412,6 +457,15 @@ class AssemblySchedulingEnv:
     def production_commit_set_enabled(self) -> bool:
         return bool(
             self.network_settings.get("production_commit_set_scorer", False)
+        )
+
+    @property
+    def e1_centered_gate_enabled(self) -> bool:
+        gate = self.network_settings.get("production_gate", {})
+        return bool(
+            isinstance(gate, dict)
+            and str(gate.get("version"))
+            == "e1_logsumexp_centered_three_objective_gate_v4"
         )
 
     @property
@@ -548,6 +602,14 @@ class AssemblySchedulingEnv:
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
         self._production_defer_reason_counts = {}
+        self._production_defer_shield_candidates = set()
+        self._production_defer_shield_masked = set()
+        self._production_defer_shield_reason_counts = {}
+        self._production_defer_shield_max_risk = 0.0
+        self._production_defer_shield_max_wait_ticks = 0
+        self._production_defer_shield_max_work_lower_bound_ticks = 0
+        self._production_defer_shield_min_deadline_slack_ticks = None
+        self._last_production_defer_certificate = None
         self._conditional_wait_opportunity_count = 0
         self._conditional_wait_selected_count = 0
         self._conditional_wait_total_ticks = 0
@@ -1766,7 +1828,7 @@ class AssemblySchedulingEnv:
             or not self.production_commit_set_enabled
         ):
             return np.empty((0,), dtype=np.float32), ()
-        names = (
+        base_names = (
             "legal_candidate_count_norm",
             "configuration_match_rate",
             "minimum_reconfiguration_time_norm",
@@ -1777,6 +1839,12 @@ class AssemblySchedulingEnv:
             "next_defer_event_distance_norm",
             "projected_legal_candidate_gain_norm",
         )
+        names = (
+            *base_names,
+            "defer_remaining_work_lower_bound_norm",
+            "defer_deadline_slack_norm",
+            "defer_risk",
+        ) if self.e1_centered_gate_enabled else base_names
         capable = relations[CAPABLE_EDGE]
         mask = self.get_action_mask()
         machine_count = len(self.machines)
@@ -1832,8 +1900,7 @@ class AssemblySchedulingEnv:
                     and profile.predicted_finish_tick <= self.horizon_tick
                 ):
                     future_legal += 1
-        values = np.asarray(
-            [
+        base_values = [
                 legal_count / maximum_pairs,
                 mean(configuration),
                 minimum(reconfiguration),
@@ -1844,9 +1911,23 @@ class AssemblySchedulingEnv:
                 max(0, defer_tick - self.current_tick)
                 / max(1, self.horizon_tick),
                 max(0, future_legal - legal_count) / maximum_pairs,
-            ],
-            dtype=np.float32,
-        )
+            ]
+        if self.e1_centered_gate_enabled:
+            certificate = self._last_production_defer_certificate or {}
+            base_values.extend(
+                [
+                    float(
+                        certificate.get(
+                            "remaining_work_lower_bound_ticks", 0
+                        )
+                    )
+                    / max(1, self.horizon_tick),
+                    float(certificate.get("deadline_slack_ticks", 0))
+                    / max(1, self.horizon_tick),
+                    min(2.0, float(certificate.get("risk", 0.0))),
+                ]
+            )
+        values = np.asarray(base_values, dtype=np.float32)
         return values, names
 
     def _build_locked_edges(self) -> EdgeStore:
@@ -1962,7 +2043,12 @@ class AssemblySchedulingEnv:
                                 )
                             ] = False
             defer_opportunity = self._production_defer_opportunity()
-            defer_allowed = defer_opportunity is not None
+            legal_pair_count = int(np.count_nonzero(~mask[:-1]))
+            defer_certificate = self._production_defer_safety_certificate(
+                legal_pair_count,
+                defer_opportunity,
+            )
+            defer_allowed = bool(defer_certificate["allowed"])
             if defer_allowed:
                 mask[self.production_defer_action] = False
             self._last_action_mask_analysis = {
@@ -1980,9 +2066,10 @@ class AssemblySchedulingEnv:
                     if defer_opportunity is not None
                     else None
                 ),
-                "legal_pair_count": int(np.count_nonzero(~mask[:-1])),
+                "legal_pair_count": legal_pair_count,
                 "non_delay": False,
                 "strict_future": defer_allowed,
+                "defer_shield": dict(defer_certificate),
             }
             return mask
         mask = np.ones(self.worker_action_size, dtype=bool)
@@ -2365,6 +2452,12 @@ class AssemblySchedulingEnv:
         )
         phase = self.decision_type
         action_type = self._action_type(phase, action)
+        defer_certificate = (
+            dict(self._last_production_defer_certificate or {})
+            if phase == DecisionType.PRODUCTION
+            and action == self.production_defer_action
+            else {}
+        )
         action_outcome: dict[str, Any] = {}
         conditional_wait_analysis = (
             dict(self._last_action_mask_analysis.get("conditional_wait"))
@@ -2495,6 +2588,17 @@ class AssemblySchedulingEnv:
             if shaping_enabled
             else 0.0
         )
+        shield = self.production_defer_shield
+        defer_risk_shaping = 0.0
+        if defer_certificate and bool(shield.get("enabled", False)):
+            excess = max(
+                0.0,
+                float(defer_certificate.get("risk", 0.0))
+                - float(shield["soft_risk_threshold"]),
+            )
+            defer_risk_shaping = -float(
+                shield["soft_risk_coefficient"]
+            ) * excess * excess
         reward = RewardVector(
             flow=-(after[0] - before[0]),
             cost=-(after[1] - before[1]),
@@ -2515,6 +2619,7 @@ class AssemblySchedulingEnv:
                 else 0.0
             ),
             feasibility_shaping=feasibility_shaping,
+            defer_risk_shaping=defer_risk_shaping,
         )
         if (
             phase == DecisionType.WORKER
@@ -2547,6 +2652,8 @@ class AssemblySchedulingEnv:
                 action_outcome.get("recovery_improvement", False)
             ),
             "conditional_wait": conditional_wait_analysis,
+            "defer_shield": defer_certificate or None,
+            "defer_risk_shaping": defer_risk_shaping,
             "terminal_reason": self.terminal_reason,
         }
         observation = self.observe() if build_observation else None
@@ -3011,6 +3118,27 @@ class AssemblySchedulingEnv:
             "production_defer_recovery_improvement_count": (
                 self._production_defer_recovery_improvement_count
             ),
+            "production_defer_shield_candidate_count": len(
+                self._production_defer_shield_candidates
+            ),
+            "production_defer_shield_masked_count": len(
+                self._production_defer_shield_masked
+            ),
+            "production_defer_shield_reason_counts": dict(
+                self._production_defer_shield_reason_counts
+            ),
+            "production_defer_shield_max_risk": (
+                self._production_defer_shield_max_risk
+            ),
+            "production_defer_shield_max_wait_ticks": (
+                self._production_defer_shield_max_wait_ticks
+            ),
+            "production_defer_shield_max_work_lower_bound_ticks": (
+                self._production_defer_shield_max_work_lower_bound_ticks
+            ),
+            "production_defer_shield_min_deadline_slack_ticks": (
+                self._production_defer_shield_min_deadline_slack_ticks
+            ),
             "conditional_worker_wait_opportunity_count": (
                 self._conditional_wait_opportunity_count
             ),
@@ -3215,21 +3343,32 @@ class AssemblySchedulingEnv:
     def _execute_production_defer(self) -> dict[str, Any]:
         opportunity = self._production_defer_opportunity()
         if opportunity is None:
-            raise RuntimeError("production defer has no decision-relevant future")
-        _, defer_reason = opportunity
-        if self._has_pending_worker_task():
-            self.decision_type = DecisionType.WORKER
+            if not bool(self.production_defer_shield.get("enabled", False)):
+                raise RuntimeError(
+                    "production defer has no decision-relevant future"
+                )
+            before_tick = self.current_tick
+            self._truncate_at_horizon("deadlock")
             outcome: dict[str, Any] = {
-                "defer_reason": "worker_phase_handoff",
-                "wait_ticks": 0,
+                "defer_reason": "terminal_or_deadlock_resolution",
+                "wait_ticks": self.current_tick - before_tick,
                 "recovery_improvement": False,
             }
         else:
-            advance_outcome = self._advance_to_next_event()
-            outcome = {
-                **advance_outcome,
-                "defer_reason": defer_reason,
-            }
+            _, defer_reason = opportunity
+            if self._has_pending_worker_task():
+                self.decision_type = DecisionType.WORKER
+                outcome = {
+                    "defer_reason": "worker_phase_handoff",
+                    "wait_ticks": 0,
+                    "recovery_improvement": False,
+                }
+            else:
+                advance_outcome = self._advance_to_next_event()
+                outcome = {
+                    **advance_outcome,
+                    "defer_reason": defer_reason,
+                }
         reason = str(outcome["defer_reason"])
         self._production_defer_reason_counts[reason] = (
             self._production_defer_reason_counts.get(reason, 0) + 1
@@ -4743,6 +4882,154 @@ class AssemblySchedulingEnv:
             horizon_feasible=horizon_feasible,
             reason="+".join(reasons),
         )
+
+    def _remaining_work_lower_bound_ticks(self) -> int:
+        """Return an optimistic resource/precedence lower bound in ticks."""
+
+        minimum_processing: dict[int, int] = {}
+        for operation_index in range(len(self.operations)):
+            values = self._capability_processing_ticks[
+                self._capability_operation_indices == operation_index
+            ]
+            minimum_processing[operation_index] = (
+                int(values.min()) if values.size else self.horizon_tick + 1
+            )
+        remaining_by_order: dict[str, int] = {}
+        total_processing = 0
+        for operation_index, operation in enumerate(self.operations):
+            if operation.state == OperationState.DONE:
+                continue
+            ticks = minimum_processing[operation_index]
+            if operation.state == OperationState.PROCESSING:
+                machine = (
+                    self._machine_by_id(operation.machine_id)
+                    if operation.machine_id is not None
+                    else None
+                )
+                if machine is not None and machine.busy_until_tick is not None:
+                    ticks = max(0, machine.busy_until_tick - self.current_tick)
+            total_processing += ticks
+            remaining_by_order[operation.spec.order_id] = (
+                remaining_by_order.get(operation.spec.order_id, 0) + ticks
+            )
+        order_chain_bound = max(remaining_by_order.values(), default=0)
+        machine_bound = math.ceil(
+            total_processing / max(1, len(self.machines))
+        )
+        active_reconfiguration_bound = max(
+            (
+                self._remaining_reconfiguration_ticks(reconfiguration)
+                for reconfiguration in self.reconfigurations.values()
+                if reconfiguration.stage != ReconfigurationStage.DONE
+            ),
+            default=0,
+        )
+        return int(
+            max(order_chain_bound, machine_bound, active_reconfiguration_bound)
+        )
+
+    def _production_defer_safety_certificate(
+        self,
+        legal_pair_count: int,
+        opportunity: tuple[int, str] | None,
+    ) -> dict[str, Any]:
+        settings = self.production_defer_shield
+        remaining_horizon = max(0, self.horizon_tick - self.current_tick)
+        lower_bound = self._remaining_work_lower_bound_ticks()
+        if opportunity is None:
+            only_defer = bool(settings.get("enabled", False)) and legal_pair_count == 0
+            certificate = {
+                "allowed": only_defer,
+                "reason": (
+                    "only_defer_legal" if only_defer else "no_state_progress"
+                ),
+                "progress_kind": (
+                    "terminal_or_deadlock_resolution" if only_defer else ""
+                ),
+                "wait_ticks": 0,
+                "remaining_work_lower_bound_ticks": lower_bound,
+                "deadline_slack_ticks": remaining_horizon - lower_bound,
+                "risk": 1.0,
+            }
+            self._last_production_defer_certificate = certificate
+            self._record_production_defer_shield_certificate(
+                certificate, legal_pair_count
+            )
+            return certificate
+        defer_tick, progress_kind = opportunity
+        wait_ticks = max(0, int(defer_tick) - self.current_tick)
+        reserve = int(settings.get("deadline_reserve_ticks", 1))
+        required = wait_ticks + lower_bound + reserve
+        risk = required / max(1, remaining_horizon)
+        if not bool(settings.get("enabled", False)):
+            allowed = True
+            reason = "shield_disabled"
+        elif legal_pair_count == 0:
+            allowed = True
+            reason = "only_defer_legal"
+        elif wait_ticks == 0:
+            allowed = True
+            reason = "zero_time_worker_handoff"
+        elif not progress_kind:
+            allowed = False
+            reason = "no_state_progress"
+        elif required > remaining_horizon:
+            allowed = False
+            reason = "deadline_budget_exceeded"
+        else:
+            allowed = True
+            reason = "certified_progress_with_budget"
+        certificate = {
+            "allowed": bool(allowed),
+            "reason": reason,
+            "progress_kind": str(progress_kind),
+            "wait_ticks": wait_ticks,
+            "remaining_work_lower_bound_ticks": lower_bound,
+            "deadline_slack_ticks": remaining_horizon - required,
+            "risk": float(max(0.0, risk)),
+        }
+        self._last_production_defer_certificate = certificate
+        self._record_production_defer_shield_certificate(
+            certificate, legal_pair_count
+        )
+        return certificate
+
+    def _record_production_defer_shield_certificate(
+        self,
+        certificate: dict[str, Any],
+        legal_pair_count: int,
+    ) -> None:
+        settings = self.production_defer_shield
+        if bool(settings.get("enabled", False)) and legal_pair_count > 0:
+            state_key = int(self._state_version)
+            if state_key not in self._production_defer_shield_candidates:
+                self._production_defer_shield_candidates.add(state_key)
+                self._production_defer_shield_max_risk = max(
+                    self._production_defer_shield_max_risk,
+                    float(certificate["risk"]),
+                )
+                self._production_defer_shield_max_wait_ticks = max(
+                    self._production_defer_shield_max_wait_ticks,
+                    int(certificate.get("wait_ticks", 0)),
+                )
+                self._production_defer_shield_max_work_lower_bound_ticks = max(
+                    self._production_defer_shield_max_work_lower_bound_ticks,
+                    int(certificate.get("remaining_work_lower_bound_ticks", 0)),
+                )
+                slack = int(certificate.get("deadline_slack_ticks", 0))
+                if (
+                    self._production_defer_shield_min_deadline_slack_ticks is None
+                    or slack
+                    < self._production_defer_shield_min_deadline_slack_ticks
+                ):
+                    self._production_defer_shield_min_deadline_slack_ticks = slack
+                if not bool(certificate.get("allowed", False)):
+                    reason = str(certificate.get("reason", "unknown"))
+                    self._production_defer_shield_masked.add(state_key)
+                    self._production_defer_shield_reason_counts[reason] = (
+                        self._production_defer_shield_reason_counts.get(reason, 0)
+                        + 1
+                    )
 
     def _production_defer_opportunity(self) -> tuple[int, str] | None:
         """Return the next state-changing consequence of production defer."""

@@ -16,6 +16,7 @@ SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION = "4.4.0"
 NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION = "4.5.0"
 SAFE_MONOTONE_FLOW_GATE_EVALUATION_SCHEMA_VERSION = "4.6.0"
 COUNTERFACTUAL_PREFERENCE_CONSISTENCY_EVALUATION_SCHEMA_VERSION = "4.7.0"
+E1_WARMSTART_SAFE_GATE_EVALUATION_SCHEMA_VERSION = "4.8.0"
 
 # Scalar diagnostics intentionally shared by evaluation, training and Pareto
 # persistence.  Keeping the registry here prevents a new experiment field from
@@ -76,6 +77,13 @@ PREFERENCE_POLICY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "max_counterfactual_state_residual_scale",
     "counterfactual_low_flow_identity_violation_count",
     "counterfactual_monotonicity_violation_count",
+    "centered_gate_dual_legal_state_count",
+    "centered_gate_flow_cost_flip_count",
+    "centered_gate_flow_variance_flip_count",
+    "centered_gate_flow_cost_flip_rate",
+    "centered_gate_flow_variance_flip_rate",
+    "centered_gate_extreme_flip_rate",
+    "centered_gate_monotonicity_violation_count",
 )
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
@@ -106,6 +114,7 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION,
         SAFE_MONOTONE_FLOW_GATE_EVALUATION_SCHEMA_VERSION,
         COUNTERFACTUAL_PREFERENCE_CONSISTENCY_EVALUATION_SCHEMA_VERSION,
+        E1_WARMSTART_SAFE_GATE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {version!r}")
     return version
@@ -297,6 +306,10 @@ def aggregate_preference_diagnostics(
     counterfactual_state_scale_max = 0.0
     counterfactual_identity_violation_count = 0
     counterfactual_monotonicity_violation_count = 0
+    centered_dual_legal_count = 0
+    centered_flow_cost_flip_count = 0
+    centered_flow_variance_flip_count = 0
+    centered_monotonicity_violation_count = 0
     for row in rows:
         count = int(row.get("ranker_top_decision_count", 0) or 0)
         overrides = int(row.get("preference_override_count", 0) or 0)
@@ -439,6 +452,27 @@ def aggregate_preference_diagnostics(
         counterfactual_monotonicity_violation_count += int(
             row.get("counterfactual_monotonicity_violation_count", 0) or 0
         )
+        row_centered_dual = int(
+            row.get("centered_gate_dual_legal_state_count", 0) or 0
+        )
+        row_flow_cost_flips = int(
+            row.get("centered_gate_flow_cost_flip_count", 0) or 0
+        )
+        row_flow_variance_flips = int(
+            row.get("centered_gate_flow_variance_flip_count", 0) or 0
+        )
+        if (
+            row_centered_dual < 0
+            or not 0 <= row_flow_cost_flips <= row_centered_dual
+            or not 0 <= row_flow_variance_flips <= row_centered_dual
+        ):
+            raise ValueError("centered gate diagnostics are inconsistent")
+        centered_dual_legal_count += row_centered_dual
+        centered_flow_cost_flip_count += row_flow_cost_flips
+        centered_flow_variance_flip_count += row_flow_variance_flips
+        centered_monotonicity_violation_count += int(
+            row.get("centered_gate_monotonicity_violation_count", 0) or 0
+        )
     result = {
         "ranker_top_decision_count": decision_count,
         "preference_override_count": override_count,
@@ -547,6 +581,30 @@ def aggregate_preference_diagnostics(
             ),
             "counterfactual_monotonicity_violation_count": (
                 counterfactual_monotonicity_violation_count
+            ),
+            "centered_gate_dual_legal_state_count": centered_dual_legal_count,
+            "centered_gate_flow_cost_flip_count": centered_flow_cost_flip_count,
+            "centered_gate_flow_variance_flip_count": (
+                centered_flow_variance_flip_count
+            ),
+            "centered_gate_flow_cost_flip_rate": (
+                centered_flow_cost_flip_count / centered_dual_legal_count
+                if centered_dual_legal_count
+                else 0.0
+            ),
+            "centered_gate_flow_variance_flip_rate": (
+                centered_flow_variance_flip_count / centered_dual_legal_count
+                if centered_dual_legal_count
+                else 0.0
+            ),
+            "centered_gate_extreme_flip_rate": (
+                min(centered_flow_cost_flip_count, centered_flow_variance_flip_count)
+                / centered_dual_legal_count
+                if centered_dual_legal_count
+                else 0.0
+            ),
+            "centered_gate_monotonicity_violation_count": (
+                centered_monotonicity_violation_count
             ),
         }
     )
@@ -659,6 +717,7 @@ def aggregate_evaluation_rows(
         NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION,
         SAFE_MONOTONE_FLOW_GATE_EVALUATION_SCHEMA_VERSION,
         COUNTERFACTUAL_PREFERENCE_CONSISTENCY_EVALUATION_SCHEMA_VERSION,
+        E1_WARMSTART_SAFE_GATE_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {schema_version!r}")
     normalized_metric = evaluation_quality_metric(
