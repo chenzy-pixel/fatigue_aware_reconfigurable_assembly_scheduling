@@ -45,6 +45,30 @@ def _fixture():
     return config, environment, observation, network, agent, report
 
 
+def _single_transition_buffer(agent, observation, mask) -> RolloutBuffer:
+    action, log_probability, value = agent.act(
+        observation, mask, deterministic=True
+    )
+    buffer = RolloutBuffer(preserve_graph=True)
+    buffer.add(
+        observation,
+        mask,
+        action,
+        log_probability,
+        value,
+        0.0,
+        True,
+    )
+    buffer.compute_gae(last_value=0.0, gamma=1.0, gae_lambda=0.95)
+    return buffer
+
+
+def _force_counterfactual_constraint_satisfied(network) -> None:
+    with torch.no_grad():
+        network.centered_gate_coefficients[-1].weight.zero_()
+        network.centered_gate_coefficients[-1].bias.fill_(1.0)
+
+
 def test_e2_7_warm_start_is_complete_fresh_and_canonically_identical() -> None:
     config, environment, observation, network, agent, report = _fixture()
     checkpoint = torch.load(
@@ -206,6 +230,10 @@ def test_e2_7_fixed_safe_pool_and_shield_boundaries() -> None:
     assert report["state_count"] == 64
     assert report["fixed_sampling_count_per_auxiliary_update"] == 64
     assert len(report["state_pool_sha256"]) == 64
+    with pytest.raises(RuntimeError, match="too small"):
+        agent.set_safe_dual_legal_state_pool(
+            pool[:-1], provenance={"test": "insufficient"}
+        )
 
     baseline_shield = environment.metrics()
     environment._state_version += 1
@@ -277,25 +305,130 @@ def test_e2_7_fixed_pool_has_nonzero_loss_and_gate_gradient_before_ppo() -> None
         [(observation, mask) for _ in range(64)],
         provenance={"test": True},
     )
-    action, log_probability, value = agent.act(
-        observation, mask, deterministic=True
-    )
-    buffer = RolloutBuffer(preserve_graph=True)
-    buffer.add(
-        observation,
-        mask,
-        action,
-        log_probability,
-        value,
-        0.0,
-        True,
-    )
-    buffer.compute_gae(last_value=0.0, gamma=1.0, gae_lambda=0.95)
+    buffer = _single_transition_buffer(agent, observation, mask)
     metrics = agent.update(buffer, reward_phase="feasibility")
     assert metrics["counterfactual_eligible_count"] >= 64.0
     assert metrics["counterfactual_loss"] > 0.0
+    assert metrics["counterfactual_constraint_status"] == "constraint_active"
     assert metrics["counterfactual_monotonicity_violation_count"] == 0.0
     assert agent._safe_pool_gradient_preflight_complete
+
+
+def test_e2_7_zero_loss_is_valid_on_first_preflight() -> None:
+    _, environment, observation, network, agent, _ = _fixture()
+    mask = environment.get_action_mask()
+    agent.set_safe_dual_legal_state_pool(
+        [(observation, mask) for _ in range(64)],
+        provenance={"test": True},
+    )
+    _force_counterfactual_constraint_satisfied(network)
+
+    metrics = agent.update(
+        _single_transition_buffer(agent, observation, mask),
+        reward_phase="feasibility",
+    )
+
+    assert metrics["counterfactual_loss"] == 0.0
+    assert (
+        metrics["counterfactual_constraint_status"]
+        == "constraint_satisfied"
+    )
+    assert agent._safe_pool_gradient_preflight_complete
+
+
+def test_e2_7_preflight_runs_once_and_later_zero_loss_is_valid(
+    monkeypatch,
+) -> None:
+    _, environment, observation, network, agent, _ = _fixture()
+    mask = environment.get_action_mask()
+    agent.set_safe_dual_legal_state_pool(
+        [(observation, mask) for _ in range(64)],
+        provenance={"test": True},
+    )
+    preflight_count = 0
+    original_preflight = agent._run_safe_pool_gradient_preflight
+
+    def counting_preflight(*, reward_phase: str) -> None:
+        nonlocal preflight_count
+        preflight_count += 1
+        original_preflight(reward_phase=reward_phase)
+
+    monkeypatch.setattr(
+        agent,
+        "_run_safe_pool_gradient_preflight",
+        counting_preflight,
+    )
+    first_metrics = agent.update(
+        _single_transition_buffer(agent, observation, mask),
+        reward_phase="feasibility",
+    )
+    assert first_metrics["counterfactual_constraint_status"] == "constraint_active"
+
+    _force_counterfactual_constraint_satisfied(network)
+    second_metrics = agent.update(
+        _single_transition_buffer(agent, observation, mask),
+        reward_phase="feasibility",
+    )
+
+    assert preflight_count == 1
+    assert second_metrics["counterfactual_loss"] == 0.0
+    assert (
+        second_metrics["counterfactual_constraint_status"]
+        == "constraint_satisfied"
+    )
+
+    agent.set_safe_dual_legal_state_pool(
+        [(observation, mask) for _ in range(64)],
+        provenance={"test": "replacement"},
+    )
+    assert not agent._safe_pool_gradient_preflight_complete
+    third_metrics = agent.update(
+        _single_transition_buffer(agent, observation, mask),
+        reward_phase="feasibility",
+    )
+    assert preflight_count == 2
+    assert (
+        third_metrics["counterfactual_constraint_status"]
+        == "constraint_satisfied"
+    )
+
+
+def test_e2_7_preflight_preserves_fail_fast_contracts(monkeypatch) -> None:
+    _, environment, observation, _, agent, _ = _fixture()
+    mask = environment.get_action_mask()
+    buffer = _single_transition_buffer(agent, observation, mask)
+    with pytest.raises(RuntimeError, match="not initialized"):
+        agent.update(buffer, reward_phase="feasibility")
+
+    agent.set_safe_dual_legal_state_pool(
+        [(observation, mask) for _ in range(64)],
+        provenance={"test": True},
+    )
+
+    def non_finite_loss(*args, **kwargs):
+        return torch.full(
+            (),
+            float("nan"),
+            device=agent.device,
+            requires_grad=True,
+        ), {}
+
+    monkeypatch.setattr(agent, "_counterfactual_loss", non_finite_loss)
+    with pytest.raises(RuntimeError, match="non-finite"):
+        agent.update(buffer, reward_phase="feasibility")
+    assert not agent._safe_pool_gradient_preflight_complete
+
+    def detached_positive_loss(*args, **kwargs):
+        return torch.ones((), device=agent.device, requires_grad=True), {}
+
+    monkeypatch.setattr(
+        agent,
+        "_counterfactual_loss",
+        detached_positive_loss,
+    )
+    with pytest.raises(RuntimeError, match="adapter gradient"):
+        agent.update(buffer, reward_phase="feasibility")
+    assert not agent._safe_pool_gradient_preflight_complete
 
 
 def test_e2_7_ungrouped_training_has_valid_pareto_anchors() -> None:
@@ -346,11 +479,27 @@ def test_e2_7_gate_flip_requires_both_extreme_contrasts() -> None:
         "preference_quality_score": 0.9,
         "heuristic_quality_score": 1.0,
         "action_trace_sha256": "trace",
+        "counterfactual_constraint_status": "constraint_satisfied",
         "centered_gate_dual_legal_state_count": 100,
-        "centered_gate_flow_cost_flip_count": 5,
-        "centered_gate_flow_variance_flip_count": 4,
+        "centered_gate_flow_cost_flip_count": 0,
+        "centered_gate_flow_variance_flip_count": 0,
         "centered_gate_monotonicity_violation_count": 0,
     }
+    no_flip = _pareto_snapshot(
+        [row],
+        config=config,
+        scope="full_grid_22",
+        update_id=20,
+        completed_episodes=200,
+        fatigue_tolerance=1e-9,
+        expected_instance_ids=("unit",),
+        expected_preference_keys=("0.5_0.3_0.2",),
+    )
+    assert no_flip["centered_gate_extreme_flip_rate"] == 0.0
+    assert not no_flip["centered_gate_pass"]
+
+    row["centered_gate_flow_cost_flip_count"] = 5
+    row["centered_gate_flow_variance_flip_count"] = 4
     failed = _pareto_snapshot(
         [row],
         config=config,

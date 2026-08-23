@@ -920,64 +920,59 @@ class PPOAgent:
             Categorical(logits=current_logits),
         ).mean()
 
-    def update(
+    def _run_safe_pool_gradient_preflight(
         self,
-        buffer: RolloutBuffer,
         *,
-        reward_phase: str = "legacy",
-    ) -> dict[str, float]:
-        if not buffer.transitions:
-            raise ValueError("cannot update PPO with an empty buffer")
-        if (
-            self.counterfactual_preference_consistency.get("version")
-            == "centered_three_objective_gate_v2"
-        ):
-            if not self.safe_dual_legal_state_pool:
-                raise RuntimeError(
-                    "E2.7 fixed safe dual-legal state pool was not initialized"
-                )
-            evaluator = getattr(
-                self.network, "centered_gate_counterfactual_batch"
+        reward_phase: str,
+    ) -> None:
+        """Verify the E2.7 auxiliary-loss gradient path once per safe pool."""
+
+        evaluator = getattr(
+            self.network, "centered_gate_counterfactual_batch"
+        )
+        with torch.no_grad():
+            preflight = evaluator(
+                [
+                    observation
+                    for observation, _ in self.safe_dual_legal_state_pool
+                ],
+                [mask for _, mask in self.safe_dual_legal_state_pool],
+                device=self.device,
             )
-            with torch.no_grad():
-                preflight = evaluator(
-                    [
-                        observation
-                        for observation, _ in self.safe_dual_legal_state_pool
-                    ],
-                    [mask for _, mask in self.safe_dual_legal_state_pool],
-                    device=self.device,
-                )
-            eligible_count = int(preflight["eligible"].sum().cpu())
-            minimum = int(
-                self.counterfactual_preference_consistency[
-                    "minimum_eligible_states"
-                ]
-            )
-            if eligible_count < minimum:
-                raise RuntimeError(
-                    "E2.7 safe dual-legal state pool is too small: "
-                    f"eligible={eligible_count}, required={minimum}"
-                )
-            probe_transitions = [
-                type(
-                    "SafePoolTransition",
-                    (),
-                    {"observation": observation, "action_mask": mask},
-                )()
-                for observation, mask in self.safe_dual_legal_state_pool[:minimum]
+        eligible_count = int(preflight["eligible"].sum().cpu())
+        minimum = int(
+            self.counterfactual_preference_consistency[
+                "minimum_eligible_states"
             ]
-            self.optimizer.zero_grad()
-            probe_loss, _ = self._counterfactual_loss(
-                probe_transitions,
-                reward_phase=reward_phase,
+        )
+        if eligible_count < minimum:
+            raise RuntimeError(
+                "E2.7 safe dual-legal state pool is too small: "
+                f"eligible={eligible_count}, required={minimum}"
             )
-            if not bool(torch.isfinite(probe_loss)) or float(
-                probe_loss.detach().cpu()
-            ) <= 0.0:
-                raise RuntimeError(
-                    "E2.7 counterfactual preflight loss is zero or non-finite"
-                )
+        probe_transitions = [
+            type(
+                "SafePoolTransition",
+                (),
+                {"observation": observation, "action_mask": mask},
+            )()
+            for observation, mask in self.safe_dual_legal_state_pool[:minimum]
+        ]
+        self.optimizer.zero_grad()
+        probe_loss, _ = self._counterfactual_loss(
+            probe_transitions,
+            reward_phase=reward_phase,
+        )
+        if not bool(torch.isfinite(probe_loss)):
+            raise RuntimeError(
+                "E2.7 counterfactual preflight loss is non-finite"
+            )
+        probe_loss_value = float(probe_loss.detach().cpu())
+        if probe_loss_value < 0.0:
+            raise RuntimeError(
+                "E2.7 counterfactual preflight loss is negative"
+            )
+        if probe_loss_value > 0.0:
             probe_loss.backward()
             gate = getattr(self.network, "centered_gate_coefficients", None)
             gradient_total = sum(
@@ -988,9 +983,42 @@ class PPOAgent:
             self.optimizer.zero_grad()
             if not math.isfinite(gradient_total) or gradient_total <= 0.0:
                 raise RuntimeError(
-                    "E2.7 centered gate adapter gradient is zero"
+                    "E2.7 centered gate adapter gradient is zero or non-finite"
                 )
-            self._safe_pool_gradient_preflight_complete = True
+        self._safe_pool_gradient_preflight_complete = True
+
+    def update(
+        self,
+        buffer: RolloutBuffer,
+        *,
+        reward_phase: str = "legacy",
+    ) -> dict[str, float | str]:
+        if not buffer.transitions:
+            raise ValueError("cannot update PPO with an empty buffer")
+        e2_7_counterfactual = (
+            self.counterfactual_preference_consistency.get("version")
+            == "centered_three_objective_gate_v2"
+        )
+        if e2_7_counterfactual:
+            minimum = int(
+                self.counterfactual_preference_consistency[
+                    "minimum_eligible_states"
+                ]
+            )
+            if not self.safe_dual_legal_state_pool:
+                raise RuntimeError(
+                    "E2.7 fixed safe dual-legal state pool was not initialized"
+                )
+            if len(self.safe_dual_legal_state_pool) < minimum:
+                raise RuntimeError(
+                    "E2.7 safe dual-legal state pool is too small: "
+                    f"eligible={len(self.safe_dual_legal_state_pool)}, "
+                    f"required={minimum}"
+                )
+            if not self._safe_pool_gradient_preflight_complete:
+                self._run_safe_pool_gradient_preflight(
+                    reward_phase=reward_phase,
+                )
         raw_advantages = torch.as_tensor(
             [transition.advantage for transition in buffer.transitions],
             dtype=torch.float32,
@@ -1226,6 +1254,17 @@ class PPOAgent:
         result.update(self.policy_head_diagnostics())
         if not all(math.isfinite(value) for value in result.values()):
             raise FloatingPointError("PPO returned non-finite metrics")
+        if e2_7_counterfactual:
+            counterfactual_loss_value = result["counterfactual_loss"]
+            if counterfactual_loss_value < 0.0:
+                raise FloatingPointError(
+                    "E2.7 counterfactual loss cannot be negative"
+                )
+            result["counterfactual_constraint_status"] = (
+                "constraint_satisfied"
+                if counterfactual_loss_value == 0.0
+                else "constraint_active"
+            )
         return result
 
     @property
