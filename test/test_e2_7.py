@@ -16,6 +16,8 @@ from train import (
     _accepted_checkpoint_path,
     _e2_3_failure_replay_cells,
     _e2_7_preference_stage,
+    _pareto_anchor_preferences,
+    _pareto_promotion_settings,
     _pareto_snapshot,
     _restore_e2_7_resume_provenance,
 )
@@ -294,6 +296,28 @@ def test_e2_7_fixed_pool_has_nonzero_loss_and_gate_gradient_before_ppo() -> None
     assert metrics["counterfactual_loss"] > 0.0
     assert metrics["counterfactual_monotonicity_violation_count"] == 0.0
     assert agent._safe_pool_gradient_preflight_complete
+
+
+def test_e2_7_ungrouped_training_has_valid_pareto_anchors() -> None:
+    config = load_config(CONFIG_PATH)
+    assert config["training"]["preference_grouping"]["enabled"] is False
+    anchors = _pareto_anchor_preferences(config)
+    assert tuple(anchor.as_tuple() for anchor in anchors) == (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0),
+        (0.5, 0.3, 0.2),
+    )
+    invalid = deepcopy(config)
+    invalid["training"]["two_stage"]["pareto_promotion"][
+        "maximum_canonical_heuristic_relative_gap"
+    ] = -1.01
+    with pytest.raises(
+        ValueError,
+        match="maximum_canonical_heuristic_relative_gap",
+    ):
+        _pareto_promotion_settings(invalid)
 
 
 def test_e2_7_gate_flip_requires_both_extreme_contrasts() -> None:

@@ -269,6 +269,14 @@ def _pareto_promotion_settings(config: dict) -> dict[str, float | int]:
             raise ValueError(
                 f"pareto_promotion.{name} must be finite and in [-1, 1]"
             )
+    heuristic_gap = float(
+        settings["maximum_canonical_heuristic_relative_gap"]
+    )
+    if not math.isfinite(heuristic_gap) or not -1.0 <= heuristic_gap <= 1.0:
+        raise ValueError(
+            "pareto_promotion.maximum_canonical_heuristic_relative_gap must "
+            "be finite and in [-1, 1]"
+        )
     if int(settings["safety_guard_consecutive_failures"]) < 1:
         raise ValueError(
             "pareto_promotion.safety_guard_consecutive_failures must be positive"
@@ -301,13 +309,10 @@ def _pareto_anchor_preferences(config: dict) -> tuple[PreferenceVector, ...]:
                 "Pareto promotion without grouped training requires "
                 "preference.sampler.anchors"
             )
-    heuristic_gap = float(settings["maximum_canonical_heuristic_relative_gap"])
-    if not math.isfinite(heuristic_gap) or not -1.0 <= heuristic_gap <= 1.0:
-        raise ValueError(
-            "pareto_promotion.maximum_canonical_heuristic_relative_gap must "
-            "be finite and in [-1, 1]"
+        anchors = tuple(
+            PreferenceVector(*map(float, values))
+            for values in raw_anchors
         )
-        anchors = tuple(PreferenceVector(*map(float, values)) for values in raw_anchors)
     if len(anchors) != 5:
         raise ValueError("Pareto anchor validation requires exactly five anchors")
     return anchors

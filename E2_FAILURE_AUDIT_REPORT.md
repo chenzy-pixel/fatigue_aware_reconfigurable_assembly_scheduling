@@ -303,7 +303,7 @@ E2.7 保留 E1 flat pair/defer head，不再把 preference embedding 拼入 E1 s
 
 ### 9.5 实现验证结果
 
-- 全量回归：`311 passed, 1 skipped`，覆盖 E1/E2 历史 checkpoint 严格加载及旧 defer/reward schema 兼容；
+- 全量回归：`312 passed, 1 skipped`，覆盖 E1/E2 历史 checkpoint 严格加载及旧 defer/reward schema 兼容；
 - 最新 smoke：`result/runs/v7_e2_7_e1_warmstart_safe_gate_v1_smoke_r3/`，完成 10 个独立 online instances 和 1 次 PPO update；
 - warm-start：116/116 共享参数加载、10 个新参数、optimizer state 为空，checkpoint hash 为 `084184afa53cebfb04d691f5f70a9abb630a1aa0d7f4ecfdb28caeca87299533`；
 - canonical identity：raw logits、softmax probability、value 的最大绝对误差均为 0；
@@ -311,6 +311,10 @@ E2.7 保留 E1 flat pair/defer head，不再把 preference embedding 拼入 E1 s
 - PPO 前置诊断：eligible=64、counterfactual loss=`0.0011604604340391233`、gate gradient 非零、单调违规为 0；
 - reward identity：10 条 trajectory 的最大绝对误差为 `5.551115123125783e-17`，低于 `1e-8`；
 - smoke 元数据正确标记 `development_accepted=false`、`formal_eligible=false`，且没有生成 `accepted_checkpoint.pt` 或开发 accepted 文件。
+
+### 9.6 首次正式运行的运行期审计
+
+首次 seed11 正式运行完成了 E1 warm-start、256 状态固定池、6 个 PPO update 与 update 5 的 E2.3 十单元回放；episode 20/40/60 的 canonical validation 均为 20/20 完成，无 truncation 和调度违规。第三次连续可行验证准备进入 quality phase 时，ungrouped E2.7 anchor 解析路径误引用局部变量并停止。该解析路径已增加直接回归测试；正式开发验收使用新的 run name 从 E1 能力锚点重新开始，以保持 2000 独立实例和 `40/80/80` update 预算完整。
 
 ## 十、最终判定
 
