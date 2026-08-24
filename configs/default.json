@@ -3,7 +3,7 @@
   "method_version": "M1_candidate_graph_v6",
   "seed": 11,
   "algorithm_seeds": [11, 23, 37, 53, 71],
-  "device": "cuda",
+  "device": "cpu",
   "paths": {
     "fixed_instance": "data/instances/fixed_instance.yaml",
     "instance_cache": "data/instances/fixed_15x4_v1.pkl",
