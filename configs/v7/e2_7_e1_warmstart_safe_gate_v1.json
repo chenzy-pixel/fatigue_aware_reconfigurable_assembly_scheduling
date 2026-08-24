@@ -1,5 +1,6 @@
 {
   "extends": "e2_3_safe_production_preference.json",
+  "device": "cuda",
   "experiment_name": "v7_e2_7_e1_warmstart_safe_gate_v2",
   "experiment_suite_version": "v7_e2_7_e1_warmstart_safe_gate_protocol_v2",
   "environment": {
