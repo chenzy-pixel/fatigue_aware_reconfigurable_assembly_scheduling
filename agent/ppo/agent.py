@@ -389,9 +389,19 @@ class PPOAgent:
         self.canonical_teacher_kl = self._validate_canonical_teacher_kl(config)
         self.canonical_teacher: ActorCriticNetwork | None = None
         self.warm_start_report: dict[str, Any] | None = None
-        self.safe_dual_legal_state_pool: list[
-            tuple[Observation | PolicyObservation, np.ndarray]
-        ] = []
+        self.centered_state_pools: dict[
+            str, list[tuple[Observation | PolicyObservation, np.ndarray]]
+        ] = {
+            "gate": [],
+            "production_pair": [],
+            "worker_variance": [],
+        }
+        self.centered_state_pool_reports: dict[str, dict[str, Any]] = {}
+        self._centered_pool_gradient_preflight_complete = {
+            name: False for name in self.centered_state_pools
+        }
+        # Compatibility aliases retained for the E2.7 gate report and callers.
+        self.safe_dual_legal_state_pool = self.centered_state_pools["gate"]
         self.safe_dual_legal_state_pool_report: dict[str, Any] | None = None
         self._safe_pool_gradient_preflight_complete = False
 
@@ -403,32 +413,73 @@ class PPOAgent:
         *,
         provenance: dict[str, Any],
     ) -> dict[str, Any]:
-        minimum = int(
-            self.counterfactual_preference_consistency.get(
-                "minimum_eligible_states", 0
-            )
-        )
+        return self.set_centered_state_pool("gate", states, provenance=provenance)
+
+    def set_centered_state_pool(
+        self,
+        name: str,
+        states: Sequence[tuple[Observation | PolicyObservation, np.ndarray]],
+        *,
+        provenance: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Install one immutable E2.7 counterfactual state pool."""
+
+        if name not in self.centered_state_pools:
+            raise ValueError(f"unknown centered E2.7 state-pool kind {name!r}")
+        objectives = self.counterfactual_preference_consistency.get("objectives", {})
+        settings = objectives.get(name, {})
+        minimum = int(settings.get("minimum_eligible_states", 0))
         if minimum < 1:
-            raise RuntimeError("safe state pools require E2.7 counterfactual training")
+            raise RuntimeError("centered state pools require E2.7 v3 training")
         normalized = [
             (observation.copy(), np.asarray(mask, dtype=bool).copy())
             for observation, mask in states
         ]
         if len(normalized) < minimum:
             raise RuntimeError(
-                "E2.7 safe dual-legal state pool is too small: "
+                f"E2.7 {name} state pool is too small: "
                 f"eligible={len(normalized)}, required={minimum}"
             )
         for observation, mask in normalized:
-            if (
-                getattr(observation, "decision_type", None)
-                != DecisionType.PRODUCTION
-                or mask.ndim != 1
-                or mask.size < 2
-                or not bool((~mask[:-1]).any())
+            phase = getattr(observation, "decision_type", None)
+            pair_count = int(np.count_nonzero(~mask[:-1])) if mask.ndim == 1 else 0
+            if mask.ndim != 1 or mask.size < 2:
+                raise ValueError("centered state pool contains an invalid action mask")
+            if name == "gate" and (
+                phase != DecisionType.PRODUCTION
+                or pair_count < 1
                 or bool(mask[-1])
             ):
-                raise ValueError("safe state pool contains a non-dual-legal state")
+                raise ValueError("gate state pool contains a non-dual-legal state")
+            if name == "production_pair" and (
+                phase != DecisionType.PRODUCTION or pair_count < 2
+            ):
+                raise ValueError("production-pair state pool contains an invalid state")
+            if name == "worker_variance" and (
+                phase != DecisionType.WORKER or pair_count < 2
+            ):
+                raise ValueError("worker-variance state pool contains an invalid state")
+        if name in {"production_pair", "worker_variance"}:
+            observations = [observation for observation, _ in normalized]
+            masks = [mask for _, mask in normalized]
+            with torch.no_grad():
+                diagnostics = (
+                    self.network.centered_production_pair_counterfactual_batch(
+                        observations,
+                        masks,
+                        device=self.device,
+                    )
+                    if name == "production_pair"
+                    else self.network.centered_worker_variance_counterfactual_batch(
+                        observations,
+                        masks,
+                        device=self.device,
+                    )
+                )
+            if int(diagnostics["eligible"].sum().detach().cpu()) < minimum:
+                raise ValueError(
+                    f"{name} state pool lacks distinct objective candidates"
+                )
         digest = hashlib.sha256()
 
         def update_array(name: str, value: Any) -> None:
@@ -439,7 +490,7 @@ class PPOAgent:
             digest.update(array.tobytes())
 
         for index, (observation, mask) in enumerate(normalized):
-            digest.update(f"state:{index}".encode("ascii"))
+            digest.update(f"{name}:state:{index}".encode("ascii"))
             digest.update(str(observation.decision_type.value).encode("utf-8"))
             update_array("mask", mask)
             update_array("global", observation.global_features)
@@ -453,17 +504,22 @@ class PPOAgent:
                 edge = observation.relations[edge_type]
                 update_array(f"edge_index:{edge_type}", edge.edge_index)
                 update_array(f"edge_features:{edge_type}", edge.edge_features)
-        self.safe_dual_legal_state_pool = normalized
-        self._safe_pool_gradient_preflight_complete = False
+        self.centered_state_pools[name] = normalized
+        self._centered_pool_gradient_preflight_complete[name] = False
         report = {
-            "version": "fixed_e1_validation_e2_3_failure_pool_v1",
+            "version": "fixed_e2_7_centered_counterfactual_pool_v2",
+            "pool_kind": name,
             "state_count": len(normalized),
             "minimum_required_state_count": minimum,
             "fixed_sampling_count_per_auxiliary_update": minimum,
             "state_pool_sha256": digest.hexdigest(),
             "provenance": dict(provenance),
         }
-        self.safe_dual_legal_state_pool_report = report
+        self.centered_state_pool_reports[name] = report
+        if name == "gate":
+            self.safe_dual_legal_state_pool = normalized
+            self.safe_dual_legal_state_pool_report = report
+            self._safe_pool_gradient_preflight_complete = False
         return dict(report)
 
     @staticmethod
@@ -509,14 +565,14 @@ class PPOAgent:
         if not enabled:
             return {"enabled": False}
         version = str(raw.get("version", ""))
-        if version == "centered_three_objective_gate_v2":
+        if version == "centered_gate_pair_worker_v3":
             expected = {
                 "enabled",
                 "version",
                 "apply_during_phase",
-                "minimum_margin_gap",
-                "minimum_eligible_states",
-                "loss_coefficient",
+                "gate",
+                "production_pair",
+                "worker_variance",
             }
             if set(raw) != expected:
                 raise ValueError(
@@ -524,15 +580,37 @@ class PPOAgent:
                 )
             if str(raw["apply_during_phase"]) != "all":
                 raise ValueError("E2.7 counterfactual loss must run in all stages")
-            gap = float(raw["minimum_margin_gap"])
-            minimum = int(raw["minimum_eligible_states"])
-            coefficient = float(raw["loss_coefficient"])
-            if not math.isfinite(gap) or gap <= 0.0:
-                raise ValueError("E2.7 minimum margin gap must be positive")
-            if minimum < 1:
-                raise ValueError("E2.7 minimum eligible states must be positive")
-            if not math.isfinite(coefficient) or coefficient <= 0.0:
-                raise ValueError("E2.7 counterfactual coefficient must be positive")
+            objectives: dict[str, dict[str, float | int]] = {}
+            for name in ("gate", "production_pair", "worker_variance"):
+                objective = raw[name]
+                if not isinstance(objective, dict) or set(objective) != {
+                    "minimum_margin_gap",
+                    "minimum_eligible_states",
+                    "loss_coefficient",
+                }:
+                    raise ValueError(
+                        f"E2.7 {name} counterfactual objective has an invalid schema"
+                    )
+                gap = float(objective["minimum_margin_gap"])
+                minimum = int(objective["minimum_eligible_states"])
+                coefficient = float(objective["loss_coefficient"])
+                if not math.isfinite(gap) or gap <= 0.0:
+                    raise ValueError(
+                        f"E2.7 {name} minimum margin gap must be positive"
+                    )
+                if minimum < 1:
+                    raise ValueError(
+                        f"E2.7 {name} minimum eligible states must be positive"
+                    )
+                if not math.isfinite(coefficient) or coefficient <= 0.0:
+                    raise ValueError(
+                        f"E2.7 {name} counterfactual coefficient must be positive"
+                    )
+                objectives[name] = {
+                    "minimum_margin_gap": gap,
+                    "minimum_eligible_states": minimum,
+                    "loss_coefficient": coefficient,
+                }
             if getattr(self.network, "production_gate_version", None) != (
                 E1_CENTERED_THREE_OBJECTIVE_GATE_VERSION
             ):
@@ -540,9 +618,7 @@ class PPOAgent:
             return {
                 "enabled": True,
                 "version": version,
-                "loss_coefficient": coefficient,
-                "minimum_margin_gap": gap,
-                "minimum_eligible_states": minimum,
+                "objectives": objectives,
                 "apply_during_phase": "all",
             }
         expected = {
@@ -723,18 +799,118 @@ class PPOAgent:
         )
         return [float(value) for value in values.cpu().tolist()]
 
+    def _centered_pool_objective(
+        self,
+        name: str,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Evaluate one E2.7 v3 fixed-pool objective and its diagnostics."""
+
+        settings = self.counterfactual_preference_consistency["objectives"][name]
+        pool = self.centered_state_pools[name]
+        minimum = int(settings["minimum_eligible_states"])
+        if len(pool) < minimum:
+            raise RuntimeError(
+                f"E2.7 {name} state pool is too small: "
+                f"eligible={len(pool)}, required={minimum}"
+            )
+        observations = [observation for observation, _ in pool[:minimum]]
+        masks = [mask for _, mask in pool[:minimum]]
+        gap = float(settings["minimum_margin_gap"])
+        zero = next(self.network.parameters()).new_zeros(())
+        if name == "gate":
+            diagnostics = self.network.centered_gate_counterfactual_batch(
+                observations, masks, device=self.device
+            )
+            eligible = diagnostics["eligible"]
+            if int(eligible.sum().detach().cpu()) < minimum:
+                raise RuntimeError("E2.7 gate state pool lost eligible states")
+            flow = diagnostics["flow_margin"][eligible]
+            cost = diagnostics["cost_margin"][eligible]
+            variance = diagnostics["variance_margin"][eligible]
+            loss = 0.5 * (
+                torch.relu(gap - (flow - cost)).square().mean()
+                + torch.relu(gap - (flow - variance)).square().mean()
+            )
+            flow_cost_flips = int(diagnostics["flow_cost_flip"].sum().detach().cpu())
+            flow_variance_flips = int(
+                diagnostics["flow_variance_flip"].sum().detach().cpu()
+            )
+            eligible_count = int(eligible.sum().detach().cpu())
+            return loss, {
+                "counterfactual_eligible_count": float(eligible_count),
+                "counterfactual_high_flow_commit_flip_count": float(
+                    max(flow_cost_flips, flow_variance_flips)
+                ),
+                "counterfactual_high_flow_commit_flip_rate": (
+                    max(flow_cost_flips, flow_variance_flips) / eligible_count
+                ),
+                "counterfactual_monotonicity_violation_count": float(
+                    diagnostics["monotonicity_violation"].sum().detach().cpu()
+                ),
+                "counterfactual_flow_cost_flip_count": float(flow_cost_flips),
+                "counterfactual_flow_variance_flip_count": float(
+                    flow_variance_flips
+                ),
+                "counterfactual_coefficient_mean": float(
+                    diagnostics["coefficients"][eligible].detach().mean().cpu()
+                ),
+            }
+        if name == "production_pair":
+            diagnostics = self.network.centered_production_pair_counterfactual_batch(
+                observations, masks, device=self.device
+            )
+            eligible = diagnostics["eligible"]
+            if int(eligible.sum().detach().cpu()) < minimum:
+                raise RuntimeError("E2.7 production-pair pool lost eligible states")
+            flow_gain = diagnostics["flow_gain"][eligible]
+            cost_gain = diagnostics["cost_gain"][eligible]
+            flow_margin = diagnostics["flow_margin"][eligible]
+            cost_margin = diagnostics["cost_margin"][eligible]
+            loss = 0.25 * (
+                torch.relu(gap - flow_gain).square().mean()
+                + torch.relu(-flow_margin).square().mean()
+                + torch.relu(gap - cost_gain).square().mean()
+                + torch.relu(-cost_margin).square().mean()
+            )
+            correct = int(
+                diagnostics["flow_correct"].sum().detach().cpu()
+                + diagnostics["cost_correct"].sum().detach().cpu()
+            )
+            eligible_count = int(eligible.sum().detach().cpu())
+            return loss, {
+                "production_pair_eligible_count": float(eligible_count),
+                "production_pair_correct_count": float(correct),
+                "production_pair_correct_rate": correct / (2.0 * eligible_count),
+            }
+        if name == "worker_variance":
+            diagnostics = self.network.centered_worker_variance_counterfactual_batch(
+                observations, masks, device=self.device
+            )
+            eligible = diagnostics["eligible"]
+            if int(eligible.sum().detach().cpu()) < minimum:
+                raise RuntimeError("E2.7 worker-variance pool lost eligible states")
+            gain = diagnostics["variance_gain"][eligible]
+            margin = diagnostics["variance_margin"][eligible]
+            loss = 0.5 * (
+                torch.relu(gap - gain).square().mean()
+                + torch.relu(-margin).square().mean()
+            )
+            correct = int(diagnostics["variance_correct"].sum().detach().cpu())
+            eligible_count = int(eligible.sum().detach().cpu())
+            return loss, {
+                "worker_variance_eligible_count": float(eligible_count),
+                "worker_variance_correct_count": float(correct),
+                "worker_variance_correct_rate": correct / float(eligible_count),
+            }
+        raise ValueError(f"unknown E2.7 centered objective {name!r}")
+
     def _counterfactual_loss(
         self,
         transitions: Sequence[Any],
         *,
         reward_phase: str,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Return the configured same-state gate counterfactual loss.
-
-        E2.7 evaluates all three preference anchors on a fixed safe dual-legal
-        state pool.  The legacy E2.6 branch remains quality-only and restricted
-        to its frozen base gate plus state residual head.
-        """
+        """Return the configured same-state preference consistency loss."""
 
         zero = next(self.network.parameters()).new_zeros(())
         disabled_metrics = {
@@ -748,79 +924,48 @@ class PPOAgent:
             "counterfactual_flow_cost_flip_count": 0.0,
             "counterfactual_flow_variance_flip_count": 0.0,
             "counterfactual_coefficient_mean": 0.0,
+            "counterfactual_gate_loss": 0.0,
+            "production_pair_loss": 0.0,
+            "production_pair_eligible_count": 0.0,
+            "production_pair_correct_count": 0.0,
+            "production_pair_correct_rate": 0.0,
+            "worker_variance_loss": 0.0,
+            "worker_variance_eligible_count": 0.0,
+            "worker_variance_correct_count": 0.0,
+            "worker_variance_correct_rate": 0.0,
         }
         settings = self.counterfactual_preference_consistency
         if not settings["enabled"]:
             return zero, disabled_metrics
-        if settings.get("version") == "centered_three_objective_gate_v2":
-            evaluator = getattr(
-                self.network, "centered_gate_counterfactual_batch", None
-            )
-            if evaluator is None:
-                raise RuntimeError("E2.7 network lacks centered counterfactuals")
-            pool = self.safe_dual_legal_state_pool
-            minimum = int(settings["minimum_eligible_states"])
-            selected_pool = pool[:minimum]
-            observations = (
-                [observation for observation, _ in selected_pool]
-                if selected_pool
-                else [transition.observation for transition in transitions]
-            )
-            masks = (
-                [mask for _, mask in selected_pool]
-                if selected_pool
-                else [transition.action_mask for transition in transitions]
-            )
-            diagnostics = evaluator(
-                observations,
-                masks,
-                device=self.device,
-            )
-            eligible = diagnostics["eligible"]
-            gap = float(settings["minimum_margin_gap"])
-            if bool(eligible.any()):
-                flow = diagnostics["flow_margin"][eligible]
-                cost = diagnostics["cost_margin"][eligible]
-                variance = diagnostics["variance_margin"][eligible]
-                loss = 0.5 * (
-                    torch.relu(gap - (flow - cost)).square().mean()
-                    + torch.relu(gap - (flow - variance)).square().mean()
+        if settings.get("version") == "centered_gate_pair_worker_v3":
+            gate_loss, gate_metrics = self._centered_pool_objective("gate")
+            stage = str(getattr(self.network, "centered_preference_stage", "gate"))
+            pair_loss = zero
+            pair_metrics: dict[str, float] = {}
+            worker_loss = zero
+            worker_metrics: dict[str, float] = {}
+            if stage in {"production_pair", "worker_variance"}:
+                pair_loss, pair_metrics = self._centered_pool_objective(
+                    "production_pair"
                 )
-                coefficient_mean = float(
-                    diagnostics["coefficients"][eligible]
-                    .detach()
-                    .mean()
-                    .cpu()
+            if stage == "worker_variance":
+                worker_loss, worker_metrics = self._centered_pool_objective(
+                    "worker_variance"
                 )
-            else:
-                loss = zero
-                coefficient_mean = 0.0
-            eligible_count = int(eligible.sum().detach().cpu())
-            flow_cost_flips = int(
-                diagnostics["flow_cost_flip"].sum().detach().cpu()
-            )
-            flow_variance_flips = int(
-                diagnostics["flow_variance_flip"].sum().detach().cpu()
+            objectives = settings["objectives"]
+            loss = (
+                float(objectives["gate"]["loss_coefficient"]) * gate_loss
+                + float(objectives["production_pair"]["loss_coefficient"]) * pair_loss
+                + float(objectives["worker_variance"]["loss_coefficient"]) * worker_loss
             )
             return loss, {
                 **disabled_metrics,
-                "counterfactual_eligible_count": float(eligible_count),
-                "counterfactual_high_flow_commit_flip_count": float(
-                    max(flow_cost_flips, flow_variance_flips)
-                ),
-                "counterfactual_high_flow_commit_flip_rate": (
-                    max(flow_cost_flips, flow_variance_flips) / eligible_count
-                    if eligible_count
-                    else 0.0
-                ),
-                "counterfactual_monotonicity_violation_count": float(
-                    diagnostics["monotonicity_violation"].sum().detach().cpu()
-                ),
-                "counterfactual_flow_cost_flip_count": float(flow_cost_flips),
-                "counterfactual_flow_variance_flip_count": float(
-                    flow_variance_flips
-                ),
-                "counterfactual_coefficient_mean": coefficient_mean,
+                **gate_metrics,
+                **pair_metrics,
+                **worker_metrics,
+                "counterfactual_gate_loss": float(gate_loss.detach().cpu()),
+                "production_pair_loss": float(pair_loss.detach().cpu()),
+                "worker_variance_loss": float(worker_loss.detach().cpu()),
             }
         if reward_phase != "quality":
             return zero, disabled_metrics
@@ -920,72 +1065,95 @@ class PPOAgent:
             Categorical(logits=current_logits),
         ).mean()
 
-    def _run_safe_pool_gradient_preflight(
-        self,
-        *,
-        reward_phase: str,
-    ) -> None:
-        """Verify the E2.7 auxiliary-loss gradient path once per safe pool."""
+    def _run_centered_pool_gradient_preflight(self, name: str) -> None:
+        """Verify one E2.7 v3 auxiliary path once per installed pool."""
 
-        evaluator = getattr(
-            self.network, "centered_gate_counterfactual_batch"
-        )
         with torch.no_grad():
-            preflight = evaluator(
-                [
-                    observation
-                    for observation, _ in self.safe_dual_legal_state_pool
-                ],
-                [mask for _, mask in self.safe_dual_legal_state_pool],
-                device=self.device,
-            )
-        eligible_count = int(preflight["eligible"].sum().cpu())
-        minimum = int(
-            self.counterfactual_preference_consistency[
-                "minimum_eligible_states"
-            ]
-        )
-        if eligible_count < minimum:
-            raise RuntimeError(
-                "E2.7 safe dual-legal state pool is too small: "
-                f"eligible={eligible_count}, required={minimum}"
-            )
-        probe_transitions = [
-            type(
-                "SafePoolTransition",
-                (),
-                {"observation": observation, "action_mask": mask},
-            )()
-            for observation, mask in self.safe_dual_legal_state_pool[:minimum]
-        ]
-        self.optimizer.zero_grad()
-        probe_loss, _ = self._counterfactual_loss(
-            probe_transitions,
-            reward_phase=reward_phase,
-        )
+            probe_loss, _ = self._centered_pool_objective(name)
         if not bool(torch.isfinite(probe_loss)):
-            raise RuntimeError(
-                "E2.7 counterfactual preflight loss is non-finite"
-            )
+            raise RuntimeError(f"E2.7 {name} preflight loss is non-finite")
         probe_loss_value = float(probe_loss.detach().cpu())
         if probe_loss_value < 0.0:
-            raise RuntimeError(
-                "E2.7 counterfactual preflight loss is negative"
-            )
+            raise RuntimeError(f"E2.7 {name} preflight loss is negative")
         if probe_loss_value > 0.0:
+            self.optimizer.zero_grad()
+            probe_loss, _ = self._centered_pool_objective(name)
             probe_loss.backward()
-            gate = getattr(self.network, "centered_gate_coefficients", None)
+            if name == "gate":
+                module = getattr(self.network, "centered_gate_coefficients", None)
+                parameters = tuple(module.parameters()) if module is not None else ()
+            elif name == "production_pair":
+                parameters = (
+                    getattr(self.network, "centered_production_pair_scale_raw", None),
+                )
+            else:
+                parameters = (
+                    getattr(self.network, "centered_worker_variance_scale_raw", None),
+                )
             gradient_total = sum(
                 float(parameter.grad.detach().abs().sum().cpu())
-                for parameter in gate.parameters()
-                if parameter.grad is not None
-            ) if gate is not None else 0.0
+                for parameter in parameters
+                if parameter is not None and parameter.grad is not None
+            )
             self.optimizer.zero_grad()
             if not math.isfinite(gradient_total) or gradient_total <= 0.0:
                 raise RuntimeError(
-                    "E2.7 centered gate adapter gradient is zero or non-finite"
+                    f"E2.7 {name} adapter gradient is zero or non-finite"
                 )
-        self._safe_pool_gradient_preflight_complete = True
+        self._centered_pool_gradient_preflight_complete[name] = True
+        if name == "gate":
+            self._safe_pool_gradient_preflight_complete = True
+
+    def _verify_centered_canonical_identity(self) -> float:
+        """Return the maximum finite canonical logit difference from E1."""
+
+        if self.canonical_teacher is None:
+            raise RuntimeError("E2.7 canonical identity is enabled before warm-start")
+        observations: list[Observation | PolicyObservation] = []
+        masks: list[np.ndarray] = []
+        for pool in self.centered_state_pools.values():
+            observations.extend(observation for observation, _ in pool)
+            masks.extend(mask for _, mask in pool)
+        if not observations:
+            raise RuntimeError("E2.7 canonical identity has no fixed state pool")
+        canonical = np.asarray((0.5, 0.3, 0.2), dtype=np.float32)
+        canonical_observations = [
+            replace(observation, preference=canonical.copy())
+            for observation in observations
+        ]
+        with torch.no_grad():
+            current_logits, _ = self.network.forward_batch(
+                canonical_observations, masks, device=self.device
+            )
+            teacher_logits, _ = self.canonical_teacher.forward_batch(
+                canonical_observations, masks, device=self.device
+            )
+        valid_actions = torch.zeros_like(current_logits, dtype=torch.bool)
+        for row, action_mask in enumerate(masks):
+            legal = ~torch.as_tensor(
+                np.asarray(action_mask, dtype=bool),
+                dtype=torch.bool,
+                device=self.device,
+            )
+            valid_actions[row, : legal.numel()] = legal
+        if not bool(valid_actions.any()):
+            raise RuntimeError("E2.7 canonical identity has no legal logits")
+        if not bool(torch.isfinite(current_logits[valid_actions]).all()) or not bool(
+            torch.isfinite(teacher_logits[valid_actions]).all()
+        ):
+            raise RuntimeError("E2.7 canonical identity has non-finite legal logits")
+        error = (
+            current_logits[valid_actions] - teacher_logits[valid_actions]
+        ).abs().max()
+        if not bool(torch.isfinite(error)):
+            raise RuntimeError("E2.7 canonical identity error is non-finite")
+        result = float(error.detach().cpu())
+        if result > 1e-8:
+            raise RuntimeError(
+                "E2.7 canonical policy logits drifted from E1: "
+                f"max_abs_error={result:.12g}"
+            )
+        return result
 
     def update(
         self,
@@ -997,28 +1165,27 @@ class PPOAgent:
             raise ValueError("cannot update PPO with an empty buffer")
         e2_7_counterfactual = (
             self.counterfactual_preference_consistency.get("version")
-            == "centered_three_objective_gate_v2"
+            == "centered_gate_pair_worker_v3"
         )
         if e2_7_counterfactual:
-            minimum = int(
-                self.counterfactual_preference_consistency[
-                    "minimum_eligible_states"
-                ]
-            )
-            if not self.safe_dual_legal_state_pool:
-                raise RuntimeError(
-                    "E2.7 fixed safe dual-legal state pool was not initialized"
+            stage = str(getattr(self.network, "centered_preference_stage", "gate"))
+            active_objectives = ["gate"]
+            if stage in {"production_pair", "worker_variance"}:
+                active_objectives.append("production_pair")
+            if stage == "worker_variance":
+                active_objectives.append("worker_variance")
+            for name in active_objectives:
+                minimum = int(
+                    self.counterfactual_preference_consistency["objectives"][name][
+                        "minimum_eligible_states"
+                    ]
                 )
-            if len(self.safe_dual_legal_state_pool) < minimum:
-                raise RuntimeError(
-                    "E2.7 safe dual-legal state pool is too small: "
-                    f"eligible={len(self.safe_dual_legal_state_pool)}, "
-                    f"required={minimum}"
-                )
-            if not self._safe_pool_gradient_preflight_complete:
-                self._run_safe_pool_gradient_preflight(
-                    reward_phase=reward_phase,
-                )
+                if len(self.centered_state_pools[name]) < minimum:
+                    raise RuntimeError(
+                        f"E2.7 fixed {name} state pool was not initialized or is too small"
+                    )
+                if not self._centered_pool_gradient_preflight_complete[name]:
+                    self._run_centered_pool_gradient_preflight(name)
         raw_advantages = torch.as_tensor(
             [transition.advantage for transition in buffer.transitions],
             dtype=torch.float32,
@@ -1073,6 +1240,15 @@ class PPOAgent:
             "counterfactual_flow_cost_flip_count",
             "counterfactual_flow_variance_flip_count",
             "counterfactual_coefficient_mean",
+            "counterfactual_gate_loss",
+            "production_pair_loss",
+            "production_pair_eligible_count",
+            "production_pair_correct_count",
+            "production_pair_correct_rate",
+            "worker_variance_loss",
+            "worker_variance_eligible_count",
+            "worker_variance_correct_count",
+            "worker_variance_correct_rate",
             "canonical_teacher_kl",
         )
         metrics: list[tuple[float, ...]] = []
@@ -1156,16 +1332,21 @@ class PPOAgent:
                 canonical_teacher_loss = self._canonical_teacher_loss(
                     transitions
                 )
-                loss = (
-                    policy_loss
-                    + self.config["value_coefficient"] * value_loss
-                    - self.config["entropy_coefficient"] * entropy
-                    + float(
+                counterfactual_multiplier = (
+                    1.0
+                    if self.counterfactual_preference_consistency.get("version")
+                    == "centered_gate_pair_worker_v3"
+                    else float(
                         self.counterfactual_preference_consistency.get(
                             "loss_coefficient", 0.0
                         )
                     )
-                    * counterfactual_loss
+                )
+                loss = (
+                    policy_loss
+                    + self.config["value_coefficient"] * value_loss
+                    - self.config["entropy_coefficient"] * entropy
+                    + counterfactual_multiplier * counterfactual_loss
                     + float(self.canonical_teacher_kl["coefficient"])
                     * canonical_teacher_loss
                 )
@@ -1219,6 +1400,15 @@ class PPOAgent:
                         counterfactual_metrics[
                             "counterfactual_coefficient_mean"
                         ],
+                        counterfactual_metrics["counterfactual_gate_loss"],
+                        counterfactual_metrics["production_pair_loss"],
+                        counterfactual_metrics["production_pair_eligible_count"],
+                        counterfactual_metrics["production_pair_correct_count"],
+                        counterfactual_metrics["production_pair_correct_rate"],
+                        counterfactual_metrics["worker_variance_loss"],
+                        counterfactual_metrics["worker_variance_eligible_count"],
+                        counterfactual_metrics["worker_variance_correct_count"],
+                        counterfactual_metrics["worker_variance_correct_rate"],
                         float(canonical_teacher_loss.detach().item()),
                     )
                 )
@@ -1255,15 +1445,44 @@ class PPOAgent:
         if not all(math.isfinite(value) for value in result.values()):
             raise FloatingPointError("PPO returned non-finite metrics")
         if e2_7_counterfactual:
-            counterfactual_loss_value = result["counterfactual_loss"]
-            if counterfactual_loss_value < 0.0:
+            for key in (
+                "counterfactual_gate_loss",
+                "production_pair_loss",
+                "worker_variance_loss",
+            ):
+                if result[key] < 0.0:
+                    raise FloatingPointError(f"E2.7 {key} cannot be negative")
+            result["canonical_identity_max_abs_error"] = (
+                self._verify_centered_canonical_identity()
+            )
+            gate_loss_value = result["counterfactual_gate_loss"]
+            if gate_loss_value < 0.0:
                 raise FloatingPointError(
-                    "E2.7 counterfactual loss cannot be negative"
+                    "E2.7 gate counterfactual loss cannot be negative"
                 )
             result["counterfactual_constraint_status"] = (
                 "constraint_satisfied"
-                if counterfactual_loss_value == 0.0
+                if gate_loss_value == 0.0
                 else "constraint_active"
+            )
+            stage = str(getattr(self.network, "centered_preference_stage", "gate"))
+            result["production_pair_constraint_status"] = (
+                "inactive"
+                if stage == "gate"
+                else (
+                    "constraint_satisfied"
+                    if result["production_pair_loss"] == 0.0
+                    else "constraint_active"
+                )
+            )
+            result["worker_variance_constraint_status"] = (
+                "inactive"
+                if stage != "worker_variance"
+                else (
+                    "constraint_satisfied"
+                    if result["worker_variance_loss"] == 0.0
+                    else "constraint_active"
+                )
             )
         return result
 

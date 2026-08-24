@@ -1,13 +1,13 @@
 {
   "extends": "e2_3_safe_production_preference.json",
-  "experiment_name": "v7_e2_7_e1_warmstart_safe_gate_v1",
-  "experiment_suite_version": "v7_e2_7_e1_warmstart_safe_gate_protocol_v1",
+  "experiment_name": "v7_e2_7_e1_warmstart_safe_gate_v2",
+  "experiment_suite_version": "v7_e2_7_e1_warmstart_safe_gate_protocol_v2",
   "environment": {
     "production_defer": {
       "allow_recovery_improvement": true,
       "shield": {
         "enabled": true,
-        "version": "deadline_progress_shield_v1",
+        "version": "deadline_progress_viability_shield_v2",
         "deadline_reserve_ticks": 1,
         "soft_risk_threshold": 0.8,
         "soft_risk_coefficient": 0.05
@@ -30,7 +30,7 @@
     },
     "centered_preference_adapter": {
       "enabled": true,
-      "version": "centered_parallel_adapter_v1",
+      "version": "centered_parallel_adapter_v2",
       "production_pair_maximum_scale": 2.0,
       "worker_variance_maximum_scale": 1.5,
       "initial_stage": "gate"
@@ -39,11 +39,23 @@
   "ppo": {
     "counterfactual_preference_consistency": {
       "enabled": true,
-      "version": "centered_three_objective_gate_v2",
+      "version": "centered_gate_pair_worker_v3",
       "apply_during_phase": "all",
-      "minimum_margin_gap": 0.05,
-      "minimum_eligible_states": 64,
-      "loss_coefficient": 0.1
+      "gate": {
+        "minimum_margin_gap": 0.05,
+        "minimum_eligible_states": 64,
+        "loss_coefficient": 0.1
+      },
+      "production_pair": {
+        "minimum_margin_gap": 0.05,
+        "minimum_eligible_states": 64,
+        "loss_coefficient": 0.1
+      },
+      "worker_variance": {
+        "minimum_margin_gap": 0.05,
+        "minimum_eligible_states": 64,
+        "loss_coefficient": 0.1
+      }
     },
     "canonical_teacher_kl": {
       "enabled": true,
@@ -67,10 +79,15 @@
     },
     "preference_stage_schedule": {
       "enabled": true,
-      "version": "e1_centered_adapter_40_80_80_v1",
-      "gate_end_update": 40,
-      "production_pair_end_update": 120,
-      "final_update": 200
+      "version": "e1_centered_adapter_metric_gated_v2",
+      "final_update": 200,
+      "gate_minimum_updates": 10,
+      "gate_maximum_end_update": 40,
+      "production_pair_minimum_updates": 20,
+      "production_pair_maximum_end_update": 120,
+      "required_consecutive_passes": 3,
+      "minimum_gate_flip_rate": 0.05,
+      "minimum_production_pair_correct_rate": 0.05
     },
     "development_acceptance": {
       "enabled": true,
@@ -101,6 +118,12 @@
         ["validation_machine_bottleneck_2000014", [0.2, 0.6, 0.2]],
         ["validation_machine_bottleneck_2000014", [0.2, 0.8, 0.0]]
       ]
+    },
+    "e2_7_safety_replay": {
+      "enabled": true,
+      "version": "validation_balanced_pure_cost_each_update_v1",
+      "instance_id": "validation_balanced_2000000",
+      "preference": [0.0, 1.0, 0.0]
     },
     "two_stage": {
       "quality_checkpoint_promotion": "pareto_guarded_e2_7_development_v1",

@@ -318,56 +318,200 @@ def _pareto_anchor_preferences(config: dict) -> tuple[PreferenceVector, ...]:
     return anchors
 
 
-def _e2_7_preference_stage(config: dict, update_number: int) -> str | None:
-    raw = config["training"].get("preference_stage_schedule")
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise TypeError("training.preference_stage_schedule must be an object")
-    required = {
-        "enabled",
-        "version",
-        "gate_end_update",
-        "production_pair_end_update",
-        "final_update",
-    }
-    if set(raw) != required:
-        raise ValueError(
-            "training.preference_stage_schedule must contain exactly "
-            f"{sorted(required)}"
-        )
-    if not bool(raw["enabled"]):
-        return None
-    if str(raw["version"]) != "e1_centered_adapter_40_80_80_v1":
-        raise ValueError(
-            "training.preference_stage_schedule.version must be "
-            "'e1_centered_adapter_40_80_80_v1'"
-        )
-    gate_end = int(raw["gate_end_update"])
-    production_end = int(raw["production_pair_end_update"])
-    final_update = int(raw["final_update"])
-    if (gate_end, production_end, final_update) != (40, 120, 200):
-        raise ValueError("E2.7 stage schedule must be exactly 40/80/80 updates")
-    update_number = int(update_number)
-    if not 1 <= update_number <= final_update:
-        raise ValueError(
-            f"E2.7 update {update_number} is outside the configured 1..{final_update} budget"
-        )
-    if update_number <= gate_end:
-        return "gate"
-    if update_number <= production_end:
-        return "production_pair"
-    return "worker_variance"
+@dataclass
+class E2_7PreferenceStageController:
+    """Metric-gated E2.7 adapter curriculum with resumable state."""
 
+    enabled: bool
+    final_update: int = 0
+    gate_minimum_updates: int = 0
+    gate_maximum_end_update: int = 0
+    production_pair_minimum_updates: int = 0
+    production_pair_maximum_end_update: int = 0
+    required_consecutive_passes: int = 0
+    minimum_gate_flip_rate: float = 0.0
+    minimum_production_pair_correct_rate: float = 0.0
+    stage: str = "gate"
+    stage_update_count: int = 0
+    consecutive_passes: int = 0
+    transition_history: list[dict[str, Any]] = field(default_factory=list)
 
-def _set_e2_7_preference_stage(agent: PPOAgent, config: dict, update_number: int) -> str | None:
-    stage = _e2_7_preference_stage(config, update_number)
-    if stage is not None:
+    @classmethod
+    def from_config(cls, config: dict) -> "E2_7PreferenceStageController | None":
+        raw = config["training"].get("preference_stage_schedule")
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise TypeError("training.preference_stage_schedule must be an object")
+        required = {
+            "enabled",
+            "version",
+            "final_update",
+            "gate_minimum_updates",
+            "gate_maximum_end_update",
+            "production_pair_minimum_updates",
+            "production_pair_maximum_end_update",
+            "required_consecutive_passes",
+            "minimum_gate_flip_rate",
+            "minimum_production_pair_correct_rate",
+        }
+        if set(raw) != required:
+            raise ValueError(
+                "training.preference_stage_schedule must contain exactly "
+                f"{sorted(required)}"
+            )
+        if not bool(raw["enabled"]):
+            return None
+        if str(raw["version"]) != "e1_centered_adapter_metric_gated_v2":
+            raise ValueError(
+                "training.preference_stage_schedule.version must be "
+                "'e1_centered_adapter_metric_gated_v2'"
+            )
+        values = {
+            name: int(raw[name])
+            for name in (
+                "final_update",
+                "gate_minimum_updates",
+                "gate_maximum_end_update",
+                "production_pair_minimum_updates",
+                "production_pair_maximum_end_update",
+                "required_consecutive_passes",
+            )
+        }
+        if not (
+            1 <= values["gate_minimum_updates"] <= values["gate_maximum_end_update"]
+            < values["production_pair_maximum_end_update"]
+            <= values["final_update"]
+            and 1 <= values["production_pair_minimum_updates"]
+            and 1 <= values["required_consecutive_passes"]
+        ):
+            raise ValueError("E2.7 metric-gated stage bounds are invalid")
+        rates = {
+            name: float(raw[name])
+            for name in (
+                "minimum_gate_flip_rate",
+                "minimum_production_pair_correct_rate",
+            )
+        }
+        if not all(math.isfinite(value) and 0.0 < value <= 1.0 for value in rates.values()):
+            raise ValueError("E2.7 metric-gated stage rates must be within (0, 1]")
+        return cls(enabled=True, **values, **rates)
+
+    def apply(self, agent: PPOAgent) -> str:
         setter = getattr(agent.network, "set_centered_preference_stage", None)
         if setter is None:
             raise RuntimeError("E2.7 stage schedule requires a centered preference adapter")
-        setter(stage)
-    return stage
+        setter(self.stage)
+        return self.stage
+
+    def observe(self, losses: dict[str, Any], *, update_id: int) -> None:
+        self.stage_update_count += 1
+        if self.stage == "gate":
+            eligible = float(losses.get("counterfactual_eligible_count", 0.0))
+            flow_cost_rate = (
+                float(losses.get("counterfactual_flow_cost_flip_count", 0.0))
+                / eligible if eligible else 0.0
+            )
+            flow_variance_rate = (
+                float(losses.get("counterfactual_flow_variance_flip_count", 0.0))
+                / eligible if eligible else 0.0
+            )
+            passed = (
+                losses.get("counterfactual_constraint_status")
+                == "constraint_satisfied"
+                and flow_cost_rate >= self.minimum_gate_flip_rate
+                and flow_variance_rate >= self.minimum_gate_flip_rate
+            )
+            maximum_update = self.gate_maximum_end_update
+            next_stage = "production_pair"
+            minimum_updates = self.gate_minimum_updates
+        elif self.stage == "production_pair":
+            passed = (
+                losses.get("production_pair_constraint_status")
+                == "constraint_satisfied"
+                and float(losses.get("production_pair_correct_rate", 0.0))
+                >= self.minimum_production_pair_correct_rate
+            )
+            maximum_update = self.production_pair_maximum_end_update
+            next_stage = "worker_variance"
+            minimum_updates = self.production_pair_minimum_updates
+        else:
+            return
+        self.consecutive_passes = self.consecutive_passes + 1 if passed else 0
+        if (
+            self.stage_update_count >= minimum_updates
+            and self.consecutive_passes >= self.required_consecutive_passes
+        ):
+            self.transition_history.append(
+                {
+                    "from": self.stage,
+                    "to": next_stage,
+                    "update_id": int(update_id),
+                    "stage_update_count": self.stage_update_count,
+                }
+            )
+            self.stage = next_stage
+            self.stage_update_count = 0
+            self.consecutive_passes = 0
+        elif int(update_id) >= maximum_update:
+            raise RuntimeError(
+                "preference_stage_failed: "
+                f"stage={self.stage}, update={update_id}, "
+                f"consecutive_passes={self.consecutive_passes}"
+            )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "version": "e1_centered_adapter_metric_gated_v2",
+            "stage": self.stage,
+            "stage_update_count": self.stage_update_count,
+            "consecutive_passes": self.consecutive_passes,
+            "transition_history": list(self.transition_history),
+        }
+
+    def restore(self, payload: object) -> None:
+        """Restore the curriculum state from a strict v2 checkpoint."""
+        if not isinstance(payload, dict):
+            raise ValueError("E2.7 resume checkpoint lacks stage-controller state")
+        expected = {
+            "version",
+            "stage",
+            "stage_update_count",
+            "consecutive_passes",
+            "transition_history",
+        }
+        if set(payload) != expected or (
+            payload.get("version") != "e1_centered_adapter_metric_gated_v2"
+        ):
+            raise ValueError("E2.7 resume checkpoint has invalid stage-controller state")
+        stage = str(payload["stage"])
+        if stage not in {"gate", "production_pair", "worker_variance"}:
+            raise ValueError("E2.7 resume checkpoint has an invalid stage")
+        stage_update_count = int(payload["stage_update_count"])
+        consecutive_passes = int(payload["consecutive_passes"])
+        history = payload["transition_history"]
+        if (
+            stage_update_count < 0
+            or consecutive_passes < 0
+            or not isinstance(history, list)
+            or not all(isinstance(item, dict) for item in history)
+        ):
+            raise ValueError("E2.7 resume checkpoint has invalid stage counters")
+        self.stage = stage
+        self.stage_update_count = stage_update_count
+        self.consecutive_passes = consecutive_passes
+        self.transition_history = [dict(item) for item in history]
+
+
+def _e2_7_preference_stage(config: dict, update_number: int) -> str | None:
+    """Compatibility helper for callers that only need the initial stage."""
+
+    controller = E2_7PreferenceStageController.from_config(config)
+    if controller is None:
+        return None
+    if int(update_number) < 1 or int(update_number) > controller.final_update:
+        raise ValueError("E2.7 update is outside the configured budget")
+    return controller.stage
 
 
 def _development_acceptance_enabled(config: dict) -> bool:
@@ -517,12 +661,144 @@ def _evaluate_e2_3_failure_replay(
     }
 
 
+def _e2_7_safety_replay_cell(
+    config: dict,
+) -> tuple[str, PreferenceVector] | None:
+    """Return the mandatory pure-cost replay cell for strict E2.7 v2."""
+    raw = config["training"].get("e2_7_safety_replay")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError("training.e2_7_safety_replay must be an object")
+    required = {"enabled", "version", "instance_id", "preference"}
+    if set(raw) != required:
+        raise ValueError("E2.7 safety replay has an invalid schema")
+    if not bool(raw["enabled"]):
+        return None
+    if str(raw["version"]) != "validation_balanced_pure_cost_each_update_v1":
+        raise ValueError("unsupported E2.7 safety replay version")
+    preference = PreferenceVector(*map(float, raw["preference"]))
+    if preference != PreferenceVector(0.0, 1.0, 0.0):
+        raise ValueError("E2.7 safety replay must use the pure-cost preference")
+    instance_id = str(raw["instance_id"])
+    if instance_id != "validation_balanced_2000000":
+        raise ValueError("E2.7 safety replay must target validation_balanced_2000000")
+    return instance_id, preference
+
+
+def _evaluate_e2_7_safety_replay(
+    config: dict,
+    *,
+    agent: PPOAgent,
+    runner: ParallelEpisodeRunner,
+    update_id: int,
+    stage: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cell = _e2_7_safety_replay_cell(config)
+    if cell is None:
+        return [], {"enabled": False, "pass": True}
+    instance_id, preference = cell
+    records = {
+        record.instance.instance_id: record
+        for record in load_dataset_split(config, "validation")
+    }
+    if instance_id not in records:
+        raise ValueError(f"E2.7 safety replay instance is missing: {instance_id}")
+    rollout = runner.evaluate_records(
+        agent,
+        [records[instance_id]],
+        max_parallelism=1,
+        deterministic=True,
+        preference=preference,
+    )[0]
+    metrics = rollout.metrics
+    safe = bool(
+        metrics.get("terminated", False)
+        and not metrics.get("truncated", False)
+        and not metrics.get("schedule_violations", [])
+        and float(metrics.get("maximum_worker_fatigue", math.inf))
+        <= float(metrics.get("safe_fatigue_limit", -math.inf)) + 1e-9
+    )
+    row = {
+        "update_id": int(update_id),
+        "stage": str(stage),
+        "instance_id": instance_id,
+        "preference_key": _preference_key(preference),
+        "w_flow": preference.flow,
+        "w_cost": preference.cost,
+        "w_variance": preference.variance,
+        "terminated": bool(metrics.get("terminated", False)),
+        "truncated": bool(metrics.get("truncated", False)),
+        "terminal_reason": metrics.get("terminal_reason"),
+        "completed_orders": metrics.get("completed_orders"),
+        "total_orders": metrics.get("total_orders"),
+        "schedule_violation_count": len(metrics.get("schedule_violations", [])),
+        "maximum_worker_fatigue": metrics.get("maximum_worker_fatigue"),
+        "unrecoverable_deadlock_diagnostic": json.dumps(
+            metrics.get("first_unrecoverable_deadlock_diagnostic"),
+            sort_keys=True,
+        ),
+        "pass": safe,
+        "action_trace_sha256": rollout.action_trace_sha256,
+    }
+    return [row], {
+        "enabled": True,
+        "update_id": int(update_id),
+        "stage": str(stage),
+        "pass": safe,
+        "failure_cell": None if safe else dict(row),
+    }
+
+
+def _save_rejected_candidate(
+    config: dict,
+    *,
+    run_directory: Path,
+    agent: PPOAgent,
+    update_id: int,
+    stage: str | None,
+    failure_source: str,
+    failure_cell: dict[str, Any] | None,
+    preference_stage_controller: E2_7PreferenceStageController | None,
+) -> dict[str, Any]:
+    """Persist the unsafe online candidate before any safety rollback."""
+    artifact = {
+        "version": "rejected_candidate_v1",
+        "update_id": int(update_id),
+        "stage": stage,
+        "failure_source": str(failure_source),
+        "learning_rate": float(agent.learning_rate),
+        "failure_cell": dict(failure_cell or {}),
+        "action_trace_sha256": (failure_cell or {}).get("action_trace_sha256"),
+        "preference_stage_controller": (
+            preference_stage_controller.as_dict()
+            if preference_stage_controller is not None
+            else None
+        ),
+    }
+    agent.save(
+        run_directory / "latest_rejected_candidate.pt",
+        metadata={
+            **_checkpoint_protocol_metadata(config),
+            "checkpoint_role": "latest_rejected_candidate",
+            **artifact,
+        },
+    )
+    write_json(run_directory / "latest_rejected_candidate.json", artifact)
+    return artifact
+
+
 def _build_e2_7_safe_state_pool(
     config: dict,
     *,
     agent: PPOAgent,
     runner: ParallelEpisodeRunner,
-) -> dict[str, Any] | None:
+) -> dict[str, dict[str, Any]] | None:
+    if (
+        agent.counterfactual_preference_consistency.get("version")
+        != "centered_gate_pair_worker_v3"
+    ):
+        return None
     cells = _e2_3_failure_replay_cells(config)
     if not cells:
         return None
@@ -530,17 +806,24 @@ def _build_e2_7_safe_state_pool(
     records_by_id = {
         record.instance.instance_id: record for record in validation_records
     }
-    states: list[tuple[Any, np.ndarray]] = []
+    pools: dict[str, list[tuple[Any, np.ndarray]]] = {
+        "gate": [],
+        "production_pair": [],
+        "worker_variance": [],
+    }
     runner.evaluate_records(
         agent,
         validation_records,
         max_parallelism=min(runner.worker_count, len(validation_records)),
         deterministic=True,
         preference=PreferenceVector(*CANONICAL_PREFERENCE),
-        dual_legal_state_sink=states,
+        dual_legal_state_sink=pools["gate"],
         maximum_captured_dual_legal_states=128,
+        production_pair_state_sink=pools["production_pair"],
+        worker_variance_state_sink=pools["worker_variance"],
+        maximum_captured_preference_states=256,
     )
-    canonical_count = len(states)
+    canonical_counts = {name: len(states) for name, states in pools.items()}
     for instance_id, preference in cells:
         if instance_id not in records_by_id:
             raise ValueError(f"E2.3 replay instance is missing: {instance_id}")
@@ -550,16 +833,22 @@ def _build_e2_7_safe_state_pool(
             max_parallelism=1,
             deterministic=True,
             preference=preference,
-            dual_legal_state_sink=states,
+            dual_legal_state_sink=pools["gate"],
             maximum_captured_dual_legal_states=256,
+            production_pair_state_sink=pools["production_pair"],
+            worker_variance_state_sink=pools["worker_variance"],
+            maximum_captured_preference_states=512,
         )
-    e2_3_count = len(states) - canonical_count
+    e2_3_counts = {
+        name: len(states) - canonical_counts[name]
+        for name, states in pools.items()
+    }
     diagnostic_checkpoint = project_path(
         "result/runs/v7_2000_e2_3_safe_production_seed11/last_checkpoint.pt"
     )
     provenance = {
-        "e1_validation_state_count": canonical_count,
-        "e2_3_failure_cell_state_count": e2_3_count,
+        "e1_validation_state_count": canonical_counts,
+        "e2_3_failure_cell_state_count": e2_3_counts,
         "e2_3_failure_cell_count": len(cells),
         "e1_checkpoint": (
             agent.warm_start_report.get("source_checkpoint")
@@ -577,10 +866,14 @@ def _build_e2_7_safe_state_pool(
         ),
         "e2_3_weights_loaded": False,
     }
-    return agent.set_safe_dual_legal_state_pool(
-        states,
-        provenance=provenance,
-    )
+    return {
+        name: agent.set_centered_state_pool(
+            name,
+            states,
+            provenance={**provenance, "pool_kind": name},
+        )
+        for name, states in pools.items()
+    }
 
 
 def _preference_key(preference: PreferenceVector) -> str:
@@ -4198,6 +4491,7 @@ def train(
     network = build_actor_critic(observation, config["network"])
     agent = PPOAgent(network, config["ppo"], device=config["device"])
     warm_start_report = None
+    initial_metadata: dict[str, Any] = {}
     if initial_checkpoint is not None:
         initial_metadata = agent.load(initial_checkpoint, load_optimizer=True)
         warm_start_report = _restore_e2_7_resume_provenance(
@@ -4280,6 +4574,11 @@ def train(
     best_score: tuple[float, float, float, float] | None = None
     phase_controller = TrainingPhaseController.from_config(config)
     stability_controller = ValidationStabilityController.from_config(config)
+    preference_stage_controller = E2_7PreferenceStageController.from_config(config)
+    if preference_stage_controller is not None and initial_checkpoint is not None:
+        preference_stage_controller.restore(
+            initial_metadata.get("preference_stage_controller")
+        )
     for episode in range(episodes):
         reward_phase = phase_controller.phase
         sampling_start = time.perf_counter()
@@ -4328,10 +4627,14 @@ def train(
                 "training batch contains no policy transitions after "
                 "forced action compression"
             )
-        preference_stage = _set_e2_7_preference_stage(
-            agent, config, episode + 1
+        preference_stage = (
+            preference_stage_controller.apply(agent)
+            if preference_stage_controller is not None
+            else None
         )
         losses = agent.update(buffer, reward_phase=reward_phase)
+        if preference_stage_controller is not None:
+            preference_stage_controller.observe(losses, update_id=episode + 1)
         update_time = time.perf_counter() - update_start
         metrics = episode_rollout.metrics
         expected_reward = episode_rollout.expected_reward
@@ -4853,6 +5156,11 @@ def train(
                 best_feasibility_validation
             ),
             "validation_stability": stability_controller.as_dict(),
+            "preference_stage_controller": (
+                preference_stage_controller.as_dict()
+                if preference_stage_controller is not None
+                else None
+            ),
             "last_sampled_validation": last_sampled_validation,
             "formal_training_status": (
                 phase_controller.formal_training_status
@@ -5080,6 +5388,7 @@ def _train_parallel(
     )
     agent = PPOAgent(network, config["ppo"], device=config["device"])
     warm_start_report = None
+    initial_metadata: dict[str, Any] = {}
     if initial_checkpoint is not None:
         initial_metadata = agent.load(initial_checkpoint, load_optimizer=True)
         warm_start_report = _restore_e2_7_resume_provenance(
@@ -5142,6 +5451,9 @@ def _train_parallel(
     pareto_candidate_rows: list[dict] = []
     e2_3_failure_replay_rows: list[dict] = []
     latest_e2_3_failure_replay: dict[str, object] | None = None
+    e2_7_safety_replay_rows: list[dict[str, Any]] = []
+    latest_e2_7_safety_replay: dict[str, Any] | None = None
+    latest_rejected_candidate: dict[str, Any] | None = None
     e2_7_heldout_candidate_rows: list[dict] = []
     latest_e2_7_heldout_report: dict[str, object] | None = None
     instance_ids: list[str] = []
@@ -5168,6 +5480,11 @@ def _train_parallel(
     best_score: tuple[float, float, float, float] | None = None
     phase_controller = TrainingPhaseController.from_config(config)
     stability_controller = ValidationStabilityController.from_config(config)
+    preference_stage_controller = E2_7PreferenceStageController.from_config(config)
+    if preference_stage_controller is not None and initial_checkpoint is not None:
+        preference_stage_controller.restore(
+            initial_metadata.get("preference_stage_controller")
+        )
     total_transitions = 0
     total_environment_steps = 0
     total_forced_actions = 0
@@ -5200,6 +5517,10 @@ def _train_parallel(
         if safe_state_pool_report is not None:
             write_json(
                 run_directory / "safe_dual_legal_state_pool.json",
+                safe_state_pool_report["gate"],
+            )
+            write_json(
+                run_directory / "e2_7_preference_state_pools.json",
                 safe_state_pool_report,
             )
         for batch_start in range(0, episodes, parallel_envs):
@@ -5224,12 +5545,100 @@ def _train_parallel(
                     "training batch contains no policy transitions after "
                     "forced action compression"
                 )
-            preference_stage = _set_e2_7_preference_stage(
-                agent, config, update_id + 1
+            preference_stage = (
+                preference_stage_controller.apply(agent)
+                if preference_stage_controller is not None
+                else None
             )
             losses = agent.update(rollout.buffer, reward_phase=reward_phase)
             update_time = time.perf_counter() - update_start
             update_id += 1
+            if preference_stage_controller is not None:
+                preference_stage_controller.observe(losses, update_id=update_id)
+                entered_production_pair = bool(
+                    preference_stage_controller.transition_history
+                    and preference_stage_controller.transition_history[-1]["to"]
+                    == "production_pair"
+                    and preference_stage_controller.transition_history[-1][
+                        "update_id"
+                    ]
+                    == update_id
+                )
+            else:
+                entered_production_pair = False
+            if entered_production_pair:
+                if pareto_settings is None:
+                    raise RuntimeError(
+                        "E2.7 production-pair entry requires Pareto safety settings"
+                    )
+                preference_stage_controller.apply(agent)
+                entry_rows, entry_snapshot = _evaluate_pareto_preferences(
+                    config,
+                    preferences=tuple(
+                        simplex_lattice(5, include=(CANONICAL_PREFERENCE,))
+                    ),
+                    scope="full_grid_22",
+                    ppo_agent=agent,
+                    runner=runner,
+                    dataset_name=validation_split,
+                    instance_limit=validation_limit,
+                    validation_parallel_envs=validation_parallel_envs,
+                    update_id=update_id,
+                    completed_episodes=episode_indices[-1] + 1,
+                    fatigue_tolerance=float(
+                        pareto_settings["fatigue_absolute_tolerance"]
+                    ),
+                    canonical_rows=None,
+                )
+                entry_safe = bool(
+                    entry_snapshot["coverage_pass"]
+                    and entry_snapshot["all_safe"]
+                )
+                entry_snapshot.update(
+                    {
+                        "stage_entry_full_grid": True,
+                        "stage_entry_safe": entry_safe,
+                    }
+                )
+                pareto_validation_rows.append(entry_snapshot)
+                pareto_candidate_rows.extend(
+                    {
+                        **row,
+                        "update_id": update_id,
+                        "completed_episodes": episode_indices[-1] + 1,
+                        "stage_entry_full_grid": True,
+                    }
+                    for row in entry_rows
+                )
+                if not entry_safe:
+                    latest_rejected_candidate = _save_rejected_candidate(
+                        config,
+                        run_directory=run_directory,
+                        agent=agent,
+                        update_id=update_id,
+                        stage="gate",
+                        failure_source="production_pair_stage_entry_full_grid",
+                        failure_cell=entry_snapshot,
+                        preference_stage_controller=(
+                            preference_stage_controller
+                        ),
+                    )
+                    raise RuntimeError(
+                        "E2.7 cannot enter production-pair stage without a "
+                        "full-grid-safe checkpoint"
+                    )
+                agent.save(
+                    full_grid_safe_checkpoint,
+                    metadata={
+                        **_checkpoint_protocol_metadata(config),
+                        "checkpoint_role": "full_grid_safe",
+                        "safe_episode": episode_indices[-1] + 1,
+                        "pareto_snapshot": entry_snapshot,
+                        "preference_stage_controller": (
+                            preference_stage_controller.as_dict()
+                        ),
+                    },
+                )
             if reward_phase == "quality":
                 quality_update_id += 1
             if (
@@ -5245,6 +5654,44 @@ def _train_parallel(
                     )
                 )
                 e2_3_failure_replay_rows.extend(replay_rows)
+            safety_replay_rolled_back = False
+            if (
+                preference_stage in {"production_pair", "worker_variance"}
+                and _e2_7_safety_replay_cell(config) is not None
+            ):
+                safety_rows, latest_e2_7_safety_replay = (
+                    _evaluate_e2_7_safety_replay(
+                        config,
+                        agent=agent,
+                        runner=runner,
+                        update_id=update_id,
+                        stage=str(preference_stage),
+                    )
+                )
+                e2_7_safety_replay_rows.extend(safety_rows)
+                if not bool(latest_e2_7_safety_replay["pass"]):
+                    failure_cell = dict(safety_rows[0]) if safety_rows else None
+                    latest_rejected_candidate = _save_rejected_candidate(
+                        config,
+                        run_directory=run_directory,
+                        agent=agent,
+                        update_id=update_id,
+                        stage=preference_stage,
+                        failure_source="e2_7_safety_replay",
+                        failure_cell=failure_cell,
+                        preference_stage_controller=(
+                            preference_stage_controller
+                        ),
+                    )
+                    if not full_grid_safe_checkpoint.exists():
+                        raise RuntimeError(
+                            "E2.7 safety replay failed before a full-grid-safe "
+                            "checkpoint was established"
+                        )
+                    agent.load(full_grid_safe_checkpoint, load_optimizer=True)
+                    if preference_stage_controller is not None:
+                        preference_stage_controller.apply(agent)
+                    safety_replay_rolled_back = True
             transition_count = rollout.transition_count
             total_transitions += transition_count
             total_environment_steps += rollout.environment_step_count
@@ -5309,6 +5756,13 @@ def _train_parallel(
                 ),
                 "reward_phase": reward_phase,
                 "preference_stage": preference_stage,
+                "e2_7_safety_replay_pass": (
+                    latest_e2_7_safety_replay.get("pass")
+                    if latest_e2_7_safety_replay is not None
+                    and preference_stage in {"production_pair", "worker_variance"}
+                    else None
+                ),
+                "e2_7_safety_replay_rollback": safety_replay_rolled_back,
                 "candidate_status": (
                     "pending"
                     if reward_phase == "quality"
@@ -5496,6 +5950,7 @@ def _train_parallel(
                 )
                 transitioned_now = validation_event == "transition"
                 pareto_guard_rollback_requested = False
+                rollback_guard_snapshot: dict[str, Any] | None = None
                 if pareto_mode:
                     if pareto_settings is None:
                         raise RuntimeError("Pareto promotion settings are missing")
@@ -5840,6 +6295,11 @@ def _train_parallel(
                                     ),
                                     "safe_episode": completed_episodes,
                                     "pareto_snapshot": guard_snapshot,
+                                    "preference_stage_controller": (
+                                        preference_stage_controller.as_dict()
+                                        if preference_stage_controller is not None
+                                        else None
+                                    ),
                                 },
                             )
                         guard_snapshot.update(
@@ -5883,6 +6343,8 @@ def _train_parallel(
                             guard_event == "rollback"
                             and rollback_anchor_available
                         )
+                        if pareto_guard_rollback_requested:
+                            rollback_guard_snapshot = dict(guard_snapshot)
                         if (
                             guard_event == "rollback"
                             and not rollback_anchor_available
@@ -5962,6 +6424,11 @@ def _train_parallel(
                             "checkpoint_role": "latest_safe",
                             "safe_episode": completed_episodes,
                             "validation": validation_row,
+                            "preference_stage_controller": (
+                                preference_stage_controller.as_dict()
+                                if preference_stage_controller is not None
+                                else None
+                            ),
                         },
                     )
                 if (
@@ -6078,6 +6545,18 @@ def _train_parallel(
                     pareto_guard_rollback_requested
                     and pareto_safety_guard is not None
                 ):
+                    latest_rejected_candidate = _save_rejected_candidate(
+                        config,
+                        run_directory=run_directory,
+                        agent=agent,
+                        update_id=update_id,
+                        stage=preference_stage,
+                        failure_source="pareto_safety_guard",
+                        failure_cell=rollback_guard_snapshot,
+                        preference_stage_controller=(
+                            preference_stage_controller
+                        ),
+                    )
                     rollback_source: tuple[str, Path] | None = next(
                         (
                             (name, path)
@@ -6100,6 +6579,8 @@ def _train_parallel(
                         )
                     failure_learning_rate = agent.learning_rate
                     agent.load(rollback_source[1], load_optimizer=True)
+                    if preference_stage_controller is not None:
+                        preference_stage_controller.apply(agent)
                     if (
                         getattr(agent.network, "production_gate_version", "none")
                         in POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS
@@ -6151,6 +6632,8 @@ def _train_parallel(
                         safe_checkpoint,
                         load_optimizer=True,
                     )
+                    if preference_stage_controller is not None:
+                        preference_stage_controller.apply(agent)
                     update_row["candidate_status"] = (
                         "catastrophic_rolled_back"
                     )
@@ -6371,6 +6854,11 @@ def _train_parallel(
                 best_feasibility_validation
             ),
             "validation_stability": stability_controller.as_dict(),
+            "preference_stage_controller": (
+                preference_stage_controller.as_dict()
+                if preference_stage_controller is not None
+                else None
+            ),
             "last_sampled_validation": last_sampled_validation,
             "formal_training_status": (
                 phase_controller.formal_training_status
@@ -6450,6 +6938,11 @@ def _train_parallel(
         write_csv(
             run_directory / "e2_3_failure_replay.csv",
             e2_3_failure_replay_rows,
+        )
+    if e2_7_safety_replay_rows:
+        write_csv(
+            run_directory / "e2_7_safety_replay.csv",
+            e2_7_safety_replay_rows,
         )
     if e2_7_heldout_candidate_rows:
         write_csv(
@@ -6597,6 +7090,13 @@ def _train_parallel(
                 else None
             ),
             "latest_e2_3_failure_replay": latest_e2_3_failure_replay,
+            "latest_e2_7_safety_replay": latest_e2_7_safety_replay,
+            "latest_rejected_candidate": latest_rejected_candidate,
+            "preference_stage_controller": (
+                preference_stage_controller.as_dict()
+                if preference_stage_controller is not None
+                else None
+            ),
             "latest_e2_7_heldout_comparison": latest_e2_7_heldout_report,
             "e2_3_failure_replay_event_count": (
                 len(e2_3_failure_replay_rows) // 10

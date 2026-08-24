@@ -168,6 +168,8 @@ class ProductionCandidateProfile:
     matching_deficit_after_commit: int
     future_installation_matching_deficit_after_commit: int
     horizon_slack_ticks: int
+    completion_lower_bound_ticks: int
+    completion_slack_ticks: int
     admissible: bool
 
 
@@ -288,6 +290,8 @@ class AssemblySchedulingEnv:
         self._production_defer_shield_max_work_lower_bound_ticks = 0
         self._production_defer_shield_min_deadline_slack_ticks: int | None = None
         self._last_production_defer_certificate: dict[str, Any] | None = None
+        self._last_completion_viability_certificate: dict[str, Any] | None = None
+        self._first_unrecoverable_deadlock_diagnostic: dict[str, Any] | None = None
         self._conditional_wait_opportunity_count = 0
         self._conditional_wait_selected_count = 0
         self._conditional_wait_total_ticks = 0
@@ -388,7 +392,11 @@ class AssemblySchedulingEnv:
         }
         if set(raw) != expected:
             raise ValueError("production defer shield has an invalid schema")
-        if str(raw["version"]) != "deadline_progress_shield_v1":
+        version = str(raw["version"])
+        if version not in {
+            "deadline_progress_shield_v1",
+            "deadline_progress_viability_shield_v2",
+        }:
             raise ValueError("unsupported production defer shield version")
         reserve = int(raw["deadline_reserve_ticks"])
         threshold = float(raw["soft_risk_threshold"])
@@ -401,10 +409,20 @@ class AssemblySchedulingEnv:
             raise ValueError("defer shield soft risk coefficient must be non-negative")
         return {
             **raw,
+            "version": version,
             "deadline_reserve_ticks": reserve,
             "soft_risk_threshold": threshold,
             "soft_risk_coefficient": coefficient,
         }
+
+    @property
+    def completion_viability_shield_enabled(self) -> bool:
+        """Whether production masks use the E2.7 suffix-completion certificate."""
+        shield = self.production_defer_shield
+        return bool(shield.get("enabled", False)) and (
+            str(shield.get("version"))
+            == "deadline_progress_viability_shield_v2"
+        )
 
     @property
     def worker_resource_control(self) -> dict[str, Any]:
@@ -610,6 +628,8 @@ class AssemblySchedulingEnv:
         self._production_defer_shield_max_work_lower_bound_ticks = 0
         self._production_defer_shield_min_deadline_slack_ticks = None
         self._last_production_defer_certificate = None
+        self._last_completion_viability_certificate = None
+        self._first_unrecoverable_deadlock_diagnostic = None
         self._conditional_wait_opportunity_count = 0
         self._conditional_wait_selected_count = 0
         self._conditional_wait_total_ticks = 0
@@ -2006,7 +2026,42 @@ class AssemblySchedulingEnv:
                             machine.current_module
                             == operation.spec.required_module
                         )
+                        needs_profile = (
+                            self.matching_admission_enabled
+                            or self.completion_viability_shield_enabled
+                        )
                         admissible = direct or not self.matching_admission_enabled
+                        profile: ProductionCandidateProfile | None = None
+                        if needs_profile:
+                            profile = self._production_candidate_profile(
+                                operation_index,
+                                machine_index,
+                            )
+                            if self.completion_viability_shield_enabled:
+                                admissible = admissible and profile.admissible
+                                self._last_completion_viability_certificate = {
+                                    "action": self.encode_production_action(
+                                        operation_index,
+                                        machine_index,
+                                    ),
+                                    "operation_id": operation.spec.id,
+                                    "machine_id": machine.spec.id,
+                                    "predicted_finish_tick": (
+                                        profile.predicted_finish_tick
+                                    ),
+                                    "completion_lower_bound_ticks": (
+                                        profile.completion_lower_bound_ticks
+                                    ),
+                                    "completion_slack_ticks": (
+                                        profile.completion_slack_ticks
+                                    ),
+                                    "allowed": bool(admissible),
+                                    "reason": (
+                                        "certified_completion"
+                                        if admissible
+                                        else "completion_viability_exceeded"
+                                    ),
+                                }
                         if not direct and self.matching_admission_enabled:
                             key = (
                                 self.current_tick,
@@ -2014,10 +2069,11 @@ class AssemblySchedulingEnv:
                                 machine_index,
                             )
                             self._resource_admission_candidates.add(key)
-                            profile = self._production_candidate_profile(
-                                operation_index,
-                                machine_index,
-                            )
+                            if profile is None:
+                                profile = self._production_candidate_profile(
+                                    operation_index,
+                                    machine_index,
+                                )
                             admissible = profile.admissible
                             if self.matching_recovery_enabled:
                                 self._future_installation_admission_candidates.add(
@@ -2067,6 +2123,9 @@ class AssemblySchedulingEnv:
                     else None
                 ),
                 "legal_pair_count": legal_pair_count,
+                "completion_viability_certificate": dict(
+                    self._last_completion_viability_certificate or {}
+                ),
                 "non_delay": False,
                 "strict_future": defer_allowed,
                 "defer_shield": dict(defer_certificate),
@@ -3139,6 +3198,11 @@ class AssemblySchedulingEnv:
             "production_defer_shield_min_deadline_slack_ticks": (
                 self._production_defer_shield_min_deadline_slack_ticks
             ),
+            "first_unrecoverable_deadlock_diagnostic": (
+                dict(self._first_unrecoverable_deadlock_diagnostic)
+                if self._first_unrecoverable_deadlock_diagnostic is not None
+                else None
+            ),
             "conditional_worker_wait_opportunity_count": (
                 self._conditional_wait_opportunity_count
             ),
@@ -3347,13 +3411,22 @@ class AssemblySchedulingEnv:
                 raise RuntimeError(
                     "production defer has no decision-relevant future"
                 )
-            before_tick = self.current_tick
-            self._truncate_at_horizon("deadlock")
-            outcome: dict[str, Any] = {
-                "defer_reason": "terminal_or_deadlock_resolution",
-                "wait_ticks": self.current_tick - before_tick,
-                "recovery_improvement": False,
-            }
+            if self.completion_viability_shield_enabled:
+                self._record_unrecoverable_deadlock_diagnostic()
+                self._truncate_at_horizon("unrecoverable_deadlock")
+                outcome: dict[str, Any] = {
+                    "defer_reason": "unrecoverable_deadlock",
+                    "wait_ticks": 0,
+                    "recovery_improvement": False,
+                }
+            else:
+                before_tick = self.current_tick
+                self._truncate_at_horizon("deadlock")
+                outcome = {
+                    "defer_reason": "terminal_or_deadlock_resolution",
+                    "wait_ticks": self.current_tick - before_tick,
+                    "recovery_improvement": False,
+                }
         else:
             _, defer_reason = opportunity
             if self._has_pending_worker_task():
@@ -4508,6 +4581,14 @@ class AssemblySchedulingEnv:
             if resource_profile.processing_start_tick is None
             else resource_profile.processing_start_tick + processing_ticks
         )
+        completion_lower_bound = self._candidate_completion_lower_bound_ticks(
+            operation_index,
+            predicted_finish_tick,
+        )
+        completion_slack = (
+            self.horizon_tick - self.current_tick - completion_lower_bound
+        )
+        reserve = int(self.production_defer_shield.get("deadline_reserve_ticks", 0))
         profile = ProductionCandidateProfile(
             resource_ready_tick=resource_profile.resource_ready_tick,
             predicted_finish_tick=predicted_finish_tick,
@@ -4524,9 +4605,15 @@ class AssemblySchedulingEnv:
                 resource_profile.future_installation_matching_deficit_after_commit
             ),
             horizon_slack_ticks=self.horizon_tick - predicted_finish_tick,
+            completion_lower_bound_ticks=completion_lower_bound,
+            completion_slack_ticks=completion_slack,
             admissible=(
                 resource_profile.base_admissible
                 and predicted_finish_tick <= self.horizon_tick
+                and (
+                    not self.completion_viability_shield_enabled
+                    or completion_slack >= reserve
+                )
             ),
         )
         self._candidate_profile_cache[key] = profile
@@ -4928,6 +5015,146 @@ class AssemblySchedulingEnv:
             max(order_chain_bound, machine_bound, active_reconfiguration_bound)
         )
 
+    def _minimum_module_transition_ticks(
+        self,
+        source_module: str,
+        target_module: str,
+    ) -> int:
+        """Return an optimistic, qualified-worker-safe module transition bound.
+
+        A transition is not charged when an idle or busy machine already carries
+        the target module: that machine could complete its current work in
+        parallel and then service the successor operation.  This keeps the
+        certificate a lower bound rather than turning it into a schedule.
+        """
+        if source_module == target_module:
+            return 0
+        if any(
+            machine.current_module == target_module
+            for machine in self.machines
+        ):
+            return 0
+        candidates: list[int] = []
+        for machine in self.machines:
+            parameters = machine.spec.module_parameters
+            if target_module not in parameters:
+                continue
+            if (
+                source_module != self.instance.no_module_state
+                and source_module not in parameters
+            ):
+                continue
+            if not any(
+                target_module in worker.spec.qualified_modules
+                for worker in self.workers
+            ):
+                continue
+            if (
+                source_module != self.instance.no_module_state
+                and not any(
+                    source_module in worker.spec.qualified_modules
+                    for worker in self.workers
+                )
+            ):
+                continue
+            disassembly = (
+                0
+                if source_module == self.instance.no_module_state
+                else max(
+                    1,
+                    quantize_to_ticks(
+                        parameters[source_module].disassembly_base_time,
+                        self.resolution,
+                    ),
+                )
+            )
+            installation = max(
+                1,
+                quantize_to_ticks(
+                    parameters[target_module].installation_base_time,
+                    self.resolution,
+                ),
+            )
+            candidates.append(disassembly + installation)
+        return min(candidates, default=self.horizon_tick + 1)
+
+    def _remaining_completion_lower_bound_ticks(self) -> int:
+        """Optimistic completion bound including each remaining module chain."""
+        baseline = self._remaining_work_lower_bound_ticks()
+        chain_bounds: list[int] = []
+        for order in self.instance.orders:
+            pending = [
+                operation
+                for operation in order.operations
+                if self.operations[self.instance.operation_index[operation.id]].state
+                != OperationState.DONE
+            ]
+            if not pending:
+                continue
+            chain = 0
+            previous_module = self.instance.no_module_state
+            for operation in pending:
+                runtime = self.operations[
+                    self.instance.operation_index[operation.id]
+                ]
+                if runtime.state == OperationState.PROCESSING:
+                    machine = (
+                        self._machine_by_id(runtime.machine_id)
+                        if runtime.machine_id is not None
+                        else None
+                    )
+                    chain += (
+                        max(0, machine.busy_until_tick - self.current_tick)
+                        if machine is not None and machine.busy_until_tick is not None
+                        else 0
+                    )
+                    previous_module = operation.required_module
+                    continue
+                values = self._capability_processing_ticks[
+                    self._capability_operation_indices
+                    == self.instance.operation_index[operation.id]
+                ]
+                chain += (
+                    int(values.min()) if values.size else self.horizon_tick + 1
+                )
+                chain += self._minimum_module_transition_ticks(
+                    previous_module,
+                    operation.required_module,
+                )
+                previous_module = operation.required_module
+            chain_bounds.append(chain)
+        return int(max(baseline, max(chain_bounds, default=0)))
+
+    def _candidate_completion_lower_bound_ticks(
+        self,
+        operation_index: int,
+        predicted_finish_tick: int,
+    ) -> int:
+        """Completion bound after committing a specific production pair."""
+        operation = self.operations[operation_index]
+        order = self._order_by_id(operation.spec.order_id)
+        successor_specs = [
+            spec
+            for spec in order.operations
+            if spec.sequence > operation.spec.sequence
+            and self.operations[self.instance.operation_index[spec.id]].state
+            != OperationState.DONE
+        ]
+        chain = max(0, int(predicted_finish_tick) - self.current_tick)
+        previous_module = operation.spec.required_module
+        for successor in successor_specs:
+            values = self._capability_processing_ticks[
+                self._capability_operation_indices
+                == self.instance.operation_index[successor.id]
+            ]
+            chain += int(values.min()) if values.size else self.horizon_tick + 1
+            chain += self._minimum_module_transition_ticks(
+                previous_module,
+                successor.required_module,
+            )
+            previous_module = successor.required_module
+        return int(max(self._remaining_completion_lower_bound_ticks(), chain))
+
     def _production_defer_safety_certificate(
         self,
         legal_pair_count: int,
@@ -4935,13 +5162,28 @@ class AssemblySchedulingEnv:
     ) -> dict[str, Any]:
         settings = self.production_defer_shield
         remaining_horizon = max(0, self.horizon_tick - self.current_tick)
-        lower_bound = self._remaining_work_lower_bound_ticks()
+        viability_v2 = self.completion_viability_shield_enabled
+        lower_bound = (
+            self._remaining_completion_lower_bound_ticks()
+            if viability_v2
+            else self._remaining_work_lower_bound_ticks()
+        )
         if opportunity is None:
-            only_defer = bool(settings.get("enabled", False)) and legal_pair_count == 0
+            only_defer = (
+                bool(settings.get("enabled", False))
+                and legal_pair_count == 0
+                and not viability_v2
+            )
             certificate = {
                 "allowed": only_defer,
                 "reason": (
-                    "only_defer_legal" if only_defer else "no_state_progress"
+                    "only_defer_legal"
+                    if only_defer
+                    else (
+                        "unrecoverable_deadlock"
+                        if viability_v2 and legal_pair_count == 0
+                        else "no_state_progress"
+                    )
                 ),
                 "progress_kind": (
                     "terminal_or_deadlock_resolution" if only_defer else ""
@@ -4964,7 +5206,7 @@ class AssemblySchedulingEnv:
         if not bool(settings.get("enabled", False)):
             allowed = True
             reason = "shield_disabled"
-        elif legal_pair_count == 0:
+        elif legal_pair_count == 0 and not viability_v2:
             allowed = True
             reason = "only_defer_legal"
         elif wait_ticks == 0:
@@ -4975,7 +5217,11 @@ class AssemblySchedulingEnv:
             reason = "no_state_progress"
         elif required > remaining_horizon:
             allowed = False
-            reason = "deadline_budget_exceeded"
+            reason = (
+                "completion_viability_exceeded"
+                if viability_v2
+                else "deadline_budget_exceeded"
+            )
         else:
             allowed = True
             reason = "certified_progress_with_budget"
@@ -5247,9 +5493,55 @@ class AssemblySchedulingEnv:
                 has_event_beyond_horizon = any(
                     event[0] > self.horizon_tick for event in self._events
                 )
+                if self.completion_viability_shield_enabled:
+                    self._record_unrecoverable_deadlock_diagnostic()
                 self._truncate_at_horizon(
-                    "horizon" if has_event_beyond_horizon else "deadlock"
+                    (
+                        "unrecoverable_deadlock"
+                        if self.completion_viability_shield_enabled
+                        else (
+                            "horizon" if has_event_beyond_horizon else "deadlock"
+                        )
+                    )
                 )
+
+    def _record_unrecoverable_deadlock_diagnostic(self) -> None:
+        if self._first_unrecoverable_deadlock_diagnostic is not None:
+            return
+        unfinished = [
+            {
+                "operation_id": operation.spec.id,
+                "order_id": operation.spec.order_id,
+                "required_module": operation.spec.required_module,
+                "state": operation.state.value,
+            }
+            for operation in self.operations
+            if operation.state != OperationState.DONE
+        ]
+        self._first_unrecoverable_deadlock_diagnostic = {
+            "state_version": int(self._state_version),
+            "time": float(self.current_time),
+            "tick": int(self.current_tick),
+            "unfinished_operations": unfinished,
+            "machine_modules": {
+                machine.spec.id: machine.current_module
+                for machine in self.machines
+            },
+            "completion_lower_bound_ticks": (
+                self._remaining_completion_lower_bound_ticks()
+            ),
+            "completion_slack_ticks": (
+                self.horizon_tick
+                - self.current_tick
+                - self._remaining_completion_lower_bound_ticks()
+            ),
+            "certificate_reason": (
+                self._last_production_defer_certificate or {}
+            ).get("reason"),
+            "candidate_certificate": dict(
+                self._last_completion_viability_certificate or {}
+            ),
+        }
 
     def _truncate_at_horizon(self, reason: str) -> None:
         if self.terminated or self.truncated:

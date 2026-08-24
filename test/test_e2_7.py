@@ -13,9 +13,9 @@ from environment import AssemblySchedulingEnv, PreferenceVector, RewardVector
 from result import aggregate_evaluation_rows, result_schema_version
 from train import (
     TrainingPhaseController,
+    E2_7PreferenceStageController,
     _accepted_checkpoint_path,
     _e2_3_failure_replay_cells,
-    _e2_7_preference_stage,
     _pareto_anchor_preferences,
     _pareto_promotion_settings,
     _pareto_snapshot,
@@ -152,14 +152,9 @@ def test_e2_7_logsumexp_gate_is_flat_e1_equivalent_and_monotone() -> None:
 
 def test_e2_7_stage_freezing_keeps_gnn_frozen() -> None:
     config, environment, observation, network, _, _ = _fixture()
-    assert [_e2_7_preference_stage(config, value) for value in (1, 40, 41, 120, 121, 200)] == [
-        "gate",
-        "gate",
-        "production_pair",
-        "production_pair",
-        "worker_variance",
-        "worker_variance",
-    ]
+    controller = E2_7PreferenceStageController.from_config(config)
+    assert controller is not None
+    assert controller.stage == "gate"
     network.set_centered_preference_stage("gate")
     gnn_prefixes = (
         "node_projectors.",
@@ -198,26 +193,120 @@ def test_e2_7_stage_freezing_keeps_gnn_frozen() -> None:
         for parameter in network.production_scorer.parameters()
     )
     network.set_centered_preference_stage("production_pair")
-    assert any(
-        parameter.requires_grad
+    assert all(
+        not parameter.requires_grad
         for parameter in network.production_scorer.parameters()
     )
     assert any(
         parameter.requires_grad
-        for parameter in network.production_action_edge_encoder.parameters()
+        for parameter in network.centered_value_adapter.parameters()
     )
+    assert network.centered_production_pair_scale_raw.requires_grad
     assert all(
         not parameter.requires_grad for parameter in network.worker_scorer.parameters()
     )
     network.set_centered_preference_stage("worker_variance")
-    assert any(
-        parameter.requires_grad for parameter in network.worker_scorer.parameters()
+    assert all(
+        not parameter.requires_grad for parameter in network.worker_scorer.parameters()
     )
+    assert network.centered_worker_variance_scale_raw.requires_grad
     assert all(
         not parameter.requires_grad
         for name, parameter in network.named_parameters()
         if name.startswith(gnn_prefixes)
     )
+
+
+def test_e2_7_pair_and_worker_scales_have_live_zero_boundary_gradients(
+    monkeypatch,
+) -> None:
+    _, environment, observation, network, agent, _ = _fixture()
+    mask = environment.get_action_mask()
+    pool = [(observation, mask) for _ in range(64)]
+    eligible = torch.ones(64, dtype=torch.bool)
+    incorrect = torch.zeros(64, dtype=torch.bool)
+
+    def pair_diagnostics(observations, *_args, **_kwargs):
+        scale = network.centered_production_pair_scale().expand(len(observations))
+        return {
+            "flow_gain": scale,
+            "cost_gain": scale,
+            "flow_margin": scale,
+            "cost_margin": scale,
+            "eligible": eligible[: len(observations)],
+            "flow_correct": incorrect[: len(observations)],
+            "cost_correct": incorrect[: len(observations)],
+        }
+
+    def worker_diagnostics(observations, *_args, **_kwargs):
+        scale = network.centered_worker_variance_scale().expand(len(observations))
+        return {
+            "variance_gain": scale,
+            "variance_margin": scale,
+            "eligible": eligible[: len(observations)],
+            "variance_correct": incorrect[: len(observations)],
+        }
+
+    monkeypatch.setattr(
+        network,
+        "centered_production_pair_counterfactual_batch",
+        pair_diagnostics,
+    )
+    monkeypatch.setattr(
+        network,
+        "centered_worker_variance_counterfactual_batch",
+        worker_diagnostics,
+    )
+
+    network.set_centered_preference_stage("production_pair")
+    agent.centered_state_pools["production_pair"] = pool
+    pair_loss, _ = agent._centered_pool_objective("production_pair")
+    pair_loss.backward()
+    assert torch.isfinite(network.centered_production_pair_scale_raw.grad)
+    assert network.centered_production_pair_scale_raw.grad.abs().item() > 0.0
+
+    network.zero_grad(set_to_none=True)
+    network.set_centered_preference_stage("worker_variance")
+    agent.centered_state_pools["worker_variance"] = pool
+    worker_loss, _ = agent._centered_pool_objective("worker_variance")
+    worker_loss.backward()
+    assert torch.isfinite(network.centered_worker_variance_scale_raw.grad)
+    assert network.centered_worker_variance_scale_raw.grad.abs().item() > 0.0
+
+
+def test_e2_7_metric_stage_controller_transitions_and_fails_fast() -> None:
+    config = load_config(CONFIG_PATH)
+    controller = E2_7PreferenceStageController.from_config(config)
+    assert controller is not None
+    gate_pass = {
+        "counterfactual_constraint_status": "constraint_satisfied",
+        "counterfactual_eligible_count": 64.0,
+        "counterfactual_flow_cost_flip_count": 4.0,
+        "counterfactual_flow_variance_flip_count": 4.0,
+    }
+    for update_id in range(1, 11):
+        controller.observe(gate_pass, update_id=update_id)
+    assert controller.stage == "production_pair"
+    assert controller.transition_history[-1]["update_id"] == 10
+
+    pair_pass = {
+        "production_pair_constraint_status": "constraint_satisfied",
+        "production_pair_correct_rate": 0.05,
+    }
+    for update_id in range(11, 31):
+        controller.observe(pair_pass, update_id=update_id)
+    assert controller.stage == "worker_variance"
+    saved = controller.as_dict()
+    restored = E2_7PreferenceStageController.from_config(config)
+    assert restored is not None
+    restored.restore(saved)
+    assert restored.as_dict() == saved
+
+    failing = E2_7PreferenceStageController.from_config(config)
+    assert failing is not None
+    with pytest.raises(RuntimeError, match="preference_stage_failed"):
+        for update_id in range(1, 41):
+            failing.observe({}, update_id=update_id)
 
 
 def test_e2_7_fixed_safe_pool_and_shield_boundaries() -> None:
@@ -264,15 +353,15 @@ def test_e2_7_fixed_safe_pool_and_shield_boundaries() -> None:
         0, (environment.current_tick + 1, "external_event")
     )
     assert only_defer["allowed"]
-    assert only_defer["reason"] == "only_defer_legal"
+    assert only_defer["reason"] == "certified_progress_with_budget"
     terminal_only_defer = environment._production_defer_safety_certificate(0, None)
-    assert terminal_only_defer["allowed"]
-    assert terminal_only_defer["reason"] == "only_defer_legal"
+    assert not terminal_only_defer["allowed"]
+    assert terminal_only_defer["reason"] == "unrecoverable_deadlock"
     deadline = environment._production_defer_safety_certificate(
         1, (environment.horizon_tick, "external_event")
     )
     assert not deadline["allowed"]
-    assert deadline["reason"] == "deadline_budget_exceeded"
+    assert deadline["reason"] == "completion_viability_exceeded"
     before = len(environment._production_defer_shield_candidates)
     environment._production_defer_safety_certificate(
         1, (environment.horizon_tick, "external_event")
@@ -298,9 +387,59 @@ def test_e2_7_fixed_safe_pool_and_shield_boundaries() -> None:
     )
 
 
-def test_e2_7_fixed_pool_has_nonzero_loss_and_gate_gradient_before_ppo() -> None:
-    _, environment, observation, _, agent, _ = _fixture()
+def test_e2_7_v1_shield_keeps_legacy_only_defer_behavior() -> None:
+    config = load_config(CONFIG_PATH)
+    config["environment"]["production_defer"]["shield"]["version"] = (
+        "deadline_progress_shield_v1"
+    )
+    instance = load_instance_pickle(project_path(config["paths"]["instance_cache"]))
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance)
+    certificate = environment._production_defer_safety_certificate(
+        0,
+        (environment.current_tick + 1, "external_event"),
+    )
+    assert certificate["allowed"]
+    assert certificate["reason"] == "only_defer_legal"
+
+
+def test_e2_7_viability_shield_masks_direct_pair_with_infeasible_suffix(
+    monkeypatch,
+) -> None:
+    config = load_config(CONFIG_PATH)
+    instance = load_instance_pickle(project_path(config["paths"]["instance_cache"]))
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance)
+    direct_pair = next(
+        (operation_index, machine_index)
+        for operation_index, operation in enumerate(environment.operations)
+        if operation.state.value == "READY"
+        for machine_index, machine in enumerate(environment.machines)
+        if (
+            machine.current_module == operation.spec.required_module
+            and machine.state.value == "IDLE"
+        )
+    )
+    profile = environment._production_candidate_profile(*direct_pair)
+    assert profile.predicted_finish_tick <= environment.horizon_tick
+    monkeypatch.setattr(
+        environment,
+        "_candidate_completion_lower_bound_ticks",
+        lambda *_args, **_kwargs: environment.horizon_tick + 1,
+    )
+    environment._invalidate_resource_snapshot()
     mask = environment.get_action_mask()
+    assert mask[environment.encode_production_action(*direct_pair)]
+
+
+def test_e2_7_fixed_pool_has_nonzero_loss_and_gate_gradient_before_ppo() -> None:
+    _, environment, observation, network, agent, _ = _fixture()
+    mask = environment.get_action_mask()
+    shared_before = {
+        name: value.detach().clone()
+        for name, value in network.state_dict().items()
+        if not name.startswith("centered_")
+    }
     agent.set_safe_dual_legal_state_pool(
         [(observation, mask) for _ in range(64)],
         provenance={"test": True},
@@ -312,6 +451,10 @@ def test_e2_7_fixed_pool_has_nonzero_loss_and_gate_gradient_before_ppo() -> None
     assert metrics["counterfactual_constraint_status"] == "constraint_active"
     assert metrics["counterfactual_monotonicity_violation_count"] == 0.0
     assert agent._safe_pool_gradient_preflight_complete
+    assert all(
+        torch.equal(value, network.state_dict()[name])
+        for name, value in shared_before.items()
+    )
 
 
 def test_e2_7_zero_loss_is_valid_on_first_preflight() -> None:
@@ -346,16 +489,16 @@ def test_e2_7_preflight_runs_once_and_later_zero_loss_is_valid(
         provenance={"test": True},
     )
     preflight_count = 0
-    original_preflight = agent._run_safe_pool_gradient_preflight
+    original_preflight = agent._run_centered_pool_gradient_preflight
 
-    def counting_preflight(*, reward_phase: str) -> None:
+    def counting_preflight(name: str) -> None:
         nonlocal preflight_count
         preflight_count += 1
-        original_preflight(reward_phase=reward_phase)
+        original_preflight(name)
 
     monkeypatch.setattr(
         agent,
-        "_run_safe_pool_gradient_preflight",
+        "_run_centered_pool_gradient_preflight",
         counting_preflight,
     )
     first_metrics = agent.update(
@@ -405,7 +548,7 @@ def test_e2_7_preflight_preserves_fail_fast_contracts(monkeypatch) -> None:
         provenance={"test": True},
     )
 
-    def non_finite_loss(*args, **kwargs):
+    def non_finite_objective(*args, **kwargs):
         return torch.full(
             (),
             float("nan"),
@@ -413,18 +556,22 @@ def test_e2_7_preflight_preserves_fail_fast_contracts(monkeypatch) -> None:
             requires_grad=True,
         ), {}
 
-    monkeypatch.setattr(agent, "_counterfactual_loss", non_finite_loss)
+    monkeypatch.setattr(
+        agent,
+        "_centered_pool_objective",
+        non_finite_objective,
+    )
     with pytest.raises(RuntimeError, match="non-finite"):
         agent.update(buffer, reward_phase="feasibility")
     assert not agent._safe_pool_gradient_preflight_complete
 
-    def detached_positive_loss(*args, **kwargs):
+    def detached_positive_objective(*args, **kwargs):
         return torch.ones((), device=agent.device, requires_grad=True), {}
 
     monkeypatch.setattr(
         agent,
-        "_counterfactual_loss",
-        detached_positive_loss,
+        "_centered_pool_objective",
+        detached_positive_objective,
     )
     with pytest.raises(RuntimeError, match="adapter gradient"):
         agent.update(buffer, reward_phase="feasibility")
@@ -592,6 +739,26 @@ def test_e2_7_schema_and_old_checkpoint_loading_regression() -> None:
     observation = AssemblySchedulingEnv(old_config).reset(instance)
     old_network = build_actor_critic(observation, old_config["network"])
     old_network.load_state_dict(e2_3_checkpoint["network"], strict=True)
+
+
+def test_e2_7_v1_checkpoint_is_rejected_by_v2_strict_resume(tmp_path) -> None:
+    _, environment, observation, _, agent, _ = _fixture()
+    checkpoint_path = tmp_path / "simulated_e2_7_v1.pt"
+    agent.save(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint["network_spec"]["centered_preference_adapter"]["version"] = (
+        "centered_parallel_adapter_v1"
+    )
+    torch.save(checkpoint, checkpoint_path)
+
+    resumed_network = build_actor_critic(
+        observation,
+        load_config(CONFIG_PATH)["network"],
+    )
+    resumed_agent = PPOAgent(resumed_network, load_config(CONFIG_PATH)["ppo"], device="cpu")
+    with pytest.raises(ValueError, match="centered_preference_adapter"):
+        resumed_agent.load(checkpoint_path, load_optimizer=True)
+    assert environment.get_action_mask().shape[0] > 1
 
 
 def test_e2_7_strict_resume_restores_warm_provenance_and_teacher(tmp_path) -> None:

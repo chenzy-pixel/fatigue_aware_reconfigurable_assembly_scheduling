@@ -493,7 +493,7 @@ E1_CENTERED_HIERARCHICAL_PRODUCTION_ACTION_SEMANTICS = (
 E1_CENTERED_THREE_OBJECTIVE_GATE_VERSION = (
     "e1_logsumexp_centered_three_objective_gate_v4"
 )
-E1_CENTERED_PREFERENCE_ADAPTER_VERSION = "centered_parallel_adapter_v1"
+E1_CENTERED_PREFERENCE_ADAPTER_VERSION = "centered_parallel_adapter_v2"
 E1_CENTERED_PREFERENCE_STAGES = (
     "gate",
     "production_pair",
@@ -3051,6 +3051,242 @@ class HeteroGraphActorCritic(nn.Module):
             & (coefficients < -1e-12).any(dim=-1),
         }
 
+    def _centered_anchor_logits(
+        self,
+        observations: Sequence[HeterogeneousGraphObservation],
+        action_masks: Sequence[np.ndarray | torch.Tensor],
+        *,
+        device: torch.device | str,
+    ) -> dict[str, torch.Tensor]:
+        """Return E2.7 anchor logits on exactly the supplied states."""
+
+        anchors = {
+            "canonical": (0.5, 0.3, 0.2),
+            "flow": (1.0, 0.0, 0.0),
+            "cost": (0.0, 1.0, 0.0),
+            "variance": (0.0, 0.0, 1.0),
+        }
+        return {
+            name: self.forward_batch(
+                [
+                    replace(
+                        observation,
+                        preference=np.asarray(preference, dtype=np.float32),
+                    )
+                    for observation in observations
+                ],
+                action_masks,
+                device=device,
+            )[0]
+            for name, preference in anchors.items()
+        }
+
+    @staticmethod
+    def _centered_dense_edge_features(
+        observation: HeterogeneousGraphObservation,
+        edge_type: EdgeType,
+        pair_count: int,
+        width: int,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+        left_count: int,
+    ) -> torch.Tensor:
+        """Materialize sparse candidate features in encoded action order."""
+
+        relation = observation.relations[edge_type]
+        dense = torch.zeros((pair_count, width), dtype=dtype, device=device)
+        if not relation.num_edges:
+            return dense
+        edge_index = torch.as_tensor(
+            relation.edge_index, dtype=torch.long, device=device
+        )
+        action_indices = edge_index[0] * left_count + edge_index[1]
+        features = torch.as_tensor(
+            relation.edge_features, dtype=dtype, device=device
+        )
+        return dense.index_copy(0, action_indices, features)
+
+    def centered_production_pair_counterfactual_batch(
+        self,
+        observations: Sequence[HeterogeneousGraphObservation],
+        action_masks: Sequence[np.ndarray | torch.Tensor],
+        *,
+        device: torch.device | str,
+    ) -> dict[str, torch.Tensor]:
+        """Compare flow and cost pair rankings on fixed trade-off states."""
+
+        if not self.use_centered_preference_adapter:
+            raise RuntimeError("centered counterfactuals require E2.7")
+        parameter = next(self.parameters())
+        anchors = self._centered_anchor_logits(
+            observations, action_masks, device=device
+        )
+        gains: dict[str, list[torch.Tensor]] = {
+            "flow_gain": [],
+            "cost_gain": [],
+            "flow_margin": [],
+            "cost_margin": [],
+        }
+        eligible_values: list[bool] = []
+        flow_correct: list[bool] = []
+        cost_correct: list[bool] = []
+        for index, (observation, raw_mask) in enumerate(
+            zip(observations, action_masks)
+        ):
+            zero = parameter.new_zeros(())
+            if observation.decision_type != DecisionType.PRODUCTION:
+                for values in gains.values():
+                    values.append(zero)
+                eligible_values.append(False)
+                flow_correct.append(False)
+                cost_correct.append(False)
+                continue
+            mask = self._validate_action_mask(raw_mask, device=device)
+            pair_count = int(mask.shape[0] - 1)
+            legal = ~mask[:-1]
+            if int(legal.sum().detach().cpu()) < 2:
+                for values in gains.values():
+                    values.append(zero)
+                eligible_values.append(False)
+                flow_correct.append(False)
+                cost_correct.append(False)
+                continue
+            operation_count = int(observation.node_features["operation"].shape[0])
+            machine_count = int(observation.node_features["machine"].shape[0])
+            if pair_count != operation_count * machine_count:
+                raise ValueError("production action mask does not match pair dimensions")
+            relation = observation.relations[CAPABLE_EDGE]
+            dense = self._centered_dense_edge_features(
+                observation,
+                CAPABLE_EDGE,
+                pair_count,
+                self.edge_feature_dimensions[CAPABLE_EDGE],
+                device=device,
+                dtype=parameter.dtype,
+                left_count=machine_count,
+            )
+            names = relation.feature_names
+            flow_objective = (
+                dense[:, names.index("processing_time_norm")]
+                + dense[:, names.index("reconfiguration_time_norm")]
+            )
+            cost_objective = (
+                dense[:, names.index("fixed_disassembly_cost_norm")]
+                + dense[:, names.index("fixed_installation_cost_norm")]
+                + dense[:, names.index("estimated_labor_cost_norm")]
+                + dense[:, names.index("estimated_downtime_cost_norm")]
+            )
+            legal_indices = torch.nonzero(legal, as_tuple=False).flatten()
+            flow_index = legal_indices[torch.argmin(flow_objective[legal_indices])]
+            cost_index = legal_indices[torch.argmin(cost_objective[legal_indices])]
+            eligible = bool((flow_index != cost_index).detach().cpu())
+            if not eligible:
+                for values in gains.values():
+                    values.append(zero)
+                eligible_values.append(False)
+                flow_correct.append(False)
+                cost_correct.append(False)
+                continue
+            rows = {
+                name: values[index, :pair_count] for name, values in anchors.items()
+            }
+            canonical_flow_margin = rows["canonical"][flow_index] - rows["canonical"][cost_index]
+            canonical_cost_margin = rows["canonical"][cost_index] - rows["canonical"][flow_index]
+            flow_margin = rows["flow"][flow_index] - rows["flow"][cost_index]
+            cost_margin = rows["cost"][cost_index] - rows["cost"][flow_index]
+            gains["flow_gain"].append(flow_margin - canonical_flow_margin)
+            gains["cost_gain"].append(cost_margin - canonical_cost_margin)
+            gains["flow_margin"].append(flow_margin)
+            gains["cost_margin"].append(cost_margin)
+            eligible_values.append(True)
+            flow_correct.append(bool((flow_margin > 0.0).detach().cpu()))
+            cost_correct.append(bool((cost_margin > 0.0).detach().cpu()))
+        eligible = torch.as_tensor(eligible_values, dtype=torch.bool, device=device)
+        return {
+            name: torch.stack(values) for name, values in gains.items()
+        } | {
+            "eligible": eligible,
+            "flow_correct": torch.as_tensor(flow_correct, dtype=torch.bool, device=device),
+            "cost_correct": torch.as_tensor(cost_correct, dtype=torch.bool, device=device),
+        }
+
+    def centered_worker_variance_counterfactual_batch(
+        self,
+        observations: Sequence[HeterogeneousGraphObservation],
+        action_masks: Sequence[np.ndarray | torch.Tensor],
+        *,
+        device: torch.device | str,
+    ) -> dict[str, torch.Tensor]:
+        """Compare canonical and variance-heavy worker rankings."""
+
+        if not self.use_centered_preference_adapter:
+            raise RuntimeError("centered counterfactuals require E2.7")
+        parameter = next(self.parameters())
+        anchors = self._centered_anchor_logits(
+            observations, action_masks, device=device
+        )
+        gains: list[torch.Tensor] = []
+        margins: list[torch.Tensor] = []
+        eligible_values: list[bool] = []
+        correct_values: list[bool] = []
+        for index, (observation, raw_mask) in enumerate(
+            zip(observations, action_masks)
+        ):
+            zero = parameter.new_zeros(())
+            if observation.decision_type != DecisionType.WORKER:
+                gains.append(zero)
+                margins.append(zero)
+                eligible_values.append(False)
+                correct_values.append(False)
+                continue
+            mask = self._validate_action_mask(raw_mask, device=device)
+            pair_count = int(mask.shape[0] - 1)
+            legal = ~mask[:-1]
+            if int(legal.sum().detach().cpu()) < 2:
+                gains.append(zero)
+                margins.append(zero)
+                eligible_values.append(False)
+                correct_values.append(False)
+                continue
+            machine_count = int(observation.node_features["machine"].shape[0])
+            worker_count = int(observation.node_features["worker"].shape[0])
+            if pair_count != machine_count * worker_count:
+                raise ValueError("worker action mask does not match pair dimensions")
+            relation = observation.relations[SERVICE_CANDIDATE_EDGE]
+            dense = self._centered_dense_edge_features(
+                observation,
+                SERVICE_CANDIDATE_EDGE,
+                pair_count,
+                self.edge_feature_dimensions[SERVICE_CANDIDATE_EDGE],
+                device=device,
+                dtype=parameter.dtype,
+                left_count=worker_count,
+            )
+            variance = dense[:, relation.feature_names.index("incremental_load_variance_norm")]
+            legal_indices = torch.nonzero(legal, as_tuple=False).flatten()
+            low_index = legal_indices[torch.argmin(variance[legal_indices])]
+            high_index = legal_indices[torch.argmax(variance[legal_indices])]
+            eligible = bool((low_index != high_index).detach().cpu())
+            if not eligible:
+                gains.append(zero)
+                margins.append(zero)
+                eligible_values.append(False)
+                correct_values.append(False)
+                continue
+            canonical_margin = anchors["canonical"][index, low_index] - anchors["canonical"][index, high_index]
+            variance_margin = anchors["variance"][index, low_index] - anchors["variance"][index, high_index]
+            gains.append(variance_margin - canonical_margin)
+            margins.append(variance_margin)
+            eligible_values.append(True)
+            correct_values.append(bool((variance_margin > 0.0).detach().cpu()))
+        return {
+            "variance_gain": torch.stack(gains),
+            "variance_margin": torch.stack(margins),
+            "eligible": torch.as_tensor(eligible_values, dtype=torch.bool, device=device),
+            "variance_correct": torch.as_tensor(correct_values, dtype=torch.bool, device=device),
+        }
+
     def set_production_state_gate_frozen(self, frozen: bool) -> None:
         """Freeze the E2.5 state-only base gate without changing its value."""
 
@@ -3072,7 +3308,13 @@ class HeteroGraphActorCritic(nn.Module):
         self.production_flow_commit_residual_active = bool(enabled)
 
     def set_centered_preference_stage(self, stage: str) -> None:
-        """Apply E2.7's staged freeze policy without rebuilding the optimizer."""
+        """Apply E2.7's canonical-safe staged adapter policy.
+
+        E2.7 v2 never updates an E1 policy parameter.  The preference
+        residuals are centered at the canonical preference, so keeping the
+        shared policy frozen gives an exact canonical-action identity instead
+        of relying on a small average teacher KL.
+        """
 
         if not self.use_centered_preference_adapter:
             if stage:
@@ -3095,23 +3337,9 @@ class HeteroGraphActorCritic(nn.Module):
             enable(self.centered_value_adapter)
             if self.centered_production_pair_scale_raw is not None:
                 self.centered_production_pair_scale_raw.requires_grad_(True)
-            enable(self.production_action_edge_encoder)
-            enable(self.production_scorer)
-            enable(self.production_relative_ranker)
-            if self.production_context_gate is not None:
-                self.production_context_gate.requires_grad_(True)
-            if self.production_residual_context_gate is not None:
-                self.production_residual_context_gate.requires_grad_(True)
         if normalized == "worker_variance":
             if self.centered_worker_variance_scale_raw is not None:
                 self.centered_worker_variance_scale_raw.requires_grad_(True)
-            enable(self.worker_action_edge_encoder)
-            enable(self.worker_scorer)
-            enable(self.worker_relative_ranker)
-            if self.worker_context_gate is not None:
-                self.worker_context_gate.requires_grad_(True)
-            if self.worker_residual_context_gate is not None:
-                self.worker_residual_context_gate.requires_grad_(True)
 
     def _production_logits(
         self,

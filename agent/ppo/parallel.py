@@ -19,12 +19,14 @@ from data.dataset import GeneratedInstanceRecord, OnlineInstanceDataset
 from data.models import AssemblyInstance
 from environment import (
     AssemblySchedulingEnv,
+    CAPABLE_EDGE,
     DecisionType,
     Observation,
     PolicyObservation,
     PreferenceInput,
     PreferenceVector,
     RewardVector,
+    SERVICE_CANDIDATE_EDGE,
     derive_episode_action_seed,
     normalize_preference,
     preference_enabled,
@@ -35,6 +37,78 @@ from utils import action_trace_sha256, derive_evaluation_sampling_seed
 
 if TYPE_CHECKING:
     from agent.ppo.agent import PPOAgent
+
+
+def _e2_7_production_pair_state_eligible(
+    observation: Observation | PolicyObservation,
+    mask: np.ndarray,
+) -> bool:
+    """Require distinct legal lowest-flow and lowest-cost production pairs."""
+    if (
+        getattr(observation, "decision_type", None) != DecisionType.PRODUCTION
+        or mask.ndim != 1
+        or mask.size < 3
+    ):
+        return False
+    legal = ~mask[:-1]
+    if int(np.count_nonzero(legal)) < 2:
+        return False
+    relation = observation.relations.get(CAPABLE_EDGE)
+    if relation is None:
+        return False
+    pair_count = mask.size - 1
+    machine_count = observation.node_features["machine"].shape[0]
+    dense = np.zeros((pair_count, relation.edge_features.shape[1]), dtype=np.float64)
+    indices = relation.edge_index[0] * machine_count + relation.edge_index[1]
+    dense[indices] = relation.edge_features
+    names = relation.feature_names
+    flow = (
+        dense[:, names.index("processing_time_norm")]
+        + dense[:, names.index("reconfiguration_time_norm")]
+    )
+    cost = sum(
+        dense[:, names.index(name)]
+        for name in (
+            "fixed_disassembly_cost_norm",
+            "fixed_installation_cost_norm",
+            "estimated_labor_cost_norm",
+            "estimated_downtime_cost_norm",
+        )
+    )
+    legal_indices = np.flatnonzero(legal)
+    return bool(
+        legal_indices[np.argmin(flow[legal_indices])]
+        != legal_indices[np.argmin(cost[legal_indices])]
+    )
+
+
+def _e2_7_worker_variance_state_eligible(
+    observation: Observation | PolicyObservation,
+    mask: np.ndarray,
+) -> bool:
+    """Require safe worker pairs with distinct projected load variance."""
+    if (
+        getattr(observation, "decision_type", None) != DecisionType.WORKER
+        or mask.ndim != 1
+        or mask.size < 3
+    ):
+        return False
+    legal = ~mask[:-1]
+    if int(np.count_nonzero(legal)) < 2:
+        return False
+    relation = observation.relations.get(SERVICE_CANDIDATE_EDGE)
+    if relation is None:
+        return False
+    pair_count = mask.size - 1
+    worker_count = observation.node_features["worker"].shape[0]
+    dense = np.zeros((pair_count, relation.edge_features.shape[1]), dtype=np.float64)
+    indices = relation.edge_index[0] * worker_count + relation.edge_index[1]
+    dense[indices] = relation.edge_features
+    variance = dense[
+        :, relation.feature_names.index("incremental_load_variance_norm")
+    ]
+    legal_values = variance[legal]
+    return bool(np.max(legal_values) > np.min(legal_values))
 
 
 @dataclass
@@ -1325,6 +1399,9 @@ class ParallelEpisodeRunner:
         preference: PreferenceInput | None = None,
         dual_legal_state_sink: list[tuple[Any, np.ndarray]] | None = None,
         maximum_captured_dual_legal_states: int | None = None,
+        production_pair_state_sink: list[tuple[Any, np.ndarray]] | None = None,
+        worker_variance_state_sink: list[tuple[Any, np.ndarray]] | None = None,
+        maximum_captured_preference_states: int | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1412,6 +1489,49 @@ class ParallelEpisodeRunner:
                             and not bool(mask[-1])
                         ):
                             dual_legal_state_sink.append(
+                                (observation.copy(), mask.copy())
+                            )
+                if (
+                    production_pair_state_sink is not None
+                    or worker_variance_state_sink is not None
+                ):
+                    preference_limit = (
+                        math.inf
+                        if maximum_captured_preference_states is None
+                        else int(maximum_captured_preference_states)
+                    )
+                    if preference_limit < 1:
+                        raise ValueError(
+                            "maximum_captured_preference_states must be positive"
+                        )
+                    for observation, mask in zip(observations, masks):
+                        legal_pair_count = int(np.count_nonzero(~mask[:-1]))
+                        if (
+                            production_pair_state_sink is not None
+                            and len(production_pair_state_sink) < preference_limit
+                            and getattr(observation, "decision_type", None)
+                            == DecisionType.PRODUCTION
+                            and legal_pair_count >= 2
+                            and _e2_7_production_pair_state_eligible(
+                                observation,
+                                mask,
+                            )
+                        ):
+                            production_pair_state_sink.append(
+                                (observation.copy(), mask.copy())
+                            )
+                        if (
+                            worker_variance_state_sink is not None
+                            and len(worker_variance_state_sink) < preference_limit
+                            and getattr(observation, "decision_type", None)
+                            == DecisionType.WORKER
+                            and legal_pair_count >= 2
+                            and _e2_7_worker_variance_state_eligible(
+                                observation,
+                                mask,
+                            )
+                        ):
+                            worker_variance_state_sink.append(
                                 (observation.copy(), mask.copy())
                             )
                 if deterministic:
