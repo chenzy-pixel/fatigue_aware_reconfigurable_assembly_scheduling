@@ -400,6 +400,13 @@ class PPOAgent:
         self._centered_pool_gradient_preflight_complete = {
             name: False for name in self.centered_state_pools
         }
+        self._centered_pool_training_cursors = {
+            name: 0 for name in self.centered_state_pools
+        }
+        self._centered_pool_training_orders = {
+            name: [] for name in self.centered_state_pools
+        }
+        self._pending_centered_pool_runtime_state: dict[str, Any] | None = None
         # Compatibility aliases retained for the E2.7 gate report and callers.
         self.safe_dual_legal_state_pool = self.centered_state_pools["gate"]
         self.safe_dual_legal_state_pool_report: dict[str, Any] | None = None
@@ -506,16 +513,45 @@ class PPOAgent:
                 update_array(f"edge_features:{edge_type}", edge.edge_features)
         self.centered_state_pools[name] = normalized
         self._centered_pool_gradient_preflight_complete[name] = False
+        canonical_counts = provenance.get("e1_validation_state_count", {})
+        canonical_count = (
+            int(canonical_counts.get(name, 0))
+            if isinstance(canonical_counts, dict)
+            else 0
+        )
+        if 0 < canonical_count < len(normalized):
+            canonical_indices = list(range(canonical_count))
+            replay_indices = list(range(canonical_count, len(normalized)))
+            order: list[int] = []
+            for offset in range(max(len(canonical_indices), len(replay_indices))):
+                if offset < len(canonical_indices):
+                    order.append(canonical_indices[offset])
+                if offset < len(replay_indices):
+                    order.append(replay_indices[offset])
+        else:
+            order = list(range(len(normalized)))
+        self._centered_pool_training_orders[name] = order
+        self._centered_pool_training_cursors[name] = 0
         report = {
-            "version": "fixed_e2_7_centered_counterfactual_pool_v2",
+            "version": (
+                "fixed_e2_7_centered_counterfactual_pool_v3"
+                if self.counterfactual_preference_consistency.get("version")
+                == "centered_gate_pair_worker_v4"
+                else "fixed_e2_7_centered_counterfactual_pool_v2"
+            ),
             "pool_kind": name,
             "state_count": len(normalized),
             "minimum_required_state_count": minimum,
             "fixed_sampling_count_per_auxiliary_update": minimum,
+            "full_control_evaluation_state_count": len(normalized),
+            "stratified_training_order": bool(
+                0 < canonical_count < len(normalized)
+            ),
             "state_pool_sha256": digest.hexdigest(),
             "provenance": dict(provenance),
         }
         self.centered_state_pool_reports[name] = report
+        self._restore_pending_centered_pool_cursor(name)
         if name == "gate":
             self.safe_dual_legal_state_pool = normalized
             self.safe_dual_legal_state_pool_report = report
@@ -565,7 +601,10 @@ class PPOAgent:
         if not enabled:
             return {"enabled": False}
         version = str(raw.get("version", ""))
-        if version == "centered_gate_pair_worker_v3":
+        if version in {
+            "centered_gate_pair_worker_v3",
+            "centered_gate_pair_worker_v4",
+        }:
             expected = {
                 "enabled",
                 "version",
@@ -583,11 +622,19 @@ class PPOAgent:
             objectives: dict[str, dict[str, float | int]] = {}
             for name in ("gate", "production_pair", "worker_variance"):
                 objective = raw[name]
-                if not isinstance(objective, dict) or set(objective) != {
+                expected_objective = {
                     "minimum_margin_gap",
                     "minimum_eligible_states",
                     "loss_coefficient",
-                }:
+                }
+                if version == "centered_gate_pair_worker_v4":
+                    expected_objective.add("minimum_final_margin")
+                    if name == "gate":
+                        expected_objective.add("minimum_extreme_flip_rate")
+                if (
+                    not isinstance(objective, dict)
+                    or set(objective) != expected_objective
+                ):
                     raise ValueError(
                         f"E2.7 {name} counterfactual objective has an invalid schema"
                     )
@@ -611,6 +658,24 @@ class PPOAgent:
                     "minimum_eligible_states": minimum,
                     "loss_coefficient": coefficient,
                 }
+                if version == "centered_gate_pair_worker_v4":
+                    final_margin = float(objective["minimum_final_margin"])
+                    if not math.isfinite(final_margin) or final_margin <= 0.0:
+                        raise ValueError(
+                            f"E2.7 {name} minimum final margin must be positive"
+                        )
+                    objectives[name]["minimum_final_margin"] = final_margin
+                    if name == "gate":
+                        flip_rate = float(objective["minimum_extreme_flip_rate"])
+                        if (
+                            not math.isfinite(flip_rate)
+                            or not 0.0 < flip_rate <= 1.0
+                        ):
+                            raise ValueError(
+                                "E2.7 gate minimum extreme flip rate must be "
+                                "within (0, 1]"
+                            )
+                        objectives[name]["minimum_extreme_flip_rate"] = flip_rate
             if getattr(self.network, "production_gate_version", None) != (
                 E1_CENTERED_THREE_OBJECTIVE_GATE_VERSION
             ):
@@ -799,107 +864,243 @@ class PPOAgent:
         )
         return [float(value) for value in values.cpu().tolist()]
 
-    def _centered_pool_objective(
+    def _restore_pending_centered_pool_cursor(self, name: str) -> None:
+        """Restore one persisted round-robin cursor after its pool is rebuilt."""
+
+        pending = self._pending_centered_pool_runtime_state
+        if not isinstance(pending, dict):
+            return
+        pools = pending.get("pools")
+        report = self.centered_state_pool_reports.get(name, {})
+        payload = pools.get(name) if isinstance(pools, dict) else None
+        if not isinstance(payload, dict):
+            return
+        if payload.get("state_pool_sha256") != report.get("state_pool_sha256"):
+            raise ValueError(
+                f"E2.7 {name} state-pool hash changed during strict resume"
+            )
+        order = self._centered_pool_training_orders[name]
+        self._centered_pool_training_cursors[name] = (
+            int(payload.get("training_cursor", 0)) % len(order) if order else 0
+        )
+
+    def _centered_pool_runtime_state(self) -> dict[str, Any]:
+        """Return the deterministic E2.7 sampling state needed for resume."""
+
+        return {
+            "version": "centered_pool_runtime_v1",
+            "pools": {
+                name: {
+                    "state_pool_sha256": report.get("state_pool_sha256"),
+                    "training_cursor": int(
+                        self._centered_pool_training_cursors[name]
+                    ),
+                }
+                for name, report in self.centered_state_pool_reports.items()
+            },
+        }
+
+    def _restore_centered_pool_runtime_state(self, payload: object) -> None:
+        if payload is None:
+            return
+        if not isinstance(payload, dict) or set(payload) != {"version", "pools"}:
+            raise ValueError("E2.7 checkpoint has invalid fixed-pool runtime state")
+        if payload.get("version") != "centered_pool_runtime_v1":
+            raise ValueError("E2.7 checkpoint has unsupported fixed-pool runtime state")
+        if not isinstance(payload["pools"], dict):
+            raise ValueError("E2.7 checkpoint fixed-pool state lacks pool mapping")
+        self._pending_centered_pool_runtime_state = dict(payload)
+        for name in self.centered_state_pool_reports:
+            self._restore_pending_centered_pool_cursor(name)
+
+    def _centered_pool_indices(
         self,
         name: str,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Evaluate one E2.7 v3 fixed-pool objective and its diagnostics."""
-
-        settings = self.counterfactual_preference_consistency["objectives"][name]
+        *,
+        full_pool: bool,
+        advance_cursor: bool,
+    ) -> list[int]:
         pool = self.centered_state_pools[name]
-        minimum = int(settings["minimum_eligible_states"])
+        minimum = int(
+            self.counterfactual_preference_consistency["objectives"][name][
+                "minimum_eligible_states"
+            ]
+        )
         if len(pool) < minimum:
             raise RuntimeError(
                 f"E2.7 {name} state pool is too small: "
                 f"eligible={len(pool)}, required={minimum}"
             )
-        observations = [observation for observation, _ in pool[:minimum]]
-        masks = [mask for _, mask in pool[:minimum]]
-        gap = float(settings["minimum_margin_gap"])
-        zero = next(self.network.parameters()).new_zeros(())
-        if name == "gate":
-            diagnostics = self.network.centered_gate_counterfactual_batch(
-                observations, masks, device=self.device
+        version = self.counterfactual_preference_consistency.get("version")
+        if full_pool:
+            return list(range(len(pool)))
+        if version != "centered_gate_pair_worker_v4":
+            return list(range(minimum))
+        order = self._centered_pool_training_orders[name]
+        if len(order) != len(pool):
+            raise RuntimeError(f"E2.7 {name} fixed-pool sampling order is invalid")
+        cursor = self._centered_pool_training_cursors[name]
+        indices = [order[(cursor + offset) % len(order)] for offset in range(minimum)]
+        if advance_cursor:
+            self._centered_pool_training_cursors[name] = (
+                cursor + minimum
+            ) % len(order)
+        return indices
+
+    def _centered_pool_diagnostics(
+        self,
+        name: str,
+        indices: Sequence[int],
+    ) -> dict[str, torch.Tensor]:
+        """Evaluate selected immutable states in bounded chunks without reordering."""
+
+        pool = self.centered_state_pools[name]
+        chunk_size = int(
+            self.counterfactual_preference_consistency["objectives"][name][
+                "minimum_eligible_states"
+            ]
+        )
+        evaluator = (
+            self.network.centered_gate_counterfactual_batch
+            if name == "gate"
+            else self.network.centered_production_pair_counterfactual_batch
+            if name == "production_pair"
+            else self.network.centered_worker_variance_counterfactual_batch
+        )
+        chunks: list[dict[str, torch.Tensor]] = []
+        for start in range(0, len(indices), chunk_size):
+            selected = indices[start : start + chunk_size]
+            chunks.append(
+                evaluator(
+                    [pool[index][0] for index in selected],
+                    [pool[index][1] for index in selected],
+                    device=self.device,
+                )
             )
-            eligible = diagnostics["eligible"]
-            if int(eligible.sum().detach().cpu()) < minimum:
-                raise RuntimeError("E2.7 gate state pool lost eligible states")
+        if not chunks:
+            raise RuntimeError(f"E2.7 {name} fixed pool is unexpectedly empty")
+        return {
+            key: torch.cat([chunk[key] for chunk in chunks], dim=0)
+            for key in chunks[0]
+        }
+
+    def _centered_pool_objective(
+        self,
+        name: str,
+        *,
+        full_pool: bool = False,
+        advance_cursor: bool = False,
+    ) -> tuple[torch.Tensor, dict[str, float | int]]:
+        """Evaluate one E2.7 fixed-pool objective at a stable parameter snapshot."""
+
+        settings = self.counterfactual_preference_consistency["objectives"][name]
+        minimum = int(settings["minimum_eligible_states"])
+        indices = self._centered_pool_indices(
+            name,
+            full_pool=full_pool,
+            advance_cursor=advance_cursor,
+        )
+        diagnostics = self._centered_pool_diagnostics(name, indices)
+        eligible = diagnostics["eligible"]
+        eligible_count = int(eligible.sum().detach().cpu())
+        if eligible_count < minimum:
+            raise RuntimeError(f"E2.7 {name} state pool lost eligible states")
+        gap = float(settings["minimum_margin_gap"])
+        strict_margin = float(settings.get("minimum_final_margin", 0.0))
+        if name == "gate":
             flow = diagnostics["flow_margin"][eligible]
             cost = diagnostics["cost_margin"][eligible]
             variance = diagnostics["variance_margin"][eligible]
-            loss = 0.5 * (
-                torch.relu(gap - (flow - cost)).square().mean()
-                + torch.relu(gap - (flow - variance)).square().mean()
-            )
+            flow_cost_gap_loss = torch.relu(gap - (flow - cost)).square().mean()
+            flow_variance_gap_loss = torch.relu(
+                gap - (flow - variance)
+            ).square().mean()
+            if (
+                self.counterfactual_preference_consistency.get("version")
+                == "centered_gate_pair_worker_v4"
+            ):
+                rate = float(settings["minimum_extreme_flip_rate"])
+                required = max(1, math.ceil(rate * eligible_count))
+
+                def response_shortfall(other: torch.Tensor) -> torch.Tensor:
+                    deficit = torch.relu(strict_margin - flow) + torch.relu(
+                        other + strict_margin
+                    )
+                    return torch.topk(
+                        deficit,
+                        k=required,
+                        largest=False,
+                    ).values.square().mean()
+
+                loss = 0.25 * (
+                    flow_cost_gap_loss
+                    + flow_variance_gap_loss
+                    + response_shortfall(cost)
+                    + response_shortfall(variance)
+                )
+            else:
+                loss = 0.5 * (flow_cost_gap_loss + flow_variance_gap_loss)
             flow_cost_flips = int(diagnostics["flow_cost_flip"].sum().detach().cpu())
             flow_variance_flips = int(
                 diagnostics["flow_variance_flip"].sum().detach().cpu()
             )
-            eligible_count = int(eligible.sum().detach().cpu())
             return loss, {
-                "counterfactual_eligible_count": float(eligible_count),
-                "counterfactual_high_flow_commit_flip_count": float(
-                    max(flow_cost_flips, flow_variance_flips)
+                "counterfactual_eligible_count": eligible_count,
+                "counterfactual_control_evaluated_state_count": len(indices),
+                "counterfactual_high_flow_commit_flip_count": max(
+                    flow_cost_flips, flow_variance_flips
                 ),
                 "counterfactual_high_flow_commit_flip_rate": (
                     max(flow_cost_flips, flow_variance_flips) / eligible_count
                 ),
-                "counterfactual_monotonicity_violation_count": float(
+                "counterfactual_monotonicity_violation_count": int(
                     diagnostics["monotonicity_violation"].sum().detach().cpu()
                 ),
-                "counterfactual_flow_cost_flip_count": float(flow_cost_flips),
-                "counterfactual_flow_variance_flip_count": float(
-                    flow_variance_flips
+                "counterfactual_flow_cost_flip_count": flow_cost_flips,
+                "counterfactual_flow_cost_flip_rate": (
+                    flow_cost_flips / eligible_count
+                ),
+                "counterfactual_flow_variance_flip_count": flow_variance_flips,
+                "counterfactual_flow_variance_flip_rate": (
+                    flow_variance_flips / eligible_count
                 ),
                 "counterfactual_coefficient_mean": float(
                     diagnostics["coefficients"][eligible].detach().mean().cpu()
                 ),
             }
         if name == "production_pair":
-            diagnostics = self.network.centered_production_pair_counterfactual_batch(
-                observations, masks, device=self.device
-            )
-            eligible = diagnostics["eligible"]
-            if int(eligible.sum().detach().cpu()) < minimum:
-                raise RuntimeError("E2.7 production-pair pool lost eligible states")
             flow_gain = diagnostics["flow_gain"][eligible]
             cost_gain = diagnostics["cost_gain"][eligible]
             flow_margin = diagnostics["flow_margin"][eligible]
             cost_margin = diagnostics["cost_margin"][eligible]
             loss = 0.25 * (
                 torch.relu(gap - flow_gain).square().mean()
-                + torch.relu(-flow_margin).square().mean()
+                + torch.relu(strict_margin - flow_margin).square().mean()
                 + torch.relu(gap - cost_gain).square().mean()
-                + torch.relu(-cost_margin).square().mean()
+                + torch.relu(strict_margin - cost_margin).square().mean()
             )
             correct = int(
                 diagnostics["flow_correct"].sum().detach().cpu()
                 + diagnostics["cost_correct"].sum().detach().cpu()
             )
-            eligible_count = int(eligible.sum().detach().cpu())
             return loss, {
-                "production_pair_eligible_count": float(eligible_count),
-                "production_pair_correct_count": float(correct),
+                "production_pair_eligible_count": eligible_count,
+                "production_pair_control_evaluated_state_count": len(indices),
+                "production_pair_correct_count": correct,
                 "production_pair_correct_rate": correct / (2.0 * eligible_count),
             }
         if name == "worker_variance":
-            diagnostics = self.network.centered_worker_variance_counterfactual_batch(
-                observations, masks, device=self.device
-            )
-            eligible = diagnostics["eligible"]
-            if int(eligible.sum().detach().cpu()) < minimum:
-                raise RuntimeError("E2.7 worker-variance pool lost eligible states")
             gain = diagnostics["variance_gain"][eligible]
             margin = diagnostics["variance_margin"][eligible]
             loss = 0.5 * (
                 torch.relu(gap - gain).square().mean()
-                + torch.relu(-margin).square().mean()
+                + torch.relu(strict_margin - margin).square().mean()
             )
             correct = int(diagnostics["variance_correct"].sum().detach().cpu())
-            eligible_count = int(eligible.sum().detach().cpu())
             return loss, {
-                "worker_variance_eligible_count": float(eligible_count),
-                "worker_variance_correct_count": float(correct),
+                "worker_variance_eligible_count": eligible_count,
+                "worker_variance_control_evaluated_state_count": len(indices),
+                "worker_variance_correct_count": correct,
                 "worker_variance_correct_rate": correct / float(eligible_count),
             }
         raise ValueError(f"unknown E2.7 centered objective {name!r}")
@@ -915,6 +1116,7 @@ class PPOAgent:
         zero = next(self.network.parameters()).new_zeros(())
         disabled_metrics = {
             "counterfactual_eligible_count": 0.0,
+            "counterfactual_control_evaluated_state_count": 0.0,
             "counterfactual_high_flow_commit_flip_count": 0.0,
             "counterfactual_high_flow_commit_flip_rate": 0.0,
             "counterfactual_state_scale_mean": 0.0,
@@ -922,23 +1124,35 @@ class PPOAgent:
             "counterfactual_low_flow_identity_violation_count": 0.0,
             "counterfactual_monotonicity_violation_count": 0.0,
             "counterfactual_flow_cost_flip_count": 0.0,
+            "counterfactual_flow_cost_flip_rate": 0.0,
             "counterfactual_flow_variance_flip_count": 0.0,
+            "counterfactual_flow_variance_flip_rate": 0.0,
             "counterfactual_coefficient_mean": 0.0,
             "counterfactual_gate_loss": 0.0,
             "production_pair_loss": 0.0,
             "production_pair_eligible_count": 0.0,
+            "production_pair_control_evaluated_state_count": 0.0,
             "production_pair_correct_count": 0.0,
             "production_pair_correct_rate": 0.0,
             "worker_variance_loss": 0.0,
             "worker_variance_eligible_count": 0.0,
+            "worker_variance_control_evaluated_state_count": 0.0,
             "worker_variance_correct_count": 0.0,
             "worker_variance_correct_rate": 0.0,
         }
         settings = self.counterfactual_preference_consistency
         if not settings["enabled"]:
             return zero, disabled_metrics
-        if settings.get("version") == "centered_gate_pair_worker_v3":
-            gate_loss, gate_metrics = self._centered_pool_objective("gate")
+        if settings.get("version") in {
+            "centered_gate_pair_worker_v3",
+            "centered_gate_pair_worker_v4",
+        }:
+            advance_cursor = (
+                settings.get("version") == "centered_gate_pair_worker_v4"
+            )
+            gate_loss, gate_metrics = self._centered_pool_objective(
+                "gate", advance_cursor=advance_cursor
+            )
             stage = str(getattr(self.network, "centered_preference_stage", "gate"))
             pair_loss = zero
             pair_metrics: dict[str, float] = {}
@@ -946,11 +1160,11 @@ class PPOAgent:
             worker_metrics: dict[str, float] = {}
             if stage in {"production_pair", "worker_variance"}:
                 pair_loss, pair_metrics = self._centered_pool_objective(
-                    "production_pair"
+                    "production_pair", advance_cursor=advance_cursor
                 )
             if stage == "worker_variance":
                 worker_loss, worker_metrics = self._centered_pool_objective(
-                    "worker_variance"
+                    "worker_variance", advance_cursor=advance_cursor
                 )
             objectives = settings["objectives"]
             loss = (
@@ -1033,6 +1247,131 @@ class PPOAgent:
             ),
         }
 
+    def _evaluate_centered_control_metrics(self) -> dict[str, float | int | str]:
+        """Evaluate final E2.7 v4 control metrics on every fixed-pool state."""
+
+        if (
+            self.counterfactual_preference_consistency.get("version")
+            != "centered_gate_pair_worker_v4"
+        ):
+            raise RuntimeError("final fixed-pool control metrics require E2.7 v4")
+        stage = str(getattr(self.network, "centered_preference_stage", "gate"))
+        objectives = self.counterfactual_preference_consistency["objectives"]
+        zero = next(self.network.parameters()).new_zeros(())
+        with torch.no_grad():
+            gate_loss, gate_metrics = self._centered_pool_objective(
+                "gate", full_pool=True
+            )
+            pair_loss = zero
+            pair_metrics: dict[str, float | int] = {}
+            worker_loss = zero
+            worker_metrics: dict[str, float | int] = {}
+            if stage in {"production_pair", "worker_variance"}:
+                pair_loss, pair_metrics = self._centered_pool_objective(
+                    "production_pair", full_pool=True
+                )
+            if stage == "worker_variance":
+                worker_loss, worker_metrics = self._centered_pool_objective(
+                    "worker_variance", full_pool=True
+                )
+        loss = (
+            float(objectives["gate"]["loss_coefficient"])
+            * float(gate_loss.detach().cpu())
+            + float(objectives["production_pair"]["loss_coefficient"])
+            * float(pair_loss.detach().cpu())
+            + float(objectives["worker_variance"]["loss_coefficient"])
+            * float(worker_loss.detach().cpu())
+        )
+        result: dict[str, float | int | str] = {
+            **gate_metrics,
+            **pair_metrics,
+            **worker_metrics,
+            "counterfactual_loss": loss,
+            "counterfactual_gate_loss": float(gate_loss.detach().cpu()),
+            "production_pair_loss": float(pair_loss.detach().cpu()),
+            "worker_variance_loss": float(worker_loss.detach().cpu()),
+            "counterfactual_constraint_status": (
+                "constraint_satisfied"
+                if float(gate_loss.detach().cpu()) == 0.0
+                else "constraint_active"
+            ),
+            "production_pair_constraint_status": (
+                "inactive"
+                if stage == "gate"
+                else (
+                    "constraint_satisfied"
+                    if float(pair_loss.detach().cpu()) == 0.0
+                    else "constraint_active"
+                )
+            ),
+            "worker_variance_constraint_status": (
+                "inactive"
+                if stage != "worker_variance"
+                else (
+                    "constraint_satisfied"
+                    if float(worker_loss.detach().cpu()) == 0.0
+                    else "constraint_active"
+                )
+            ),
+            "counterfactual_gate_state_pool_sha256": str(
+                self.centered_state_pool_reports["gate"]["state_pool_sha256"]
+            ),
+            "production_pair_state_pool_sha256": str(
+                self.centered_state_pool_reports.get("production_pair", {}).get(
+                    "state_pool_sha256", ""
+                )
+            ),
+            "worker_variance_state_pool_sha256": str(
+                self.centered_state_pool_reports.get("worker_variance", {}).get(
+                    "state_pool_sha256", ""
+                )
+            ),
+        }
+        finite_values = [
+            float(value)
+            for value in result.values()
+            if isinstance(value, (float, int))
+        ]
+        if not all(math.isfinite(value) for value in finite_values):
+            raise FloatingPointError("E2.7 final control metrics are non-finite")
+        for count_key, eligible_key, rate_key, denominator in (
+            (
+                "counterfactual_flow_cost_flip_count",
+                "counterfactual_eligible_count",
+                "counterfactual_flow_cost_flip_rate",
+                1.0,
+            ),
+            (
+                "counterfactual_flow_variance_flip_count",
+                "counterfactual_eligible_count",
+                "counterfactual_flow_variance_flip_rate",
+                1.0,
+            ),
+            (
+                "production_pair_correct_count",
+                "production_pair_eligible_count",
+                "production_pair_correct_rate",
+                2.0,
+            ),
+            (
+                "worker_variance_correct_count",
+                "worker_variance_eligible_count",
+                "worker_variance_correct_rate",
+                1.0,
+            ),
+        ):
+            if count_key not in result:
+                continue
+            count = result[count_key]
+            eligible = result.get(eligible_key, 0)
+            rate = result[rate_key]
+            if not isinstance(count, int) or not isinstance(eligible, int):
+                raise RuntimeError(f"E2.7 {count_key} and {eligible_key} must be integers")
+            expected = count / (denominator * eligible) if eligible else 0.0
+            if not math.isclose(float(rate), expected, rel_tol=0.0, abs_tol=1e-15):
+                raise RuntimeError(f"E2.7 {rate_key} is inconsistent with its count")
+        return result
+
     def _canonical_teacher_loss(
         self,
         transitions: Sequence[Any],
@@ -1066,10 +1405,16 @@ class PPOAgent:
         ).mean()
 
     def _run_centered_pool_gradient_preflight(self, name: str) -> None:
-        """Verify one E2.7 v3 auxiliary path once per installed pool."""
+        """Verify one E2.7 auxiliary path once per installed pool."""
 
         with torch.no_grad():
-            probe_loss, _ = self._centered_pool_objective(name)
+            probe_loss, _ = self._centered_pool_objective(
+                name,
+                full_pool=(
+                    self.counterfactual_preference_consistency.get("version")
+                    == "centered_gate_pair_worker_v4"
+                ),
+            )
         if not bool(torch.isfinite(probe_loss)):
             raise RuntimeError(f"E2.7 {name} preflight loss is non-finite")
         probe_loss_value = float(probe_loss.detach().cpu())
@@ -1077,7 +1422,13 @@ class PPOAgent:
             raise RuntimeError(f"E2.7 {name} preflight loss is negative")
         if probe_loss_value > 0.0:
             self.optimizer.zero_grad()
-            probe_loss, _ = self._centered_pool_objective(name)
+            probe_loss, _ = self._centered_pool_objective(
+                name,
+                full_pool=(
+                    self.counterfactual_preference_consistency.get("version")
+                    == "centered_gate_pair_worker_v4"
+                ),
+            )
             probe_loss.backward()
             if name == "gate":
                 module = getattr(self.network, "centered_gate_coefficients", None)
@@ -1165,7 +1516,7 @@ class PPOAgent:
             raise ValueError("cannot update PPO with an empty buffer")
         e2_7_counterfactual = (
             self.counterfactual_preference_consistency.get("version")
-            == "centered_gate_pair_worker_v3"
+            in {"centered_gate_pair_worker_v3", "centered_gate_pair_worker_v4"}
         )
         if e2_7_counterfactual:
             stage = str(getattr(self.network, "centered_preference_stage", "gate"))
@@ -1231,6 +1582,7 @@ class PPOAgent:
             "gradient_clipped_fraction",
             "counterfactual_loss",
             "counterfactual_eligible_count",
+            "counterfactual_control_evaluated_state_count",
             "counterfactual_high_flow_commit_flip_count",
             "counterfactual_high_flow_commit_flip_rate",
             "counterfactual_state_scale_mean",
@@ -1238,15 +1590,19 @@ class PPOAgent:
             "counterfactual_low_flow_identity_violation_count",
             "counterfactual_monotonicity_violation_count",
             "counterfactual_flow_cost_flip_count",
+            "counterfactual_flow_cost_flip_rate",
             "counterfactual_flow_variance_flip_count",
+            "counterfactual_flow_variance_flip_rate",
             "counterfactual_coefficient_mean",
             "counterfactual_gate_loss",
             "production_pair_loss",
             "production_pair_eligible_count",
+            "production_pair_control_evaluated_state_count",
             "production_pair_correct_count",
             "production_pair_correct_rate",
             "worker_variance_loss",
             "worker_variance_eligible_count",
+            "worker_variance_control_evaluated_state_count",
             "worker_variance_correct_count",
             "worker_variance_correct_rate",
             "canonical_teacher_kl",
@@ -1335,7 +1691,10 @@ class PPOAgent:
                 counterfactual_multiplier = (
                     1.0
                     if self.counterfactual_preference_consistency.get("version")
-                    == "centered_gate_pair_worker_v3"
+                    in {
+                        "centered_gate_pair_worker_v3",
+                        "centered_gate_pair_worker_v4",
+                    }
                     else float(
                         self.counterfactual_preference_consistency.get(
                             "loss_coefficient", 0.0
@@ -1378,6 +1737,9 @@ class PPOAgent:
                         float(counterfactual_loss.detach().item()),
                         counterfactual_metrics["counterfactual_eligible_count"],
                         counterfactual_metrics[
+                            "counterfactual_control_evaluated_state_count"
+                        ],
+                        counterfactual_metrics[
                             "counterfactual_high_flow_commit_flip_count"
                         ],
                         counterfactual_metrics[
@@ -1395,7 +1757,13 @@ class PPOAgent:
                             "counterfactual_flow_cost_flip_count"
                         ],
                         counterfactual_metrics[
+                            "counterfactual_flow_cost_flip_rate"
+                        ],
+                        counterfactual_metrics[
                             "counterfactual_flow_variance_flip_count"
+                        ],
+                        counterfactual_metrics[
+                            "counterfactual_flow_variance_flip_rate"
                         ],
                         counterfactual_metrics[
                             "counterfactual_coefficient_mean"
@@ -1403,10 +1771,16 @@ class PPOAgent:
                         counterfactual_metrics["counterfactual_gate_loss"],
                         counterfactual_metrics["production_pair_loss"],
                         counterfactual_metrics["production_pair_eligible_count"],
+                        counterfactual_metrics[
+                            "production_pair_control_evaluated_state_count"
+                        ],
                         counterfactual_metrics["production_pair_correct_count"],
                         counterfactual_metrics["production_pair_correct_rate"],
                         counterfactual_metrics["worker_variance_loss"],
                         counterfactual_metrics["worker_variance_eligible_count"],
+                        counterfactual_metrics[
+                            "worker_variance_control_evaluated_state_count"
+                        ],
                         counterfactual_metrics["worker_variance_correct_count"],
                         counterfactual_metrics["worker_variance_correct_rate"],
                         float(canonical_teacher_loss.detach().item()),
@@ -1445,6 +1819,23 @@ class PPOAgent:
         if not all(math.isfinite(value) for value in result.values()):
             raise FloatingPointError("PPO returned non-finite metrics")
         if e2_7_counterfactual:
+            if (
+                self.counterfactual_preference_consistency.get("version")
+                == "centered_gate_pair_worker_v4"
+            ):
+                result["counterfactual_training_loss_mean"] = result[
+                    "counterfactual_loss"
+                ]
+                result["counterfactual_gate_training_loss_mean"] = result[
+                    "counterfactual_gate_loss"
+                ]
+                result["production_pair_training_loss_mean"] = result[
+                    "production_pair_loss"
+                ]
+                result["worker_variance_training_loss_mean"] = result[
+                    "worker_variance_loss"
+                ]
+                result.update(self._evaluate_centered_control_metrics())
             for key in (
                 "counterfactual_gate_loss",
                 "production_pair_loss",
@@ -1455,6 +1846,11 @@ class PPOAgent:
             result["canonical_identity_max_abs_error"] = (
                 self._verify_centered_canonical_identity()
             )
+            if (
+                self.counterfactual_preference_consistency.get("version")
+                == "centered_gate_pair_worker_v4"
+            ):
+                return result
             gate_loss_value = result["counterfactual_gate_loss"]
             if gate_loss_value < 0.0:
                 raise FloatingPointError(
@@ -1545,6 +1941,7 @@ class PPOAgent:
                 "network_spec": self.network.network_spec(),
                 "optimizer": self.optimizer.state_dict(),
                 "ppo_config": self.config,
+                "centered_pool_runtime_state": self._centered_pool_runtime_state(),
                 "metadata": saved_metadata,
             },
             output,
@@ -1589,6 +1986,9 @@ class PPOAgent:
             )
         if load_optimizer and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
+        self._restore_centered_pool_runtime_state(
+            checkpoint.get("centered_pool_runtime_state")
+        )
         return dict(checkpoint.get("metadata", {}))
 
     def restore_e1_teacher_from_warm_start_report(

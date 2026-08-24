@@ -24,11 +24,12 @@ from train import (
 
 
 CONFIG_PATH = "configs/v7/e2_7_e1_warmstart_safe_gate_v1.json"
+V2_1_CONFIG_PATH = "configs/v7/e2_7_e1_warmstart_safe_gate_v2_1.json"
 E1_CHECKPOINT = "result/runs/v7_2000_e1_seed11/accepted_checkpoint.pt"
 
 
-def _fixture():
-    config = load_config(CONFIG_PATH)
+def _fixture(config_path: str = CONFIG_PATH):
+    config = load_config(config_path)
     instance = load_instance_pickle(project_path(config["paths"]["instance_cache"]))
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(instance, preference=(0.5, 0.3, 0.2))
@@ -739,6 +740,8 @@ def test_e2_7_schema_and_old_checkpoint_loading_regression() -> None:
     observation = AssemblySchedulingEnv(old_config).reset(instance)
     old_network = build_actor_critic(observation, old_config["network"])
     old_network.load_state_dict(e2_3_checkpoint["network"], strict=True)
+    v2_1_config = load_config(V2_1_CONFIG_PATH)
+    assert result_schema_version(v2_1_config) == "4.9.0"
 
 
 def test_e2_7_v1_checkpoint_is_rejected_by_v2_strict_resume(tmp_path) -> None:
@@ -778,3 +781,203 @@ def test_e2_7_strict_resume_restores_warm_provenance_and_teacher(tmp_path) -> No
         for parameter in resumed_agent.canonical_teacher.parameters()
     )
     assert environment.get_action_mask().shape[0] > 1
+
+
+def test_e2_7_v2_1_control_uses_the_full_fixed_pool_not_its_prefix(
+    monkeypatch,
+) -> None:
+    _, environment, observation, network, agent, _ = _fixture(V2_1_CONFIG_PATH)
+    mask = environment.get_action_mask()
+    pool = []
+    for index in range(256):
+        state = observation.copy()
+        state.global_features[0] = float(index)
+        pool.append((state, mask))
+    agent.set_safe_dual_legal_state_pool(
+        pool,
+        provenance={"e1_validation_state_count": {"gate": 128}},
+    )
+
+    def diagnostics(observations, *_args, device, **_kwargs):
+        indices = torch.as_tensor(
+            [int(round(float(item.global_features[0]))) for item in observations],
+            device=device,
+        )
+        flow = torch.ones(len(observations), device=device)
+        flipped = (indices == 0) | (indices >= 216)
+        cost = torch.where(flipped, -torch.ones_like(flow), flow)
+        variance = torch.where(flipped, -torch.ones_like(flow), flow)
+        eligible = torch.ones(len(observations), dtype=torch.bool, device=device)
+        return {
+            "flow_margin": flow,
+            "cost_margin": cost,
+            "variance_margin": variance,
+            "coefficients": torch.ones((len(observations), 3), device=device),
+            "eligible": eligible,
+            "flow_cost_flip": flipped,
+            "flow_variance_flip": flipped,
+            "monotonicity_violation": torch.zeros(
+                len(observations), dtype=torch.bool, device=device
+            ),
+        }
+
+    monkeypatch.setattr(network, "centered_gate_counterfactual_batch", diagnostics)
+    _, prefix = agent._centered_pool_objective("gate")
+    _, full = agent._centered_pool_objective("gate", full_pool=True)
+    assert prefix["counterfactual_flow_cost_flip_count"] == 1
+    assert prefix["counterfactual_eligible_count"] == 64
+    assert full["counterfactual_flow_cost_flip_count"] == 41
+    assert full["counterfactual_eligible_count"] == 256
+    assert full["counterfactual_flow_cost_flip_rate"] == pytest.approx(41 / 256)
+
+
+def test_e2_7_v2_1_returns_final_integer_control_metrics() -> None:
+    _, environment, observation, _, agent, _ = _fixture(V2_1_CONFIG_PATH)
+    mask = environment.get_action_mask()
+    agent.set_safe_dual_legal_state_pool(
+        [(observation, mask) for _ in range(64)],
+        provenance={"e1_validation_state_count": {"gate": 32}},
+    )
+    metrics = agent.update(
+        _single_transition_buffer(agent, observation, mask),
+        reward_phase="feasibility",
+    )
+    assert isinstance(metrics["counterfactual_eligible_count"], int)
+    assert isinstance(metrics["counterfactual_flow_cost_flip_count"], int)
+    assert metrics["counterfactual_control_evaluated_state_count"] == 64
+    assert "counterfactual_training_loss_mean" in metrics
+    assert len(metrics["counterfactual_gate_state_pool_sha256"]) == 64
+    assert metrics["counterfactual_flow_cost_flip_rate"] == pytest.approx(
+        metrics["counterfactual_flow_cost_flip_count"]
+        / metrics["counterfactual_eligible_count"]
+    )
+
+
+def test_e2_7_v2_1_zero_gate_loss_requires_real_extreme_flips(
+    monkeypatch,
+) -> None:
+    _, environment, observation, network, agent, _ = _fixture(V2_1_CONFIG_PATH)
+    mask = environment.get_action_mask()
+    agent.set_safe_dual_legal_state_pool(
+        [(observation, mask) for _ in range(64)], provenance={}
+    )
+
+    def diagnostics(observations, *_args, device, **_kwargs):
+        count = len(observations)
+        flow = torch.ones(count, device=device)
+        other = -torch.ones(count, device=device)
+        eligible = torch.ones(count, dtype=torch.bool, device=device)
+        return {
+            "flow_margin": flow,
+            "cost_margin": other,
+            "variance_margin": other,
+            "coefficients": torch.ones((count, 3), device=device),
+            "eligible": eligible,
+            "flow_cost_flip": eligible,
+            "flow_variance_flip": eligible,
+            "monotonicity_violation": torch.zeros(
+                count, dtype=torch.bool, device=device
+            ),
+        }
+
+    monkeypatch.setattr(network, "centered_gate_counterfactual_batch", diagnostics)
+    loss, metrics = agent._centered_pool_objective("gate", full_pool=True)
+    assert loss.item() == 0.0
+    assert metrics["counterfactual_flow_cost_flip_rate"] >= 0.05
+    assert metrics["counterfactual_flow_variance_flip_rate"] >= 0.05
+
+
+def test_e2_7_v2_1_strict_margin_removes_pair_zero_loss_dead_zone(
+    monkeypatch,
+) -> None:
+    _, environment, observation, network, agent, _ = _fixture(V2_1_CONFIG_PATH)
+    mask = environment.get_action_mask()
+    pool = [(observation, mask) for _ in range(64)]
+    eligible = torch.ones(64, dtype=torch.bool)
+
+    def pair_diagnostics(observations, *_args, **_kwargs):
+        scale = network.centered_production_pair_scale().expand(len(observations))
+        return {
+            "flow_gain": scale,
+            "cost_gain": scale,
+            "flow_margin": scale,
+            "cost_margin": scale,
+            "eligible": eligible[: len(observations)],
+            "flow_correct": torch.zeros(len(observations), dtype=torch.bool),
+            "cost_correct": torch.zeros(len(observations), dtype=torch.bool),
+        }
+
+    monkeypatch.setattr(
+        network, "centered_production_pair_counterfactual_batch", pair_diagnostics
+    )
+    network.set_centered_preference_stage("production_pair")
+    agent.centered_state_pools["production_pair"] = pool
+    loss, metrics = agent._centered_pool_objective(
+        "production_pair", full_pool=True
+    )
+    assert loss.item() > 0.0
+    assert metrics["production_pair_correct_count"] == 0
+
+
+def test_e2_7_v2_1_stage_controller_requires_validated_transition() -> None:
+    config = load_config(V2_1_CONFIG_PATH)
+    controller = E2_7PreferenceStageController.from_config(config)
+    assert controller is not None
+    passing = {
+        "counterfactual_constraint_status": "constraint_satisfied",
+        "counterfactual_eligible_count": 64,
+        "counterfactual_control_evaluated_state_count": 64,
+        "counterfactual_flow_cost_flip_rate": 0.05,
+        "counterfactual_flow_variance_flip_rate": 0.05,
+    }
+    for update_id in range(1, 11):
+        proposal = controller.propose(passing, update_id=update_id)
+        outcome = controller.commit(
+            proposal,
+            transition_confirmed=False if update_id == 10 else True,
+        )
+    assert not outcome["transitioned"]
+    assert controller.stage == "gate"
+    assert controller.consecutive_passes == 0
+    for update_id in range(11, 14):
+        outcome = controller.commit(
+            controller.propose(passing, update_id=update_id)
+        )
+    assert outcome["transitioned"]
+    assert controller.stage == "production_pair"
+
+
+def test_e2_7_v2_1_resume_restores_fixed_pool_sampling_cursor(tmp_path) -> None:
+    config, environment, observation, network, agent, _ = _fixture(V2_1_CONFIG_PATH)
+    mask = environment.get_action_mask()
+    pool = [(observation, mask) for _ in range(128)]
+    provenance = {"e1_validation_state_count": {"gate": 64}}
+    agent.set_safe_dual_legal_state_pool(pool, provenance=provenance)
+    agent._centered_pool_objective("gate", advance_cursor=True)
+    expected_cursor = agent._centered_pool_training_cursors["gate"]
+    checkpoint = tmp_path / "cursor.pt"
+    agent.save(checkpoint)
+
+    resumed = PPOAgent(
+        build_actor_critic(observation, config["network"]),
+        config["ppo"],
+        device="cpu",
+    )
+    resumed.load(checkpoint, load_optimizer=True)
+    resumed.set_safe_dual_legal_state_pool(pool, provenance=provenance)
+    assert resumed._centered_pool_training_cursors["gate"] == expected_cursor
+    assert network.centered_preference_stage == resumed.network.centered_preference_stage
+
+
+def test_e2_7_v2_checkpoint_is_rejected_by_v2_1_strict_resume() -> None:
+    config, _, _, _, agent, _ = _fixture(V2_1_CONFIG_PATH)
+    with pytest.raises(ValueError, match="different experiment protocol"):
+        _restore_e2_7_resume_provenance(
+            agent,
+            {
+                "experiment_suite_version": (
+                    "v7_e2_7_e1_warmstart_safe_gate_protocol_v2"
+                )
+            },
+            config,
+        )

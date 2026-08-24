@@ -1,0 +1,48 @@
+{
+  "extends": "e2_7_e1_warmstart_safe_gate_v1.json",
+  "experiment_name": "v7_e2_7_e1_warmstart_safe_gate_v2_1",
+  "experiment_suite_version": "v7_e2_7_e1_warmstart_safe_gate_protocol_v2_1",
+  "ppo": {
+    "counterfactual_preference_consistency": {
+      "enabled": true,
+      "version": "centered_gate_pair_worker_v4",
+      "apply_during_phase": "all",
+      "gate": {
+        "minimum_margin_gap": 0.05,
+        "minimum_eligible_states": 64,
+        "loss_coefficient": 0.1,
+        "minimum_final_margin": 0.000001,
+        "minimum_extreme_flip_rate": 0.05
+      },
+      "production_pair": {
+        "minimum_margin_gap": 0.05,
+        "minimum_eligible_states": 64,
+        "loss_coefficient": 0.1,
+        "minimum_final_margin": 0.000001
+      },
+      "worker_variance": {
+        "minimum_margin_gap": 0.05,
+        "minimum_eligible_states": 64,
+        "loss_coefficient": 0.1,
+        "minimum_final_margin": 0.000001
+      }
+    }
+  },
+  "training": {
+    "preference_stage_schedule": {
+      "enabled": true,
+      "version": "e1_centered_adapter_metric_gated_v3",
+      "final_update": 200,
+      "gate_minimum_updates": 10,
+      "gate_maximum_end_update": 40,
+      "production_pair_minimum_updates": 20,
+      "production_pair_maximum_end_update": 120,
+      "required_consecutive_passes": 3,
+      "minimum_gate_flip_rate": 0.05,
+      "minimum_production_pair_correct_rate": 0.05
+    }
+  },
+  "evaluation": {
+    "result_schema_version": "4.9.0"
+  }
+}
