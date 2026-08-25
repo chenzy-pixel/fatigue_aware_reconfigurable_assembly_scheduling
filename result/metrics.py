@@ -19,6 +19,7 @@ COUNTERFACTUAL_PREFERENCE_CONSISTENCY_EVALUATION_SCHEMA_VERSION = "4.7.0"
 E1_WARMSTART_SAFE_GATE_EVALUATION_SCHEMA_VERSION = "4.8.0"
 E1_WARMSTART_SAFE_GATE_V2_1_EVALUATION_SCHEMA_VERSION = "4.9.0"
 TIERED_TRAINING_GATES_EVALUATION_SCHEMA_VERSION = "5.0.0"
+MO_ALNS_EVALUATION_SCHEMA_VERSION = "5.1.0"
 
 # Scalar diagnostics intentionally shared by evaluation, training and Pareto
 # persistence.  Keeping the registry here prevents a new experiment field from
@@ -119,6 +120,7 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         E1_WARMSTART_SAFE_GATE_EVALUATION_SCHEMA_VERSION,
         E1_WARMSTART_SAFE_GATE_V2_1_EVALUATION_SCHEMA_VERSION,
         TIERED_TRAINING_GATES_EVALUATION_SCHEMA_VERSION,
+        MO_ALNS_EVALUATION_SCHEMA_VERSION,
     }:
         raise ValueError(f"unsupported evaluation result schema {version!r}")
     return version
@@ -724,6 +726,7 @@ def aggregate_evaluation_rows(
             E1_WARMSTART_SAFE_GATE_EVALUATION_SCHEMA_VERSION,
             E1_WARMSTART_SAFE_GATE_V2_1_EVALUATION_SCHEMA_VERSION,
             TIERED_TRAINING_GATES_EVALUATION_SCHEMA_VERSION,
+            MO_ALNS_EVALUATION_SCHEMA_VERSION,
         }:
         raise ValueError(f"unsupported evaluation result schema {schema_version!r}")
     normalized_metric = evaluation_quality_metric(

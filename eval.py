@@ -396,7 +396,7 @@ def evaluate_representative_diagnostic(
     }
 
 
-def _evaluation_row(
+def build_evaluation_row(
     record,
     metrics: dict[str, Any],
     reward_config: dict[str, Any],
@@ -658,6 +658,12 @@ def _evaluation_row(
     }
 
 
+# Kept as a private compatibility alias for existing experiment scripts.  New
+# baselines should import ``build_evaluation_row`` so all methods share one
+# formal row schema without depending on a private helper.
+_evaluation_row = build_evaluation_row
+
+
 @_preserve_rng_for_sampled
 def evaluate_dataset(
     config: dict[str, Any],
@@ -721,7 +727,7 @@ def evaluate_dataset(
                 decode_mode=decode_mode,
                 preference=effective_preference,
             )
-            row = _evaluation_row(
+            row = build_evaluation_row(
                 record,
                 metrics,
                 config["reward"],

@@ -633,3 +633,42 @@ python train.py `
 E2.4 使用 result schema `5.0.0`。逐实例、validation、Pareto 和 summary 同时
 持久化 matching recovery、production/worker preference、state-only gate 和
 safety guard 字段；provenance 的 schema 版本来自生效配置，不再硬编码为 `4.1.0`。
+
+### MO-ALNS 元启发式强基线
+
+`agent/mo_alns/` 提供环境解码的多目标 ALNS：解编码包含工序优先级、机器与
+拆卸/安装工人的完整偏好排序以及三类等待基因。任何候选均通过
+`AssemblySchedulingEnv` 的合法动作掩码逐步重放，因此保持拆装分阶段、疲劳
+恢复和 matching admission 的原始语义。搜索使用 8 个初始化规则、6 个破坏算子、
+6 个修复算子、Pareto archive、增广 Tchebycheff 标量化与自校准模拟退火。
+
+默认配置每实例–偏好点使用 300 次完整环境评价；全网格是 denominator-five 的
+21 点加 canonical `(0.5, 0.3, 0.2)`，共 22 个端点。先用小预算做 smoke：
+
+```powershell
+.\.venv\Scripts\python.exe mo_alns.py `
+  --config configs\baselines\mo_alns_smoke.json `
+  --dataset test --smoke --instance-limit 1 --parallel-envs 1
+```
+
+正式单种子运行：
+
+```powershell
+.\.venv\Scripts\python.exe mo_alns.py `
+  --config configs\baselines\mo_alns.json `
+  --dataset test --algorithm-seed 11 --parallel-envs 20
+```
+
+`mo_alns_benchmark.py` 可执行 `configs/baselines/mo_alns_manifest.json`
+中的五种子、三数据集协议。它输出 22 个端点、实例级 archive、完整排程日志、
+算子统计和 provenance。用 `mo_alns_analysis.py` 将这些 `candidates.csv` 与既有
+E1/E2 分析结果合并，得到三方法经验 Pareto、Hypervolume、贡献、canonical 质量和
+成对检验。报告明确标注 MO-ALNS 是 solver-budget arm，不把其内部搜索评价次数伪装
+成 E1/E2 的 equal-rollout budget。
+
+```powershell
+.\.venv\Scripts\python.exe mo_alns_analysis.py `
+  --e1-e2-candidate-csv result\analysis\e1_e2_full\candidates.csv `
+  --mo-alns-candidate-csv result\runs\mo_alns_formal\candidates.csv `
+  --output-dir result\analysis\e1_e2_mo_alns_solver_budget_v1
+```

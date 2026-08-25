@@ -1,0 +1,9 @@
+{
+  "protocol": "e1_e2_mo_alns_solver_budget_v1",
+  "config": "configs/baselines/mo_alns.json",
+  "datasets": ["test", "ood", "stress"],
+  "algorithm_seeds": [11, 23, 37, 53, 71],
+  "instance_limit": null,
+  "parallel_envs": 20,
+  "e1_e2_candidates": "result/analysis/e1_e2_full/candidates.csv"
+}
