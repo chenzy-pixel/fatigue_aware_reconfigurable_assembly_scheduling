@@ -40,22 +40,26 @@
   "ppo": {
     "counterfactual_preference_consistency": {
       "enabled": true,
-      "version": "centered_gate_pair_worker_v3",
+      "version": "centered_gate_pair_worker_v4",
       "apply_during_phase": "all",
       "gate": {
         "minimum_margin_gap": 0.05,
         "minimum_eligible_states": 64,
-        "loss_coefficient": 0.1
+        "loss_coefficient": 0.1,
+        "minimum_final_margin": 0.000001,
+        "minimum_extreme_flip_rate": 0.05
       },
       "production_pair": {
         "minimum_margin_gap": 0.05,
         "minimum_eligible_states": 64,
-        "loss_coefficient": 0.1
+        "loss_coefficient": 0.1,
+        "minimum_final_margin": 0.000001
       },
       "worker_variance": {
         "minimum_margin_gap": 0.05,
         "minimum_eligible_states": 64,
-        "loss_coefficient": 0.1
+        "loss_coefficient": 0.1,
+        "minimum_final_margin": 0.000001
       }
     },
     "canonical_teacher_kl": {
@@ -66,6 +70,15 @@
     }
   },
   "training": {
+    "gate_policy": {
+      "version": "tiered_training_gates_v1",
+      "canonical_identity_tolerance": 1e-8,
+      "policy_safety_action": "rollback_continue",
+      "stage_timeout_action": "force_transition",
+      "candidate_ranking": "completion_hypervolume_update",
+      "final_acceptance_rule": "any_candidate_passes",
+      "primary_precedence": ["best_safe", "last_safe"]
+    },
     "episodes": 2000,
     "parallel_envs": 10,
     "smoke_episodes": 10,
@@ -80,15 +93,16 @@
     },
     "preference_stage_schedule": {
       "enabled": true,
-      "version": "e1_centered_adapter_metric_gated_v2",
+      "version": "e1_centered_adapter_monitored_v4",
       "final_update": 200,
       "gate_minimum_updates": 10,
       "gate_maximum_end_update": 40,
       "production_pair_minimum_updates": 20,
-      "production_pair_maximum_end_update": 120,
+      "production_pair_maximum_end_update": 80,
       "required_consecutive_passes": 3,
       "minimum_gate_flip_rate": 0.05,
-      "minimum_production_pair_correct_rate": 0.05
+      "minimum_production_pair_correct_rate": 0.05,
+      "maximum_auxiliary_loss": 0.0001
     },
     "development_acceptance": {
       "enabled": true,
@@ -154,6 +168,6 @@
     }
   },
   "evaluation": {
-    "result_schema_version": "4.8.0"
+    "result_schema_version": "5.0.0"
   }
 }

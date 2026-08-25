@@ -21,6 +21,15 @@
     }
   },
   "training": {
+    "gate_policy": {
+      "version": "tiered_training_gates_v1",
+      "canonical_identity_tolerance": 1e-8,
+      "policy_safety_action": "rollback_continue",
+      "stage_timeout_action": "force_transition",
+      "candidate_ranking": "completion_hypervolume_update",
+      "final_acceptance_rule": "any_candidate_passes",
+      "primary_precedence": ["best_safe", "last_safe"]
+    },
     "two_stage": {
       "quality_checkpoint_promotion": "pareto_guarded_e2_4_v1",
       "pareto_promotion": {
@@ -46,6 +55,6 @@
     }
   },
   "evaluation": {
-    "result_schema_version": "4.5.0"
+    "result_schema_version": "5.0.0"
   }
 }

@@ -600,16 +600,26 @@ E2.4 的 `hierarchical_state_only_gate_then_pair_v3` 先用 action-set 状态特
 `matching_admission_recovery_v2` 安全 mask，只在安全候选内加入直接的负载方差
 偏好；worker 的直接 flow/cost 项恒为零。
 
-Quality 阶段保存不同角色的 checkpoint：canonical 过渡点为
-`phase1_checkpoint.pt`，五锚点 100/100 安全点为
-`anchor_safe_checkpoint.pt`，完整网格 440/440 安全点为
-`full_grid_safe_checkpoint.pt`。连续两次多偏好安全审计失败时，按完整网格、
-锚点、phase1 的顺序恢复网络和 optimizer，并把学习率减半（下限 `1e-5`）；
-canonical-only `safe_checkpoint.pt` 不用于 E2.4 quality 回滚。
+### E2.4–E2.7 分层训练门禁
 
-`accepted_checkpoint.pt` 仍只能由完整 22 点网格产生：精确 440/440、0 截断、
-0 调度违规、疲劳安全、8/8/4 可控性门槛，以及 flow/cost/variance 三项平均
-Spearman 都不高于 `-0.05`。在 accepted 产生前，不做正式 test Pareto 分析。
+这些配置显式启用 `training.gate_policy.version =
+"tiered_training_gates_v1"`（schema `5.0.0`）。训练期的硬门禁只包括数值
+非有限值、非法动作、固定验证清单损坏、canonical identity 漂移，以及调度/疲劳
+物理违规。调度或疲劳违规会先保存 `latest_rejected_candidate.pt`，恢复最近安全
+checkpoint，并将学习率减半后继续；完成率、KL、梯度、pair loss、偏好响应和
+Pareto 指标只记录或驱动 plateau 学习率控制，不再触发完成率回滚或提前停训。
+
+每次固定审计分别记录 `physical_safety_pass`、`completion_pass` 和
+`evaluation_integrity_pass`；`all_safe` 保留为历史兼容字段。通过物理安全和清单
+完整性的状态写入 `last_safe_checkpoint.pt`，完整网格的最佳候选按完成率、
+Hypervolume、update id 排序写入 `best_safe_candidate_checkpoint.pt`。
+
+训练结束后才分别冻结并验收这两个候选，输出
+`final_acceptance_best_safe.json`、`final_acceptance_last_safe.json` 和
+`final_acceptance.json`。任一候选通过即可接受，优先选择 best-safe；此时才生成
+兼容的 `accepted_checkpoint.pt`。E2.7 仅在 validation 前置条件通过后执行
+validation/test/OOD/stress heldout；E2.4–E2.6 将 heldout 标为 `not_configured`。
+旧配置缺少该版本字段时保持原有门禁语义。
 
 远端运行 seed11：
 
@@ -620,6 +630,6 @@ python train.py `
   --run-name v7_2000_e2_4_neutral_gate_seed11
 ```
 
-E2.4 使用 result schema `4.5.0`。逐实例、validation、Pareto 和 summary 同时
+E2.4 使用 result schema `5.0.0`。逐实例、validation、Pareto 和 summary 同时
 持久化 matching recovery、production/worker preference、state-only gate 和
 safety guard 字段；provenance 的 schema 版本来自生效配置，不再硬编码为 `4.1.0`。

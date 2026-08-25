@@ -30,7 +30,7 @@ def _force_base_defer(network) -> None:
 
 def test_e2_6_gate_contract_and_checkpoint_recovery(tmp_path) -> None:
     config, environment, observation, network = _network()
-    assert result_schema_version(config) == "4.7.0"
+    assert result_schema_version(config) == "5.0.0"
     assert network.production_gate_version == "state_only_counterfactual_monotone_flow_commit_gate_v3"
     _force_base_defer(network)
     network.eval()

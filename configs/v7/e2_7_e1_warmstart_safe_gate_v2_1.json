@@ -31,18 +31,19 @@
   "training": {
     "preference_stage_schedule": {
       "enabled": true,
-      "version": "e1_centered_adapter_metric_gated_v3",
+      "version": "e1_centered_adapter_monitored_v4",
       "final_update": 200,
       "gate_minimum_updates": 10,
       "gate_maximum_end_update": 40,
       "production_pair_minimum_updates": 20,
-      "production_pair_maximum_end_update": 120,
+      "production_pair_maximum_end_update": 80,
       "required_consecutive_passes": 3,
       "minimum_gate_flip_rate": 0.05,
-      "minimum_production_pair_correct_rate": 0.05
+      "minimum_production_pair_correct_rate": 0.05,
+      "maximum_auxiliary_loss": 0.0001
     }
   },
   "evaluation": {
-    "result_schema_version": "4.9.0"
+    "result_schema_version": "5.0.0"
   }
 }

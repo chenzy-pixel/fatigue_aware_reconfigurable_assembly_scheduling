@@ -261,7 +261,9 @@ def test_e2_7_pair_and_worker_scales_have_live_zero_boundary_gradients(
 
     network.set_centered_preference_stage("production_pair")
     agent.centered_state_pools["production_pair"] = pool
-    pair_loss, _ = agent._centered_pool_objective("production_pair")
+    pair_loss, _ = agent._centered_pool_objective(
+        "production_pair", full_pool=True
+    )
     pair_loss.backward()
     assert torch.isfinite(network.centered_production_pair_scale_raw.grad)
     assert network.centered_production_pair_scale_raw.grad.abs().item() > 0.0
@@ -269,21 +271,24 @@ def test_e2_7_pair_and_worker_scales_have_live_zero_boundary_gradients(
     network.zero_grad(set_to_none=True)
     network.set_centered_preference_stage("worker_variance")
     agent.centered_state_pools["worker_variance"] = pool
-    worker_loss, _ = agent._centered_pool_objective("worker_variance")
+    worker_loss, _ = agent._centered_pool_objective(
+        "worker_variance", full_pool=True
+    )
     worker_loss.backward()
     assert torch.isfinite(network.centered_worker_variance_scale_raw.grad)
     assert network.centered_worker_variance_scale_raw.grad.abs().item() > 0.0
 
 
-def test_e2_7_metric_stage_controller_transitions_and_fails_fast() -> None:
+def test_e2_7_monitored_stage_controller_transitions_or_times_out() -> None:
     config = load_config(CONFIG_PATH)
     controller = E2_7PreferenceStageController.from_config(config)
     assert controller is not None
     gate_pass = {
-        "counterfactual_constraint_status": "constraint_satisfied",
-        "counterfactual_eligible_count": 64.0,
-        "counterfactual_flow_cost_flip_count": 4.0,
-        "counterfactual_flow_variance_flip_count": 4.0,
+        "counterfactual_eligible_count": 64,
+        "counterfactual_control_evaluated_state_count": 64,
+        "counterfactual_gate_loss": 0.0,
+        "counterfactual_flow_cost_flip_rate": 0.05,
+        "counterfactual_flow_variance_flip_rate": 0.05,
     }
     for update_id in range(1, 11):
         controller.observe(gate_pass, update_id=update_id)
@@ -291,7 +296,9 @@ def test_e2_7_metric_stage_controller_transitions_and_fails_fast() -> None:
     assert controller.transition_history[-1]["update_id"] == 10
 
     pair_pass = {
-        "production_pair_constraint_status": "constraint_satisfied",
+        "production_pair_eligible_count": 64,
+        "production_pair_control_evaluated_state_count": 64,
+        "production_pair_loss": 0.0,
         "production_pair_correct_rate": 0.05,
     }
     for update_id in range(11, 31):
@@ -303,11 +310,30 @@ def test_e2_7_metric_stage_controller_transitions_and_fails_fast() -> None:
     restored.restore(saved)
     assert restored.as_dict() == saved
 
-    failing = E2_7PreferenceStageController.from_config(config)
-    assert failing is not None
-    with pytest.raises(RuntimeError, match="preference_stage_failed"):
-        for update_id in range(1, 41):
-            failing.observe({}, update_id=update_id)
+    timed_out = E2_7PreferenceStageController.from_config(config)
+    assert timed_out is not None
+    failing_metrics = {
+        "counterfactual_eligible_count": 64,
+        "counterfactual_control_evaluated_state_count": 64,
+        "counterfactual_gate_loss": 1.0,
+        "counterfactual_flow_cost_flip_rate": 0.0,
+        "counterfactual_flow_variance_flip_rate": 0.0,
+    }
+    for update_id in range(1, 41):
+        timed_out.observe(failing_metrics, update_id=update_id)
+    assert timed_out.stage == "production_pair"
+    assert timed_out.transition_history[-1]["reason"] == "budget_exhausted"
+    for update_id in range(41, 121):
+        timed_out.observe(
+            {
+                "production_pair_eligible_count": 64,
+                "production_pair_control_evaluated_state_count": 64,
+                "production_pair_loss": 1.0,
+                "production_pair_correct_rate": 0.0,
+            },
+            update_id=update_id,
+        )
+    assert timed_out.stage == "worker_variance"
 
 
 def test_e2_7_fixed_safe_pool_and_shield_boundaries() -> None:
@@ -719,15 +745,15 @@ def test_e2_7_development_acceptance_requires_two_full_grids_and_new_name(tmp_pa
 
 def test_e2_7_schema_and_old_checkpoint_loading_regression() -> None:
     config, _, _, _, _, _ = _fixture()
-    assert result_schema_version(config) == "4.8.0"
+    assert result_schema_version(config) == "5.0.0"
     aggregate = aggregate_evaluation_rows(
         [],
         dataset="validation",
         policy="ppo",
         manifest="validation/manifest.json",
-        schema_version="4.8.0",
+        schema_version="5.0.0",
     )
-    assert aggregate["evaluation_schema_version"] == "4.8.0"
+    assert aggregate["evaluation_schema_version"] == "5.0.0"
     e2_3_checkpoint = torch.load(
         project_path(
             "result/runs/v7_2000_e2_3_safe_production_seed11/last_checkpoint.pt"
@@ -741,7 +767,7 @@ def test_e2_7_schema_and_old_checkpoint_loading_regression() -> None:
     old_network = build_actor_critic(observation, old_config["network"])
     old_network.load_state_dict(e2_3_checkpoint["network"], strict=True)
     v2_1_config = load_config(V2_1_CONFIG_PATH)
-    assert result_schema_version(v2_1_config) == "4.9.0"
+    assert result_schema_version(v2_1_config) == "5.0.0"
 
 
 def test_e2_7_v1_checkpoint_is_rejected_by_v2_strict_resume(tmp_path) -> None:
@@ -924,9 +950,9 @@ def test_e2_7_v2_1_stage_controller_requires_validated_transition() -> None:
     controller = E2_7PreferenceStageController.from_config(config)
     assert controller is not None
     passing = {
-        "counterfactual_constraint_status": "constraint_satisfied",
         "counterfactual_eligible_count": 64,
         "counterfactual_control_evaluated_state_count": 64,
+        "counterfactual_gate_loss": 0.0,
         "counterfactual_flow_cost_flip_rate": 0.05,
         "counterfactual_flow_variance_flip_rate": 0.05,
     }

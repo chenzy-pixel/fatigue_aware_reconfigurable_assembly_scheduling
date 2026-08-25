@@ -73,7 +73,7 @@ quality are reported separately.
 ## E2.5 safe monotone gate
 
 `configs/v7/e2_5_safe_monotone_flow_gate.json` is a from-scratch E2.5
-configuration (schema `4.6.0`, `parallel_envs=10`).  Its state-only base gate
+configuration (schema `5.0.0`, `parallel_envs=10`).  Its state-only base gate
 is exactly E2.4 for `w_flow <= 0.2`.  Only after three canonical feasibility
 successes is that base gate frozen and a positive-only
 `kappa * max(w_flow - 0.2, 0)` commit-logit residual enabled.  The defer logit

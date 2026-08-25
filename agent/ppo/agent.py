@@ -32,6 +32,12 @@ from result.provenance import (
 )
 
 
+# This is a hard canonical-invariance contract, not a tuning threshold.  The
+# tiered E2 training protocol records it in config and fails immediately when
+# the exact E1 identity is no longer preserved.
+E2_7_CANONICAL_IDENTITY_TOLERANCE = 1e-8
+
+
 def summarize_policy_decision_diagnostics(
     rows: Sequence[dict[str, Any]],
 ) -> dict[str, float | int]:
@@ -1499,7 +1505,7 @@ class PPOAgent:
         if not bool(torch.isfinite(error)):
             raise RuntimeError("E2.7 canonical identity error is non-finite")
         result = float(error.detach().cpu())
-        if result > 1e-8:
+        if result > E2_7_CANONICAL_IDENTITY_TOLERANCE:
             raise RuntimeError(
                 "E2.7 canonical policy logits drifted from E1: "
                 f"max_abs_error={result:.12g}"

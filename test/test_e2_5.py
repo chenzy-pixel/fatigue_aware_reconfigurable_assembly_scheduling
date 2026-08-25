@@ -23,7 +23,7 @@ def _network():
 def test_e2_5_config_and_scales_are_bounded() -> None:
     config, _, network = _network()
     assert config["training"]["parallel_envs"] == 10
-    assert result_schema_version(config) == "4.6.0"
+    assert result_schema_version(config) == "5.0.0"
     assert network.production_gate_version == "state_only_monotone_flow_commit_gate_v2"
     assert 0.5 < float(network.production_preference_action_scale()) < 3.0
     assert 0.1 < float(network.worker_preference_action_scale()) < 2.0

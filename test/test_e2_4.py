@@ -26,6 +26,8 @@ from train import (
     TrainingPhaseController,
     _pareto_snapshot,
     _preference_key,
+    _tiered_hard_failure_reason,
+    _select_tiered_primary_role,
 )
 
 
@@ -41,7 +43,7 @@ def _network(preference=(0.5, 0.3, 0.2)):
 def test_e2_4_config_and_checkpoint_contract(tmp_path) -> None:
     config, _, _, observation, network = _network()
     assert config["experiment_name"] == "v7_e2_4_neutral_gate_safe_variance"
-    assert result_schema_version(config) == "4.5.0"
+    assert result_schema_version(config) == "5.0.0"
     assert network.network_spec()["production_gate"] == {
         "version": "state_only_action_set_gate_v1",
         "preference_conditioning": False,
@@ -219,6 +221,9 @@ def test_e2_4_full_grid_requires_response_direction() -> None:
     controller = TrainingPhaseController.from_config(config)
     controller.phase = "quality"
     assert controller.observe_pareto_snapshot(snapshot, completed_episodes=200) == "accepted"
+    final_decision = controller.evaluate_final_pareto_snapshot(snapshot)
+    assert final_decision["pass"] is True
+    assert final_decision["checks"]["completion_pass"] is True
 
     failed = deepcopy(rows)
     for row in failed:
@@ -237,21 +242,87 @@ def test_e2_4_full_grid_requires_response_direction() -> None:
     assert failed_snapshot["preference_response_pass"] is False
 
 
-def test_e2_4_safety_guard_waits_for_two_consecutive_failures() -> None:
+def test_tiered_snapshot_separates_completion_from_physical_safety() -> None:
+    config = load_config("configs/v7/e2_4_neutral_gate_safe_variance.json")
+    rows, instances, preferences = _full_grid_rows()
+    rows[0]["terminated"] = False
+    rows[0]["truncated"] = True
+    snapshot = _pareto_snapshot(
+        rows,
+        config=config,
+        scope="full_grid_22",
+        update_id=20,
+        completed_episodes=200,
+        fatigue_tolerance=1e-9,
+        expected_instance_ids=instances,
+        expected_preference_keys=preferences,
+    )
+    assert snapshot["physical_safety_pass"] is True
+    assert snapshot["completion_pass"] is False
+    assert snapshot["evaluation_integrity_pass"] is True
+    assert snapshot["all_safe"] is False
+
+
+def test_tiered_hard_metric_gate_rejects_nan_and_canonical_drift() -> None:
+    config = load_config("configs/v7/e2_4_neutral_gate_safe_variance.json")
+    assert _tiered_hard_failure_reason({"loss": float("nan")}, config) == (
+        "non_finite_training_metric:loss"
+    )
+    assert _tiered_hard_failure_reason(
+        {"canonical_identity_max_abs_error": 2e-8}, config
+    ) == "canonical_identity_failed"
+
+
+@pytest.mark.parametrize(
+    ("best", "last", "expected"),
+    [
+        ("passed", "passed", "best_safe"),
+        ("passed", "failed", "best_safe"),
+        ("failed", "passed", "last_safe"),
+        ("failed", "failed", None),
+    ],
+)
+def test_tiered_final_acceptance_any_candidate_matrix(
+    best: str, last: str, expected: str | None
+) -> None:
+    reports = {
+        "best_safe": {"acceptance_status": best, "checkpoint_sha256": "same"},
+        "last_safe": {"acceptance_status": last, "checkpoint_sha256": "same"},
+    }
+    assert _select_tiered_primary_role(reports) == expected
+
+
+def test_e2_4_tiered_safety_guard_only_rolls_back_physical_failures() -> None:
     config = load_config("configs/v7/e2_4_neutral_gate_safe_variance.json")
     guard = ParetoSafetyGuard.from_config(config)
     assert guard is not None
-    safe = {"scope": "anchors_5", "coverage_pass": True, "all_safe": True}
-    unsafe = {"scope": "anchors_5", "coverage_pass": True, "all_safe": False}
-    assert guard.observe(unsafe) == "warning"
-    assert guard.consecutive_failures == 1
+    safe = {"scope": "anchors_5", "physical_safety_pass": True}
+    incomplete = {
+        "scope": "anchors_5",
+        "physical_safety_pass": True,
+        "completion_pass": False,
+        "completion_rate": 0.99,
+    }
+    unsafe = {"scope": "anchors_5", "physical_safety_pass": False}
+    assert guard.observe(incomplete) == "safe"
+    assert guard.rollback_count == 0
     assert guard.observe(safe) == "safe"
     assert guard.consecutive_failures == 0
-    assert guard.observe(unsafe) == "warning"
     assert guard.observe(unsafe) == "rollback"
+    assert guard.rollback_count == 1
     guard.record_rollback("full_grid_safe")
     assert guard.consecutive_failures == 0
     assert guard.last_rollback_source == "full_grid_safe"
+
+
+def test_missing_tiered_policy_retains_legacy_safety_guard_behavior() -> None:
+    config = load_config("configs/v7/e2_4_neutral_gate_safe_variance.json")
+    del config["training"]["gate_policy"]
+    guard = ParetoSafetyGuard.from_config(config)
+    assert guard is not None
+    unsafe = {"scope": "anchors_5", "coverage_pass": True, "all_safe": False}
+    assert guard.observe(unsafe) == "warning"
+    assert guard.observe(unsafe) == "rollback"
 
 
 def test_e2_4_schema_aggregates_new_diagnostics() -> None:
