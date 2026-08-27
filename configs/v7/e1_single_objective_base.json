@@ -1,0 +1,36 @@
+{
+  "extends": "e1_context_exception.json",
+  "experiment_name": "v7_e1_single_objective",
+  "experiment_suite_version": "v7_e1_single_objective_protocol_v1",
+  "environment": {
+    "worker_resource_control": {
+      "mode": "matching_admission_recovery_v2"
+    },
+    "production_defer": {
+      "shield": {
+        "enabled": true,
+        "version": "deadline_progress_viability_shield_v2",
+        "deadline_reserve_ticks": 1,
+        "soft_risk_threshold": 0.8,
+        "soft_risk_coefficient": 0.0
+      }
+    }
+  },
+  "training": {
+    "validation_instance_limit": 500,
+    "two_stage": {
+      "quality_checkpoint_promotion": "single_objective_guarded_v1",
+      "quality_completion_floor": 0.95,
+      "quality_promotion_constraints": null,
+      "single_objective_promotion": {
+        "window_size": 5,
+        "window_statistic": "median",
+        "rollback_below_floor_consecutive": 2,
+        "formal_completion_target": 1.0,
+        "formal_truncation_target": 0,
+        "formal_violation_target": 0,
+        "physical_safety_required": true
+      }
+    }
+  }
+}

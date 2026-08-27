@@ -672,3 +672,64 @@ E1/E2 分析结果合并，得到三方法经验 Pareto、Hypervolume、贡献�
   --mo-alns-candidate-csv result\runs\mo_alns_formal\candidates.csv `
   --output-dir result\analysis\e1_e2_mo_alns_solver_budget_v1
 ```
+
+### E1 三个单目标策略
+
+`e1_single_flow.json`、`e1_single_cost.json` 和
+`e1_single_variance.json` 继承同一个 E1 单目标公共配置。三者仅将
+`reward.quality_weights` 分别设为 `(1,0,0)`、`(0,1,0)` 和 `(0,0,1)`。
+公共配置使用 `matching_admission_recovery_v2`、
+`deadline_progress_viability_shield_v2` 和
+`single_objective_guarded_v1`；soft risk shaping 系数固定为零。
+
+正式 validation 固定为同一份、同一顺序的 500 个 publication 实例。首次在训练电脑
+生成后，三个策略共用该 manifest：
+
+```powershell
+.\.venv\Scripts\python.exe data\generate_orders.py `
+  --config configs\v7\e1_single_flow.json `
+  --build-split validation --profile publication --count 500 --overwrite
+```
+
+阶段一进入质量阶段仍要求连续 3 次 `completion_rate=1.0`。质量阶段采用 5 次
+合格验证的原始目标中位数：`completion_rate>=0.95`、零 schedule violation 和物理/疲劳
+安全的候选进入探索轨道；连续两次严格低于 0.95 回滚并清空当前窗口。探索 checkpoint
+不会覆盖 `accepted_checkpoint.pt`。正式 accepted 还要求当前验证 100% 完成、零
+truncation、零 schedule violation 和物理/疲劳安全，因此只由正式轨道写入。
+
+本机 smoke 命令如下。Smoke 只验证配置、rollout/PPO 更新、安全机制诊断字段和
+reward identity，不用于判断收敛，也不进入后续 payoff matrix：
+
+```powershell
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_flow.json --smoke --algorithm-seed 11 --run-name e1_single_flow_smoke_seed11
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_cost.json --smoke --algorithm-seed 11 --run-name e1_single_cost_smoke_seed11
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_variance.json --smoke --algorithm-seed 11 --run-name e1_single_variance_smoke_seed11
+```
+
+另一台训练电脑运行 seed 11、2000 episodes 的正式实验。配置已固定
+`training.episodes=2000`：
+
+```powershell
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_flow.json --algorithm-seed 11 --run-name e1_single_flow_seed11_2000
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_cost.json --algorithm-seed 11 --run-name e1_single_cost_seed11_2000
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_variance.json --algorithm-seed 11 --run-name e1_single_variance_seed11_2000
+```
+
+训练完成后，将三个正式 run 目录传给收敛分析入口：
+
+```powershell
+.\.venv\Scripts\python.exe single_objective_analysis.py `
+  --flow-run result\runs\e1_single_flow_seed11_2000 `
+  --cost-run result\runs\e1_single_cost_seed11_2000 `
+  --variance-run result\runs\e1_single_variance_seed11_2000 `
+  --output-dir result\analysis\e1_single_objective_seed11
+```
+
+每个策略输出一张五面板 PDF、300-dpi PNG 和对应的原始 validation 数据 CSV，
+并标记 feasibility→quality 切换点、探索窗口晋升点及正式 accepted checkpoint episode。
+completion 面板同时绘制 1.0 和 0.95 参考线。汇总文件
+`convergence_diagnostics.json` 和 `convergence_report.md` 报告 95% 合格点数、窗口中位数
+下降、探索/正式晋升数量、正式 accepted 是否回到 100%，以及另外两个目标的原始变化。
+逐实例尾部失败保存在 `single_objective_validation_failures.csv`（instance ID、截断、
+未完成订单、排程违反和疲劳安全线）。正式 accepted checkpoint 之后再在同一 calibration
+set 上计算 payoff matrix。
