@@ -2,11 +2,24 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import torch
 
 from agent.ppo import PPOAgent, RolloutBuffer, TypedActorCritic
 from environment import AssemblySchedulingEnv
 from utils import set_seed
+
+
+def test_ppo_agent_reports_unavailable_cuda(config, fixed_instance, monkeypatch):
+    environment = AssemblySchedulingEnv(config)
+    observation = environment.reset(fixed_instance)
+    network = TypedActorCritic(
+        observation.feature_dimensions, config["network"]["hidden_dim"]
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    with pytest.raises(RuntimeError, match="CUDA training was requested"):
+        PPOAgent(network, config["ppo"], device="cuda")
 
 
 def test_ppo_update_changes_parameters_and_checkpoint_reloads(

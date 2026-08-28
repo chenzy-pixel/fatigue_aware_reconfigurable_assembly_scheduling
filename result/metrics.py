@@ -36,6 +36,15 @@ MATCHING_RECOVERY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "future_installation_admission_masked_action_ratio",
     "future_installation_matching_deficit_after_commit",
     "maximum_projected_installation_deficit",
+    "temporal_oracle_call_count",
+    "temporal_oracle_cache_hit_count",
+    "temporal_oracle_searched_nodes",
+    "temporal_oracle_feasible_count",
+    "temporal_oracle_infeasible_count",
+    "temporal_oracle_unknown_count",
+    "temporal_worker_action_rescued_count",
+    "temporal_future_installation_rescued_count",
+    "temporal_delayed_disassembly_rescued_count",
 )
 PREFERENCE_POLICY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "ranker_top_decision_count",
@@ -678,6 +687,20 @@ def aggregate_matching_recovery_diagnostics(
             maximum_projected
         ),
         "maximum_projected_installation_deficit": maximum_projected,
+        **{
+            name: total(name)
+            for name in (
+                "temporal_oracle_call_count",
+                "temporal_oracle_cache_hit_count",
+                "temporal_oracle_searched_nodes",
+                "temporal_oracle_feasible_count",
+                "temporal_oracle_infeasible_count",
+                "temporal_oracle_unknown_count",
+                "temporal_worker_action_rescued_count",
+                "temporal_future_installation_rescued_count",
+                "temporal_delayed_disassembly_rescued_count",
+            )
+        },
     }
 
 
@@ -825,6 +848,15 @@ def aggregate_evaluation_rows(
                 "future_installation_admission_masked_action_ratio",
                 "future_installation_matching_deficit_after_commit",
                 "maximum_projected_installation_deficit",
+                "temporal_oracle_call_count",
+                "temporal_oracle_cache_hit_count",
+                "temporal_oracle_searched_nodes",
+                "temporal_oracle_feasible_count",
+                "temporal_oracle_infeasible_count",
+                "temporal_oracle_unknown_count",
+                "temporal_worker_action_rescued_count",
+                "temporal_future_installation_rescued_count",
+                "temporal_delayed_disassembly_rescued_count",
             )
         },
         "resource_admission_masked_action_count": summarize_values(

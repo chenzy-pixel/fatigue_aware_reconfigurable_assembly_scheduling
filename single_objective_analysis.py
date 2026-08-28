@@ -137,12 +137,7 @@ def load_plot_rows(
                 "phase_after_validation", ""
             ),
             "validation_event": source.get("validation_event", ""),
-            "exploratory_promotion_event": source.get(
-                "exploratory_promotion_event", ""
-            ),
-            "formal_promotion_event": source.get(
-                "formal_promotion_event", ""
-            ),
+            "audit_event": source.get("audit_event", ""),
             "window_objective_statistic": source.get(
                 "window_objective_statistic", ""
             ),
@@ -159,7 +154,14 @@ def load_plot_rows(
 
 
 def _load_failure_rows(run_directory: str | Path) -> list[dict[str, str]]:
-    path = Path(run_directory) / "single_objective_validation_failures.csv"
+    path = Path(run_directory) / "single_objective_audit_failures.csv"
+    if not path.is_file():
+        path = Path(run_directory) / "single_objective_validation_failures.csv"
+    return _read_csv(path) if path.is_file() else []
+
+
+def _load_audit_rows(run_directory: str | Path) -> list[dict[str, str]]:
+    path = Path(run_directory) / "single_objective_audit_log.csv"
     return _read_csv(path) if path.is_file() else []
 
 
@@ -186,8 +188,8 @@ def _phase_markers(
             (
                 row["completed_episodes"]
                 for row in reversed(rows)
-                if row["formal_promotion_event"] == "formal_promoted"
-                or row["validation_event"] == "formal_promoted"
+                if row.get("audit_event") == "accepted"
+                or row.get("validation_event") == "accepted"
             ),
             None,
         )
@@ -197,12 +199,14 @@ def _phase_markers(
     )
 
 
-def _exploratory_marker_episodes(rows: Sequence[dict[str, Any]]) -> list[int]:
+def _audit_marker_episodes(rows: Sequence[dict[str, Any]]) -> list[int]:
     return [
         int(row["completed_episodes"])
         for row in rows
-        if row["exploratory_promotion_event"] == "exploratory_promoted"
-        or row["validation_event"] == "exploratory_promoted"
+        if row.get("audit_event") in {
+            "accepted", "audit_rejected", "audit_passed_not_accepted"
+        }
+        or row.get("validation_event") == "audit_required"
     ]
 
 
@@ -210,7 +214,7 @@ def _add_markers(
     axis: plt.Axes,
     transition_episode: int | None,
     accepted_episode: int | None,
-    exploratory_episodes: Sequence[int],
+    audit_episodes: Sequence[int],
 ) -> None:
     if transition_episode is not None:
         axis.axvline(
@@ -220,13 +224,13 @@ def _add_markers(
             linewidth=1.1,
             label="feasibility -> quality",
         )
-    for index, episode in enumerate(exploratory_episodes):
+    for index, episode in enumerate(audit_episodes):
         axis.axvline(
             episode,
             color="#ff7f0e",
             linestyle="-.",
             linewidth=1.0,
-            label="exploratory window promotion" if index == 0 else None,
+            label="500-instance audit" if index == 0 else None,
         )
     if accepted_episode is not None:
         axis.axvline(
@@ -255,6 +259,7 @@ def analyze_run(
     objective: str,
     transition_episode: int | None,
     failure_rows: Sequence[dict[str, str]] = (),
+    audit_rows: Sequence[dict[str, str]] = (),
 ) -> dict[str, Any]:
     """Return transparent diagnostics without smoothing validation values."""
 
@@ -304,11 +309,11 @@ def analyze_run(
         if str(row.get("window_objective_statistic", "")).strip()
         not in {"", "None", "nan"}
     ]
-    formal_rows = [
+    accepted_rows = [
         row
         for row in rows
-        if row["formal_promotion_event"] == "formal_promoted"
-        or row["validation_event"] == "formal_promoted"
+        if row.get("audit_event") == "accepted"
+        or row.get("validation_event") == "accepted"
     ]
     failure_instance_ids = sorted(
         {
@@ -349,12 +354,14 @@ def analyze_run(
                 for row in quality_rows
             ),
             "quality_point_count": len(quality_rows),
-            "exploratory_promotion_count": sum(
-                row["exploratory_promotion_event"] == "exploratory_promoted"
-                or row["validation_event"] == "exploratory_promoted"
+            "audit_trigger_count": sum(
+                row.get("validation_event") == "audit_required"
                 for row in rows
             ),
-            "formal_promotion_count": len(formal_rows),
+            "audit_count": len(audit_rows),
+            "accepted_count": sum(
+                row.get("audit_event") == "accepted" for row in audit_rows
+            ),
             "window_statistic_count": len(window_statistics),
             "window_statistic_strict_decrease_count": sum(
                 later < earlier
@@ -362,17 +369,14 @@ def analyze_run(
                     window_statistics, window_statistics[1:], strict=False
                 )
             ),
-            "formal_accepted_current_point_is_100_percent": bool(
-                formal_rows
-                and math.isclose(
-                    formal_rows[-1]["completion_rate"],
-                    1.0,
-                    rel_tol=0.0,
-                    abs_tol=1e-12,
+            "accepted_audit_reaches_98_percent": bool(
+                audit_rows
+                and any(
+                    row.get("audit_event") == "accepted"
+                    and float(row.get("audit_completion_rate", 0.0)) >= 0.98
+                    and int(row.get("audit_failed_instance_count", 501)) <= 10
+                    for row in audit_rows
                 )
-                and int(formal_rows[-1]["truncated_count"]) == 0
-                and int(formal_rows[-1]["schedule_violation_count"]) == 0
-                and bool(formal_rows[-1]["physical_safety_pass"])
             ),
         },
         "failure_details": {
@@ -437,7 +441,7 @@ def plot_run(
     output_path = Path(output_directory)
     output_path.mkdir(parents=True, exist_ok=True)
     transition_episode, accepted_episode = _phase_markers(rows, summary)
-    exploratory_episodes = _exploratory_marker_episodes(rows)
+    audit_episodes = _audit_marker_episodes(rows)
 
     data_path = output_path / f"{objective}_convergence_data.csv"
     write_csv(data_path, list(rows))
@@ -514,9 +518,7 @@ def plot_run(
         axis.set_title(label)
         axis.set_ylabel("Raw validation value")
         axis.grid(alpha=0.25)
-        _add_markers(
-            axis, transition_episode, accepted_episode, exploratory_episodes
-        )
+        _add_markers(axis, transition_episode, accepted_episode, audit_episodes)
         handles, labels = axis.get_legend_handles_labels()
         if handles:
             unique = dict(zip(labels, handles, strict=True))
@@ -539,13 +541,14 @@ def plot_run(
         objective,
         transition_episode,
         _load_failure_rows(run_directory),
+        _load_audit_rows(run_directory),
     )
     diagnostics.update(
         {
             "run_directory": str(Path(run_directory).resolve()),
             "phase_transition_episode": transition_episode,
             "accepted_checkpoint_episode": accepted_episode,
-            "exploratory_promotion_episodes": exploratory_episodes,
+            "audit_episodes": audit_episodes,
             "plot_data_csv": str(data_path.resolve()),
             "png": str(png_path.resolve()),
             "pdf": str(pdf_path.resolve()),
@@ -570,25 +573,26 @@ def _write_markdown_report(
             "The plateau flag is a diagnostic, not an acceptance gate."
         ),
         "",
-        "| Objective | ≥95% quality points | Exploratory/formal promotions | "
-        "Formal 100% | Target first→last | Downward | Plateau |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Objective | ≥95% daily points | Audit triggers | Audits/accepted | "
+        "98% accepted | Target first→last | Downward | Plateau |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for report in diagnostics:
         gates = report["hard_gates"]
         target = report["target"]
         exploration = report["exploration"]
         lines.append(
-            "| {objective} | {qualified}/{quality} | {exploratory}/{formal} | "
-            "{formal_100} | {first:.6g}→{last:.6g} ({change}) | {downward} | {plateau} |".format(
+            "| {objective} | {qualified}/{quality} | {triggers} | {audits}/{accepted} | "
+            "{audit_98} | {first:.6g}→{last:.6g} ({change}) | {downward} | {plateau} |".format(
                 objective=report["objective"],
                 qualified=exploration["quality_points_at_or_above_95_percent"],
                 quality=exploration["quality_point_count"],
-                exploratory=exploration["exploratory_promotion_count"],
-                formal=exploration["formal_promotion_count"],
-                formal_100=(
+                triggers=exploration["audit_trigger_count"],
+                audits=exploration["audit_count"],
+                accepted=exploration["accepted_count"],
+                audit_98=(
                     "yes"
-                    if exploration["formal_accepted_current_point_is_100_percent"]
+                    if exploration["accepted_audit_reaches_98_percent"]
                     else "no"
                 ),
                 first=target["first"],
@@ -612,9 +616,10 @@ def _write_markdown_report(
         [
             "",
             (
-                "The table uses raw validation points; 95% is an exploratory "
-                "floor, while formal promotion remains 100% completion with "
-                "zero truncation/violation and physical safety. Other-objective "
+                "The table uses raw 100-instance daily validation points; 95% is "
+                "an exploration floor. A 500-instance audit accepts at 98% with "
+                "zero schedule violations and physical safety. The project "
+                "formal completion standard remains 100%. Other-objective "
                 "changes are recorded in "
                 "`convergence_diagnostics.json`. Whether a change is abnormal "
                 "must be judged against a declared domain tolerance."

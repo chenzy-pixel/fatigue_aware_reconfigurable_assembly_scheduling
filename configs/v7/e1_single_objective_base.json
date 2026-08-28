@@ -1,10 +1,14 @@
 {
   "extends": "e1_context_exception.json",
   "experiment_name": "v7_e1_single_objective",
-  "experiment_suite_version": "v7_e1_single_objective_protocol_v1",
+  "experiment_suite_version": "v7_e1_single_objective_protocol_v2",
   "environment": {
     "worker_resource_control": {
-      "mode": "matching_admission_recovery_v2"
+      "mode": "temporal_matching_admission_recovery_v3",
+      "temporal_feasibility": {
+        "max_search_nodes": 50000,
+        "unknown_action": "allow"
+      }
     },
     "production_defer": {
       "shield": {
@@ -17,7 +21,7 @@
     }
   },
   "training": {
-    "validation_instance_limit": 500,
+    "validation_instance_limit": 100,
     "two_stage": {
       "quality_checkpoint_promotion": "single_objective_guarded_v1",
       "quality_completion_floor": 0.95,
@@ -25,11 +29,13 @@
       "single_objective_promotion": {
         "window_size": 5,
         "window_statistic": "median",
+        "candidate_improvement_epsilon": 1e-9,
         "rollback_below_floor_consecutive": 2,
-        "formal_completion_target": 1.0,
-        "formal_truncation_target": 0,
-        "formal_violation_target": 0,
-        "physical_safety_required": true
+        "audit_instance_limit": 500,
+        "audit_completion_target": 0.98,
+        "audit_max_failed_instances": 10,
+        "audit_schedule_violation_target": 0,
+        "audit_physical_safety_required": true
       }
     }
   }

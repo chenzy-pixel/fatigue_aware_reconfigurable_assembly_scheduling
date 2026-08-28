@@ -60,7 +60,10 @@ from result import (
     result_schema_version,
 )
 from result.io import write_config, write_csv, write_json
-from result.metrics import PREFERENCE_POLICY_DIAGNOSTIC_FIELDS
+from result.metrics import (
+    MATCHING_RECOVERY_DIAGNOSTIC_FIELDS,
+    PREFERENCE_POLICY_DIAGNOSTIC_FIELDS,
+)
 from result.visdom_dashboard import (
     create_training_dashboard,
     override_visdom_enabled,
@@ -96,7 +99,7 @@ POST_FEASIBILITY_RESIDUAL_GATE_VERSIONS = frozenset(
 
 def _checkpoint_eligible_validation_event(event: str, promotion: str) -> bool:
     if promotion == SINGLE_OBJECTIVE_PROMOTION_MODE:
-        return event == "formal_promoted"
+        return event == "accepted"
     return bool(
         event in {"promoted", "accepted"}
         or (
@@ -127,17 +130,29 @@ def _validate_single_objective_validation_protocol(
         config["training"]["two_stage"].get("quality_checkpoint_promotion", "")
     ).strip().lower() != SINGLE_OBJECTIVE_PROMOTION_MODE:
         return
-    if validation_limit != 500:
-        raise ValueError("single-objective formal validation must use 500 instances")
+    settings = config["training"]["two_stage"][
+        "single_objective_promotion"
+    ]
+    audit_limit = int(settings["audit_instance_limit"])
+    if validation_limit != 100 or audit_limit != 500:
+        raise ValueError(
+            "single-objective validation must use 100 daily instances and "
+            "a 500-instance audit"
+        )
     manifest_path = _validation_manifest_path(config)
     if not manifest_path.is_file():
         raise FileNotFoundError(
             f"single-objective validation manifest is missing: {manifest_path}"
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if int(manifest.get("instance_count", len(manifest.get("files", [])))) != 500:
+    files = manifest.get("files", [])
+    if (
+        int(manifest.get("instance_count", len(files))) != 500
+        or not isinstance(files, list)
+        or len(files) != 500
+    ):
         raise ValueError(
-            "single-objective formal validation requires a 500-instance manifest; "
+            "single-objective validation requires a 500-instance manifest; "
             f"found {manifest.get('instance_count')}"
         )
 
@@ -2374,13 +2389,23 @@ class TrainingPhaseController:
     single_objective_window_size: int = 5
     single_objective_window_statistic: str = "median"
     single_objective_rollback_below_floor_consecutive: int = 2
+    single_objective_candidate_improvement_epsilon: float = 1e-9
+    single_objective_audit_instance_limit: int = 500
+    single_objective_audit_completion_target: float = 0.98
+    single_objective_audit_max_failed_instances: int = 10
+    single_objective_audit_schedule_violation_target: int = 0
+    single_objective_audit_physical_safety_required: bool = True
     single_objective_window_values: list[float] = field(default_factory=list)
     single_objective_window_episodes: list[int] = field(default_factory=list)
-    exploratory_single_objective_value: float | None = None
-    exploratory_single_objective_window_value: float | None = None
-    exploratory_quality_episode: int | None = None
-    exploratory_quality_updates: int = 0
-    formal_single_objective_window_value: float | None = None
+    single_objective_candidate_anchor_value: float | None = None
+    single_objective_candidate_episode: int | None = None
+    single_objective_audit_count: int = 0
+    accepted_single_objective_failed_instances: int | None = None
+    accepted_single_objective_window_value: float | None = None
+    accepted_single_objective_audit_value: float | None = None
+    last_single_objective_audit_diagnostics: dict[str, object] = field(
+        default_factory=dict
+    )
 
     @classmethod
     def from_config(cls, config: dict) -> "TrainingPhaseController":
@@ -2482,6 +2507,12 @@ class TrainingPhaseController:
         single_window_size = 5
         single_window_statistic = "median"
         single_rollback_count = 2
+        single_candidate_epsilon = 1e-9
+        single_audit_limit = 500
+        single_audit_completion = 0.98
+        single_audit_max_failed = 10
+        single_audit_violation_target = 0
+        single_audit_physical_required = True
         if promotion == SINGLE_OBJECTIVE_PROMOTION_MODE:
             single_objective_name = _single_objective_name(config)
             promotion_settings = settings.get("single_objective_promotion")
@@ -2496,39 +2527,78 @@ class TrainingPhaseController:
             single_rollback_count = int(
                 promotion_settings.get("rollback_below_floor_consecutive", 0)
             )
-            formal_completion = float(
-                promotion_settings.get("formal_completion_target", math.nan)
+            single_candidate_epsilon = float(
+                promotion_settings.get(
+                    "candidate_improvement_epsilon", math.nan
+                )
             )
-            formal_truncation = int(
-                promotion_settings.get("formal_truncation_target", -1)
+            single_audit_limit = int(
+                promotion_settings.get("audit_instance_limit", 0)
             )
-            formal_violation = int(
-                promotion_settings.get("formal_violation_target", -1)
+            single_audit_completion = float(
+                promotion_settings.get("audit_completion_target", math.nan)
+            )
+            single_audit_max_failed = int(
+                promotion_settings.get("audit_max_failed_instances", -1)
+            )
+            single_audit_violation_target = int(
+                promotion_settings.get(
+                    "audit_schedule_violation_target", -1
+                )
+            )
+            single_audit_physical_required = bool(
+                promotion_settings.get(
+                    "audit_physical_safety_required", False
+                )
             )
             if single_window_size < 1 or single_window_statistic != "median":
                 raise ValueError("single-objective window must be a positive median window")
             if single_rollback_count < 1:
                 raise ValueError("single-objective rollback count must be positive")
             if (
-                not math.isclose(formal_completion, 1.0, rel_tol=0.0, abs_tol=1e-12)
-                or formal_truncation != 0
-                or formal_violation != 0
-                or not bool(promotion_settings.get("physical_safety_required", False))
+                not math.isfinite(single_candidate_epsilon)
+                or single_candidate_epsilon < 0.0
+                or single_audit_limit != 500
+                or not math.isclose(
+                    single_audit_completion,
+                    0.98,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                or single_audit_max_failed != 10
+                or single_audit_violation_target != 0
+                or not single_audit_physical_required
             ):
-                raise ValueError("single-objective formal targets must be 1.0/0/0 with physical safety")
+                raise ValueError(
+                    "single-objective audit requires epsilon>=0, "
+                    "500 instances, completion 0.98, at most 10 failures, "
+                    "zero violations, and physical safety"
+                )
             worker_control = config["environment"].get(
                 "worker_resource_control", {}
             )
             if (
                 not isinstance(worker_control, dict)
                 or worker_control.get("mode")
-                != "matching_admission_recovery_v2"
-                or not bool(worker_control.get("require_full_matching"))
-                or not bool(worker_control.get("preserve_matching_on_worker_action"))
+                != "temporal_matching_admission_recovery_v3"
+                or not isinstance(
+                    worker_control.get("temporal_feasibility"), dict
+                )
+                or int(
+                    worker_control["temporal_feasibility"].get(
+                        "max_search_nodes", 0
+                    )
+                )
+                != 50_000
+                or worker_control["temporal_feasibility"].get(
+                    "unknown_action"
+                )
+                != "allow"
             ):
                 raise ValueError(
                     "single-objective promotion requires "
-                    "matching_admission_recovery_v2 with full matching preservation"
+                    "temporal_matching_admission_recovery_v3 with the "
+                    "50,000-node fail-open oracle"
                 )
             shield = (
                 config["environment"].get("production_defer", {}).get(
@@ -2588,6 +2658,22 @@ class TrainingPhaseController:
             single_objective_window_size=single_window_size,
             single_objective_window_statistic=single_window_statistic,
             single_objective_rollback_below_floor_consecutive=single_rollback_count,
+            single_objective_candidate_improvement_epsilon=(
+                single_candidate_epsilon
+            ),
+            single_objective_audit_instance_limit=single_audit_limit,
+            single_objective_audit_completion_target=(
+                single_audit_completion
+            ),
+            single_objective_audit_max_failed_instances=(
+                single_audit_max_failed
+            ),
+            single_objective_audit_schedule_violation_target=(
+                single_audit_violation_target
+            ),
+            single_objective_audit_physical_safety_required=(
+                single_audit_physical_required
+            ),
             phase="feasibility",
         )
         if promotion == "pareto_guarded_e2_7_development_v1":
@@ -2706,11 +2792,13 @@ class TrainingPhaseController:
                         "window_statistic": self.single_objective_window_statistic,
                         "window_count": 0,
                         "window_objective_values": [],
+                        "window_objective_episodes": [],
                         "window_objective_statistic": None,
-                        "exploratory_promotion_event": None,
-                        "formal_promotion_event": None,
-                        "exploratory_anchor_value": None,
-                        "formal_anchor_value": None,
+                        "candidate_anchor_value": None,
+                        "previous_candidate_anchor_value": None,
+                        "accepted_window_median": None,
+                        "accepted_failed_instance_count": None,
+                        "audit_required": False,
                     }
                 return "transition"
             return "feasibility"
@@ -2848,17 +2936,15 @@ class TrainingPhaseController:
         )
         candidate = float(score[1]) if finite and score is not None else None
         completion_pass = completion_rate >= self.quality_completion_floor
-        formal_completion_pass = completion_rate >= self.completion_target - 1e-12
         truncation_pass = int(truncated_count) == 0
         violation_pass = int(schedule_violation_count) == 0
         physical_pass = bool(physical_safety_pass)
-        previous_formal_anchor = self.formal_single_objective_window_value
-        previous_exploratory_anchor = self.exploratory_single_objective_window_value
-        exploration_gate = bool(completion_pass and violation_pass and physical_pass and finite)
-        formal_gate = bool(formal_completion_pass and truncation_pass and violation_pass and physical_pass and finite)
+        previous_candidate_anchor = self.single_objective_candidate_anchor_value
+        exploration_gate = bool(
+            completion_pass and violation_pass and physical_pass and finite
+        )
         window_stat = None
-        exploratory_promoted = False
-        formal_promoted = False
+        audit_required = False
         if not exploration_gate:
             self.single_objective_window_values.clear()
             self.single_objective_window_episodes.clear()
@@ -2879,29 +2965,21 @@ class TrainingPhaseController:
                 event, reason = "window_warmup", "window_warmup"
             else:
                 window_stat = float(statistics.median(self.single_objective_window_values))
-                exploratory_promoted = (
-                    self.exploratory_single_objective_window_value is None
-                    or window_stat < float(self.exploratory_single_objective_window_value) - 1e-12
+                audit_required = (
+                    self.single_objective_candidate_anchor_value is None
+                    or window_stat
+                    < float(self.single_objective_candidate_anchor_value)
+                    - self.single_objective_candidate_improvement_epsilon
                 )
-                if exploratory_promoted:
-                    self.exploratory_single_objective_window_value = window_stat
-                    self.exploratory_single_objective_value = float(candidate)
-                    self.exploratory_quality_episode = int(completed_episodes)
-                    self.exploratory_quality_updates += 1
-                if formal_gate and (
-                    self.formal_single_objective_window_value is None
-                    or window_stat < float(self.formal_single_objective_window_value) - 1e-12
-                ):
-                    formal_promoted = True
-                    self.formal_single_objective_window_value = window_stat
-                    self.accepted_quality_updates += 1
-                    self.accepted_quality_score = score
-                    self.accepted_single_objective_value = float(candidate)
-                    self.accepted_quality_episode = int(completed_episodes)
-                if formal_promoted:
-                    event, reason = "formal_promoted", "formal_window_improved"
-                elif exploratory_promoted:
-                    event, reason = "exploratory_promoted", "exploratory_window_improved"
+                if audit_required:
+                    self.single_objective_candidate_anchor_value = window_stat
+                    self.single_objective_candidate_episode = int(
+                        completed_episodes
+                    )
+                    event, reason = (
+                        "audit_required",
+                        "candidate_window_improved",
+                    )
                 else:
                     event, reason = "not_promoted", "window_not_improved"
                     self.not_promoted_quality_updates += 1
@@ -2919,27 +2997,141 @@ class TrainingPhaseController:
             "window_objective_episodes": list(self.single_objective_window_episodes),
             "window_objective_statistic": window_stat,
             "promotion_candidate_objective_value": candidate,
-            "promotion_anchor_objective_value": self.formal_single_objective_window_value,
-            "promotion_exploratory_anchor_objective_value": self.exploratory_single_objective_window_value,
-            "promotion_previous_formal_anchor_objective_value": previous_formal_anchor,
-            "promotion_previous_exploratory_anchor_objective_value": previous_exploratory_anchor,
-            "exploratory_anchor_value": self.exploratory_single_objective_window_value,
-            "formal_anchor_value": self.formal_single_objective_window_value,
+            "candidate_anchor_value": self.single_objective_candidate_anchor_value,
+            "previous_candidate_anchor_value": previous_candidate_anchor,
+            "accepted_window_median": self.accepted_single_objective_window_value,
+            "accepted_failed_instance_count": self.accepted_single_objective_failed_instances,
             "promotion_anchor_episode": self.accepted_quality_episode,
             "promotion_completion_constraint_pass": completion_pass,
-            "promotion_formal_completion_constraint_pass": formal_completion_pass,
             "promotion_truncation_constraint_pass": truncation_pass,
             "promotion_violation_constraint_pass": violation_pass,
             "promotion_physical_safety_constraint_pass": physical_pass,
-            "exploratory_promotion_event": "exploratory_promoted" if exploratory_promoted else None,
-            "formal_promotion_event": "formal_promoted" if formal_promoted else None,
-            "exploratory_promoted": exploratory_promoted,
-            "formal_promoted": formal_promoted,
+            "audit_required": audit_required,
+        }
+        return event
+
+    def observe_single_objective_audit(
+        self,
+        audit: dict[str, object],
+        *,
+        completed_episodes: int,
+        window_median: float,
+    ) -> str:
+        if self.quality_checkpoint_promotion != SINGLE_OBJECTIVE_PROMOTION_MODE:
+            raise RuntimeError("single-objective audit requires its promotion mode")
+        instance_count = int(audit.get("instance_count", 0))
+        completed_count = int(audit.get("completed_count", 0))
+        failed_count = instance_count - completed_count
+        completion_rate = float(audit.get("completion_rate", math.nan))
+        truncated_count = int(audit.get("truncated_count", 0))
+        violation_count = int(audit.get("schedule_violation_count", 0))
+        physical_pass = bool(audit.get("physical_safety_pass", False))
+        objective_value = audit.get("single_objective_value")
+        objective_pass = bool(
+            objective_value is not None
+            and math.isfinite(float(objective_value))
+        )
+        completion_pass = bool(
+            instance_count == self.single_objective_audit_instance_limit
+            and math.isfinite(completion_rate)
+            and completion_rate
+            >= self.single_objective_audit_completion_target - 1e-12
+            and failed_count
+            <= self.single_objective_audit_max_failed_instances
+        )
+        violation_pass = bool(
+            violation_count
+            == self.single_objective_audit_schedule_violation_target
+        )
+        safety_pass = bool(
+            physical_pass
+            if self.single_objective_audit_physical_safety_required
+            else True
+        )
+        audit_pass = bool(
+            completion_pass and violation_pass and safety_pass and objective_pass
+        )
+        previous_rank = (
+            None
+            if self.accepted_single_objective_failed_instances is None
+            or self.accepted_single_objective_window_value is None
+            else (
+                int(self.accepted_single_objective_failed_instances),
+                float(self.accepted_single_objective_window_value),
+            )
+        )
+        candidate_rank = (int(failed_count), float(window_median))
+        accepted = bool(
+            audit_pass
+            and (previous_rank is None or candidate_rank < previous_rank)
+        )
+        self.single_objective_audit_count += 1
+        if accepted:
+            self.accepted_single_objective_failed_instances = failed_count
+            self.accepted_single_objective_window_value = float(window_median)
+            audit_value = audit.get("single_objective_value")
+            self.accepted_single_objective_audit_value = (
+                None if audit_value is None else float(audit_value)
+            )
+            self.accepted_single_objective_value = float(window_median)
+            self.accepted_quality_episode = int(completed_episodes)
+            self.accepted_quality_updates += 1
+            event = "accepted"
+            reason = "first_audit_pass" if previous_rank is None else "audit_rank_improved"
+        elif not audit_pass:
+            self.rejected_quality_updates += 1
+            event = "audit_rejected"
+            reason = (
+                "audit_completion_below_98"
+                if not completion_pass
+                else "audit_schedule_violation_nonzero"
+                if not violation_pass
+                else "audit_physical_safety_failed"
+                if not safety_pass
+                else "audit_objective_non_finite"
+            )
+        else:
+            self.not_promoted_quality_updates += 1
+            event = "audit_passed_not_accepted"
+            reason = "audit_rank_not_improved"
+        self.last_single_objective_audit_diagnostics = {
+            "audit_event": event,
+            "audit_decision_reason": reason,
+            "audit_instance_count": instance_count,
+            "audit_completed_count": completed_count,
+            "audit_failed_instance_count": failed_count,
+            "audit_completion_rate": completion_rate,
+            "audit_truncated_count": truncated_count,
+            "audit_schedule_violation_count": violation_count,
+            "audit_physical_safety_pass": physical_pass,
+            "audit_completion_pass": completion_pass,
+            "audit_violation_pass": violation_pass,
+            "audit_safety_pass": safety_pass,
+            "audit_objective_pass": objective_pass,
+            "audit_single_objective_value": (
+                None if objective_value is None else float(objective_value)
+            ),
+            "audit_pass": audit_pass,
+            "audit_window_median": float(window_median),
+            "audit_candidate_rank": list(candidate_rank),
+            "audit_previous_accepted_rank": (
+                None if previous_rank is None else list(previous_rank)
+            ),
+            "audit_accepted_rank": (
+                None
+                if self.accepted_single_objective_failed_instances is None
+                or self.accepted_single_objective_window_value is None
+                else [
+                    self.accepted_single_objective_failed_instances,
+                    self.accepted_single_objective_window_value,
+                ]
+            ),
+            "accepted_checkpoint_episode": self.accepted_quality_episode,
         }
         return event
 
     def reset_single_objective_window(self) -> None:
-        """Clear the rolling candidate window while retaining both anchors."""
+        """Clear the rolling daily window while retaining candidate/accepted anchors."""
         self.single_objective_window_values.clear()
         self.single_objective_window_episodes.clear()
 
@@ -3681,11 +3873,12 @@ class TrainingPhaseController:
             == SINGLE_OBJECTIVE_PROMOTION_MODE
             and self.accepted_single_objective_value is None
         ):
-            return (
-                "exploratory_candidate"
-                if self.exploratory_single_objective_value is not None
-                else "single_objective_anchor_not_reached"
-            )
+            return "single_objective_98_candidate_not_reached"
+        if (
+            self.quality_checkpoint_promotion
+            == SINGLE_OBJECTIVE_PROMOTION_MODE
+        ):
+            return "accepted_98_experiment_candidate"
         return "quality_constrained"
 
     def as_dict(self) -> dict:
@@ -3754,13 +3947,21 @@ class TrainingPhaseController:
                     "single_objective_window_size": self.single_objective_window_size,
                     "single_objective_window_statistic": self.single_objective_window_statistic,
                     "single_objective_rollback_below_floor_consecutive": self.single_objective_rollback_below_floor_consecutive,
+                    "single_objective_candidate_improvement_epsilon": self.single_objective_candidate_improvement_epsilon,
+                    "single_objective_audit_instance_limit": self.single_objective_audit_instance_limit,
+                    "single_objective_audit_completion_target": self.single_objective_audit_completion_target,
+                    "single_objective_audit_max_failed_instances": self.single_objective_audit_max_failed_instances,
                     "single_objective_window_values": list(self.single_objective_window_values),
                     "single_objective_window_episodes": list(self.single_objective_window_episodes),
-                    "exploratory_single_objective_value": self.exploratory_single_objective_value,
-                    "exploratory_single_objective_window_value": self.exploratory_single_objective_window_value,
-                    "exploratory_quality_episode": self.exploratory_quality_episode,
-                    "exploratory_quality_updates": self.exploratory_quality_updates,
-                    "formal_single_objective_window_value": self.formal_single_objective_window_value,
+                    "single_objective_candidate_anchor_value": self.single_objective_candidate_anchor_value,
+                    "single_objective_candidate_episode": self.single_objective_candidate_episode,
+                    "single_objective_audit_count": self.single_objective_audit_count,
+                    "accepted_single_objective_failed_instances": self.accepted_single_objective_failed_instances,
+                    "accepted_single_objective_window_value": self.accepted_single_objective_window_value,
+                    "accepted_single_objective_audit_value": self.accepted_single_objective_audit_value,
+                    "last_single_objective_audit_diagnostics": dict(
+                        self.last_single_objective_audit_diagnostics
+                    ),
                 }
             )
         return result
@@ -4012,8 +4213,7 @@ class ValidationStabilityController:
             self.validations_without_improvement += 1
         if self.rollback_completion_floor is not None:
             degraded = bool(
-                not improved
-                and not feasibility_phase
+                not feasibility_phase
                 and rate < self.rollback_completion_floor
             )
         else:
@@ -4024,7 +4224,7 @@ class ValidationStabilityController:
             )
         if degraded:
             self.consecutive_degraded_validations += 1
-        elif not improved:
+        elif self.rollback_completion_floor is not None or not improved:
             self.consecutive_degraded_validations = 0
         rollback_ready = bool(
             degraded
@@ -4430,11 +4630,17 @@ def _validation_log_row(
         "window_statistic": None,
         "window_count": None,
         "window_objective_values": None,
+        "window_objective_episodes": None,
         "window_objective_statistic": None,
-        "exploratory_promotion_event": None,
-        "formal_promotion_event": None,
-        "exploratory_anchor_value": None,
-        "formal_anchor_value": None,
+        "candidate_anchor_value": None,
+        "previous_candidate_anchor_value": None,
+        "accepted_window_median": None,
+        "accepted_failed_instance_count": None,
+        "audit_required": False,
+        "audit_event": None,
+        "audit_failed_instance_count": None,
+        "audit_completion_rate": None,
+        "accepted_checkpoint_episode": None,
         "ranker_top_decision_count": validation.get(
             "ranker_top_decision_count", 0
         ),
@@ -4504,6 +4710,10 @@ def _validation_log_row(
         "maximum_projected_installation_deficit": validation.get(
             "maximum_projected_installation_deficit", 0
         ),
+        **{
+            name: validation.get(name, 0)
+            for name in MATCHING_RECOVERY_DIAGNOSTIC_FIELDS
+        },
         **{
             name: validation.get(name, 0)
             for name in PREFERENCE_POLICY_DIAGNOSTIC_FIELDS
@@ -4787,6 +4997,7 @@ def _reevaluate_checkpoint_from_disk(
     dataset_name: str,
     instance_limit: int | None,
     sampling_seeds: list[int],
+    greedy_only: bool = False,
 ) -> dict[str, object]:
     """Load an isolated agent and produce the only final reported metrics."""
     evaluation_agent = PPOAgent(
@@ -4806,13 +5017,15 @@ def _reevaluate_checkpoint_from_disk(
     greedy["physical_safety_pass"] = _rows_are_physically_safe(
         greedy_rows, 1e-9
     )
-    sampled = _evaluate_sampled_validation(
-        config,
-        dataset_name=dataset_name,
-        ppo_agent=evaluation_agent,
-        instance_limit=instance_limit,
-        sampling_seeds=sampling_seeds,
-    )
+    sampled = None
+    if not greedy_only:
+        sampled = _evaluate_sampled_validation(
+            config,
+            dataset_name=dataset_name,
+            ppo_agent=evaluation_agent,
+            instance_limit=instance_limit,
+            sampling_seeds=sampling_seeds,
+        )
     manifest_path = _validation_manifest_path(config)
     return {
         "checkpoint": str(checkpoint),
@@ -4849,25 +5062,50 @@ def _assert_single_objective_checkpoint_evaluation(
     greedy = evaluation.get("greedy")
     if not isinstance(greedy, dict):
         raise RuntimeError("single-objective checkpoint is missing greedy evaluation")
-    gate = _single_objective_hard_gate(greedy)
-    if not gate["all"]:
+    instance_count = int(greedy.get("instance_count", 0))
+    completed_count = int(greedy.get("completed_count", 0))
+    failed_count = instance_count - completed_count
+    completion_pass = bool(
+        instance_count == phase_controller.single_objective_audit_instance_limit
+        and float(greedy.get("completion_rate", math.nan))
+        >= phase_controller.single_objective_audit_completion_target - 1e-12
+        and failed_count
+        <= phase_controller.single_objective_audit_max_failed_instances
+    )
+    violation_pass = bool(
+        int(greedy.get("schedule_violation_count", 0))
+        == phase_controller.single_objective_audit_schedule_violation_target
+    )
+    physical_pass = bool(greedy.get("physical_safety_pass", False))
+    if not (completion_pass and violation_pass and physical_pass):
         raise RuntimeError(
-            "single-objective checkpoint failed final hard gate: "
-            f"completion={gate['completion']}, "
-            f"truncation={gate['truncation']}, violation={gate['violation']}, "
-            f"physical_safety={gate['physical_safety']}"
+            "single-objective checkpoint failed final 500-instance audit: "
+            f"instances={instance_count}, failed={failed_count}, "
+            f"completion={completion_pass}, violation={violation_pass}, "
+            f"physical_safety={physical_pass}"
         )
     objective_name = phase_controller.single_objective_name
     if objective_name is None:
         raise RuntimeError("single-objective checkpoint target is missing")
     score = _single_objective_guard_score(greedy, objective_name)
-    expected = phase_controller.accepted_single_objective_value
+    expected = phase_controller.accepted_single_objective_audit_value
     if expected is None or not math.isclose(
         float(score[1]), float(expected), rel_tol=0.0, abs_tol=1e-8
     ):
         raise RuntimeError(
             "single-objective checkpoint objective changed after disk reload: "
             f"expected={expected}, observed={score[1]}"
+        )
+    metadata = evaluation.get("checkpoint_metadata")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("single-objective checkpoint metadata is missing")
+    saved = metadata.get("single_objective_audit_value")
+    if saved is None or not math.isclose(
+        float(score[1]), float(saved), rel_tol=0.0, abs_tol=1e-8
+    ):
+        raise RuntimeError(
+            "single-objective checkpoint metadata disagrees with disk audit: "
+            f"saved={saved}, observed={score[1]}"
         )
 
 
@@ -4882,6 +5120,7 @@ def _single_objective_checkpoint_metadata(
     ):
         return {}
     diagnostics = phase_controller.last_promotion_diagnostics
+    audit_diagnostics = phase_controller.last_single_objective_audit_diagnostics
     return {
         "single_objective_target": phase_controller.single_objective_name,
         "single_objective_statistic": phase_controller.single_objective_window_statistic,
@@ -4896,34 +5135,38 @@ def _single_objective_checkpoint_metadata(
         "single_objective_candidate_value": diagnostics.get(
             "promotion_candidate_objective_value"
         ),
-        "single_objective_previous_anchor_value": diagnostics.get(
-            "promotion_previous_formal_anchor_objective_value",
-            diagnostics.get("promotion_anchor_objective_value"),
+        "single_objective_candidate_anchor_value": (
+            phase_controller.single_objective_candidate_anchor_value
         ),
-        "single_objective_exploratory_anchor_value": diagnostics.get(
-            "promotion_previous_exploratory_anchor_objective_value",
-            diagnostics.get("promotion_exploratory_anchor_objective_value"),
+        "single_objective_candidate_improvement_epsilon": (
+            phase_controller.single_objective_candidate_improvement_epsilon
         ),
-        "single_objective_hard_gates": {
-            "completion_100_percent": diagnostics.get(
-                "promotion_formal_completion_constraint_pass",
-                diagnostics.get("promotion_completion_constraint_pass"),
-            ),
-            "truncation_zero": diagnostics.get(
-                "promotion_truncation_constraint_pass"
-            ),
-            "schedule_violation_zero": diagnostics.get(
-                "promotion_violation_constraint_pass"
-            ),
-            "physical_safety": diagnostics.get(
-                "promotion_physical_safety_constraint_pass"
-            ),
-        },
+        "single_objective_audit_instance_limit": (
+            phase_controller.single_objective_audit_instance_limit
+        ),
+        "single_objective_audit_completion_target": (
+            phase_controller.single_objective_audit_completion_target
+        ),
+        "single_objective_audit_max_failed_instances": (
+            phase_controller.single_objective_audit_max_failed_instances
+        ),
+        "single_objective_accepted_failed_instances": (
+            phase_controller.accepted_single_objective_failed_instances
+        ),
+        "single_objective_accepted_window_median": (
+            phase_controller.accepted_single_objective_window_value
+        ),
+        "single_objective_audit_value": (
+            phase_controller.accepted_single_objective_audit_value
+        ),
+        "single_objective_audit_diagnostics": dict(audit_diagnostics),
+        "formal_eligible": False,
     }
 
 
 def _single_objective_failure_rows(
-    rows: list[dict], *, episode: int, fatigue_tolerance: float = 1e-9
+    rows: list[dict], *, episode: int, fatigue_tolerance: float = 1e-9,
+    audit_event: str | None = None,
 ) -> list[dict]:
     failures: list[dict] = []
     for row in rows:
@@ -4960,7 +5203,77 @@ def _single_objective_failure_rows(
                     "failure_reason": ";".join(reasons),
                 }
             )
+            if audit_event is not None:
+                failures[-1]["audit_event"] = audit_event
     return failures
+
+
+def _evaluate_single_objective_audit(
+    config: dict,
+    *,
+    dataset_name: str,
+    ppo_agent: PPOAgent,
+    phase_controller: TrainingPhaseController,
+    runner: ParallelEpisodeRunner | None = None,
+    use_parallel: bool = False,
+) -> tuple[list[dict], dict]:
+    """Evaluate the improved daily candidate on the complete fixed manifest."""
+    limit = phase_controller.single_objective_audit_instance_limit
+    if use_parallel:
+        if runner is None:
+            raise ValueError("parallel single-objective audit requires a runner")
+        rows, audit = evaluate_dataset_parallel(
+            config,
+            dataset_name=dataset_name,
+            ppo_agent=ppo_agent,
+            runner=runner,
+            instance_limit=limit,
+            decode_mode="greedy",
+        )
+    else:
+        rows, _, _, audit = evaluate_dataset(
+            config,
+            dataset_name=dataset_name,
+            policy_name="ppo",
+            ppo_agent=ppo_agent,
+            instance_limit=limit,
+            decode_mode="greedy",
+        )
+    audit["physical_safety_pass"] = _rows_are_physically_safe(rows, 1e-9)
+    objective_name = phase_controller.single_objective_name
+    if objective_name is None:
+        raise RuntimeError("single-objective audit target is missing")
+    audit["single_objective_value"] = _single_objective_guard_score(
+        audit, objective_name
+    )[1]
+    return rows, audit
+
+
+def _single_objective_audit_log_row(
+    config: dict,
+    *,
+    episode: int,
+    phase_controller: TrainingPhaseController,
+) -> dict[str, object]:
+    diagnostics = phase_controller.last_single_objective_audit_diagnostics
+    manifest_path = _validation_manifest_path(config)
+    manifest_sha256 = (
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        if manifest_path.is_file()
+        else None
+    )
+    return {
+        "episode": int(episode),
+        "single_objective_target": phase_controller.single_objective_name,
+        "window_size": phase_controller.single_objective_window_size,
+        "window_statistic": phase_controller.single_objective_window_statistic,
+        "window_episodes": list(phase_controller.single_objective_window_episodes),
+        "window_objective_values": list(phase_controller.single_objective_window_values),
+        "window_objective_statistic": diagnostics.get("audit_window_median"),
+        "candidate_anchor_value": phase_controller.single_objective_candidate_anchor_value,
+        "validation_manifest_sha256": manifest_sha256,
+        **diagnostics,
+    }
 
 
 def _can_reuse_final_sampled_validation(
@@ -5861,7 +6174,8 @@ def train(
     rows: list[dict] = []
     update_rows: list[dict] = []
     validation_rows: list[dict] = []
-    validation_failure_rows: list[dict] = []
+    single_objective_audit_rows: list[dict] = []
+    single_objective_audit_failure_rows: list[dict] = []
     pareto_validation_rows: list[dict] = []
     pareto_candidate_rows: list[dict] = []
     instance_ids: list[str] = []
@@ -5871,7 +6185,7 @@ def train(
     )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = _accepted_checkpoint_path(run_directory, config)
-    exploratory_checkpoint = run_directory / "exploratory_candidate_checkpoint.pt"
+    candidate_checkpoint = run_directory / "single_objective_candidate_checkpoint.pt"
     safe_checkpoint = run_directory / "safe_checkpoint.pt"
     anchor_safe_checkpoint = run_directory / "anchor_safe_checkpoint.pt"
     full_grid_safe_checkpoint = (
@@ -6177,9 +6491,10 @@ def train(
                     completed_episodes=completed_episodes,
                     transition_anchor=validation_event == "transition",
                 )
-            last_validation_event = validation_event
+            daily_validation_event = validation_event
+            audit_event = None
             validation_row["candidate_phase"] = reward_phase
-            validation_row["validation_event"] = validation_event
+            validation_row["validation_event"] = daily_validation_event
             validation_row.update(
                 phase_controller.last_promotion_diagnostics
             )
@@ -6193,13 +6508,93 @@ def train(
             validation_row["feasibility_rollback_applied"] = bool(
                 stability["rollback"]
             )
-            validation_rows.append(validation_row)
-            if phase_controller.quality_checkpoint_promotion == SINGLE_OBJECTIVE_PROMOTION_MODE:
-                validation_failure_rows.extend(
+            if (
+                phase_controller.quality_checkpoint_promotion
+                == SINGLE_OBJECTIVE_PROMOTION_MODE
+                and daily_validation_event == "audit_required"
+            ):
+                window_median = phase_controller.last_promotion_diagnostics.get(
+                    "window_objective_statistic"
+                )
+                if window_median is None:
+                    raise RuntimeError("single-objective audit is missing window median")
+                agent.save(
+                    candidate_checkpoint,
+                    metadata={
+                        **_checkpoint_protocol_metadata(config),
+                        **_single_objective_checkpoint_metadata(
+                            phase_controller,
+                            checkpoint_role="audit_pending_candidate",
+                        ),
+                        "accepted_episode": None,
+                        "daily_validation": validation_row,
+                    },
+                )
+                audit_instance_rows, audit = _evaluate_single_objective_audit(
+                    config,
+                    dataset_name=validation_split,
+                    ppo_agent=agent,
+                    phase_controller=phase_controller,
+                )
+                audit_event = phase_controller.observe_single_objective_audit(
+                    audit,
+                    completed_episodes=completed_episodes,
+                    window_median=float(window_median),
+                )
+                audit_log_row = _single_objective_audit_log_row(
+                    config,
+                    episode=completed_episodes,
+                    phase_controller=phase_controller,
+                )
+                single_objective_audit_rows.append(audit_log_row)
+                single_objective_audit_failure_rows.extend(
                     _single_objective_failure_rows(
-                        validation_instance_rows, episode=completed_episodes
+                        audit_instance_rows,
+                        episode=completed_episodes,
+                        audit_event=audit_event,
                     )
                 )
+                validation_row.update(
+                    {
+                        "audit_event": audit_event,
+                        "audit_failed_instance_count": audit_log_row.get(
+                            "audit_failed_instance_count"
+                        ),
+                        "audit_completion_rate": audit_log_row.get(
+                            "audit_completion_rate"
+                        ),
+                        "accepted_checkpoint_episode": (
+                            phase_controller.accepted_quality_episode
+                        ),
+                    }
+                )
+                if audit_event == "accepted":
+                    agent.save(
+                        candidate_checkpoint,
+                        metadata={
+                            **_checkpoint_protocol_metadata(config),
+                            **_single_objective_checkpoint_metadata(
+                                phase_controller,
+                                checkpoint_role=(
+                                    "accepted_98_experiment_candidate"
+                                ),
+                            ),
+                            "formal_eligible": False,
+                            "accepted_episode": completed_episodes,
+                            "daily_validation": validation_row,
+                            "audit": audit_log_row,
+                        },
+                    )
+                    candidate_checkpoint.replace(accepted_checkpoint)
+                    best_score = score
+                    best_validation = validation_row
+                    row["candidate_status"] = "accepted_98"
+                    update_rows[-1]["candidate_status"] = "accepted_98"
+                elif candidate_checkpoint.exists():
+                    candidate_checkpoint.unlink()
+            validation_event = audit_event or daily_validation_event
+            last_validation_event = validation_event
+            validation_rows.append(validation_row)
             validation_is_safe = (
                 _single_objective_hard_gate(validation)["all"]
                 if phase_controller.quality_checkpoint_promotion
@@ -6267,26 +6662,12 @@ def train(
                 agent.save(phase1_checkpoint, metadata=transition_metadata)
                 row["candidate_status"] = "phase_transition"
                 update_rows[-1]["candidate_status"] = "phase_transition"
-            if (
-                phase_controller.quality_checkpoint_promotion == SINGLE_OBJECTIVE_PROMOTION_MODE
-                and bool(phase_controller.last_promotion_diagnostics.get("exploratory_promoted"))
-            ):
-                agent.save(
-                    exploratory_checkpoint,
-                    metadata={
-                        **_checkpoint_protocol_metadata(config),
-                        **_single_objective_checkpoint_metadata(
-                            phase_controller,
-                            checkpoint_role="exploratory_quality_candidate",
-                        ),
-                        "formal_eligible": False,
-                        "accepted_episode": None,
-                        "validation": validation_row,
-                    },
-                )
             if _checkpoint_eligible_validation_event(
                 validation_event,
                 phase_controller.quality_checkpoint_promotion,
+            ) and (
+                phase_controller.quality_checkpoint_promotion
+                != SINGLE_OBJECTIVE_PROMOTION_MODE
             ):
                 accepted_metadata = {
                     **_checkpoint_protocol_metadata(config),
@@ -6294,10 +6675,7 @@ def train(
                         phase_controller
                     ),
                     "checkpoint_role": (
-                        "single_objective_formal_accepted"
-                        if phase_controller.quality_checkpoint_promotion
-                        == SINGLE_OBJECTIVE_PROMOTION_MODE
-                        else "single_seed_development_pareto"
+                        "single_seed_development_pareto"
                         if _development_acceptance_enabled(config)
                         else "shadow_best"
                     ),
@@ -6339,7 +6717,12 @@ def train(
                 if validation_event != "transition":
                     row["candidate_status"] = "promoted"
                     update_rows[-1]["candidate_status"] = "promoted"
-            elif validation_event in {"not_promoted", "rejected"}:
+            elif validation_event in {
+                "not_promoted",
+                "rejected",
+                "audit_rejected",
+                "audit_passed_not_accepted",
+            }:
                 row["candidate_status"] = "not_promoted"
                 update_rows[-1]["candidate_status"] = "not_promoted"
             if bool(stability["rollback"]):
@@ -6406,8 +6789,9 @@ def train(
             if validation_event in {
                 "transition",
                 "promoted",
-                "exploratory_promoted",
-                "formal_promoted",
+                "audit_required",
+                "audit_rejected",
+                "audit_passed_not_accepted",
                 "not_promoted",
                 "accepted",
                 "rejected",
@@ -6479,7 +6863,11 @@ def train(
         )
         if reran_final_sampled_validation:
             stability_controller.sampled_validation_runs += 1
-    formal_eligible = (
+    single_objective_mode = (
+        phase_controller.quality_checkpoint_promotion
+        == SINGLE_OBJECTIVE_PROMOTION_MODE
+    )
+    formal_eligible = (not single_objective_mode) and (
         not phase_controller.enabled
         or (
             phase_controller.phase_transition_episode is not None
@@ -6488,13 +6876,13 @@ def train(
                 not in PARETO_PROMOTION_MODES
                 or phase_controller.accepted_pareto_hv is not None
             )
-            and (
-                phase_controller.quality_checkpoint_promotion
-                != SINGLE_OBJECTIVE_PROMOTION_MODE
-                or phase_controller.accepted_single_objective_value is not None
-            )
         )
     ) and not _development_acceptance_enabled(config)
+    experiment_candidate_accepted = bool(
+        single_objective_mode
+        and accepted_checkpoint.exists()
+        and phase_controller.accepted_single_objective_value is not None
+    )
     development_accepted = bool(
         _development_acceptance_enabled(config)
         and accepted_checkpoint.exists()
@@ -6503,11 +6891,12 @@ def train(
     if (
         not formal_eligible
         and not _development_acceptance_enabled(config)
+        and not single_objective_mode
         and phase_controller.formal_training_status
         not in {
             "feasibility_not_reached",
             "pareto_baseline_not_reached",
-            "single_objective_anchor_not_reached",
+            "single_objective_98_candidate_not_reached",
         }
     ):
         raise RuntimeError("invalid hierarchical training state")
@@ -6566,10 +6955,7 @@ def train(
             ),
             "training_phase": phase_controller.as_dict(),
             "formal_eligible": formal_eligible,
-            "exploratory_checkpoint": (
-                _run_relative_checkpoint(exploratory_checkpoint, run_directory)
-                if exploratory_checkpoint.exists() else None
-            ),
+            "experiment_candidate_accepted": experiment_candidate_accepted,
             "development_accepted": development_accepted,
             "development_scope": (
                 "single_seed_development"
@@ -6585,7 +6971,10 @@ def train(
         last_checkpoint,
         metadata={**final_metadata, "checkpoint_role": "last_online"},
     )
-    if formal_eligible:
+    if single_objective_mode:
+        checkpoint = None
+        last_candidate_checkpoint = None
+    elif formal_eligible:
         if not accepted_checkpoint.exists():
             raise RuntimeError(
                 "formal training completed without a shadow-best checkpoint"
@@ -6599,18 +6988,53 @@ def train(
         last_candidate_checkpoint = (
             run_directory / "last_candidate_checkpoint.pt"
         )
-        shutil.copyfile(
-            exploratory_checkpoint
-            if (
-                phase_controller.formal_training_status == "exploratory_candidate"
-                and exploratory_checkpoint.exists()
-            )
-            else last_checkpoint,
-            last_candidate_checkpoint,
-        )
+        shutil.copyfile(last_checkpoint, last_candidate_checkpoint)
     final_checkpoint_evaluation = None
     checkpoint_sha256 = None
-    if checkpoint is not None:
+    if single_objective_mode and accepted_checkpoint.exists():
+        final_checkpoint_evaluation = _reevaluate_checkpoint_from_disk(
+            config,
+            checkpoint=accepted_checkpoint,
+            bootstrap_observation=bootstrap_observation,
+            dataset_name=validation_split,
+            instance_limit=phase_controller.single_objective_audit_instance_limit,
+            sampling_seeds=[],
+            greedy_only=True,
+        )
+        try:
+            _assert_single_objective_checkpoint_evaluation(
+                phase_controller,
+                final_checkpoint_evaluation,
+            )
+        except Exception as error:
+            invalidated_checkpoint = (
+                run_directory / "invalidated_accepted_checkpoint.pt"
+            )
+            accepted_checkpoint.replace(invalidated_checkpoint)
+            write_csv(run_directory / "train_log.csv", rows)
+            write_csv(run_directory / "update_log.csv", update_rows)
+            write_csv(run_directory / "validation_log.csv", validation_rows)
+            write_csv(
+                run_directory / "single_objective_audit_log.csv",
+                single_objective_audit_rows,
+            )
+            write_csv(
+                run_directory / "single_objective_audit_failures.csv",
+                single_objective_audit_failure_rows,
+            )
+            write_json(
+                run_directory / "failure.json",
+                {
+                    "status": "accepted_checkpoint_invalidated",
+                    "error": str(error),
+                    "invalidated_checkpoint": str(invalidated_checkpoint),
+                    "formal_eligible": False,
+                },
+            )
+            raise RuntimeError(
+                "single-objective accepted checkpoint failed final audit"
+            ) from error
+    elif checkpoint is not None:
         checkpoint_sha256 = _checkpoint_sha256(checkpoint)
         accepted_sha256 = _checkpoint_sha256(accepted_checkpoint)
         best_sha256 = _checkpoint_sha256(best_checkpoint)
@@ -6626,11 +7050,11 @@ def train(
             instance_limit=validation_limit,
             sampling_seeds=_official_evaluation_sampling_seeds(config),
         )
-        _assert_single_objective_checkpoint_evaluation(
-            phase_controller,
-            final_checkpoint_evaluation,
-        )
-    summary_checkpoint = checkpoint or last_checkpoint
+    summary_checkpoint = (
+        accepted_checkpoint
+        if single_objective_mode and accepted_checkpoint.exists()
+        else checkpoint or last_checkpoint
+    )
     summary_provenance = build_provenance(
         config,
         dataset_manifest_path=_validation_manifest_path(config),
@@ -6640,6 +7064,15 @@ def train(
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
+    if single_objective_mode:
+        write_csv(
+            run_directory / "single_objective_audit_log.csv",
+            single_objective_audit_rows,
+        )
+        write_csv(
+            run_directory / "single_objective_audit_failures.csv",
+            single_objective_audit_failure_rows,
+        )
     write_json(
         run_directory / "summary.json",
         {
@@ -6699,6 +7132,7 @@ def train(
                 else None
             ),
             "formal_eligible": formal_eligible,
+            "experiment_candidate_accepted": experiment_candidate_accepted,
             "warm_start": warm_start_report,
             "last_checkpoint": _run_relative_checkpoint(last_checkpoint, run_directory),
             "safe_checkpoint": (
@@ -6741,15 +7175,20 @@ def train(
                 phase_controller.formal_training_status
             ),
             "training_phase": phase_controller.as_dict(),
-            "single_objective_exploration": (
+            "single_objective_audit": (
                 {
-                    "exploratory_checkpoint": _run_relative_checkpoint(
-                        exploratory_checkpoint, run_directory
-                    ) if exploratory_checkpoint.exists() else None,
-                    "validation_failure_row_count": len(validation_failure_rows),
+                    "daily_validation_instance_limit": validation_limit,
+                    "audit_instance_limit": (
+                        phase_controller.single_objective_audit_instance_limit
+                    ),
+                    "audit_count": len(single_objective_audit_rows),
+                    "audit_failure_row_count": len(
+                        single_objective_audit_failure_rows
+                    ),
+                    "accepted_status": phase_controller.formal_training_status,
+                    "project_formal_completion_target": 1.0,
                 }
-                if phase_controller.quality_checkpoint_promotion
-                == SINGLE_OBJECTIVE_PROMOTION_MODE
+                if single_objective_mode
                 else None
             ),
             "validation_stability": stability_controller.as_dict(),
@@ -6877,7 +7316,8 @@ def _train_parallel(
     update_rows: list[dict] = []
     validation_rows: list[dict] = []
     pareto_validation_rows: list[dict] = []
-    validation_failure_rows: list[dict] = []
+    single_objective_audit_rows: list[dict] = []
+    single_objective_audit_failure_rows: list[dict] = []
     pareto_candidate_rows: list[dict] = []
     e2_3_failure_replay_rows: list[dict] = []
     latest_e2_3_failure_replay: dict[str, object] | None = None
@@ -6898,7 +7338,7 @@ def _train_parallel(
     )
     phase1_checkpoint = run_directory / "phase1_checkpoint.pt"
     accepted_checkpoint = _accepted_checkpoint_path(run_directory, config)
-    exploratory_checkpoint = run_directory / "exploratory_candidate_checkpoint.pt"
+    candidate_checkpoint = run_directory / "single_objective_candidate_checkpoint.pt"
     safe_checkpoint = run_directory / "safe_checkpoint.pt"
     anchor_safe_checkpoint = run_directory / "anchor_safe_checkpoint.pt"
     full_grid_safe_checkpoint = (
@@ -8262,9 +8702,10 @@ def _train_parallel(
                         completed_episodes=completed_episodes,
                         transition_anchor=validation_event == "transition",
                     )
-                last_validation_event = validation_event
+                daily_validation_event = validation_event
+                audit_event = None
                 validation_row["candidate_phase"] = reward_phase
-                validation_row["validation_event"] = validation_event
+                validation_row["validation_event"] = daily_validation_event
                 validation_row.update(
                     phase_controller.last_promotion_diagnostics
                 )
@@ -8282,13 +8723,102 @@ def _train_parallel(
                         and reward_phase == "quality"
                     )
                 )
-                validation_rows.append(validation_row)
-                if phase_controller.quality_checkpoint_promotion == SINGLE_OBJECTIVE_PROMOTION_MODE:
-                    validation_failure_rows.extend(
-                        _single_objective_failure_rows(
-                            validation_instance_rows, episode=completed_episodes
+                if (
+                    phase_controller.quality_checkpoint_promotion
+                    == SINGLE_OBJECTIVE_PROMOTION_MODE
+                    and daily_validation_event == "audit_required"
+                ):
+                    window_median = (
+                        phase_controller.last_promotion_diagnostics.get(
+                            "window_objective_statistic"
                         )
                     )
+                    if window_median is None:
+                        raise RuntimeError(
+                            "single-objective audit is missing window median"
+                        )
+                    agent.save(
+                        candidate_checkpoint,
+                        metadata={
+                            **_checkpoint_protocol_metadata(config),
+                            **_single_objective_checkpoint_metadata(
+                                phase_controller,
+                                checkpoint_role="audit_pending_candidate",
+                            ),
+                            "accepted_episode": None,
+                            "daily_validation": validation_row,
+                        },
+                    )
+                    audit_instance_rows, audit = (
+                        _evaluate_single_objective_audit(
+                            config,
+                            dataset_name=validation_split,
+                            ppo_agent=agent,
+                            phase_controller=phase_controller,
+                            runner=runner,
+                            use_parallel=validation_parallel_envs > 1,
+                        )
+                    )
+                    audit_event = phase_controller.observe_single_objective_audit(
+                        audit,
+                        completed_episodes=completed_episodes,
+                        window_median=float(window_median),
+                    )
+                    audit_log_row = _single_objective_audit_log_row(
+                        config,
+                        episode=completed_episodes,
+                        phase_controller=phase_controller,
+                    )
+                    single_objective_audit_rows.append(audit_log_row)
+                    single_objective_audit_failure_rows.extend(
+                        _single_objective_failure_rows(
+                            audit_instance_rows,
+                            episode=completed_episodes,
+                            audit_event=audit_event,
+                        )
+                    )
+                    validation_row.update(
+                        {
+                            "audit_event": audit_event,
+                            "audit_failed_instance_count": audit_log_row.get(
+                                "audit_failed_instance_count"
+                            ),
+                            "audit_completion_rate": audit_log_row.get(
+                                "audit_completion_rate"
+                            ),
+                            "accepted_checkpoint_episode": (
+                                phase_controller.accepted_quality_episode
+                            ),
+                        }
+                    )
+                    if audit_event == "accepted":
+                        agent.save(
+                            candidate_checkpoint,
+                            metadata={
+                                **_checkpoint_protocol_metadata(config),
+                                **_single_objective_checkpoint_metadata(
+                                    phase_controller,
+                                    checkpoint_role=(
+                                        "accepted_98_experiment_candidate"
+                                    ),
+                                ),
+                                "formal_eligible": False,
+                                "accepted_episode": completed_episodes,
+                                "daily_validation": validation_row,
+                                "audit": audit_log_row,
+                            },
+                        )
+                        candidate_checkpoint.replace(accepted_checkpoint)
+                        best_score = score
+                        best_validation = validation_row
+                        update_row["candidate_status"] = "accepted_98"
+                        for recent_row in rows[-len(rollout.episodes) :]:
+                            recent_row["candidate_status"] = "accepted_98"
+                    elif candidate_checkpoint.exists():
+                        candidate_checkpoint.unlink()
+                validation_event = audit_event or daily_validation_event
+                last_validation_event = validation_event
+                validation_rows.append(validation_row)
                 canonical_safe = (
                     _rows_are_safe(
                         validation_instance_rows,
@@ -8383,30 +8913,18 @@ def _train_parallel(
                     update_row["candidate_status"] = "phase_transition"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "phase_transition"
-                if (
-                    phase_controller.quality_checkpoint_promotion == SINGLE_OBJECTIVE_PROMOTION_MODE
-                    and bool(phase_controller.last_promotion_diagnostics.get("exploratory_promoted"))
-                ):
-                    agent.save(
-                        exploratory_checkpoint,
-                        metadata={
-                            **_checkpoint_protocol_metadata(config),
-                            **_single_objective_checkpoint_metadata(
-                                phase_controller,
-                                checkpoint_role="exploratory_quality_candidate",
-                            ),
-                            "formal_eligible": False,
-                            "accepted_episode": None,
-                            "validation": validation_row,
-                        },
-                    )
                 checkpoint_eligible_event = (
                     _checkpoint_eligible_validation_event(
                         validation_event,
                         phase_controller.quality_checkpoint_promotion,
                     )
                 )
-                if checkpoint_eligible_event and not tiered_protocol:
+                if (
+                    checkpoint_eligible_event
+                    and not tiered_protocol
+                    and phase_controller.quality_checkpoint_promotion
+                    != SINGLE_OBJECTIVE_PROMOTION_MODE
+                ):
                     agent.save(
                         accepted_checkpoint,
                         metadata={
@@ -8415,10 +8933,7 @@ def _train_parallel(
                                 phase_controller
                             ),
                             "checkpoint_role": (
-                                "single_objective_formal_accepted"
-                                if phase_controller.quality_checkpoint_promotion
-                                == SINGLE_OBJECTIVE_PROMOTION_MODE
-                                else "single_seed_development_pareto"
+                                "single_seed_development_pareto"
                                 if _development_acceptance_enabled(config)
                                 else "shadow_best"
                             ),
@@ -8462,7 +8977,12 @@ def _train_parallel(
                         update_row["candidate_status"] = "promoted"
                         for row in rows[-len(rollout.episodes) :]:
                             row["candidate_status"] = "promoted"
-                elif validation_event in {"not_promoted", "rejected"}:
+                elif validation_event in {
+                    "not_promoted",
+                    "rejected",
+                    "audit_rejected",
+                    "audit_passed_not_accepted",
+                }:
                     update_row["candidate_status"] = "not_promoted"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "not_promoted"
@@ -8617,8 +9137,9 @@ def _train_parallel(
                 if validation_event in {
                     "transition",
                     "promoted",
-                    "exploratory_promoted",
-                    "formal_promoted",
+                    "audit_required",
+                    "audit_rejected",
+                    "audit_passed_not_accepted",
                     "not_promoted",
                     "accepted",
                     "rejected",
@@ -8826,7 +9347,11 @@ def _train_parallel(
                 latest_e2_7_heldout_report = candidate_reports[primary_role].get(
                     "heldout"
                 )
-    formal_eligible = bool(tiered_protocol) or (
+    single_objective_mode = (
+        phase_controller.quality_checkpoint_promotion
+        == SINGLE_OBJECTIVE_PROMOTION_MODE
+    )
+    formal_eligible = bool(tiered_protocol) or ((not single_objective_mode) and (
         (
             not phase_controller.enabled
             or (
@@ -8836,14 +9361,14 @@ def _train_parallel(
                     not in PARETO_PROMOTION_MODES
                     or phase_controller.accepted_pareto_hv is not None
                 )
-                and (
-                    phase_controller.quality_checkpoint_promotion
-                    != SINGLE_OBJECTIVE_PROMOTION_MODE
-                    or phase_controller.accepted_single_objective_value is not None
-                )
             )
         )
         and not _development_acceptance_enabled(config)
+    ))
+    experiment_candidate_accepted = bool(
+        single_objective_mode
+        and accepted_checkpoint.exists()
+        and phase_controller.accepted_single_objective_value is not None
     )
     development_accepted = (
         bool(
@@ -8860,13 +9385,13 @@ def _train_parallel(
     if (
         not tiered_protocol
         and not formal_eligible
+        and not single_objective_mode
         and not _development_acceptance_enabled(config)
         and phase_controller.formal_training_status
         not in {
             "feasibility_not_reached",
             "pareto_baseline_not_reached",
-            "single_objective_anchor_not_reached",
-            "exploratory_candidate",
+            "single_objective_98_candidate_not_reached",
         }
     ):
         raise RuntimeError("invalid hierarchical training state")
@@ -8956,6 +9481,7 @@ def _train_parallel(
             ),
             "training_phase": phase_controller.as_dict(),
             "formal_eligible": formal_eligible,
+            "experiment_candidate_accepted": experiment_candidate_accepted,
             "development_accepted": development_accepted,
             "development_scope": (
                 "single_seed_development"
@@ -8972,7 +9498,10 @@ def _train_parallel(
         last_checkpoint,
         metadata={**final_metadata, "checkpoint_role": "last_online"},
     )
-    if formal_eligible and accepted_checkpoint.exists():
+    if single_objective_mode:
+        checkpoint = None
+        last_candidate_checkpoint = None
+    elif formal_eligible and accepted_checkpoint.exists():
         checkpoint = run_directory / "checkpoint.pt"
         last_candidate_checkpoint = None
         shutil.copyfile(accepted_checkpoint, checkpoint)
@@ -8986,18 +9515,53 @@ def _train_parallel(
         last_candidate_checkpoint = (
             run_directory / "last_candidate_checkpoint.pt"
         )
-        shutil.copyfile(
-            exploratory_checkpoint
-            if (
-                phase_controller.formal_training_status == "exploratory_candidate"
-                and exploratory_checkpoint.exists()
-            )
-            else last_checkpoint,
-            last_candidate_checkpoint,
-        )
+        shutil.copyfile(last_checkpoint, last_candidate_checkpoint)
     final_checkpoint_evaluation = None
     checkpoint_sha256 = None
-    if checkpoint is not None:
+    if single_objective_mode and accepted_checkpoint.exists():
+        final_checkpoint_evaluation = _reevaluate_checkpoint_from_disk(
+            config,
+            checkpoint=accepted_checkpoint,
+            bootstrap_observation=bootstrap_observation,
+            dataset_name=validation_split,
+            instance_limit=phase_controller.single_objective_audit_instance_limit,
+            sampling_seeds=[],
+            greedy_only=True,
+        )
+        try:
+            _assert_single_objective_checkpoint_evaluation(
+                phase_controller,
+                final_checkpoint_evaluation,
+            )
+        except Exception as error:
+            invalidated_checkpoint = (
+                run_directory / "invalidated_accepted_checkpoint.pt"
+            )
+            accepted_checkpoint.replace(invalidated_checkpoint)
+            write_csv(run_directory / "train_log.csv", rows)
+            write_csv(run_directory / "update_log.csv", update_rows)
+            write_csv(run_directory / "validation_log.csv", validation_rows)
+            write_csv(
+                run_directory / "single_objective_audit_log.csv",
+                single_objective_audit_rows,
+            )
+            write_csv(
+                run_directory / "single_objective_audit_failures.csv",
+                single_objective_audit_failure_rows,
+            )
+            write_json(
+                run_directory / "failure.json",
+                {
+                    "status": "accepted_checkpoint_invalidated",
+                    "error": str(error),
+                    "invalidated_checkpoint": str(invalidated_checkpoint),
+                    "formal_eligible": False,
+                },
+            )
+            raise RuntimeError(
+                "single-objective accepted checkpoint failed final audit"
+            ) from error
+    elif checkpoint is not None:
         checkpoint_sha256 = _checkpoint_sha256(checkpoint)
         accepted_sha256 = _checkpoint_sha256(accepted_checkpoint)
         best_sha256 = _checkpoint_sha256(best_checkpoint)
@@ -9013,11 +9577,11 @@ def _train_parallel(
             instance_limit=validation_limit,
             sampling_seeds=_official_evaluation_sampling_seeds(config),
         )
-        _assert_single_objective_checkpoint_evaluation(
-            phase_controller,
-            final_checkpoint_evaluation,
-        )
-    summary_checkpoint = checkpoint or last_checkpoint
+    summary_checkpoint = (
+        accepted_checkpoint
+        if single_objective_mode and accepted_checkpoint.exists()
+        else checkpoint or last_checkpoint
+    )
     summary_provenance = build_provenance(
         config,
         dataset_manifest_path=_validation_manifest_path(config),
@@ -9027,10 +9591,14 @@ def _train_parallel(
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
-    if phase_controller.quality_checkpoint_promotion == SINGLE_OBJECTIVE_PROMOTION_MODE:
+    if single_objective_mode:
         write_csv(
-            run_directory / "single_objective_validation_failures.csv",
-            validation_failure_rows,
+            run_directory / "single_objective_audit_log.csv",
+            single_objective_audit_rows,
+        )
+        write_csv(
+            run_directory / "single_objective_audit_failures.csv",
+            single_objective_audit_failure_rows,
         )
     if pareto_validation_rows:
         write_csv(
@@ -9242,6 +9810,7 @@ def _train_parallel(
                 else None
             ),
             "formal_eligible": formal_eligible,
+            "experiment_candidate_accepted": experiment_candidate_accepted,
             "warm_start": warm_start_report,
             "last_checkpoint": _run_relative_checkpoint(last_checkpoint, run_directory),
             "last_safe_checkpoint": (
@@ -9308,15 +9877,20 @@ def _train_parallel(
                 phase_controller.formal_training_status
             ),
             "training_phase": phase_controller.as_dict(),
-            "single_objective_exploration": (
+            "single_objective_audit": (
                 {
-                    "exploratory_checkpoint": _run_relative_checkpoint(
-                        exploratory_checkpoint, run_directory
-                    ) if exploratory_checkpoint.exists() else None,
-                    "validation_failure_row_count": len(validation_failure_rows),
+                    "daily_validation_instance_limit": validation_limit,
+                    "audit_instance_limit": (
+                        phase_controller.single_objective_audit_instance_limit
+                    ),
+                    "audit_count": len(single_objective_audit_rows),
+                    "audit_failure_row_count": len(
+                        single_objective_audit_failure_rows
+                    ),
+                    "accepted_status": phase_controller.formal_training_status,
+                    "project_formal_completion_target": 1.0,
                 }
-                if phase_controller.quality_checkpoint_promotion
-                == SINGLE_OBJECTIVE_PROMOTION_MODE
+                if single_objective_mode
                 else None
             ),
             "validation_stability": stability_controller.as_dict(),

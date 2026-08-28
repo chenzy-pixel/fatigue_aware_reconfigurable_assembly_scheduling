@@ -678,11 +678,14 @@ E1/E2 分析结果合并，得到三方法经验 Pareto、Hypervolume、贡献�
 `e1_single_flow.json`、`e1_single_cost.json` 和
 `e1_single_variance.json` 继承同一个 E1 单目标公共配置。三者仅将
 `reward.quality_weights` 分别设为 `(1,0,0)`、`(0,1,0)` 和 `(0,0,1)`。
-公共配置使用 `matching_admission_recovery_v2`、
+公共配置使用 `temporal_matching_admission_recovery_v3`、
 `deadline_progress_viability_shield_v2` 和
-`single_objective_guarded_v1`；soft risk shaping 系数固定为零。
+`single_objective_guarded_v1`；soft risk shaping 系数固定为零。v3 保留静态
+快速路径，并在静态检查失败时使用有限节点的确定性时序 oracle；历史 E1/E2
+配置仍保留原动作域。
 
-正式 validation 固定为同一份、同一顺序的 500 个 publication 实例。首次在训练电脑
+正式 validation 固定为同一份、同一顺序的 500 个 publication 实例。日常 validation
+只读取该 manifest 的前 100 个；改善候选触发完整 500-instance 审计。首次在训练电脑
 生成后，三个策略共用该 manifest：
 
 ```powershell
@@ -691,11 +694,14 @@ E1/E2 分析结果合并，得到三方法经验 Pareto、Hypervolume、贡献�
   --build-split validation --profile publication --count 500 --overwrite
 ```
 
-阶段一进入质量阶段仍要求连续 3 次 `completion_rate=1.0`。质量阶段采用 5 次
-合格验证的原始目标中位数：`completion_rate>=0.95`、零 schedule violation 和物理/疲劳
-安全的候选进入探索轨道；连续两次严格低于 0.95 回滚并清空当前窗口。探索 checkpoint
-不会覆盖 `accepted_checkpoint.pt`。正式 accepted 还要求当前验证 100% 完成、零
-truncation、零 schedule violation 和物理/疲劳安全，因此只由正式轨道写入。
+阶段一进入质量阶段仍要求连续 3 次 `completion_rate=1.0`。质量阶段采用最近 5 次
+合格日常验证的原始目标中位数：`completion_rate>=0.95`、零 schedule violation 和物理/疲劳
+安全。窗口中位数相对 candidate anchor 严格下降 `1e-9` 时触发一次完整 500-instance 审计；
+连续两次严格低于 0.95 回滚并清空当前窗口。审计以 `failed_count = 500 - completed_count`
+统一计入 incomplete/truncated 实例，最多允许 10 个失败（完成率至少 98%），且 schedule
+violation 和物理/疲劳安全必须为零。只有审计通过且字典序 `(failed_count, window_median)`
+改善时，才原子替换唯一的 `accepted_checkpoint.pt`。该 accepted 是 98% 实验候选，
+`formal_eligible` 保持为 false；项目正式完成标准仍是 100%。
 
 本机 smoke 命令如下。Smoke 只验证配置、rollout/PPO 更新、安全机制诊断字段和
 reward identity，不用于判断收敛，也不进入后续 payoff matrix：
@@ -725,11 +731,13 @@ reward identity，不用于判断收敛，也不进入后续 payoff matrix：
   --output-dir result\analysis\e1_single_objective_seed11
 ```
 
-每个策略输出一张五面板 PDF、300-dpi PNG 和对应的原始 validation 数据 CSV，
-并标记 feasibility→quality 切换点、探索窗口晋升点及正式 accepted checkpoint episode。
+每个策略输出一张五面板 PDF、300-dpi PNG 和对应的原始 100-instance validation 数据 CSV，
+并标记 feasibility→quality 切换点、500-instance 审计触发点及 accepted checkpoint episode。
 completion 面板同时绘制 1.0 和 0.95 参考线。汇总文件
-`convergence_diagnostics.json` 和 `convergence_report.md` 报告 95% 合格点数、窗口中位数
-下降、探索/正式晋升数量、正式 accepted 是否回到 100%，以及另外两个目标的原始变化。
-逐实例尾部失败保存在 `single_objective_validation_failures.csv`（instance ID、截断、
-未完成订单、排程违反和疲劳安全线）。正式 accepted checkpoint 之后再在同一 calibration
-set 上计算 payoff matrix。
+`convergence_diagnostics.json` 和 `convergence_report.md` 报告 95% 合格点数、审计数量、
+accepted 数量、98% 审计结果以及另外两个目标的原始变化。审计逐实例失败保存在
+`single_objective_audit_failures.csv`；审计摘要保存在 `single_objective_audit_log.csv`。
+正式 accepted checkpoint 之后再在同一 calibration set 上计算 payoff matrix。
+
+`configs/baselines/mo_alns_temporal_v3.json` 提供与三个单目标策略相同的 v3
+动作域，用于 MO-ALNS 对照；原 `mo_alns.json` 保持历史 v2/静态动作域语义。

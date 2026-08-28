@@ -1,0 +1,14 @@
+{
+  "extends": "mo_alns.json",
+  "experiment_name": "mo_alns_fatigue_aware_temporal_v3",
+  "experiment_suite_version": "mo_alns_temporal_solver_budget_v1",
+  "environment": {
+    "worker_resource_control": {
+      "mode": "temporal_matching_admission_recovery_v3",
+      "temporal_feasibility": {
+        "max_search_nodes": 50000,
+        "unknown_action": "allow"
+      }
+    }
+  }
+}

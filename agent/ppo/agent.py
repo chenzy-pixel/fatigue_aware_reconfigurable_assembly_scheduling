@@ -385,6 +385,21 @@ class PPOAgent:
         self.network = network
         self.config = config
         self.device = torch.device(device)
+        if self.device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA training was requested, but torch.cuda.is_available() "
+                "is False. Install CUDA-enabled PyTorch and a compatible "
+                "NVIDIA driver, or explicitly configure device='cpu'."
+            )
+        if (
+            self.device.type == "cuda"
+            and self.device.index is not None
+            and self.device.index >= torch.cuda.device_count()
+        ):
+            raise RuntimeError(
+                f"CUDA device index {self.device.index} was requested, but "
+                f"only {torch.cuda.device_count()} CUDA device(s) are visible."
+            )
         self.network.to(self.device)
         self.optimizer = torch.optim.Adam(
             self.network.parameters(), lr=config["learning_rate"]

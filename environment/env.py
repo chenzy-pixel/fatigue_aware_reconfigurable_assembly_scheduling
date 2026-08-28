@@ -149,6 +149,36 @@ class WorkerTaskSnapshot:
 
 
 @dataclass(frozen=True)
+class TemporalWorkerTask:
+    """One worker stage in the finite-horizon temporal feasibility search."""
+
+    task_id: str
+    machine_index: int
+    stage: ReconfigurationStage
+    module: str
+    ready_tick: int
+    predecessor_id: str | None = None
+    candidate: bool = False
+
+
+@dataclass(frozen=True)
+class TemporalWorkerState:
+    """Hypothetical worker availability and fatigue at that availability."""
+
+    available_tick: int
+    fatigue: float
+
+
+@dataclass(frozen=True)
+class TemporalFeasibilityResult:
+    """Deterministic tri-state outcome of the temporal feasibility oracle."""
+
+    status: str
+    searched_nodes: int
+    candidate_completion_tick: int | None = None
+
+
+@dataclass(frozen=True)
 class ResourceFeasibilitySnapshot:
     """Shared worker feasibility view used by masks, features, and metrics."""
 
@@ -170,6 +200,7 @@ class ProductionCandidateProfile:
     horizon_slack_ticks: int
     completion_lower_bound_ticks: int
     completion_slack_ticks: int
+    temporal_feasibility_status: str
     admissible: bool
 
 
@@ -183,6 +214,7 @@ class ProductionResourceProfile:
     safe_installation_workers: int
     matching_deficit_after_commit: int
     future_installation_matching_deficit_after_commit: int
+    temporal_feasibility_status: str
     base_admissible: bool
 
 
@@ -278,6 +310,23 @@ class AssemblySchedulingEnv:
         self._matching_deficit_recovery_advance_count = 0
         self._maximum_worker_matching_deficit = 0
         self._maximum_projected_installation_deficit = 0
+        self._temporal_oracle_call_count = 0
+        self._temporal_oracle_cache_hit_count = 0
+        self._temporal_oracle_searched_nodes = 0
+        self._temporal_oracle_result_counts = {
+            "feasible": 0,
+            "infeasible": 0,
+            "unknown": 0,
+        }
+        self._temporal_worker_action_rescued: set[
+            tuple[int, str, str, str]
+        ] = set()
+        self._temporal_future_installation_rescued: set[
+            tuple[int, int, str]
+        ] = set()
+        self._temporal_delayed_disassembly_rescued: set[
+            tuple[int, int, str]
+        ] = set()
         self._candidate_recovery_advance_count = 0
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
@@ -317,6 +366,9 @@ class AssemblySchedulingEnv:
         ] = {}
         self._stage_projection_cache: dict[
             tuple[int, int, str, bool, int], tuple[int, int] | None
+        ] = {}
+        self._temporal_oracle_cache: dict[
+            tuple[Any, ...], TemporalFeasibilityResult
         ] = {}
         self._production_defer_recovery_cache_version = -1
         self._production_defer_recovery_cache: int | None = None
@@ -437,10 +489,12 @@ class AssemblySchedulingEnv:
             "legacy_postcheck",
             "matching_admission_v1",
             "matching_admission_recovery_v2",
+            "temporal_matching_admission_recovery_v3",
         }:
             raise ValueError(
                 "worker_resource_control.mode must be 'legacy_postcheck', "
-                "'matching_admission_v1', or 'matching_admission_recovery_v2'"
+                "'matching_admission_v1', 'matching_admission_recovery_v2', "
+                "or 'temporal_matching_admission_recovery_v3'"
             )
         return settings
 
@@ -449,13 +503,39 @@ class AssemblySchedulingEnv:
         return str(self.worker_resource_control.get("mode")) in {
             "matching_admission_v1",
             "matching_admission_recovery_v2",
+            "temporal_matching_admission_recovery_v3",
         }
 
     @property
     def matching_recovery_enabled(self) -> bool:
+        return str(self.worker_resource_control.get("mode")) in {
+            "matching_admission_recovery_v2",
+            "temporal_matching_admission_recovery_v3",
+        }
+
+    @property
+    def temporal_matching_enabled(self) -> bool:
         return str(self.worker_resource_control.get("mode")) == (
-            "matching_admission_recovery_v2"
+            "temporal_matching_admission_recovery_v3"
         )
+
+    @property
+    def temporal_feasibility_settings(self) -> dict[str, Any]:
+        raw = self.worker_resource_control.get("temporal_feasibility", {})
+        if not isinstance(raw, dict):
+            raise TypeError(
+                "environment.worker_resource_control.temporal_feasibility "
+                "must be a mapping"
+            )
+        result = {
+            "max_search_nodes": int(raw.get("max_search_nodes", 50_000)),
+            "unknown_action": str(raw.get("unknown_action", "allow")),
+        }
+        if result["max_search_nodes"] < 1:
+            raise ValueError("temporal feasibility max_search_nodes must be positive")
+        if result["unknown_action"] != "allow":
+            raise ValueError("temporal feasibility unknown_action must be 'allow'")
+        return result
 
     def _resource_setting(self, name: str, default: bool) -> bool:
         return bool(self.worker_resource_control.get(name, default))
@@ -533,6 +613,7 @@ class AssemblySchedulingEnv:
         self._candidate_profile_cache = {}
         self._production_resource_profile_cache = {}
         self._stage_projection_cache = {}
+        self._temporal_oracle_cache = {}
         self._production_defer_recovery_cache_version = -1
         self._production_defer_recovery_cache = None
         self._observation_cache_version = -1
@@ -616,6 +697,17 @@ class AssemblySchedulingEnv:
         self._matching_deficit_recovery_advance_count = 0
         self._maximum_worker_matching_deficit = 0
         self._maximum_projected_installation_deficit = 0
+        self._temporal_oracle_call_count = 0
+        self._temporal_oracle_cache_hit_count = 0
+        self._temporal_oracle_searched_nodes = 0
+        self._temporal_oracle_result_counts = {
+            "feasible": 0,
+            "infeasible": 0,
+            "unknown": 0,
+        }
+        self._temporal_worker_action_rescued = set()
+        self._temporal_future_installation_rescued = set()
+        self._temporal_delayed_disassembly_rescued = set()
         self._candidate_recovery_advance_count = 0
         self._production_defer_recovery_improvement_count = 0
         self._production_defer_wait_ticks = 0
@@ -662,6 +754,13 @@ class AssemblySchedulingEnv:
             )
         self._process_events_at_current_tick()
         self._resolve_terminal_or_deadlock()
+        # ``build_observation=False`` is used by callers that intentionally
+        # defer graph/resource feature construction until the first explicit
+        # ``observe()`` call.  Deadlock resolution must still inspect the
+        # action mask, but its speculative resource projections should not
+        # consume the observation cache's first-build budget.
+        if not build_observation:
+            self._production_resource_profile_cache.clear()
         return self.observe() if build_observation else None
 
     def observe(self) -> Observation:
@@ -2079,13 +2178,25 @@ class AssemblySchedulingEnv:
                                 self._future_installation_admission_candidates.add(
                                     key
                                 )
-                                if profile.matching_deficit_after_commit > 0:
+                                temporal_rejected = bool(
+                                    self.temporal_matching_enabled
+                                    and profile.temporal_feasibility_status
+                                    == "infeasible"
+                                )
+                                if profile.matching_deficit_after_commit > 0 and (
+                                    not self.temporal_matching_enabled
+                                    or temporal_rejected
+                                ):
                                     self._current_matching_admission_masked.add(
                                         key
                                     )
                                 if (
                                     profile.future_installation_matching_deficit_after_commit
                                     > 0
+                                    and (
+                                        not self.temporal_matching_enabled
+                                        or temporal_rejected
+                                    )
                                 ):
                                     self._future_installation_admission_masked.add(
                                         key
@@ -2155,11 +2266,28 @@ class AssemblySchedulingEnv:
                             worker_index,
                         )
                     )
-                    legal = (
+                    static_legal = (
                         after_deficit == 0
                         if before_deficit == 0
                         else after_deficit < before_deficit
                     )
+                    if self.temporal_matching_enabled and not static_legal:
+                        temporal_result = self._temporal_worker_action_result(
+                            reconfiguration,
+                            worker_index,
+                        )
+                        legal = temporal_result.status != "infeasible"
+                        if legal:
+                            self._temporal_worker_action_rescued.add(
+                                (
+                                    self.current_tick,
+                                    reconfiguration.id,
+                                    reconfiguration.stage.value,
+                                    worker.spec.id,
+                                )
+                            )
+                    else:
+                        legal = static_legal
                     if legal and before_deficit > 0:
                         self._deficit_reducing_worker_action_candidates.add(
                             (
@@ -3128,6 +3256,31 @@ class AssemblySchedulingEnv:
             ),
             "future_installation_matching_deficit_after_commit": (
                 self._maximum_projected_installation_deficit
+            ),
+            "temporal_oracle_call_count": self._temporal_oracle_call_count,
+            "temporal_oracle_cache_hit_count": (
+                self._temporal_oracle_cache_hit_count
+            ),
+            "temporal_oracle_searched_nodes": (
+                self._temporal_oracle_searched_nodes
+            ),
+            "temporal_oracle_feasible_count": (
+                self._temporal_oracle_result_counts["feasible"]
+            ),
+            "temporal_oracle_infeasible_count": (
+                self._temporal_oracle_result_counts["infeasible"]
+            ),
+            "temporal_oracle_unknown_count": (
+                self._temporal_oracle_result_counts["unknown"]
+            ),
+            "temporal_worker_action_rescued_count": len(
+                self._temporal_worker_action_rescued
+            ),
+            "temporal_future_installation_rescued_count": len(
+                self._temporal_future_installation_rescued
+            ),
+            "temporal_delayed_disassembly_rescued_count": len(
+                self._temporal_delayed_disassembly_rescued
             ),
             "minimum_worker_alternatives": (
                 self._minimum_worker_alternatives_seen
@@ -4309,6 +4462,440 @@ class AssemblySchedulingEnv:
             duration_ticks,
         )
 
+    def _temporal_task_reconfiguration(
+        self, task: TemporalWorkerTask
+    ) -> ReconfigurationRuntime:
+        machine = self.machines[task.machine_index]
+        return ReconfigurationRuntime(
+            id=task.task_id,
+            machine_id=machine.spec.id,
+            operation_id="",
+            source_module=(
+                task.module
+                if task.stage == ReconfigurationStage.WAIT_DIS
+                else self.instance.no_module_state
+            ),
+            target_module=(
+                task.module
+                if task.stage == ReconfigurationStage.WAIT_INS
+                else self.instance.no_module_state
+            ),
+            lock_tick=self.current_tick,
+            stage=task.stage,
+        )
+
+    def _temporal_worker_tasks(
+        self,
+        *,
+        candidate_machine_index: int | None = None,
+        candidate_target_module: str | None = None,
+    ) -> tuple[TemporalWorkerTask, ...]:
+        tasks: list[TemporalWorkerTask] = []
+        for reconfiguration in sorted(
+            self.reconfigurations.values(), key=lambda value: value.id
+        ):
+            machine_index = self.instance.machine_index[
+                reconfiguration.machine_id
+            ]
+            if reconfiguration.stage == ReconfigurationStage.WAIT_DIS:
+                disassembly_id = f"dis:{reconfiguration.id}"
+                tasks.append(
+                    TemporalWorkerTask(
+                        task_id=disassembly_id,
+                        machine_index=machine_index,
+                        stage=ReconfigurationStage.WAIT_DIS,
+                        module=reconfiguration.source_module,
+                        ready_tick=self.current_tick,
+                    )
+                )
+                tasks.append(
+                    TemporalWorkerTask(
+                        task_id=f"ins:{reconfiguration.id}",
+                        machine_index=machine_index,
+                        stage=ReconfigurationStage.WAIT_INS,
+                        module=reconfiguration.target_module,
+                        ready_tick=self.current_tick,
+                        predecessor_id=disassembly_id,
+                    )
+                )
+            elif reconfiguration.stage == ReconfigurationStage.DIS:
+                ready_tick = reconfiguration.disassembly_end_tick
+                if ready_tick is not None:
+                    tasks.append(
+                        TemporalWorkerTask(
+                            task_id=f"ins:{reconfiguration.id}",
+                            machine_index=machine_index,
+                            stage=ReconfigurationStage.WAIT_INS,
+                            module=reconfiguration.target_module,
+                            ready_tick=int(ready_tick),
+                        )
+                    )
+            elif reconfiguration.stage == ReconfigurationStage.WAIT_INS:
+                tasks.append(
+                    TemporalWorkerTask(
+                        task_id=f"ins:{reconfiguration.id}",
+                        machine_index=machine_index,
+                        stage=ReconfigurationStage.WAIT_INS,
+                        module=reconfiguration.target_module,
+                        ready_tick=self.current_tick,
+                    )
+                )
+        if candidate_machine_index is not None:
+            if candidate_target_module is None:
+                raise ValueError("candidate target module is required")
+            machine = self.machines[candidate_machine_index]
+            disassembly_id = (
+                f"candidate-dis:{candidate_machine_index}:"
+                f"{candidate_target_module}"
+            )
+            tasks.extend(
+                (
+                    TemporalWorkerTask(
+                        task_id=disassembly_id,
+                        machine_index=candidate_machine_index,
+                        stage=ReconfigurationStage.WAIT_DIS,
+                        module=machine.current_module,
+                        ready_tick=self.current_tick,
+                        candidate=True,
+                    ),
+                    TemporalWorkerTask(
+                        task_id=(
+                            f"candidate-ins:{candidate_machine_index}:"
+                            f"{candidate_target_module}"
+                        ),
+                        machine_index=candidate_machine_index,
+                        stage=ReconfigurationStage.WAIT_INS,
+                        module=candidate_target_module,
+                        ready_tick=self.current_tick,
+                        predecessor_id=disassembly_id,
+                        candidate=True,
+                    ),
+                )
+            )
+        return tuple(sorted(tasks, key=lambda value: value.task_id))
+
+    def _temporal_initial_worker_states(
+        self,
+    ) -> tuple[TemporalWorkerState, ...]:
+        return tuple(
+            TemporalWorkerState(
+                available_tick=int(available_tick),
+                fatigue=float(fatigue),
+            )
+            for available_tick, fatigue in (
+                self._worker_fatigue_at_availability(worker_index)
+                for worker_index in range(len(self.workers))
+            )
+        )
+
+    def _temporal_assignment_options(
+        self,
+        task: TemporalWorkerTask,
+        worker_states: tuple[TemporalWorkerState, ...],
+        *,
+        minimum_start_tick: int,
+        exact_worker_index: int | None = None,
+        exact_start_tick: int | None = None,
+    ) -> list[tuple[int, int, int, float]]:
+        options: list[tuple[int, int, int, float]] = []
+        reconfiguration = self._temporal_task_reconfiguration(task)
+        safe_limit = float(self.instance.fatigue.maximum_safe_fatigue)
+        recovery_rate = float(
+            self.instance.fatigue.idle_recovery_rate_per_minute
+        )
+        worker_indices = (
+            (int(exact_worker_index),)
+            if exact_worker_index is not None
+            else tuple(range(len(self.workers)))
+        )
+        for worker_index in worker_indices:
+            worker = self.workers[worker_index]
+            if task.module not in worker.spec.qualified_modules:
+                continue
+            state = worker_states[worker_index]
+            earliest = max(
+                int(task.ready_tick),
+                int(minimum_start_tick),
+                int(state.available_tick),
+            )
+            starts = (
+                (int(exact_start_tick),)
+                if exact_start_tick is not None
+                else range(earliest, self.horizon_tick + 1)
+            )
+            seen: set[tuple[int, int, str]] = set()
+            for start_tick in starts:
+                if start_tick < earliest or start_tick > self.horizon_tick:
+                    continue
+                recovered = max(
+                    0.0,
+                    float(state.fatigue)
+                    - recovery_rate
+                    * ticks_to_minutes(
+                        start_tick - int(state.available_tick),
+                        self.resolution,
+                    ),
+                )
+                duration_ticks = self._stage_duration_ticks(
+                    reconfiguration,
+                    worker,
+                    fatigue_override=recovered,
+                )
+                end_tick = start_tick + duration_ticks
+                if end_tick > self.horizon_tick:
+                    continue
+                end_fatigue = recovered + self._stage_accumulation_rate(
+                    reconfiguration
+                ) * ticks_to_minutes(duration_ticks, self.resolution)
+                if end_fatigue > safe_limit + EPSILON:
+                    continue
+                signature = (
+                    int(end_tick),
+                    int(start_tick),
+                    float(end_fatigue).hex(),
+                )
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                options.append(
+                    (
+                        int(worker_index),
+                        int(start_tick),
+                        int(end_tick),
+                        float(end_fatigue),
+                    )
+                )
+        return sorted(options, key=lambda value: (value[2], value[1], value[0]))
+
+    @staticmethod
+    def _temporal_remove_task(
+        tasks: tuple[TemporalWorkerTask, ...],
+        selected: TemporalWorkerTask,
+        end_tick: int,
+    ) -> tuple[TemporalWorkerTask, ...]:
+        remaining: list[TemporalWorkerTask] = []
+        for task in tasks:
+            if task.task_id == selected.task_id:
+                continue
+            if task.predecessor_id == selected.task_id:
+                task = TemporalWorkerTask(
+                    task_id=task.task_id,
+                    machine_index=task.machine_index,
+                    stage=task.stage,
+                    module=task.module,
+                    ready_tick=max(int(task.ready_tick), int(end_tick)),
+                    predecessor_id=None,
+                    candidate=task.candidate,
+                )
+            remaining.append(task)
+        return tuple(sorted(remaining, key=lambda value: value.task_id))
+
+    @staticmethod
+    def _temporal_state_key(
+        tasks: tuple[TemporalWorkerTask, ...],
+        worker_states: tuple[TemporalWorkerState, ...],
+        minimum_start_tick: int,
+    ) -> tuple[Any, ...]:
+        return (
+            int(minimum_start_tick),
+            tuple(
+                (
+                    task.task_id,
+                    task.machine_index,
+                    task.stage.value,
+                    task.module,
+                    task.ready_tick,
+                    task.predecessor_id,
+                    task.candidate,
+                )
+                for task in tasks
+            ),
+            tuple(
+                (state.available_tick, float(state.fatigue).hex())
+                for state in worker_states
+            ),
+        )
+
+    def _run_temporal_feasibility_search(
+        self,
+        tasks: tuple[TemporalWorkerTask, ...],
+        *,
+        minimum_start_tick: int | None = None,
+        forced_task_id: str | None = None,
+        forced_worker_index: int | None = None,
+    ) -> TemporalFeasibilityResult:
+        """Exhaust the discrete search or return unknown at the node budget."""
+
+        self._temporal_oracle_call_count += 1
+        effective_minimum = (
+            self.current_tick
+            if minimum_start_tick is None
+            else int(minimum_start_tick)
+        )
+        worker_states = self._temporal_initial_worker_states()
+        candidate_completion_tick: int | None = None
+        if forced_task_id is not None:
+            forced_task = next(
+                (task for task in tasks if task.task_id == forced_task_id),
+                None,
+            )
+            if forced_task is None or forced_worker_index is None:
+                result = TemporalFeasibilityResult("infeasible", 0)
+                self._temporal_oracle_result_counts[result.status] += 1
+                return result
+            forced_options = self._temporal_assignment_options(
+                forced_task,
+                worker_states,
+                minimum_start_tick=self.current_tick,
+                exact_worker_index=int(forced_worker_index),
+                exact_start_tick=self.current_tick,
+            )
+            if not forced_options:
+                result = TemporalFeasibilityResult("infeasible", 0)
+                self._temporal_oracle_result_counts[result.status] += 1
+                return result
+            worker_index, _, end_tick, end_fatigue = forced_options[0]
+            updated_states = list(worker_states)
+            updated_states[worker_index] = TemporalWorkerState(
+                available_tick=end_tick,
+                fatigue=end_fatigue,
+            )
+            worker_states = tuple(updated_states)
+            tasks = self._temporal_remove_task(tasks, forced_task, end_tick)
+            if forced_task.candidate and (
+                forced_task.stage == ReconfigurationStage.WAIT_INS
+            ):
+                candidate_completion_tick = end_tick
+
+        cache_key = self._temporal_state_key(
+            tasks, worker_states, effective_minimum
+        )
+        cached = self._temporal_oracle_cache.get(cache_key)
+        if cached is not None:
+            self._temporal_oracle_cache_hit_count += 1
+            self._temporal_oracle_result_counts[cached.status] += 1
+            return cached
+
+        maximum_nodes = int(
+            self.temporal_feasibility_settings["max_search_nodes"]
+        )
+        searched_nodes = 0
+        proven_infeasible: set[tuple[Any, ...]] = set()
+
+        def search(
+            remaining: tuple[TemporalWorkerTask, ...],
+            states: tuple[TemporalWorkerState, ...],
+            candidate_tick: int | None,
+        ) -> tuple[str, int | None]:
+            nonlocal searched_nodes
+            if searched_nodes >= maximum_nodes:
+                return "unknown", None
+            searched_nodes += 1
+            if not remaining:
+                return "feasible", candidate_tick
+            state_key = self._temporal_state_key(
+                remaining, states, effective_minimum
+            )
+            if state_key in proven_infeasible:
+                return "infeasible", None
+            ready_tasks = [
+                task for task in remaining if task.predecessor_id is None
+            ]
+            if not ready_tasks:
+                proven_infeasible.add(state_key)
+                return "infeasible", None
+            selected: TemporalWorkerTask | None = None
+            selected_options: list[tuple[int, int, int, float]] | None = None
+            for task in ready_tasks:
+                options = self._temporal_assignment_options(
+                    task,
+                    states,
+                    minimum_start_tick=effective_minimum,
+                )
+                if not options:
+                    proven_infeasible.add(state_key)
+                    return "infeasible", None
+                if selected_options is None or (
+                    len(options), task.task_id
+                ) < (len(selected_options), selected.task_id):
+                    selected = task
+                    selected_options = options
+            if selected is None or selected_options is None:
+                proven_infeasible.add(state_key)
+                return "infeasible", None
+            saw_unknown = False
+            for worker_index, _, end_tick, end_fatigue in selected_options:
+                if searched_nodes >= maximum_nodes:
+                    saw_unknown = True
+                    break
+                updated_states = list(states)
+                updated_states[worker_index] = TemporalWorkerState(
+                    available_tick=end_tick,
+                    fatigue=end_fatigue,
+                )
+                updated_tasks = self._temporal_remove_task(
+                    remaining, selected, end_tick
+                )
+                updated_candidate_tick = candidate_tick
+                if selected.candidate and (
+                    selected.stage == ReconfigurationStage.WAIT_INS
+                ):
+                    updated_candidate_tick = end_tick
+                status, completion_tick = search(
+                    updated_tasks,
+                    tuple(updated_states),
+                    updated_candidate_tick,
+                )
+                if status == "feasible":
+                    return status, completion_tick
+                if status == "unknown":
+                    saw_unknown = True
+            if saw_unknown:
+                return "unknown", None
+            proven_infeasible.add(state_key)
+            return "infeasible", None
+
+        status, completion_tick = search(
+            tasks, worker_states, candidate_completion_tick
+        )
+        result = TemporalFeasibilityResult(
+            status=status,
+            searched_nodes=searched_nodes,
+            candidate_completion_tick=completion_tick,
+        )
+        self._temporal_oracle_cache[cache_key] = result
+        self._temporal_oracle_searched_nodes += searched_nodes
+        self._temporal_oracle_result_counts[result.status] += 1
+        return result
+
+    def _temporal_worker_action_result(
+        self,
+        reconfiguration: ReconfigurationRuntime,
+        worker_index: int,
+    ) -> TemporalFeasibilityResult:
+        prefix = (
+            "dis"
+            if reconfiguration.stage == ReconfigurationStage.WAIT_DIS
+            else "ins"
+        )
+        return self._run_temporal_feasibility_search(
+            self._temporal_worker_tasks(),
+            forced_task_id=f"{prefix}:{reconfiguration.id}",
+            forced_worker_index=worker_index,
+        )
+
+    def _temporal_production_result(
+        self,
+        machine_index: int,
+        target_module: str,
+    ) -> TemporalFeasibilityResult:
+        return self._run_temporal_feasibility_search(
+            self._temporal_worker_tasks(
+                candidate_machine_index=machine_index,
+                candidate_target_module=target_module,
+            )
+        )
+
     def _production_resource_profile(
         self,
         machine_index: int,
@@ -4448,6 +5035,7 @@ class AssemblySchedulingEnv:
                 safe_installation_workers=len(self.workers),
                 matching_deficit_after_commit=0,
                 future_installation_matching_deficit_after_commit=0,
+                temporal_feasibility_status="static_fast_path",
                 base_admissible=True,
             )
 
@@ -4539,7 +5127,7 @@ class AssemblySchedulingEnv:
         require_full_matching = self._resource_setting(
             "require_full_matching", True
         )
-        base_admissible = bool(
+        static_base_admissible = bool(
             candidate_edges
             and (not require_full_matching or matching_deficit == 0)
             and (
@@ -4549,6 +5137,25 @@ class AssemblySchedulingEnv:
             )
             and resource_ready_tick == self.current_tick
         )
+        temporal_status = "static_fast_path"
+        base_admissible = static_base_admissible
+        if self.temporal_matching_enabled and not static_base_admissible:
+            temporal_result = self._temporal_production_result(
+                machine_index,
+                target_module,
+            )
+            temporal_status = temporal_result.status
+            base_admissible = bool(
+                disassembly_projections
+                and processing_start_tick is not None
+                and temporal_result.status != "infeasible"
+            )
+            key = (self.current_tick, machine_index, str(target_module))
+            if base_admissible:
+                if matching_deficit > 0 or future_installation_deficit > 0:
+                    self._temporal_future_installation_rescued.add(key)
+                if resource_ready_tick > self.current_tick:
+                    self._temporal_delayed_disassembly_rescued.add(key)
         return ProductionResourceProfile(
             resource_ready_tick=resource_ready_tick,
             processing_start_tick=processing_start_tick,
@@ -4558,6 +5165,7 @@ class AssemblySchedulingEnv:
             future_installation_matching_deficit_after_commit=(
                 future_installation_deficit
             ),
+            temporal_feasibility_status=temporal_status,
             base_admissible=base_admissible,
         )
 
@@ -4607,6 +5215,9 @@ class AssemblySchedulingEnv:
             horizon_slack_ticks=self.horizon_tick - predicted_finish_tick,
             completion_lower_bound_ticks=completion_lower_bound,
             completion_slack_ticks=completion_slack,
+            temporal_feasibility_status=(
+                resource_profile.temporal_feasibility_status
+            ),
             admissible=(
                 resource_profile.base_admissible
                 and predicted_finish_tick <= self.horizon_tick
@@ -4905,8 +5516,18 @@ class AssemblySchedulingEnv:
         future_matching = _maximum_matching_size(
             [list(edge) for edge in future_edges], len(self.workers)
         )
+        temporal_future_status = "static_fast_path"
+        if (
+            self.temporal_matching_enabled
+            and future_matching != len(future_tasks_tuple)
+        ):
+            temporal_future_status = self._run_temporal_feasibility_search(
+                self._temporal_worker_tasks(),
+                minimum_start_tick=next_tick,
+            ).status
         if settings["require_full_matching"] and (
             future_matching != len(future_tasks_tuple)
+            and temporal_future_status == "infeasible"
         ):
             return None
 
@@ -4919,6 +5540,11 @@ class AssemblySchedulingEnv:
             )
             for task, edge in zip(future_tasks_tuple, future_edges)
         )
+        if temporal_future_status in {"feasible", "unknown"}:
+            # The temporal oracle includes qualification, recovery and horizon
+            # checks; a static projection is diagnostic only after it rescues
+            # an otherwise over-constrained matching.
+            horizon_feasible = True
         if settings["require_horizon_feasible"] and not horizon_feasible:
             return None
 
@@ -4955,6 +5581,11 @@ class AssemblySchedulingEnv:
             "minimum_duration_improvement_ticks"
         ]:
             reasons.append("duration_improvement")
+        if (
+            temporal_future_status in {"feasible", "unknown"}
+            and future_matching < len(future_tasks_tuple)
+        ):
+            reasons.append(f"temporal_{temporal_future_status}")
         if not reasons:
             return None
         return ConditionalWorkerWaitPreview(
@@ -4967,7 +5598,9 @@ class AssemblySchedulingEnv:
             future_matching_size=future_matching,
             future_task_count=len(future_tasks_tuple),
             horizon_feasible=horizon_feasible,
-            reason="+".join(reasons),
+            reason="+".join(
+                reasons
+            ),
         )
 
     def _remaining_work_lower_bound_ticks(self) -> int:

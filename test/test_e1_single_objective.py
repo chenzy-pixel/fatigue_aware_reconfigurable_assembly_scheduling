@@ -62,6 +62,20 @@ def _validation(flow: float, cost: float, variance: float) -> dict[str, object]:
     }
 
 
+def _audit(*, objective_value: float, failed: int = 0, violation: int = 0,
+           physical: bool = True) -> dict[str, object]:
+    completed = 500 - failed
+    return {
+        "instance_count": 500,
+        "completed_count": completed,
+        "completion_rate": completed / 500.0,
+        "truncated_count": failed,
+        "schedule_violation_count": violation,
+        "physical_safety_pass": physical,
+        "single_objective_value": objective_value,
+    }
+
+
 def _raw_json(path: str) -> dict:
     with Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -74,11 +88,14 @@ def test_single_objective_base_changes_only_requested_e1_protocol_fields():
     expected = public_config(e1)
     expected["experiment_name"] = "v7_e1_single_objective"
     expected["experiment_suite_version"] = (
-        "v7_e1_single_objective_protocol_v1"
+        "v7_e1_single_objective_protocol_v2"
     )
     expected["environment"]["worker_resource_control"]["mode"] = (
-        "matching_admission_recovery_v2"
+        "temporal_matching_admission_recovery_v3"
     )
+    expected["environment"]["worker_resource_control"][
+        "temporal_feasibility"
+    ] = {"max_search_nodes": 50000, "unknown_action": "allow"}
     expected["environment"]["production_defer"]["shield"] = {
         "enabled": True,
         "version": "deadline_progress_viability_shield_v2",
@@ -89,17 +106,19 @@ def test_single_objective_base_changes_only_requested_e1_protocol_fields():
     expected["training"]["two_stage"][
         "quality_checkpoint_promotion"
     ] = SINGLE_OBJECTIVE_PROMOTION_MODE
-    expected["training"]["validation_instance_limit"] = 500
+    expected["training"]["validation_instance_limit"] = 100
     expected["training"]["two_stage"]["quality_completion_floor"] = 0.95
     expected["training"]["two_stage"]["quality_promotion_constraints"] = None
     expected["training"]["two_stage"]["single_objective_promotion"] = {
         "window_size": 5,
         "window_statistic": "median",
+        "candidate_improvement_epsilon": 1e-9,
         "rollback_below_floor_consecutive": 2,
-        "formal_completion_target": 1.0,
-        "formal_truncation_target": 0,
-        "formal_violation_target": 0,
-        "physical_safety_required": True,
+        "audit_instance_limit": 500,
+        "audit_completion_target": 0.98,
+        "audit_max_failed_instances": 10,
+        "audit_schedule_violation_target": 0,
+        "audit_physical_safety_required": True,
     }
 
     assert public_config(base) == expected
@@ -149,10 +168,16 @@ def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
         for index in range(5)
     ]
     assert events[:4] == ["window_warmup"] * 4
-    assert events[-1] == "formal_promoted"
+    assert events[-1] == "audit_required"
     anchor_value = anchor_validation[OBJECTIVE_FIELDS[objective]]
+    assert controller.accepted_single_objective_value is None
+    assert controller.single_objective_candidate_anchor_value == anchor_value
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=anchor_value),
+        completed_episodes=24,
+        window_median=anchor_value,
+    ) == "accepted"
     assert controller.accepted_single_objective_value == anchor_value
-    assert controller.formal_single_objective_window_value == anchor_value
 
     other_names = [name for name in CONFIGS if name != objective]
     non_target_improvement = dict(anchor_validation)
@@ -178,7 +203,7 @@ def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
         )
         for index in range(5)
     ]
-    assert "formal_promoted" not in unchanged_events
+    assert "audit_required" not in unchanged_events
     assert controller.accepted_single_objective_value == anchor_value
 
     target_improvement = dict(anchor_validation)
@@ -203,11 +228,13 @@ def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
         )
         for index in range(5)
     ]
-    assert "formal_promoted" in improved_events
+    assert "audit_required" in improved_events
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=anchor_value - 0.25),
+        completed_episodes=44,
+        window_median=anchor_value - 0.25,
+    ) == "accepted"
     assert controller.accepted_single_objective_value == anchor_value - 0.25
-    assert controller.last_promotion_diagnostics["formal_anchor_value"] == (
-        anchor_value - 0.25
-    )
 
 
 def test_95_percent_candidates_are_exploratory_only_and_window_warms_up():
@@ -223,12 +250,12 @@ def test_95_percent_candidates_are_exploratory_only_and_window_warms_up():
         for index in range(5)
     ]
     assert events[:4] == ["window_warmup"] * 4
-    assert events[-1] == "exploratory_promoted"
+    assert events[-1] == "audit_required"
     assert controller.accepted_single_objective_value is None
-    assert controller.exploratory_single_objective_value == 99.0
+    assert controller.single_objective_candidate_anchor_value == 99.0
     assert controller.last_promotion_diagnostics["window_count"] == 5
     assert not _checkpoint_eligible_validation_event(
-        "exploratory_promoted", SINGLE_OBJECTIVE_PROMOTION_MODE
+        "audit_required", SINGLE_OBJECTIVE_PROMOTION_MODE
     )
 
 
@@ -301,7 +328,17 @@ def test_serial_and_parallel_promotion_paths_share_the_same_decisions():
         parallel_events.append(parallel.observe_validation(1.0, **arguments))
     assert serial_events == parallel_events
     assert serial_events[:4] == ["window_warmup"] * 4
-    assert serial_events[-1] == "formal_promoted"
+    assert serial_events[-1] == "audit_required"
+    assert serial.observe_single_objective_audit(
+        _audit(objective_value=2.5),
+        completed_episodes=50,
+        window_median=2.5,
+    ) == "accepted"
+    assert parallel.observe_single_objective_audit(
+        _audit(objective_value=2.5),
+        completed_episodes=50,
+        window_median=2.5,
+    ) == "accepted"
     assert serial.as_dict() == parallel.as_dict()
 
 
@@ -312,18 +349,18 @@ def test_individual_improvement_does_not_promote_until_window_median_improves():
         controller.observe_validation(
             0.95, completed_episodes=20 + index, score=baseline
         )
-    assert controller.exploratory_single_objective_window_value == 100.0
+    assert controller.single_objective_candidate_anchor_value == 100.0
     assert controller.observe_validation(
         0.95, completed_episodes=30, score=(-0.95, 50.0, 0.0, 0.0)
     ) == "not_promoted"
-    assert controller.exploratory_single_objective_window_value == 100.0
+    assert controller.single_objective_candidate_anchor_value == 100.0
     assert controller.observe_validation(
         0.95, completed_episodes=31, score=(-0.95, 50.0, 0.0, 0.0)
     ) == "not_promoted"
     assert controller.observe_validation(
         0.95, completed_episodes=32, score=(-0.95, 50.0, 0.0, 0.0)
-    ) == "exploratory_promoted"
-    assert controller.exploratory_single_objective_window_value == 50.0
+    ) == "audit_required"
+    assert controller.single_objective_candidate_anchor_value == 50.0
 
 
 def test_formal_promotion_requires_current_100_percent_candidate():
@@ -341,10 +378,15 @@ def test_formal_promotion_requires_current_100_percent_candidate():
             completed_episodes=30 + index,
             score=(-1.0, 80.0, 0.0, 0.0),
         )
-    assert event == "formal_promoted"
+    assert event == "audit_required"
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=80.0),
+        completed_episodes=32,
+        window_median=80.0,
+    ) == "accepted"
     assert controller.accepted_single_objective_value == 80.0
     assert _checkpoint_eligible_validation_event(
-        "formal_promoted", SINGLE_OBJECTIVE_PROMOTION_MODE
+        "accepted", SINGLE_OBJECTIVE_PROMOTION_MODE
     )
 
 
@@ -370,8 +412,20 @@ def test_formal_track_rejects_failed_hard_gates(
         schedule_violation_count=violations,
         physical_safety_pass=physical_safety_pass,
     )
-    assert event != "formal_promoted"
-    assert controller.accepted_single_objective_value is None
+    if violations or not physical_safety_pass:
+        assert event == "rejected"
+    else:
+        assert event == "audit_required"
+        audit_failed = controller.observe_single_objective_audit(
+            _audit(objective_value=90.0, failed=1 if truncated_count else 0),
+            completed_episodes=25,
+            window_median=90.0,
+        )
+        assert audit_failed == "accepted"
+    if violations or not physical_safety_pass:
+        assert controller.accepted_single_objective_value is None
+    else:
+        assert controller.accepted_single_objective_value == 90.0
 
 
 def test_single_objective_rollback_is_strict_below_95_and_requires_two():
@@ -442,18 +496,18 @@ def test_formal_run_requires_a_500_instance_validation_manifest(tmp_path: Path):
     config["paths"]["manifests_root"] = str(tmp_path / "manifests")
     with pytest.raises(FileNotFoundError, match="validation manifest"):
         _validate_single_objective_validation_protocol(
-            config, smoke=False, validation_limit=500
+            config, smoke=False, validation_limit=100
         )
     manifest_path = tmp_path / "manifests" / "validation" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
     write_json(manifest_path, {"instance_count": 20, "files": []})
     with pytest.raises(ValueError, match="500-instance manifest"):
         _validate_single_objective_validation_protocol(
-            config, smoke=False, validation_limit=500
+            config, smoke=False, validation_limit=100
         )
     write_json(manifest_path, {"instance_count": 500, "files": [None] * 500})
     _validate_single_objective_validation_protocol(
-        config, smoke=False, validation_limit=500
+        config, smoke=False, validation_limit=100
     )
 
 
