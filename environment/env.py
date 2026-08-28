@@ -373,6 +373,8 @@ class AssemblySchedulingEnv:
         self._production_defer_recovery_cache_version = -1
         self._production_defer_recovery_cache: int | None = None
         self._state_version = 0
+        self._action_mask_cache_version = -1
+        self._action_mask_cache: np.ndarray | None = None
         self._observation_cache_version = -1
         self._observation_cache: Observation | None = None
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
@@ -616,6 +618,8 @@ class AssemblySchedulingEnv:
         self._temporal_oracle_cache = {}
         self._production_defer_recovery_cache_version = -1
         self._production_defer_recovery_cache = None
+        self._action_mask_cache_version = -1
+        self._action_mask_cache = None
         self._observation_cache_version = -1
         self._observation_cache = None
 
@@ -2103,12 +2107,17 @@ class AssemblySchedulingEnv:
 
     def get_action_mask(self) -> np.ndarray:
         """Return True for illegal actions and False for feasible actions."""
+        if (
+            self._action_mask_cache is not None
+            and self._action_mask_cache_version == self._state_version
+        ):
+            return self._action_mask_cache.copy()
         if self.decision_type == DecisionType.TERMINAL:
             self._last_action_mask_analysis = {
                 "state_version": self._state_version,
                 "phase": self.decision_type.value,
             }
-            return np.ones(1, dtype=bool)
+            return self._cache_action_mask(np.ones(1, dtype=bool))
         if self.decision_type == DecisionType.PRODUCTION:
             mask = np.ones(self.production_action_size, dtype=bool)
             for operation_index, operation in enumerate(self.operations):
@@ -2241,7 +2250,7 @@ class AssemblySchedulingEnv:
                 "strict_future": defer_allowed,
                 "defer_shield": dict(defer_certificate),
             }
-            return mask
+            return self._cache_action_mask(mask)
         mask = np.ones(self.worker_action_size, dtype=bool)
         legal_worker_pairs = 0
         matching_deficit = 0
@@ -2355,7 +2364,15 @@ class AssemblySchedulingEnv:
             "matching_deficit": matching_deficit,
             "matching_recovery": recovering,
         }
-        return mask
+        return self._cache_action_mask(mask)
+
+    def _cache_action_mask(self, mask: np.ndarray) -> np.ndarray:
+        """Cache one immutable-by-convention mask for the current state."""
+
+        cached = np.asarray(mask, dtype=np.bool_).copy()
+        self._action_mask_cache_version = self._state_version
+        self._action_mask_cache = cached
+        return cached.copy()
 
     def forced_action_diagnostic(
         self,
@@ -4603,6 +4620,9 @@ class AssemblySchedulingEnv:
         recovery_rate = float(
             self.instance.fatigue.idle_recovery_rate_per_minute
         )
+        accumulation_rate = self._stage_accumulation_rate(reconfiguration)
+        resolution = float(self.resolution)
+        duration_parameters: tuple[float, float] | None = None
         worker_indices = (
             (int(exact_worker_index),)
             if exact_worker_index is not None
@@ -4612,57 +4632,132 @@ class AssemblySchedulingEnv:
             worker = self.workers[worker_index]
             if task.module not in worker.spec.qualified_modules:
                 continue
+            if duration_parameters is None:
+                duration_parameters = self._stage_duration_parameters(
+                    reconfiguration
+                )
+            base_duration, fatigue_coefficient = duration_parameters
             state = worker_states[worker_index]
             earliest = max(
                 int(task.ready_tick),
                 int(minimum_start_tick),
                 int(state.available_tick),
             )
-            starts = (
-                (int(exact_start_tick),)
-                if exact_start_tick is not None
-                else range(earliest, self.horizon_tick + 1)
+            if exact_start_tick is not None:
+                starts = np.asarray((int(exact_start_tick),), dtype=np.int64)
+            elif earliest < self.horizon_tick:
+                def scalar_projection(start_tick: int) -> tuple[int, float]:
+                    recovered_fatigue = max(
+                        0.0,
+                        float(state.fatigue)
+                        - recovery_rate
+                        * (start_tick - int(state.available_tick))
+                        * resolution,
+                    )
+                    duration = max(
+                        1,
+                        quantize_to_ticks(
+                            base_duration
+                            * (
+                                1.0
+                                + fatigue_coefficient * recovered_fatigue
+                            ),
+                            resolution,
+                        ),
+                    )
+                    projected_fatigue = (
+                        recovered_fatigue
+                        + accumulation_rate * duration * resolution
+                    )
+                    return duration, projected_fatigue
+
+                first_start = earliest
+                last_start = self.horizon_tick - 1
+                duration_drop_per_start_tick = (
+                    base_duration * fatigue_coefficient * recovery_rate
+                )
+                monotone_completion = (
+                    duration_drop_per_start_tick <= 1.0 + EPSILON
+                )
+                if monotone_completion:
+                    _, latest_fatigue = scalar_projection(last_start)
+                    if latest_fatigue > safe_limit + EPSILON:
+                        continue
+                    lower = first_start
+                    upper = last_start
+                    while lower < upper:
+                        middle = (lower + upper) // 2
+                        _, middle_fatigue = scalar_projection(middle)
+                        if middle_fatigue <= safe_limit + EPSILON:
+                            upper = middle
+                        else:
+                            lower = middle + 1
+                    first_start = lower
+                    first_duration, _ = scalar_projection(first_start)
+                    if first_start + first_duration > self.horizon_tick:
+                        continue
+                    lower = first_start
+                    upper = last_start
+                    while lower < upper:
+                        middle = (lower + upper + 1) // 2
+                        middle_duration, _ = scalar_projection(middle)
+                        if middle + middle_duration <= self.horizon_tick:
+                            lower = middle
+                        else:
+                            upper = middle - 1
+                    last_start = lower
+                # The old oracle evaluated every tick in Python.  Temporal
+                # admission calls this path thousands of times per rollout,
+                # so locate the feasible interval logarithmically and evaluate
+                # the identical discrete candidate set in one vectorized batch.
+                starts = np.arange(
+                    first_start,
+                    last_start + 1,
+                    dtype=np.int64,
+                )
+            else:
+                continue
+            valid_start = (starts >= earliest) & (starts <= self.horizon_tick)
+            if not bool(valid_start.any()):
+                continue
+            starts = starts[valid_start]
+            recovery_minutes = (
+                starts.astype(np.float64) - int(state.available_tick)
+            ) * resolution
+            recovered = np.maximum(
+                0.0,
+                float(state.fatigue) - recovery_rate * recovery_minutes,
             )
-            seen: set[tuple[int, int, str]] = set()
-            for start_tick in starts:
-                if start_tick < earliest or start_tick > self.horizon_tick:
-                    continue
-                recovered = max(
-                    0.0,
-                    float(state.fatigue)
-                    - recovery_rate
-                    * ticks_to_minutes(
-                        start_tick - int(state.available_tick),
-                        self.resolution,
-                    ),
-                )
-                duration_ticks = self._stage_duration_ticks(
-                    reconfiguration,
-                    worker,
-                    fatigue_override=recovered,
-                )
-                end_tick = start_tick + duration_ticks
-                if end_tick > self.horizon_tick:
-                    continue
-                end_fatigue = recovered + self._stage_accumulation_rate(
-                    reconfiguration
-                ) * ticks_to_minutes(duration_ticks, self.resolution)
-                if end_fatigue > safe_limit + EPSILON:
-                    continue
-                signature = (
-                    int(end_tick),
-                    int(start_tick),
-                    float(end_fatigue).hex(),
-                )
-                if signature in seen:
-                    continue
-                seen.add(signature)
+            duration_ticks = np.maximum(
+                1,
+                np.ceil(
+                    (
+                        base_duration
+                        * (1.0 + fatigue_coefficient * recovered)
+                        - EPSILON
+                    )
+                    / resolution
+                ).astype(np.int64),
+            )
+            end_ticks = starts + duration_ticks
+            end_fatigue = (
+                recovered + accumulation_rate * duration_ticks * resolution
+            )
+            feasible = (end_ticks <= self.horizon_tick) & (
+                end_fatigue <= safe_limit + EPSILON
+            )
+            for start_tick, end_tick, projected_fatigue in zip(
+                starts[feasible],
+                end_ticks[feasible],
+                end_fatigue[feasible],
+                strict=True,
+            ):
                 options.append(
                     (
                         int(worker_index),
                         int(start_tick),
                         int(end_tick),
-                        float(end_fatigue),
+                        float(projected_fatigue),
                     )
                 )
         return sorted(options, key=lambda value: (value[2], value[1], value[0]))
@@ -5145,6 +5240,14 @@ class AssemblySchedulingEnv:
                 target_module,
             )
             temporal_status = temporal_result.status
+            if (
+                temporal_result.status == "feasible"
+                and temporal_result.candidate_completion_tick is not None
+            ):
+                processing_start_tick = max(
+                    processing_start_tick or 0,
+                    int(temporal_result.candidate_completion_tick),
+                )
             base_admissible = bool(
                 disassembly_projections
                 and processing_start_tick is not None
@@ -5360,8 +5463,20 @@ class AssemblySchedulingEnv:
         *,
         fatigue_override: float | None = None,
     ) -> int:
-        machine = self._machine_by_id(reconfiguration.machine_id)
         fatigue = worker.fatigue if fatigue_override is None else fatigue_override
+        base, coefficient = self._stage_duration_parameters(reconfiguration)
+        return max(
+            1,
+            quantize_to_ticks(base * (1.0 + coefficient * fatigue), self.resolution),
+        )
+
+    def _stage_duration_parameters(
+        self,
+        reconfiguration: ReconfigurationRuntime,
+    ) -> tuple[float, float]:
+        """Return the base duration and fatigue coefficient for one stage."""
+
+        machine = self._machine_by_id(reconfiguration.machine_id)
         if reconfiguration.stage == ReconfigurationStage.WAIT_DIS:
             base = machine.spec.module_parameters[
                 reconfiguration.source_module
@@ -5374,10 +5489,7 @@ class AssemblySchedulingEnv:
             coefficient = self.instance.fatigue.installation_time_coefficient
         else:
             raise ValueError("duration requested for a non-waiting stage")
-        return max(
-            1,
-            quantize_to_ticks(base * (1.0 + coefficient * fatigue), self.resolution),
-        )
+        return float(base), float(coefficient)
 
     def _stage_accumulation_rate(
         self, reconfiguration: ReconfigurationRuntime
