@@ -4,12 +4,17 @@ import argparse
 import hashlib
 import json
 import math
+import os
+import shlex
 import shutil
 import statistics
+import sys
 import time
+import traceback
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +60,7 @@ from result import (
     aggregate_matching_recovery_diagnostics,
     aggregate_preference_diagnostics,
     build_provenance,
+    capture_terminal_output,
     create_run_directory,
     evaluation_selection_key,
     result_schema_version,
@@ -125,7 +131,7 @@ def _validation_manifest_path(config: dict) -> Path:
 def _validate_single_objective_validation_protocol(
     config: dict, *, smoke: bool, validation_limit: int | None
 ) -> None:
-    """Require the publication-sized, deterministic validation manifest for formal runs."""
+    """Require a deterministic manifest large enough for the formal audit."""
     if smoke or str(
         config["training"]["two_stage"].get("quality_checkpoint_promotion", "")
     ).strip().lower() != SINGLE_OBJECTIVE_PROMOTION_MODE:
@@ -134,10 +140,10 @@ def _validate_single_objective_validation_protocol(
         "single_objective_promotion"
     ]
     audit_limit = int(settings["audit_instance_limit"])
-    if validation_limit != 100 or audit_limit != 500:
+    if validation_limit != 50 or audit_limit != 200:
         raise ValueError(
-            "single-objective validation must use 100 daily instances and "
-            "a 500-instance audit"
+            "single-objective validation must use 50 daily instances and "
+            "a 200-instance audit"
         )
     manifest_path = _validation_manifest_path(config)
     if not manifest_path.is_file():
@@ -146,14 +152,15 @@ def _validate_single_objective_validation_protocol(
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     files = manifest.get("files", [])
+    manifest_count = int(manifest.get("instance_count", len(files)))
     if (
-        int(manifest.get("instance_count", len(files))) != 500
-        or not isinstance(files, list)
-        or len(files) != 500
+        not isinstance(files, list)
+        or manifest_count != len(files)
+        or manifest_count < audit_limit
     ):
         raise ValueError(
-            "single-objective validation requires a 500-instance manifest; "
-            f"found {manifest.get('instance_count')}"
+            "single-objective validation requires a manifest with at least "
+            f"{audit_limit} instances; found {manifest_count}"
         )
 
 
@@ -2390,9 +2397,9 @@ class TrainingPhaseController:
     single_objective_window_statistic: str = "median"
     single_objective_rollback_below_floor_consecutive: int = 2
     single_objective_candidate_improvement_epsilon: float = 1e-9
-    single_objective_audit_instance_limit: int = 500
+    single_objective_audit_instance_limit: int = 200
     single_objective_audit_completion_target: float = 0.98
-    single_objective_audit_max_failed_instances: int = 10
+    single_objective_audit_max_failed_instances: int = 4
     single_objective_audit_schedule_violation_target: int = 0
     single_objective_audit_physical_safety_required: bool = True
     single_objective_window_values: list[float] = field(default_factory=list)
@@ -2508,9 +2515,9 @@ class TrainingPhaseController:
         single_window_statistic = "median"
         single_rollback_count = 2
         single_candidate_epsilon = 1e-9
-        single_audit_limit = 500
+        single_audit_limit = 200
         single_audit_completion = 0.98
-        single_audit_max_failed = 10
+        single_audit_max_failed = 4
         single_audit_violation_target = 0
         single_audit_physical_required = True
         if promotion == SINGLE_OBJECTIVE_PROMOTION_MODE:
@@ -2558,20 +2565,20 @@ class TrainingPhaseController:
             if (
                 not math.isfinite(single_candidate_epsilon)
                 or single_candidate_epsilon < 0.0
-                or single_audit_limit != 500
+                or single_audit_limit != 200
                 or not math.isclose(
                     single_audit_completion,
                     0.98,
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
-                or single_audit_max_failed != 10
+                or single_audit_max_failed != 4
                 or single_audit_violation_target != 0
                 or not single_audit_physical_required
             ):
                 raise ValueError(
                     "single-objective audit requires epsilon>=0, "
-                    "500 instances, completion 0.98, at most 10 failures, "
+                    "200 instances, completion 0.98, at most 4 failures, "
                     "zero violations, and physical safety"
                 )
             worker_control = config["environment"].get(
@@ -4998,6 +5005,7 @@ def _reevaluate_checkpoint_from_disk(
     instance_limit: int | None,
     sampling_seeds: list[int],
     greedy_only: bool = False,
+    runner: ParallelEpisodeRunner | None = None,
 ) -> dict[str, object]:
     """Load an isolated agent and produce the only final reported metrics."""
     evaluation_agent = PPOAgent(
@@ -5006,14 +5014,24 @@ def _reevaluate_checkpoint_from_disk(
         device=config["device"],
     )
     metadata = evaluation_agent.load(checkpoint, load_optimizer=False)
-    greedy_rows, _, _, greedy = evaluate_dataset(
-        config,
-        dataset_name=dataset_name,
-        policy_name="ppo",
-        ppo_agent=evaluation_agent,
-        instance_limit=instance_limit,
-        decode_mode="greedy",
-    )
+    if runner is None:
+        greedy_rows, _, _, greedy = evaluate_dataset(
+            config,
+            dataset_name=dataset_name,
+            policy_name="ppo",
+            ppo_agent=evaluation_agent,
+            instance_limit=instance_limit,
+            decode_mode="greedy",
+        )
+    else:
+        greedy_rows, greedy = evaluate_dataset_parallel(
+            config,
+            dataset_name=dataset_name,
+            ppo_agent=evaluation_agent,
+            runner=runner,
+            instance_limit=instance_limit,
+            decode_mode="greedy",
+        )
     greedy["physical_safety_pass"] = _rows_are_physically_safe(
         greedy_rows, 1e-9
     )
@@ -5025,6 +5043,8 @@ def _reevaluate_checkpoint_from_disk(
             ppo_agent=evaluation_agent,
             instance_limit=instance_limit,
             sampling_seeds=sampling_seeds,
+            runner=runner,
+            use_parallel=runner is not None,
         )
     manifest_path = _validation_manifest_path(config)
     return {
@@ -5044,10 +5064,54 @@ def _reevaluate_checkpoint_from_disk(
             "instance_limit": instance_limit,
             "greedy": True,
             "sampling_seeds": list(sampling_seeds),
+            "execution_mode": "parallel" if runner is not None else "serial",
+            "parallel_envs": int(greedy.get("parallel_envs", 1)),
         },
         "greedy": greedy,
         "sampled": sampled,
     }
+
+
+def _reevaluate_checkpoint_with_parallel_runner(
+    config: dict,
+    *,
+    checkpoint: Path,
+    bootstrap_observation,
+    dataset_name: str,
+    instance_limit: int | None,
+    sampling_seeds: list[int],
+    greedy_only: bool,
+    template,
+    episode_count: int,
+    parallel_worker_count: int,
+) -> dict[str, object]:
+    """Run final checkpoint verification on an isolated worker pool."""
+    if parallel_worker_count <= 1:
+        return _reevaluate_checkpoint_from_disk(
+            config,
+            checkpoint=checkpoint,
+            bootstrap_observation=bootstrap_observation,
+            dataset_name=dataset_name,
+            instance_limit=instance_limit,
+            sampling_seeds=sampling_seeds,
+            greedy_only=greedy_only,
+        )
+    with ParallelEpisodeRunner(
+        config=config,
+        template=template,
+        episode_count=episode_count,
+        worker_count=parallel_worker_count,
+    ) as runner:
+        return _reevaluate_checkpoint_from_disk(
+            config,
+            checkpoint=checkpoint,
+            bootstrap_observation=bootstrap_observation,
+            dataset_name=dataset_name,
+            instance_limit=instance_limit,
+            sampling_seeds=sampling_seeds,
+            greedy_only=greedy_only,
+            runner=runner,
+        )
 
 
 def _assert_single_objective_checkpoint_evaluation(
@@ -5079,7 +5143,8 @@ def _assert_single_objective_checkpoint_evaluation(
     physical_pass = bool(greedy.get("physical_safety_pass", False))
     if not (completion_pass and violation_pass and physical_pass):
         raise RuntimeError(
-            "single-objective checkpoint failed final 500-instance audit: "
+            "single-objective checkpoint failed final "
+            f"{phase_controller.single_objective_audit_instance_limit}-instance audit: "
             f"instances={instance_count}, failed={failed_count}, "
             f"completion={completion_pass}, violation={violation_pass}, "
             f"physical_safety={physical_pass}"
@@ -7180,6 +7245,12 @@ def train(
                     "daily_validation_instance_limit": validation_limit,
                     "audit_instance_limit": (
                         phase_controller.single_objective_audit_instance_limit
+                    ),
+                    "audit_completion_target": (
+                        phase_controller.single_objective_audit_completion_target
+                    ),
+                    "audit_max_failed_instances": (
+                        phase_controller.single_objective_audit_max_failed_instances
                     ),
                     "audit_count": len(single_objective_audit_rows),
                     "audit_failure_row_count": len(
@@ -9519,7 +9590,7 @@ def _train_parallel(
     final_checkpoint_evaluation = None
     checkpoint_sha256 = None
     if single_objective_mode and accepted_checkpoint.exists():
-        final_checkpoint_evaluation = _reevaluate_checkpoint_from_disk(
+        final_checkpoint_evaluation = _reevaluate_checkpoint_with_parallel_runner(
             config,
             checkpoint=accepted_checkpoint,
             bootstrap_observation=bootstrap_observation,
@@ -9527,6 +9598,9 @@ def _train_parallel(
             instance_limit=phase_controller.single_objective_audit_instance_limit,
             sampling_seeds=[],
             greedy_only=True,
+            template=template,
+            episode_count=training_base_instance_count(config, episodes),
+            parallel_worker_count=validation_parallel_envs,
         )
         try:
             _assert_single_objective_checkpoint_evaluation(
@@ -9569,13 +9643,17 @@ def _train_parallel(
             raise RuntimeError(
                 "official, accepted, and best checkpoint hashes diverged"
             )
-        final_checkpoint_evaluation = _reevaluate_checkpoint_from_disk(
+        final_checkpoint_evaluation = _reevaluate_checkpoint_with_parallel_runner(
             config,
             checkpoint=checkpoint,
             bootstrap_observation=bootstrap_observation,
             dataset_name=validation_split,
             instance_limit=validation_limit,
             sampling_seeds=_official_evaluation_sampling_seeds(config),
+            greedy_only=False,
+            template=template,
+            episode_count=training_base_instance_count(config, episodes),
+            parallel_worker_count=validation_parallel_envs,
         )
     summary_checkpoint = (
         accepted_checkpoint
@@ -9883,6 +9961,12 @@ def _train_parallel(
                     "audit_instance_limit": (
                         phase_controller.single_objective_audit_instance_limit
                     ),
+                    "audit_completion_target": (
+                        phase_controller.single_objective_audit_completion_target
+                    ),
+                    "audit_max_failed_instances": (
+                        phase_controller.single_objective_audit_max_failed_instances
+                    ),
                     "audit_count": len(single_objective_audit_rows),
                     "audit_failure_row_count": len(
                         single_objective_audit_failure_rows
@@ -9933,7 +10017,7 @@ def _train_parallel(
     return run_directory
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Train the lightweight PPO policy")
     parser.add_argument("--config", default="configs/default.json")
     parser.add_argument("--smoke", action="store_true")
@@ -10000,20 +10084,71 @@ def main() -> None:
         if args.episodes <= 0:
             parser.error("--episodes must be positive")
         config["training"]["episodes"] = args.episodes
-    run_directory = train(
-        config,
-        smoke=args.smoke,
-        run_name=args.run_name,
-        online_instances=args.online_instances,
-        algorithm_seed=args.algorithm_seed,
-        parallel_envs=args.parallel_envs,
-        visdom_enabled=args.visdom_enabled,
-        ablation_variant=args.ablation,
-        initial_checkpoint=args.initial_checkpoint,
-        warm_start_checkpoint=args.warm_start_checkpoint,
+    result_root = project_path(config["paths"]["result_root"])
+    result_root.mkdir(parents=True, exist_ok=True)
+    run_key = Path(args.run_name).name if args.run_name else "unnamed_train"
+    staging_log = (
+        result_root / f".{run_key}.{os.getpid()}.terminal.log.tmp"
     )
-    print(f"training artifacts: {run_directory}")
+    expected_run_directory = (
+        result_root / args.run_name if args.run_name is not None else None
+    )
+    expected_directory_preexisted = bool(
+        expected_run_directory is not None
+        and expected_run_directory.exists()
+    )
+    run_directory: Path | None = None
+    exit_code = 0
+    try:
+        with capture_terminal_output(staging_log):
+            started_at = datetime.now(timezone.utc).isoformat()
+            displayed_command = shlex.join(
+                [Path(sys.executable).name, *sys.argv]
+            )
+            print(f"[terminal-log] started_at={started_at}")
+            print(f"[terminal-log] command={displayed_command}")
+            try:
+                run_directory = train(
+                    config,
+                    smoke=args.smoke,
+                    run_name=args.run_name,
+                    online_instances=args.online_instances,
+                    algorithm_seed=args.algorithm_seed,
+                    parallel_envs=args.parallel_envs,
+                    visdom_enabled=args.visdom_enabled,
+                    ablation_variant=args.ablation,
+                    initial_checkpoint=args.initial_checkpoint,
+                    warm_start_checkpoint=args.warm_start_checkpoint,
+                )
+                print(f"training artifacts: {run_directory}")
+            except KeyboardInterrupt:
+                exit_code = 130
+                traceback.print_exc()
+            except Exception:
+                exit_code = 1
+                traceback.print_exc()
+            finally:
+                finished_at = datetime.now(timezone.utc).isoformat()
+                print(f"[terminal-log] finished_at={finished_at}")
+                print(f"[terminal-log] exit_code={exit_code}")
+    finally:
+        if staging_log.exists():
+            if run_directory is not None:
+                log_destination = run_directory / "terminal.log"
+            elif (
+                expected_run_directory is not None
+                and expected_run_directory.is_dir()
+                and not expected_directory_preexisted
+            ):
+                log_destination = expected_run_directory / "terminal.log"
+            else:
+                log_destination = (
+                    result_root
+                    / f"{run_key}.{os.getpid()}.startup_failed.terminal.log"
+                )
+            os.replace(staging_log, log_destination)
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

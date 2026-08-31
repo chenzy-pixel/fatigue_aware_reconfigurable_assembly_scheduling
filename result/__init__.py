@@ -31,6 +31,7 @@ from .provenance import (
     provenance_with_network_weights,
     source_state_snapshot,
 )
+from .terminal_log import capture_terminal_output
 from .visdom_dashboard import (
     TrainingDashboard,
     create_training_dashboard,
@@ -67,4 +68,5 @@ __all__ = [
     "network_weights_sha256",
     "provenance_with_network_weights",
     "source_state_snapshot",
+    "capture_terminal_output",
 ]

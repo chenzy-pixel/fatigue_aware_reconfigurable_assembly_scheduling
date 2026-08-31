@@ -1,7 +1,7 @@
 {
   "extends": "e1_context_exception.json",
   "experiment_name": "v7_e1_single_objective",
-  "experiment_suite_version": "v7_e1_single_objective_protocol_v2",
+  "experiment_suite_version": "v7_e1_single_objective_protocol_v3",
   "environment": {
     "worker_resource_control": {
       "mode": "temporal_matching_admission_recovery_v3",
@@ -21,7 +21,7 @@
     }
   },
   "training": {
-    "validation_instance_limit": 100,
+    "validation_instance_limit": 50,
     "two_stage": {
       "quality_checkpoint_promotion": "single_objective_guarded_v1",
       "quality_completion_floor": 0.95,
@@ -31,9 +31,9 @@
         "window_statistic": "median",
         "candidate_improvement_epsilon": 1e-9,
         "rollback_below_floor_consecutive": 2,
-        "audit_instance_limit": 500,
+        "audit_instance_limit": 200,
         "audit_completion_target": 0.98,
-        "audit_max_failed_instances": 10,
+        "audit_max_failed_instances": 4,
         "audit_schedule_violation_target": 0,
         "audit_physical_safety_required": true
       }

@@ -215,6 +215,7 @@ def _add_markers(
     transition_episode: int | None,
     accepted_episode: int | None,
     audit_episodes: Sequence[int],
+    audit_instance_limit: int,
 ) -> None:
     if transition_episode is not None:
         axis.axvline(
@@ -230,7 +231,11 @@ def _add_markers(
             color="#ff7f0e",
             linestyle="-.",
             linewidth=1.0,
-            label="500-instance audit" if index == 0 else None,
+            label=(
+                f"{audit_instance_limit}-instance audit"
+                if index == 0
+                else None
+            ),
         )
     if accepted_episode is not None:
         axis.axvline(
@@ -260,6 +265,11 @@ def analyze_run(
     transition_episode: int | None,
     failure_rows: Sequence[dict[str, str]] = (),
     audit_rows: Sequence[dict[str, str]] = (),
+    *,
+    daily_validation_instance_limit: int = 50,
+    audit_instance_limit: int = 200,
+    audit_completion_target: float = 0.98,
+    audit_max_failed_instances: int = 4,
 ) -> dict[str, Any]:
     """Return transparent diagnostics without smoothing validation values."""
 
@@ -373,11 +383,22 @@ def analyze_run(
                 audit_rows
                 and any(
                     row.get("audit_event") == "accepted"
-                    and float(row.get("audit_completion_rate", 0.0)) >= 0.98
-                    and int(row.get("audit_failed_instance_count", 501)) <= 10
+                    and float(row.get("audit_completion_rate", 0.0))
+                    >= audit_completion_target
+                    and int(
+                        row.get(
+                            "audit_failed_instance_count",
+                            audit_instance_limit + 1,
+                        )
+                    )
+                    <= audit_max_failed_instances
                     for row in audit_rows
                 )
             ),
+            "daily_validation_instance_limit": daily_validation_instance_limit,
+            "audit_instance_limit": audit_instance_limit,
+            "audit_completion_target": audit_completion_target,
+            "audit_max_failed_instances": audit_max_failed_instances,
         },
         "failure_details": {
             "failure_row_count": len(failure_rows),
@@ -442,6 +463,25 @@ def plot_run(
     output_path.mkdir(parents=True, exist_ok=True)
     transition_episode, accepted_episode = _phase_markers(rows, summary)
     audit_episodes = _audit_marker_episodes(rows)
+    audit_summary = summary.get("single_objective_audit") or {}
+    daily_validation_instance_limit = int(
+        audit_summary.get("daily_validation_instance_limit", 50)
+    )
+    audit_instance_limit = int(
+        audit_summary.get("audit_instance_limit", 200)
+    )
+    audit_completion_target = float(
+        audit_summary.get("audit_completion_target", 0.98)
+    )
+    audit_max_failed_instances = int(
+        audit_summary.get(
+            "audit_max_failed_instances",
+            math.floor(
+                (1.0 - audit_completion_target) * audit_instance_limit
+                + 1e-9
+            ),
+        )
+    )
 
     data_path = output_path / f"{objective}_convergence_data.csv"
     write_csv(data_path, list(rows))
@@ -518,7 +558,13 @@ def plot_run(
         axis.set_title(label)
         axis.set_ylabel("Raw validation value")
         axis.grid(alpha=0.25)
-        _add_markers(axis, transition_episode, accepted_episode, audit_episodes)
+        _add_markers(
+            axis,
+            transition_episode,
+            accepted_episode,
+            audit_episodes,
+            audit_instance_limit,
+        )
         handles, labels = axis.get_legend_handles_labels()
         if handles:
             unique = dict(zip(labels, handles, strict=True))
@@ -542,6 +588,10 @@ def plot_run(
         transition_episode,
         _load_failure_rows(run_directory),
         _load_audit_rows(run_directory),
+        daily_validation_instance_limit=daily_validation_instance_limit,
+        audit_instance_limit=audit_instance_limit,
+        audit_completion_target=audit_completion_target,
+        audit_max_failed_instances=audit_max_failed_instances,
     )
     diagnostics.update(
         {
@@ -616,9 +666,10 @@ def _write_markdown_report(
         [
             "",
             (
-                "The table uses raw 100-instance daily validation points; 95% is "
-                "an exploration floor. A 500-instance audit accepts at 98% with "
-                "zero schedule violations and physical safety. The project "
+                "Daily-validation and audit sizes are read from each run's "
+                "summary. The 95% daily threshold is an exploration floor; "
+                "audits require the configured completion target, zero schedule "
+                "violations, and physical safety. The project "
                 "formal completion standard remains 100%. Other-objective "
                 "changes are recorded in "
                 "`convergence_diagnostics.json`. Whether a change is abnormal "

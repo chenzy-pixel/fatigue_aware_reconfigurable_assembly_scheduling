@@ -369,6 +369,134 @@ def test_parallel_training_configuration_contract(config):
         )
 
 
+def test_disk_checkpoint_reevaluation_routes_through_parallel_evaluator(
+    config,
+    tmp_path,
+    monkeypatch,
+):
+    checkpoint = tmp_path / "accepted_checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    runner = SimpleNamespace(worker_count=20)
+    calls = []
+
+    class FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load(self, path, *, load_optimizer):
+            assert path == checkpoint
+            assert load_optimizer is False
+            return {"checkpoint_role": "accepted"}
+
+    def fake_parallel_evaluation(*args, **kwargs):
+        calls.append(kwargs)
+        aggregate = _validation_aggregate(10.0)
+        aggregate["parallel_envs"] = 20
+        return [], aggregate
+
+    monkeypatch.setattr(training_module, "PPOAgent", FakeAgent)
+    monkeypatch.setattr(training_module, "build_actor_critic", lambda *args: object())
+    monkeypatch.setattr(
+        training_module,
+        "evaluate_dataset",
+        lambda *args, **kwargs: pytest.fail("serial evaluator was used"),
+    )
+    monkeypatch.setattr(
+        training_module,
+        "evaluate_dataset_parallel",
+        fake_parallel_evaluation,
+    )
+    monkeypatch.setattr(
+        training_module,
+        "_validation_manifest_path",
+        lambda effective_config: tmp_path / "missing-manifest.json",
+    )
+    monkeypatch.setattr(
+        training_module,
+        "build_provenance",
+        lambda *args, **kwargs: {},
+    )
+
+    evaluation = training_module._reevaluate_checkpoint_from_disk(
+        config,
+        checkpoint=checkpoint,
+        bootstrap_observation=object(),
+        dataset_name="validation",
+        instance_limit=200,
+        sampling_seeds=[],
+        greedy_only=True,
+        runner=runner,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["runner"] is runner
+    assert calls[0]["instance_limit"] == 200
+    assert evaluation["evaluation_config"] == {
+        "dataset": "validation",
+        "instance_limit": 200,
+        "greedy": True,
+        "sampling_seeds": [],
+        "execution_mode": "parallel",
+        "parallel_envs": 20,
+    }
+
+
+def test_final_checkpoint_parallel_runner_has_isolated_lifecycle(
+    config,
+    tmp_path,
+    monkeypatch,
+):
+    events = []
+
+    class FakeParallelRunner:
+        def __init__(self, *, worker_count, episode_count, **kwargs):
+            self.worker_count = worker_count
+            events.append(("init", worker_count, episode_count))
+
+        def __enter__(self):
+            events.append(("enter", self.worker_count))
+            return self
+
+        def __exit__(self, *args):
+            events.append(("exit", self.worker_count))
+
+    def fake_reevaluation(*args, **kwargs):
+        events.append(("evaluate", kwargs["runner"].worker_count))
+        return {"source": "parallel_disk_reload"}
+
+    monkeypatch.setattr(
+        training_module,
+        "ParallelEpisodeRunner",
+        FakeParallelRunner,
+    )
+    monkeypatch.setattr(
+        training_module,
+        "_reevaluate_checkpoint_from_disk",
+        fake_reevaluation,
+    )
+
+    evaluation = training_module._reevaluate_checkpoint_with_parallel_runner(
+        config,
+        checkpoint=tmp_path / "accepted_checkpoint.pt",
+        bootstrap_observation=object(),
+        dataset_name="validation",
+        instance_limit=200,
+        sampling_seeds=[],
+        greedy_only=True,
+        template=object(),
+        episode_count=2000,
+        parallel_worker_count=20,
+    )
+
+    assert evaluation == {"source": "parallel_disk_reload"}
+    assert events == [
+        ("init", 20, 2000),
+        ("enter", 20),
+        ("evaluate", 20),
+        ("exit", 20),
+    ]
+
+
 def test_parallel_training_batches_updates_and_writes_update_log(
     config,
     fixed_instance,

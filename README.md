@@ -684,24 +684,27 @@ E1/E2 分析结果合并，得到三方法经验 Pareto、Hypervolume、贡献�
 快速路径，并在静态检查失败时使用有限节点的确定性时序 oracle；历史 E1/E2
 配置仍保留原动作域。
 
-正式 validation 固定为同一份、同一顺序的 500 个 publication 实例。日常 validation
-只读取该 manifest 的前 100 个；改善候选触发完整 500-instance 审计。首次在训练电脑
-生成后，三个策略共用该 manifest：
+正式 validation 固定为同一份、同一顺序的 200 个 publication 实例。日常 validation
+只读取该 manifest 的前 50 个；改善候选触发完整 200-instance 审计。已有 500-instance
+manifest 也可直接复用其前 200 个。首次在训练电脑生成后，三个策略共用该 manifest：
 
 ```powershell
 .\.venv\Scripts\python.exe data\generate_orders.py `
   --config configs\v7\e1_single_flow.json `
-  --build-split validation --profile publication --count 500 --overwrite
+  --build-split validation --profile publication --count 200 --overwrite
 ```
 
 阶段一进入质量阶段仍要求连续 3 次 `completion_rate=1.0`。质量阶段采用最近 5 次
 合格日常验证的原始目标中位数：`completion_rate>=0.95`、零 schedule violation 和物理/疲劳
-安全。窗口中位数相对 candidate anchor 严格下降 `1e-9` 时触发一次完整 500-instance 审计；
-连续两次严格低于 0.95 回滚并清空当前窗口。审计以 `failed_count = 500 - completed_count`
-统一计入 incomplete/truncated 实例，最多允许 10 个失败（完成率至少 98%），且 schedule
+安全。窗口中位数相对 candidate anchor 严格下降 `1e-9` 时触发一次完整 200-instance 审计；
+连续两次严格低于 0.95 回滚并清空当前窗口。审计以 `failed_count = 200 - completed_count`
+统一计入 incomplete/truncated 实例，最多允许 4 个失败（完成率至少 98%），且 schedule
 violation 和物理/疲劳安全必须为零。只有审计通过且字典序 `(failed_count, window_median)`
 改善时，才原子替换唯一的 `accepted_checkpoint.pt`。该 accepted 是 98% 实验候选，
 `formal_eligible` 保持为 false；项目正式完成标准仍是 100%。
+训练收尾会从磁盘隔离重载 accepted checkpoint，并另启短生命周期验证进程池，按
+`training.validation_parallel_envs` 并行复核 200 个实例；`summary.json` 的
+`final_checkpoint_evaluation.evaluation_config` 记录实际执行模式与并行度。
 
 本机 smoke 命令如下。Smoke 只验证配置、rollout/PPO 更新、安全机制诊断字段和
 reward identity，不用于判断收敛，也不进入后续 payoff matrix：
@@ -721,6 +724,15 @@ reward identity，不用于判断收敛，也不进入后续 payoff matrix：
 .\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_variance.json --algorithm-seed 11 --run-name e1_single_variance_seed11_2000
 ```
 
+`train.py` 会自动同时显示并保存 stdout/stderr；无需在命令外添加
+`Tee-Object`。正常完成或训练阶段异常退出后，日志位于本次 run 目录内的
+`terminal.log`，并包含实际命令、UTC 起止时间与退出码。因此原训练命令可直接使用：
+
+```powershell
+$train = ".\.venv\Scripts\python.exe"
+& $train train.py --config configs\v7\e1_single_flow.json --algorithm-seed 11 --parallel-envs 20 --run-name e1_single_flow_seed11_2000_diagnostic
+```
+
 训练完成后，将三个正式 run 目录传给收敛分析入口：
 
 ```powershell
@@ -731,8 +743,8 @@ reward identity，不用于判断收敛，也不进入后续 payoff matrix：
   --output-dir result\analysis\e1_single_objective_seed11
 ```
 
-每个策略输出一张五面板 PDF、300-dpi PNG 和对应的原始 100-instance validation 数据 CSV，
-并标记 feasibility→quality 切换点、500-instance 审计触发点及 accepted checkpoint episode。
+每个策略输出一张五面板 PDF、300-dpi PNG 和对应的原始 50-instance validation 数据 CSV，
+并标记 feasibility→quality 切换点、200-instance 审计触发点及 accepted checkpoint episode。
 completion 面板同时绘制 1.0 和 0.95 参考线。汇总文件
 `convergence_diagnostics.json` 和 `convergence_report.md` 报告 95% 合格点数、审计数量、
 accepted 数量、98% 审计结果以及另外两个目标的原始变化。审计逐实例失败保存在

@@ -64,11 +64,11 @@ def _validation(flow: float, cost: float, variance: float) -> dict[str, object]:
 
 def _audit(*, objective_value: float, failed: int = 0, violation: int = 0,
            physical: bool = True) -> dict[str, object]:
-    completed = 500 - failed
+    completed = 200 - failed
     return {
-        "instance_count": 500,
+        "instance_count": 200,
         "completed_count": completed,
-        "completion_rate": completed / 500.0,
+        "completion_rate": completed / 200.0,
         "truncated_count": failed,
         "schedule_violation_count": violation,
         "physical_safety_pass": physical,
@@ -88,7 +88,7 @@ def test_single_objective_base_changes_only_requested_e1_protocol_fields():
     expected = public_config(e1)
     expected["experiment_name"] = "v7_e1_single_objective"
     expected["experiment_suite_version"] = (
-        "v7_e1_single_objective_protocol_v2"
+        "v7_e1_single_objective_protocol_v3"
     )
     expected["environment"]["worker_resource_control"]["mode"] = (
         "temporal_matching_admission_recovery_v3"
@@ -106,7 +106,7 @@ def test_single_objective_base_changes_only_requested_e1_protocol_fields():
     expected["training"]["two_stage"][
         "quality_checkpoint_promotion"
     ] = SINGLE_OBJECTIVE_PROMOTION_MODE
-    expected["training"]["validation_instance_limit"] = 100
+    expected["training"]["validation_instance_limit"] = 50
     expected["training"]["two_stage"]["quality_completion_floor"] = 0.95
     expected["training"]["two_stage"]["quality_promotion_constraints"] = None
     expected["training"]["two_stage"]["single_objective_promotion"] = {
@@ -114,9 +114,9 @@ def test_single_objective_base_changes_only_requested_e1_protocol_fields():
         "window_statistic": "median",
         "candidate_improvement_epsilon": 1e-9,
         "rollback_below_floor_consecutive": 2,
-        "audit_instance_limit": 500,
+        "audit_instance_limit": 200,
         "audit_completion_target": 0.98,
-        "audit_max_failed_instances": 10,
+        "audit_max_failed_instances": 4,
         "audit_schedule_violation_target": 0,
         "audit_physical_safety_required": True,
     }
@@ -491,23 +491,27 @@ def test_failure_detail_rows_record_the_required_tail_diagnostics():
     ]
 
 
-def test_formal_run_requires_a_500_instance_validation_manifest(tmp_path: Path):
+def test_formal_run_requires_at_least_the_200_audit_instances(tmp_path: Path):
     config = load_config(CONFIGS["flow"])
     config["paths"]["manifests_root"] = str(tmp_path / "manifests")
     with pytest.raises(FileNotFoundError, match="validation manifest"):
         _validate_single_objective_validation_protocol(
-            config, smoke=False, validation_limit=100
+            config, smoke=False, validation_limit=50
         )
     manifest_path = tmp_path / "manifests" / "validation" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
     write_json(manifest_path, {"instance_count": 20, "files": []})
-    with pytest.raises(ValueError, match="500-instance manifest"):
+    with pytest.raises(ValueError, match="at least 200 instances"):
         _validate_single_objective_validation_protocol(
-            config, smoke=False, validation_limit=100
+            config, smoke=False, validation_limit=50
         )
+    write_json(manifest_path, {"instance_count": 200, "files": [None] * 200})
+    _validate_single_objective_validation_protocol(
+        config, smoke=False, validation_limit=50
+    )
     write_json(manifest_path, {"instance_count": 500, "files": [None] * 500})
     _validate_single_objective_validation_protocol(
-        config, smoke=False, validation_limit=100
+        config, smoke=False, validation_limit=50
     )
 
 
