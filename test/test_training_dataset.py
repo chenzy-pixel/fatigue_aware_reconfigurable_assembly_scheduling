@@ -523,6 +523,9 @@ def test_parallel_training_batches_updates_and_writes_update_log(
         def __exit__(self, *args):
             return None
 
+        def pre_generate_training_instances(self):
+            return {"instance_count": 11, "cache_hit_count": 0}
+
         def collect_training_batch(
             self,
             agent,

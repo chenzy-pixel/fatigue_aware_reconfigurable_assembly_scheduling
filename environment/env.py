@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import heapq
 import math
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
+from data.feasibility import maximum_matching_size as _maximum_matching_size
 from data.models import (
     AssemblyInstance,
     MachineSpec,
@@ -72,23 +74,6 @@ def _as_edge_index(pairs: list[tuple[int, int]]) -> np.ndarray:
         return np.empty((2, 0), dtype=np.int64)
     ordered = sorted(pairs)
     return np.asarray(ordered, dtype=np.int64).T
-
-
-def _maximum_matching_size(edges: list[list[int]], worker_count: int) -> int:
-    matched_task = [-1] * worker_count
-
-    def augment(task_index: int, seen: set[int]) -> bool:
-        for worker_index in edges[task_index]:
-            if worker_index in seen:
-                continue
-            seen.add(worker_index)
-            previous = matched_task[worker_index]
-            if previous < 0 or augment(previous, seen):
-                matched_task[worker_index] = task_index
-                return True
-        return False
-
-    return sum(augment(index, set()) for index in range(len(edges)))
 
 
 @dataclass
@@ -176,6 +161,27 @@ class TemporalFeasibilityResult:
     status: str
     searched_nodes: int
     candidate_completion_tick: int | None = None
+    termination_reason: str | None = None
+    option_evaluations: int = 0
+    frontier_options_before: int = 0
+    frontier_options_after: int = 0
+
+
+@dataclass
+class _TemporalSearchBudget:
+    searched_nodes: int = 0
+    option_evaluations: int = 0
+    frontier_options_before: int = 0
+    frontier_options_after: int = 0
+    dominated_options: int = 0
+    last_options_before: int = 0
+    last_options_after: int = 0
+
+
+class _TemporalBudgetExhausted(RuntimeError):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -312,7 +318,22 @@ class AssemblySchedulingEnv:
         self._maximum_projected_installation_deficit = 0
         self._temporal_oracle_call_count = 0
         self._temporal_oracle_cache_hit_count = 0
+        self._temporal_subproblem_cache_hit_count = 0
         self._temporal_oracle_searched_nodes = 0
+        self._temporal_oracle_option_evaluations = 0
+        self._temporal_frontier_options_before = 0
+        self._temporal_frontier_options_after = 0
+        self._temporal_dominated_option_count = 0
+        self._temporal_decision_searched_nodes = 0
+        self._temporal_decision_option_evaluations = 0
+        self._temporal_decision_budget_exhausted_reason: str | None = None
+        self._temporal_episode_budget_exhausted_reason: str | None = None
+        self._temporal_budget_termination_counts: dict[str, int] = {}
+        self.temporal_progress_callback: (
+            Callable[[dict[str, Any]], None] | None
+        ) = None
+        self._temporal_progress_last_time = time.monotonic()
+        self._temporal_progress_last_work = 0
         self._temporal_oracle_result_counts = {
             "feasible": 0,
             "infeasible": 0,
@@ -369,6 +390,9 @@ class AssemblySchedulingEnv:
         ] = {}
         self._temporal_oracle_cache: dict[
             tuple[Any, ...], TemporalFeasibilityResult
+        ] = {}
+        self._temporal_subproblem_cache: dict[
+            tuple[Any, ...], tuple[str, int | None]
         ] = {}
         self._production_defer_recovery_cache_version = -1
         self._production_defer_recovery_cache: int | None = None
@@ -531,10 +555,39 @@ class AssemblySchedulingEnv:
             )
         result = {
             "max_search_nodes": int(raw.get("max_search_nodes", 50_000)),
+            "max_option_evaluations_per_call": int(
+                raw.get("max_option_evaluations_per_call", 250_000)
+            ),
+            "max_search_nodes_per_decision": int(
+                raw.get("max_search_nodes_per_decision", 200_000)
+            ),
+            "max_option_evaluations_per_decision": int(
+                raw.get("max_option_evaluations_per_decision", 1_000_000)
+            ),
+            "max_search_nodes_per_episode": int(
+                raw.get("max_search_nodes_per_episode", 2_000_000)
+            ),
+            "max_option_evaluations_per_episode": int(
+                raw.get("max_option_evaluations_per_episode", 5_000_000)
+            ),
             "unknown_action": str(raw.get("unknown_action", "allow")),
+            "search_implementation": str(
+                raw.get(
+                    "search_implementation",
+                    "strict_recovery_frontier_transposition_budget_v1",
+                )
+            ),
         }
-        if result["max_search_nodes"] < 1:
-            raise ValueError("temporal feasibility max_search_nodes must be positive")
+        budget_names = (
+            "max_search_nodes",
+            "max_option_evaluations_per_call",
+            "max_search_nodes_per_decision",
+            "max_option_evaluations_per_decision",
+            "max_search_nodes_per_episode",
+            "max_option_evaluations_per_episode",
+        )
+        if any(int(result[name]) < 1 for name in budget_names):
+            raise ValueError("temporal feasibility budgets must be positive")
         if result["unknown_action"] != "allow":
             raise ValueError("temporal feasibility unknown_action must be 'allow'")
         return result
@@ -616,6 +669,10 @@ class AssemblySchedulingEnv:
         self._production_resource_profile_cache = {}
         self._stage_projection_cache = {}
         self._temporal_oracle_cache = {}
+        self._temporal_subproblem_cache = {}
+        self._temporal_decision_searched_nodes = 0
+        self._temporal_decision_option_evaluations = 0
+        self._temporal_decision_budget_exhausted_reason = None
         self._production_defer_recovery_cache_version = -1
         self._production_defer_recovery_cache = None
         self._action_mask_cache_version = -1
@@ -703,7 +760,19 @@ class AssemblySchedulingEnv:
         self._maximum_projected_installation_deficit = 0
         self._temporal_oracle_call_count = 0
         self._temporal_oracle_cache_hit_count = 0
+        self._temporal_subproblem_cache_hit_count = 0
         self._temporal_oracle_searched_nodes = 0
+        self._temporal_oracle_option_evaluations = 0
+        self._temporal_frontier_options_before = 0
+        self._temporal_frontier_options_after = 0
+        self._temporal_dominated_option_count = 0
+        self._temporal_decision_searched_nodes = 0
+        self._temporal_decision_option_evaluations = 0
+        self._temporal_decision_budget_exhausted_reason = None
+        self._temporal_episode_budget_exhausted_reason = None
+        self._temporal_budget_termination_counts = {}
+        self._temporal_progress_last_time = time.monotonic()
+        self._temporal_progress_last_work = 0
         self._temporal_oracle_result_counts = {
             "feasible": 0,
             "infeasible": 0,
@@ -3278,8 +3347,29 @@ class AssemblySchedulingEnv:
             "temporal_oracle_cache_hit_count": (
                 self._temporal_oracle_cache_hit_count
             ),
+            "temporal_subproblem_cache_hit_count": (
+                self._temporal_subproblem_cache_hit_count
+            ),
             "temporal_oracle_searched_nodes": (
                 self._temporal_oracle_searched_nodes
+            ),
+            "temporal_oracle_option_evaluations": (
+                self._temporal_oracle_option_evaluations
+            ),
+            "temporal_frontier_options_before": (
+                self._temporal_frontier_options_before
+            ),
+            "temporal_frontier_options_after": (
+                self._temporal_frontier_options_after
+            ),
+            "temporal_dominated_option_count": (
+                self._temporal_dominated_option_count
+            ),
+            "temporal_budget_termination_counts": dict(
+                sorted(self._temporal_budget_termination_counts.items())
+            ),
+            "temporal_search_implementation": (
+                self.temporal_feasibility_settings["search_implementation"]
             ),
             "temporal_oracle_feasible_count": (
                 self._temporal_oracle_result_counts["feasible"]
@@ -3289,6 +3379,12 @@ class AssemblySchedulingEnv:
             ),
             "temporal_oracle_unknown_count": (
                 self._temporal_oracle_result_counts["unknown"]
+            ),
+            "temporal_oracle_unknown_rate": (
+                self._temporal_oracle_result_counts["unknown"]
+                / self._temporal_oracle_call_count
+                if self._temporal_oracle_call_count
+                else 0.0
             ),
             "temporal_worker_action_rescued_count": len(
                 self._temporal_worker_action_rescued
@@ -4605,6 +4701,222 @@ class AssemblySchedulingEnv:
             )
         )
 
+    def _temporal_charge_search_node(
+        self,
+        budget: _TemporalSearchBudget,
+    ) -> None:
+        settings = self.temporal_feasibility_settings
+        limits = (
+            (
+                budget.searched_nodes,
+                int(settings["max_search_nodes"]),
+                "call_node_budget_exhausted",
+            ),
+            (
+                self._temporal_decision_searched_nodes,
+                int(settings["max_search_nodes_per_decision"]),
+                "decision_node_budget_exhausted",
+            ),
+            (
+                self._temporal_oracle_searched_nodes,
+                int(settings["max_search_nodes_per_episode"]),
+                "episode_node_budget_exhausted",
+            ),
+        )
+        for used, maximum, reason in limits:
+            if used >= maximum:
+                if reason.startswith("decision_"):
+                    self._temporal_decision_budget_exhausted_reason = reason
+                elif reason.startswith("episode_"):
+                    self._temporal_episode_budget_exhausted_reason = reason
+                raise _TemporalBudgetExhausted(reason)
+        budget.searched_nodes += 1
+        self._temporal_decision_searched_nodes += 1
+        self._temporal_oracle_searched_nodes += 1
+        self._temporal_emit_progress(budget)
+
+    def _temporal_charge_option_evaluations(
+        self,
+        budget: _TemporalSearchBudget,
+        count: int,
+    ) -> None:
+        if count <= 0:
+            return
+        settings = self.temporal_feasibility_settings
+        limits = (
+            (
+                budget.option_evaluations,
+                int(settings["max_option_evaluations_per_call"]),
+                "call_option_budget_exhausted",
+            ),
+            (
+                self._temporal_decision_option_evaluations,
+                int(settings["max_option_evaluations_per_decision"]),
+                "decision_option_budget_exhausted",
+            ),
+            (
+                self._temporal_oracle_option_evaluations,
+                int(settings["max_option_evaluations_per_episode"]),
+                "episode_option_budget_exhausted",
+            ),
+        )
+        for used, maximum, reason in limits:
+            if used + count > maximum:
+                if reason.startswith("decision_"):
+                    self._temporal_decision_budget_exhausted_reason = reason
+                elif reason.startswith("episode_"):
+                    self._temporal_episode_budget_exhausted_reason = reason
+                raise _TemporalBudgetExhausted(reason)
+        budget.option_evaluations += count
+        self._temporal_decision_option_evaluations += count
+        self._temporal_oracle_option_evaluations += count
+        self._temporal_emit_progress(budget)
+
+    def _temporal_emit_progress(
+        self,
+        budget: _TemporalSearchBudget,
+        *,
+        force: bool = False,
+    ) -> None:
+        callback = self.temporal_progress_callback
+        if callback is None:
+            return
+        now = time.monotonic()
+        work = (
+            self._temporal_oracle_searched_nodes
+            + self._temporal_oracle_option_evaluations
+        )
+        if not force and (
+            now - self._temporal_progress_last_time < 5.0
+            and work - self._temporal_progress_last_work < 25_000
+        ):
+            return
+        self._temporal_progress_last_time = now
+        self._temporal_progress_last_work = work
+        callback(
+            {
+                "phase": "temporal_search",
+                "environment_step": self._decision_count,
+                "state_version": self._state_version,
+                "current_tick": self.current_tick,
+                "oracle_calls": self._temporal_oracle_call_count,
+                "search_nodes": self._temporal_oracle_searched_nodes,
+                "option_evaluations": (
+                    self._temporal_oracle_option_evaluations
+                ),
+                "root_cache_hits": self._temporal_oracle_cache_hit_count,
+                "subproblem_cache_hits": (
+                    self._temporal_subproblem_cache_hit_count
+                ),
+                "call_search_nodes": budget.searched_nodes,
+                "call_option_evaluations": budget.option_evaluations,
+                "frontier_options_before": budget.frontier_options_before,
+                "frontier_options_after": budget.frontier_options_after,
+            }
+        )
+
+    @staticmethod
+    def _temporal_option_dominates(
+        option_a: tuple[int, int, int, float],
+        option_b: tuple[int, int, int, float],
+        *,
+        recovery_rate: float,
+        resolution: float,
+        epsilon: float = EPSILON,
+    ) -> bool:
+        """Return the full recovery-aware dominance certificate for A over B."""
+        worker_a, _, end_a, end_fatigue_a = option_a
+        worker_b, _, end_b, end_fatigue_b = option_b
+        if worker_a != worker_b or end_a > end_b:
+            return False
+        recovered_at_b = max(
+            0.0,
+            float(end_fatigue_a)
+            - float(recovery_rate)
+            * (int(end_b) - int(end_a))
+            * float(resolution),
+        )
+        return recovered_at_b <= float(end_fatigue_b) + float(epsilon)
+
+    @classmethod
+    def _temporal_strict_frontier(
+        cls,
+        options: list[tuple[int, int, int, float]],
+        *,
+        recovery_rate: float,
+        resolution: float,
+    ) -> tuple[
+        list[tuple[int, int, int, float]],
+        dict[
+            tuple[int, int, int, float],
+            tuple[int, int, int, float],
+        ],
+    ]:
+        """Delete only options carrying an explicit full-dominance witness."""
+        frontier: list[tuple[int, int, int, float]] = []
+        witnesses: dict[
+            tuple[int, int, int, float], tuple[int, int, int, float]
+        ] = {}
+        by_worker: dict[int, list[tuple[int, int, int, float]]] = {}
+        for option in options:
+            by_worker.setdefault(int(option[0]), []).append(option)
+        for worker_index in sorted(by_worker):
+            ordered = sorted(
+                by_worker[worker_index],
+                key=lambda value: (value[2], value[3], value[1], value[0]),
+            )
+            minimum_key_option: tuple[int, int, int, float] | None = None
+            minimum_key = math.inf
+            for option in ordered:
+                witness = minimum_key_option
+                if witness is not None:
+                    candidate_key = (
+                        float(option[3])
+                        + float(recovery_rate)
+                        * int(option[2])
+                        * float(resolution)
+                    )
+                    if minimum_key <= candidate_key + EPSILON and (
+                        cls._temporal_option_dominates(
+                            witness,
+                            option,
+                            recovery_rate=recovery_rate,
+                            resolution=resolution,
+                        )
+                    ):
+                        witnesses[option] = witness
+                        continue
+                frontier.append(option)
+                recovery_key = (
+                    float(option[3])
+                    + float(recovery_rate)
+                    * int(option[2])
+                    * float(resolution)
+                )
+                if (
+                    recovery_key,
+                    option[2],
+                    option[3],
+                    option[1],
+                ) < (
+                    minimum_key,
+                    minimum_key_option[2]
+                    if minimum_key_option is not None
+                    else math.inf,
+                    minimum_key_option[3]
+                    if minimum_key_option is not None
+                    else math.inf,
+                    minimum_key_option[1]
+                    if minimum_key_option is not None
+                    else math.inf,
+                ):
+                    minimum_key = recovery_key
+                    minimum_key_option = option
+        return (
+            sorted(frontier, key=lambda value: (value[2], value[1], value[0])),
+            witnesses,
+        )
+
     def _temporal_assignment_options(
         self,
         task: TemporalWorkerTask,
@@ -4613,6 +4925,7 @@ class AssemblySchedulingEnv:
         minimum_start_tick: int,
         exact_worker_index: int | None = None,
         exact_start_tick: int | None = None,
+        budget: _TemporalSearchBudget | None = None,
     ) -> list[tuple[int, int, int, float]]:
         options: list[tuple[int, int, int, float]] = []
         reconfiguration = self._temporal_task_reconfiguration(task)
@@ -4717,6 +5030,10 @@ class AssemblySchedulingEnv:
                 )
             else:
                 continue
+            if budget is not None:
+                self._temporal_charge_option_evaluations(
+                    budget, int(starts.size)
+                )
             valid_start = (starts >= earliest) & (starts <= self.horizon_tick)
             if not bool(valid_start.any()):
                 continue
@@ -4760,7 +5077,26 @@ class AssemblySchedulingEnv:
                         float(projected_fatigue),
                     )
                 )
-        return sorted(options, key=lambda value: (value[2], value[1], value[0]))
+        ordered_options = sorted(
+            options, key=lambda value: (value[2], value[1], value[0])
+        )
+        if budget is None:
+            return ordered_options
+        budget.last_options_before = len(ordered_options)
+        budget.frontier_options_before += len(ordered_options)
+        if exact_start_tick is not None:
+            budget.last_options_after = len(ordered_options)
+            budget.frontier_options_after += len(ordered_options)
+            return ordered_options
+        frontier, witnesses = self._temporal_strict_frontier(
+            ordered_options,
+            recovery_rate=recovery_rate,
+            resolution=resolution,
+        )
+        budget.frontier_options_after += len(frontier)
+        budget.dominated_options += len(witnesses)
+        budget.last_options_after = len(frontier)
+        return frontier
 
     @staticmethod
     def _temporal_remove_task(
@@ -4790,9 +5126,11 @@ class AssemblySchedulingEnv:
         tasks: tuple[TemporalWorkerTask, ...],
         worker_states: tuple[TemporalWorkerState, ...],
         minimum_start_tick: int,
+        candidate_completion_tick: int | None = None,
     ) -> tuple[Any, ...]:
         return (
             int(minimum_start_tick),
+            candidate_completion_tick,
             tuple(
                 (
                     task.task_id,
@@ -4819,7 +5157,7 @@ class AssemblySchedulingEnv:
         forced_task_id: str | None = None,
         forced_worker_index: int | None = None,
     ) -> TemporalFeasibilityResult:
-        """Exhaust the discrete search or return unknown at the node budget."""
+        """Search deterministically, returning unknown only at a work budget."""
 
         self._temporal_oracle_call_count += 1
         effective_minimum = (
@@ -4829,139 +5167,192 @@ class AssemblySchedulingEnv:
         )
         worker_states = self._temporal_initial_worker_states()
         candidate_completion_tick: int | None = None
-        if forced_task_id is not None:
-            forced_task = next(
-                (task for task in tasks if task.task_id == forced_task_id),
-                None,
-            )
-            if forced_task is None or forced_worker_index is None:
-                result = TemporalFeasibilityResult("infeasible", 0)
-                self._temporal_oracle_result_counts[result.status] += 1
-                return result
-            forced_options = self._temporal_assignment_options(
-                forced_task,
-                worker_states,
-                minimum_start_tick=self.current_tick,
-                exact_worker_index=int(forced_worker_index),
-                exact_start_tick=self.current_tick,
-            )
-            if not forced_options:
-                result = TemporalFeasibilityResult("infeasible", 0)
-                self._temporal_oracle_result_counts[result.status] += 1
-                return result
-            worker_index, _, end_tick, end_fatigue = forced_options[0]
-            updated_states = list(worker_states)
-            updated_states[worker_index] = TemporalWorkerState(
-                available_tick=end_tick,
-                fatigue=end_fatigue,
-            )
-            worker_states = tuple(updated_states)
-            tasks = self._temporal_remove_task(tasks, forced_task, end_tick)
-            if forced_task.candidate and (
-                forced_task.stage == ReconfigurationStage.WAIT_INS
-            ):
-                candidate_completion_tick = end_tick
+        budget = _TemporalSearchBudget()
 
-        cache_key = self._temporal_state_key(
-            tasks, worker_states, effective_minimum
-        )
-        cached = self._temporal_oracle_cache.get(cache_key)
-        if cached is not None:
-            self._temporal_oracle_cache_hit_count += 1
-            self._temporal_oracle_result_counts[cached.status] += 1
-            return cached
-
-        maximum_nodes = int(
-            self.temporal_feasibility_settings["max_search_nodes"]
-        )
-        searched_nodes = 0
-        proven_infeasible: set[tuple[Any, ...]] = set()
-
-        def search(
-            remaining: tuple[TemporalWorkerTask, ...],
-            states: tuple[TemporalWorkerState, ...],
-            candidate_tick: int | None,
-        ) -> tuple[str, int | None]:
-            nonlocal searched_nodes
-            if searched_nodes >= maximum_nodes:
-                return "unknown", None
-            searched_nodes += 1
-            if not remaining:
-                return "feasible", candidate_tick
-            state_key = self._temporal_state_key(
-                remaining, states, effective_minimum
+        def finish(
+            status: str,
+            completion_tick: int | None,
+            reason: str,
+        ) -> TemporalFeasibilityResult:
+            result = TemporalFeasibilityResult(
+                status=status,
+                searched_nodes=budget.searched_nodes,
+                candidate_completion_tick=completion_tick,
+                termination_reason=reason,
+                option_evaluations=budget.option_evaluations,
+                frontier_options_before=budget.frontier_options_before,
+                frontier_options_after=budget.frontier_options_after,
             )
-            if state_key in proven_infeasible:
-                return "infeasible", None
-            ready_tasks = [
-                task for task in remaining if task.predecessor_id is None
-            ]
-            if not ready_tasks:
-                proven_infeasible.add(state_key)
-                return "infeasible", None
-            selected: TemporalWorkerTask | None = None
-            selected_options: list[tuple[int, int, int, float]] | None = None
-            for task in ready_tasks:
-                options = self._temporal_assignment_options(
-                    task,
-                    states,
-                    minimum_start_tick=effective_minimum,
+            self._temporal_frontier_options_before += (
+                budget.frontier_options_before
+            )
+            self._temporal_frontier_options_after += (
+                budget.frontier_options_after
+            )
+            self._temporal_dominated_option_count += budget.dominated_options
+            self._temporal_oracle_result_counts[status] += 1
+            if status == "unknown":
+                self._temporal_budget_termination_counts[reason] = (
+                    self._temporal_budget_termination_counts.get(reason, 0) + 1
                 )
-                if not options:
-                    proven_infeasible.add(state_key)
-                    return "infeasible", None
-                if selected_options is None or (
-                    len(options), task.task_id
-                ) < (len(selected_options), selected.task_id):
-                    selected = task
-                    selected_options = options
-            if selected is None or selected_options is None:
-                proven_infeasible.add(state_key)
-                return "infeasible", None
-            saw_unknown = False
-            for worker_index, _, end_tick, end_fatigue in selected_options:
-                if searched_nodes >= maximum_nodes:
-                    saw_unknown = True
-                    break
-                updated_states = list(states)
+            return result
+
+        exhausted_reason = (
+            self._temporal_episode_budget_exhausted_reason
+            or self._temporal_decision_budget_exhausted_reason
+        )
+        if exhausted_reason is not None:
+            return finish("unknown", None, exhausted_reason)
+
+        try:
+            if forced_task_id is not None:
+                forced_task = next(
+                    (task for task in tasks if task.task_id == forced_task_id),
+                    None,
+                )
+                if forced_task is None or forced_worker_index is None:
+                    return finish(
+                        "infeasible", None, "invalid_forced_assignment"
+                    )
+                forced_options = self._temporal_assignment_options(
+                    forced_task,
+                    worker_states,
+                    minimum_start_tick=self.current_tick,
+                    exact_worker_index=int(forced_worker_index),
+                    exact_start_tick=self.current_tick,
+                    budget=budget,
+                )
+                if not forced_options:
+                    return finish(
+                        "infeasible", None, "forced_assignment_unsafe"
+                    )
+                worker_index, _, end_tick, end_fatigue = forced_options[0]
+                updated_states = list(worker_states)
                 updated_states[worker_index] = TemporalWorkerState(
                     available_tick=end_tick,
                     fatigue=end_fatigue,
                 )
-                updated_tasks = self._temporal_remove_task(
-                    remaining, selected, end_tick
+                worker_states = tuple(updated_states)
+                tasks = self._temporal_remove_task(
+                    tasks, forced_task, end_tick
                 )
-                updated_candidate_tick = candidate_tick
-                if selected.candidate and (
-                    selected.stage == ReconfigurationStage.WAIT_INS
+                if forced_task.candidate and (
+                    forced_task.stage == ReconfigurationStage.WAIT_INS
                 ):
-                    updated_candidate_tick = end_tick
-                status, completion_tick = search(
-                    updated_tasks,
-                    tuple(updated_states),
-                    updated_candidate_tick,
-                )
-                if status == "feasible":
-                    return status, completion_tick
-                if status == "unknown":
-                    saw_unknown = True
-            if saw_unknown:
-                return "unknown", None
-            proven_infeasible.add(state_key)
-            return "infeasible", None
+                    candidate_completion_tick = end_tick
 
-        status, completion_tick = search(
-            tasks, worker_states, candidate_completion_tick
-        )
-        result = TemporalFeasibilityResult(
-            status=status,
-            searched_nodes=searched_nodes,
-            candidate_completion_tick=completion_tick,
-        )
-        self._temporal_oracle_cache[cache_key] = result
-        self._temporal_oracle_searched_nodes += searched_nodes
-        self._temporal_oracle_result_counts[result.status] += 1
-        return result
+            cache_key = self._temporal_state_key(
+                tasks,
+                worker_states,
+                effective_minimum,
+                candidate_completion_tick,
+            )
+            cached = self._temporal_oracle_cache.get(cache_key)
+            if cached is not None:
+                self._temporal_oracle_cache_hit_count += 1
+                self._temporal_oracle_result_counts[cached.status] += 1
+                return cached
+
+            def search(
+                remaining: tuple[TemporalWorkerTask, ...],
+                states: tuple[TemporalWorkerState, ...],
+                candidate_tick: int | None,
+            ) -> tuple[str, int | None]:
+                self._temporal_charge_search_node(budget)
+                state_key = self._temporal_state_key(
+                    remaining,
+                    states,
+                    effective_minimum,
+                    candidate_tick,
+                )
+                cached_subproblem = self._temporal_subproblem_cache.get(
+                    state_key
+                )
+                if cached_subproblem is not None:
+                    self._temporal_subproblem_cache_hit_count += 1
+                    return cached_subproblem
+                if not remaining:
+                    answer = ("feasible", candidate_tick)
+                    self._temporal_subproblem_cache[state_key] = answer
+                    return answer
+                ready_tasks = [
+                    task for task in remaining if task.predecessor_id is None
+                ]
+                if not ready_tasks:
+                    answer = ("infeasible", None)
+                    self._temporal_subproblem_cache[state_key] = answer
+                    return answer
+                selected: TemporalWorkerTask | None = None
+                selected_options: list[
+                    tuple[int, int, int, float]
+                ] | None = None
+                selected_raw_option_count: int | None = None
+                for task in ready_tasks:
+                    options = self._temporal_assignment_options(
+                        task,
+                        states,
+                        minimum_start_tick=effective_minimum,
+                        budget=budget,
+                    )
+                    if not options:
+                        answer = ("infeasible", None)
+                        self._temporal_subproblem_cache[state_key] = answer
+                        return answer
+                    raw_option_count = budget.last_options_before
+                    if selected_options is None or (
+                        raw_option_count,
+                        task.task_id,
+                    ) < (
+                        int(selected_raw_option_count),
+                        selected.task_id,
+                    ):
+                        selected = task
+                        selected_options = options
+                        selected_raw_option_count = raw_option_count
+                if selected is None or selected_options is None:
+                    answer = ("infeasible", None)
+                    self._temporal_subproblem_cache[state_key] = answer
+                    return answer
+                for worker_index, _, end_tick, end_fatigue in selected_options:
+                    updated_states = list(states)
+                    updated_states[worker_index] = TemporalWorkerState(
+                        available_tick=end_tick,
+                        fatigue=end_fatigue,
+                    )
+                    updated_tasks = self._temporal_remove_task(
+                        remaining, selected, end_tick
+                    )
+                    updated_candidate_tick = candidate_tick
+                    if selected.candidate and (
+                        selected.stage == ReconfigurationStage.WAIT_INS
+                    ):
+                        updated_candidate_tick = end_tick
+                    status, completion_tick = search(
+                        updated_tasks,
+                        tuple(updated_states),
+                        updated_candidate_tick,
+                    )
+                    if status == "feasible":
+                        answer = (status, completion_tick)
+                        self._temporal_subproblem_cache[state_key] = answer
+                        return answer
+                answer = ("infeasible", None)
+                self._temporal_subproblem_cache[state_key] = answer
+                return answer
+
+            status, completion_tick = search(
+                tasks, worker_states, candidate_completion_tick
+            )
+            reason = (
+                "feasible_solution_found"
+                if status == "feasible"
+                else "infeasible_search_exhausted"
+            )
+            result = finish(status, completion_tick, reason)
+            self._temporal_oracle_cache[cache_key] = result
+            return result
+        except _TemporalBudgetExhausted as exhausted:
+            return finish("unknown", None, exhausted.reason)
 
     def _temporal_worker_action_result(
         self,

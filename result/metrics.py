@@ -38,7 +38,12 @@ MATCHING_RECOVERY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "maximum_projected_installation_deficit",
     "temporal_oracle_call_count",
     "temporal_oracle_cache_hit_count",
+    "temporal_subproblem_cache_hit_count",
     "temporal_oracle_searched_nodes",
+    "temporal_oracle_option_evaluations",
+    "temporal_frontier_options_before",
+    "temporal_frontier_options_after",
+    "temporal_dominated_option_count",
     "temporal_oracle_feasible_count",
     "temporal_oracle_infeasible_count",
     "temporal_oracle_unknown_count",
@@ -687,12 +692,23 @@ def aggregate_matching_recovery_diagnostics(
             maximum_projected
         ),
         "maximum_projected_installation_deficit": maximum_projected,
+        "temporal_oracle_unknown_rate": (
+            total("temporal_oracle_unknown_count")
+            / total("temporal_oracle_call_count")
+            if total("temporal_oracle_call_count")
+            else 0.0
+        ),
         **{
             name: total(name)
             for name in (
                 "temporal_oracle_call_count",
                 "temporal_oracle_cache_hit_count",
+                "temporal_subproblem_cache_hit_count",
                 "temporal_oracle_searched_nodes",
+                "temporal_oracle_option_evaluations",
+                "temporal_frontier_options_before",
+                "temporal_frontier_options_after",
+                "temporal_dominated_option_count",
                 "temporal_oracle_feasible_count",
                 "temporal_oracle_infeasible_count",
                 "temporal_oracle_unknown_count",
@@ -850,10 +866,16 @@ def aggregate_evaluation_rows(
                 "maximum_projected_installation_deficit",
                 "temporal_oracle_call_count",
                 "temporal_oracle_cache_hit_count",
+                "temporal_subproblem_cache_hit_count",
                 "temporal_oracle_searched_nodes",
+                "temporal_oracle_option_evaluations",
+                "temporal_frontier_options_before",
+                "temporal_frontier_options_after",
+                "temporal_dominated_option_count",
                 "temporal_oracle_feasible_count",
                 "temporal_oracle_infeasible_count",
                 "temporal_oracle_unknown_count",
+                "temporal_oracle_unknown_rate",
                 "temporal_worker_action_rescued_count",
                 "temporal_future_installation_rescued_count",
                 "temporal_delayed_disassembly_rescued_count",

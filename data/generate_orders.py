@@ -9,7 +9,7 @@ import sys
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,6 +23,11 @@ from data.dataset import (
     build_dataset_split,
     template_sha256,
     validate_instance_seed,
+)
+from data.feasibility import (
+    StaticFeasibilityAnalysis,
+    analyze_static_feasibility,
+    cheap_feasibility_precheck,
 )
 from data.models import (
     AssemblyInstance,
@@ -97,12 +102,14 @@ def _weighted_choice(rng: random.Random, weights: dict[str, float]) -> str:
 def _rollout_metrics(
     instance: AssemblyInstance,
     config: dict[str, Any],
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     from agent.baselines import HeuristicPolicy
     from environment import AssemblySchedulingEnv
     from environment.types import MachineState, OperationState
 
     environment = AssemblySchedulingEnv(config)
+    environment.temporal_progress_callback = progress_callback
     environment.reset(instance, build_observation=False)
     policy = HeuristicPolicy()
     seen_ready: set[str] = set()
@@ -180,6 +187,24 @@ def _rollout_metrics(
         ),
         "max_wave_overlap_ratio": max(wave_overlap_values, default=0.0),
         "schedule_violations": environment.validate_schedule(),
+        **{
+            name: base_metrics.get(name)
+            for name in (
+                "temporal_oracle_call_count",
+                "temporal_oracle_cache_hit_count",
+                "temporal_subproblem_cache_hit_count",
+                "temporal_oracle_searched_nodes",
+                "temporal_oracle_option_evaluations",
+                "temporal_frontier_options_before",
+                "temporal_frontier_options_after",
+                "temporal_dominated_option_count",
+                "temporal_oracle_feasible_count",
+                "temporal_oracle_infeasible_count",
+                "temporal_oracle_unknown_count",
+                "temporal_budget_termination_counts",
+                "temporal_search_implementation",
+            )
+        },
     }
     return heuristic_metrics, environment
 
@@ -217,43 +242,12 @@ def _wave_overlap_values(
     return values
 
 
-def _load_metrics(instance: AssemblyInstance) -> dict[str, Any]:
-    module_loads: dict[str, float] = {}
-    minimum_times: dict[str, float] = {}
-    for operation in instance.operations:
-        minutes = min(
-            operation.base_processing_time
-            * machine.module_parameters[
-                operation.required_module
-            ].processing_speed_factor
-            for machine in instance.machines
-            if operation.required_module in machine.module_parameters
-        )
-        minimum_times[operation.id] = _quantize(minutes, instance.resolution)
-    total_load = sum(minimum_times.values()) / (
-        len(instance.machines) * instance.horizon
-    )
-    for module in instance.modules:
-        compatible = sum(
-            module in machine.module_parameters for machine in instance.machines
-        )
-        module_loads[module] = sum(
-            minimum_times[operation.id]
-            for operation in instance.operations
-            if operation.required_module == module
-        ) / (compatible * instance.horizon)
-    qualifications = sum(
-        module in worker.qualified_modules
-        for worker in instance.workers
-        for module in instance.modules
-    )
-    return {
-        "total_effective_load": total_load,
-        "module_loads": module_loads,
-        "max_module_load": max(module_loads.values(), default=0.0),
-        "worker_qualification_density": qualifications
-        / (len(instance.workers) * len(instance.modules)),
-    }
+def _load_metrics(
+    instance: AssemblyInstance,
+    analysis: StaticFeasibilityAnalysis | None = None,
+) -> dict[str, Any]:
+    effective = analysis or analyze_static_feasibility(instance)
+    return effective.load_metrics()
 
 
 class InstanceGenerator:
@@ -263,6 +257,7 @@ class InstanceGenerator:
         generator_config: dict[str, Any],
         *,
         config: dict[str, Any] | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.template = template
         self.settings = generator_config
@@ -275,6 +270,11 @@ class InstanceGenerator:
             )
         )
         self.template_hash = template_sha256(template)
+        self.progress_callback = progress_callback
+
+    def _emit_progress(self, **payload: Any) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(payload)
 
     def generate(
         self,
@@ -313,6 +313,12 @@ class InstanceGenerator:
         last_metrics: dict[str, Any] | None = None
         maximum_attempts = int(self.settings["max_generation_attempts"])
         for attempt in range(maximum_attempts):
+            self._emit_progress(
+                phase="candidate_build",
+                seed=seed,
+                generation_attempt=attempt,
+                pressure_type=pressure_type,
+            )
             attempt_seed = _stable_seed(
                 self.version,
                 self.template_hash,
@@ -344,7 +350,8 @@ class InstanceGenerator:
                     instance,
                     minimum_qualified_workers=minimum_workers,
                 )
-                static_metrics = _load_metrics(instance)
+                static_analysis = analyze_static_feasibility(instance)
+                static_metrics = _load_metrics(instance, static_analysis)
                 static_reasons = self._static_rejection_reasons(
                     instance, static_metrics
                 )
@@ -352,8 +359,26 @@ class InstanceGenerator:
                     failure_reasons.update(static_reasons)
                     last_metrics = static_metrics
                     continue
+                precheck = cheap_feasibility_precheck(
+                    instance, static_analysis
+                )
+                if not precheck.passed:
+                    failure_reasons.update(precheck.reason_codes)
+                    last_metrics = {
+                        **static_metrics,
+                        "feasibility_precheck": precheck.to_dict(),
+                    }
+                    continue
+                self._emit_progress(
+                    phase="heuristic_rollout",
+                    seed=seed,
+                    generation_attempt=attempt,
+                    pressure_type=pressure_type,
+                )
                 heuristic_metrics, environment = _rollout_metrics(
-                    instance, self.config
+                    instance,
+                    self.config,
+                    progress_callback=self.progress_callback,
                 )
                 metrics = {**static_metrics, **heuristic_metrics}
                 dynamic_reasons = self._dynamic_rejection_reasons(
@@ -387,10 +412,35 @@ class InstanceGenerator:
                     "generation_attempt": attempt,
                     "attempt_seed": attempt_seed,
                     "pressure_metrics": static_metrics,
+                    "feasibility_precheck": precheck.to_dict(),
                     "heuristic_metrics": heuristic_metrics,
                     "reconfiguration_value_class": value_class,
                     "counterfactual_candidate_count": counterfactual_count,
+                    "generation_rejection_reasons": dict(
+                        sorted(failure_reasons.items())
+                    ),
                 }
+                self._emit_progress(
+                    phase="generation_complete",
+                    seed=seed,
+                    generation_attempt=attempt,
+                    pressure_type=pressure_type,
+                    oracle_calls=heuristic_metrics.get(
+                        "temporal_oracle_call_count", 0
+                    ),
+                    search_nodes=heuristic_metrics.get(
+                        "temporal_oracle_searched_nodes", 0
+                    ),
+                    option_evaluations=heuristic_metrics.get(
+                        "temporal_oracle_option_evaluations", 0
+                    ),
+                    root_cache_hits=heuristic_metrics.get(
+                        "temporal_oracle_cache_hit_count", 0
+                    ),
+                    subproblem_cache_hits=heuristic_metrics.get(
+                        "temporal_subproblem_cache_hit_count", 0
+                    ),
+                )
                 return GeneratedInstanceRecord(instance, metadata)
             except (RuntimeError, ValueError) as error:
                 failure_reasons[f"candidate_error:{type(error).__name__}"] += 1
@@ -1185,12 +1235,62 @@ def main() -> None:
     parser.add_argument("--count", type=int)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-resume", action="store_true")
+    parser.add_argument("--build-train-cache", action="store_true")
+    parser.add_argument("--parallel-envs", type=int)
+    parser.add_argument("--run-name")
     args = parser.parse_args()
 
     config = load_config(args.config)
     fixed = load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
-    if args.build_split and args.build_all:
-        parser.error("--build-split and --build-all are mutually exclusive")
+    build_modes = sum(
+        bool(value)
+        for value in (
+            args.build_split,
+            args.build_all,
+            args.build_train_cache,
+        )
+    )
+    if build_modes > 1:
+        parser.error(
+            "--build-split, --build-all and --build-train-cache are "
+            "mutually exclusive"
+        )
+    if args.build_train_cache:
+        from agent.ppo.parallel import ParallelEpisodeRunner
+        from result import create_run_directory
+        from result.io import write_config
+
+        episode_count = (
+            int(config["training"]["episodes"])
+            if args.count is None
+            else int(args.count)
+        )
+        if episode_count < 2:
+            parser.error("--build-train-cache requires --count >= 2")
+        worker_count = (
+            int(config["training"]["parallel_envs"])
+            if args.parallel_envs is None
+            else int(args.parallel_envs)
+        )
+        worker_count = min(worker_count, episode_count)
+        if worker_count < 2:
+            parser.error("--parallel-envs must be at least 2")
+        run_directory = create_run_directory(
+            project_path(config["paths"]["result_root"]),
+            label="training_instance_generation",
+            run_name=args.run_name,
+        )
+        write_config(run_directory, config)
+        with ParallelEpisodeRunner(
+            config=config,
+            template=fixed,
+            episode_count=episode_count,
+            worker_count=worker_count,
+            diagnostic_directory=run_directory,
+        ) as runner:
+            runner.pre_generate_training_instances()
+        print(f"saved training cache manifest: {run_directory}")
+        return
     if args.build_all:
         manifests = build_all_dataset_splits(
             config=config,

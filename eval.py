@@ -443,6 +443,17 @@ def build_evaluation_row(
             name: metrics.get(name, 0)
             for name in MATCHING_RECOVERY_DIAGNOSTIC_FIELDS
         },
+        "temporal_budget_termination_counts": json.dumps(
+            metrics.get("temporal_budget_termination_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        "temporal_search_implementation": metrics.get(
+            "temporal_search_implementation"
+        ),
+        "temporal_oracle_unknown_rate": metrics.get(
+            "temporal_oracle_unknown_rate", 0.0
+        ),
         **{
             name: metrics.get(name, 0)
             for name in (

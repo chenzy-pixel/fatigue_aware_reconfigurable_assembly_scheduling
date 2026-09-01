@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -120,3 +121,9 @@ def test_training_exception_traceback_is_saved_inside_created_run(
     assert "Traceback (most recent call last)" in log
     assert "RuntimeError: diagnostic failure" in log
     assert "exit_code=1" in log
+    failure = json.loads(
+        (result_root / run_name / "failure.json").read_text(encoding="utf-8")
+    )
+    assert failure["exception_type"] == "RuntimeError"
+    assert failure["message"] == "diagnostic failure"
+    assert (result_root / run_name / "failure_partial.csv").exists()

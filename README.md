@@ -681,8 +681,10 @@ E1/E2 分析结果合并，得到三方法经验 Pareto、Hypervolume、贡献�
 公共配置使用 `temporal_matching_admission_recovery_v3`、
 `deadline_progress_viability_shield_v2` 和
 `single_objective_guarded_v1`；soft risk shaping 系数固定为零。v3 保留静态
-快速路径，并在静态检查失败时使用有限节点的确定性时序 oracle；历史 E1/E2
-配置仍保留原动作域。
+快速路径，并在静态检查失败时使用确定性时序 oracle。单目标协议 v4 在 heuristic
+rollout 前增加必要条件预检；时序搜索使用完整恢复支配 frontier、状态版本内子问题缓存，
+并同时限制每次调用、每个决策和每个 episode 的节点数与选项评价数。预算耗尽返回
+`unknown` 并继续采用 fail-open 动作语义；历史 E1/E2 配置仍保留原动作域。
 
 正式 validation 固定为同一份、同一顺序的 200 个 publication 实例。日常 validation
 只读取该 manifest 的前 50 个；改善候选触发完整 200-instance 审计。已有 500-instance
@@ -693,6 +695,19 @@ manifest 也可直接复用其前 200 个。首次在训练电脑生成后，三
   --config configs\v7\e1_single_flow.json `
   --build-split validation --profile publication --count 200 --overwrite
 ```
+
+旧 generator fingerprint 不会复用。正式训练启动后会先并行生成或校验 train index
+0–1999 的确定性缓存，再进入 PPO rollout。也可只执行缓存生成与慢 seed 审计：
+
+```powershell
+.\.venv\Scripts\python.exe data\generate_orders.py `
+  --config configs\v7\e1_single_flow.json `
+  --build-train-cache --count 2000 --parallel-envs 20 `
+  --run-name e1_single_flow_train_cache_2000
+```
+
+生成摘要、逐实例 SHA256、预检报告和缓存命中率保存在该 run 目录的
+`training_instance_manifest.json` 与 `training_instance_generation_summary.json`。
 
 阶段一进入质量阶段仍要求连续 3 次 `completion_rate=1.0`。质量阶段采用最近 5 次
 合格日常验证的原始目标中位数：`completion_rate>=0.95`、零 schedule violation 和物理/疲劳
@@ -732,6 +747,11 @@ reward identity，不用于判断收敛，也不进入后续 payoff matrix：
 $train = ".\.venv\Scripts\python.exe"
 & $train train.py --config configs\v7\e1_single_flow.json --algorithm-seed 11 --parallel-envs 20 --run-name e1_single_flow_seed11_2000_diagnostic
 ```
+
+运行期间还会持续写入 `worker_progress.jsonl`、`slow_instances.jsonl` 和
+`temporal_search_summary.json`。60 秒无心跳记为 `stall_timeout`；有心跳但超过
+600 秒总上限记为活跃慢搜索。异常时保留 `failure.json`、`failure_partial.csv`、
+已有训练/更新/验证日志以及最近安全 checkpoint。
 
 训练完成后，将三个正式 run 目录传给收敛分析入口：
 

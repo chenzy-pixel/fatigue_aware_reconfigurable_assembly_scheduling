@@ -1,12 +1,18 @@
 {
   "extends": "e1_context_exception.json",
   "experiment_name": "v7_e1_single_objective",
-  "experiment_suite_version": "v7_e1_single_objective_protocol_v3",
+  "experiment_suite_version": "v7_e1_single_objective_protocol_v4",
   "environment": {
     "worker_resource_control": {
       "mode": "temporal_matching_admission_recovery_v3",
       "temporal_feasibility": {
         "max_search_nodes": 50000,
+        "max_option_evaluations_per_call": 250000,
+        "max_search_nodes_per_decision": 200000,
+        "max_option_evaluations_per_decision": 1000000,
+        "max_search_nodes_per_episode": 2000000,
+        "max_option_evaluations_per_episode": 5000000,
+        "search_implementation": "strict_recovery_frontier_transposition_budget_v1",
         "unknown_action": "allow"
       }
     },

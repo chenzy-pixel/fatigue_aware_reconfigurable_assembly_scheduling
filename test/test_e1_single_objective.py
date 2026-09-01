@@ -88,14 +88,25 @@ def test_single_objective_base_changes_only_requested_e1_protocol_fields():
     expected = public_config(e1)
     expected["experiment_name"] = "v7_e1_single_objective"
     expected["experiment_suite_version"] = (
-        "v7_e1_single_objective_protocol_v3"
+        "v7_e1_single_objective_protocol_v4"
     )
     expected["environment"]["worker_resource_control"]["mode"] = (
         "temporal_matching_admission_recovery_v3"
     )
     expected["environment"]["worker_resource_control"][
         "temporal_feasibility"
-    ] = {"max_search_nodes": 50000, "unknown_action": "allow"}
+    ] = {
+        "max_search_nodes": 50000,
+        "max_option_evaluations_per_call": 250000,
+        "max_search_nodes_per_decision": 200000,
+        "max_option_evaluations_per_decision": 1000000,
+        "max_search_nodes_per_episode": 2000000,
+        "max_option_evaluations_per_episode": 5000000,
+        "search_implementation": (
+            "strict_recovery_frontier_transposition_budget_v1"
+        ),
+        "unknown_action": "allow",
+    }
     expected["environment"]["production_defer"]["shield"] = {
         "enabled": True,
         "version": "deadline_progress_viability_shield_v2",
@@ -500,16 +511,49 @@ def test_formal_run_requires_at_least_the_200_audit_instances(tmp_path: Path):
         )
     manifest_path = tmp_path / "manifests" / "validation" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
-    write_json(manifest_path, {"instance_count": 20, "files": []})
+    write_json(
+        manifest_path,
+        {
+            "generator_version": config["generator"]["version"],
+            "instance_count": 20,
+            "files": [],
+        },
+    )
     with pytest.raises(ValueError, match="at least 200 instances"):
         _validate_single_objective_validation_protocol(
             config, smoke=False, validation_limit=50
         )
-    write_json(manifest_path, {"instance_count": 200, "files": [None] * 200})
+    write_json(
+        manifest_path,
+        {
+            "generator_version": "1.2.0",
+            "instance_count": 200,
+            "files": [None] * 200,
+        },
+    )
+    with pytest.raises(ValueError, match="stale generator fingerprint"):
+        _validate_single_objective_validation_protocol(
+            config, smoke=False, validation_limit=50
+        )
+    write_json(
+        manifest_path,
+        {
+            "generator_version": config["generator"]["version"],
+            "instance_count": 200,
+            "files": [None] * 200,
+        },
+    )
     _validate_single_objective_validation_protocol(
         config, smoke=False, validation_limit=50
     )
-    write_json(manifest_path, {"instance_count": 500, "files": [None] * 500})
+    write_json(
+        manifest_path,
+        {
+            "generator_version": config["generator"]["version"],
+            "instance_count": 500,
+            "files": [None] * 500,
+        },
+    )
     _validate_single_objective_validation_protocol(
         config, smoke=False, validation_limit=50
     )

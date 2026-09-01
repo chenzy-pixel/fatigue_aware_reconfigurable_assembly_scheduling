@@ -9,7 +9,8 @@
     "instance_cache": "data/instances/fixed_15x4_v1.pkl",
     "manifests_root": "data/manifests",
     "instances_root": "data/instances",
-    "result_root": "result/runs"
+    "result_root": "result/runs",
+    "training_instances_cache": "data/instances/train_cache"
   },
   "dataset": {
     "schema_version": "1.1.0",
@@ -57,7 +58,7 @@
     }
   },
   "generator": {
-    "version": "1.2.0",
+    "version": "1.3.0",
     "max_generation_attempts": 100,
     "max_counterfactual_candidates": 3,
     "wave_count": 3,
@@ -366,6 +367,8 @@
       "reward_identity_tolerance": 1e-8
     },
     "worker_timeout_seconds": 600,
+    "worker_stall_timeout_seconds": 60,
+    "slow_instance_seconds": 30,
     "multiprocessing_start_method": "spawn",
     "torch_num_threads": 4
   },

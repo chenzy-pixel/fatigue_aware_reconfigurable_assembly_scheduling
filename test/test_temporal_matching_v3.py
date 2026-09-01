@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 
 import pytest
@@ -178,3 +179,142 @@ def test_temporal_candidate_completion_drives_processing_start(
     )
     assert calls == 1
     assert profile.processing_start_tick >= candidate_completion_tick
+
+
+def test_strict_frontier_keeps_equal_duration_recovery_counterexample():
+    early_high_fatigue = (0, 0, 10, 0.90)
+    late_low_fatigue = (0, 5, 15, 0.10)
+    frontier, witnesses = AssemblySchedulingEnv._temporal_strict_frontier(
+        [early_high_fatigue, late_low_fatigue],
+        recovery_rate=0.01,
+        resolution=1.0,
+    )
+    assert early_high_fatigue in frontier
+    assert late_low_fatigue in frontier
+    assert late_low_fatigue not in witnesses
+    assert not AssemblySchedulingEnv._temporal_option_dominates(
+        early_high_fatigue,
+        late_low_fatigue,
+        recovery_rate=0.01,
+        resolution=1.0,
+    )
+
+
+def test_strict_frontier_matches_quadratic_reference_and_has_witnesses():
+    rng = random.Random(20260901)
+    options = [
+        (
+            rng.randrange(3),
+            start := rng.randrange(40),
+            start + rng.randrange(1, 12),
+            rng.random(),
+        )
+        for _ in range(300)
+    ]
+    recovery_rate = 0.013
+    resolution = 0.1
+    actual, witnesses = AssemblySchedulingEnv._temporal_strict_frontier(
+        options,
+        recovery_rate=recovery_rate,
+        resolution=resolution,
+    )
+    expected = []
+    for worker_index in sorted({option[0] for option in options}):
+        ordered = sorted(
+            (option for option in options if option[0] == worker_index),
+            key=lambda value: (value[2], value[3], value[1], value[0]),
+        )
+        retained = []
+        for option in ordered:
+            if any(
+                AssemblySchedulingEnv._temporal_option_dominates(
+                    witness,
+                    option,
+                    recovery_rate=recovery_rate,
+                    resolution=resolution,
+                )
+                for witness in retained
+            ):
+                continue
+            retained.append(option)
+        expected.extend(retained)
+    expected.sort(key=lambda value: (value[2], value[1], value[0]))
+    assert actual == expected
+    removed = set(options) - set(actual)
+    assert removed == set(witnesses)
+    for option in removed:
+        assert AssemblySchedulingEnv._temporal_option_dominates(
+            witnesses[option],
+            option,
+            recovery_rate=recovery_rate,
+            resolution=resolution,
+        )
+
+
+def test_temporal_option_budget_is_unknown_and_never_cached(fixed_instance):
+    environment = _single_worker_temporal_env(fixed_instance)
+    temporal = environment.config["environment"]["worker_resource_control"][
+        "temporal_feasibility"
+    ]
+    temporal["max_option_evaluations_per_call"] = 1
+    module = next(iter(environment.workers[0].spec.qualified_modules))
+    tasks = (
+        TemporalWorkerTask(
+            "dis:first", 0, ReconfigurationStage.WAIT_DIS, module, 0
+        ),
+        TemporalWorkerTask(
+            "ins:first",
+            0,
+            ReconfigurationStage.WAIT_INS,
+            module,
+            0,
+            predecessor_id="dis:first",
+        ),
+    )
+    first = environment._run_temporal_feasibility_search(tasks)
+    second = environment._run_temporal_feasibility_search(tasks)
+    assert first.status == second.status == "unknown"
+    assert first.termination_reason == "call_option_budget_exhausted"
+    assert environment.metrics()["temporal_oracle_cache_hit_count"] == 0
+
+
+def test_strict_oracle_matches_full_tick_reference_completion(
+    fixed_instance,
+    monkeypatch,
+):
+    strict_environment = _single_worker_temporal_env(fixed_instance)
+    module = strict_environment.workers[0].spec.qualified_modules[0]
+    tasks = (
+        TemporalWorkerTask(
+            "ordinary-dis",
+            0,
+            ReconfigurationStage.WAIT_DIS,
+            module,
+            0,
+        ),
+        TemporalWorkerTask(
+            "candidate-ins",
+            1,
+            ReconfigurationStage.WAIT_INS,
+            module,
+            5,
+            candidate=True,
+        ),
+    )
+    strict = strict_environment._run_temporal_feasibility_search(tasks)
+
+    def full_tick_frontier(cls, options, **_kwargs):
+        return (
+            sorted(options, key=lambda value: (value[2], value[1], value[0])),
+            {},
+        )
+
+    monkeypatch.setattr(
+        AssemblySchedulingEnv,
+        "_temporal_strict_frontier",
+        classmethod(full_tick_frontier),
+    )
+    reference_environment = _single_worker_temporal_env(fixed_instance)
+    reference = reference_environment._run_temporal_feasibility_search(tasks)
+    assert strict.status == reference.status == "feasible"
+    assert strict.candidate_completion_tick == reference.candidate_completion_tick

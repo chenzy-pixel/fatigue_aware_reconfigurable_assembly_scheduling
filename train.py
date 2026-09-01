@@ -151,6 +151,13 @@ def _validate_single_objective_validation_protocol(
             f"single-objective validation manifest is missing: {manifest_path}"
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected_generator = str(config["generator"]["version"])
+    if manifest.get("generator_version") != expected_generator:
+        raise ValueError(
+            "single-objective validation manifest has a stale generator "
+            f"fingerprint: expected {expected_generator}, got "
+            f"{manifest.get('generator_version')}"
+        )
     files = manifest.get("files", [])
     manifest_count = int(manifest.get("instance_count", len(files)))
     if (
@@ -2597,6 +2604,40 @@ class TrainingPhaseController:
                     )
                 )
                 != 50_000
+                or int(
+                    worker_control["temporal_feasibility"].get(
+                        "max_option_evaluations_per_call", 0
+                    )
+                )
+                != 250_000
+                or int(
+                    worker_control["temporal_feasibility"].get(
+                        "max_search_nodes_per_decision", 0
+                    )
+                )
+                != 200_000
+                or int(
+                    worker_control["temporal_feasibility"].get(
+                        "max_option_evaluations_per_decision", 0
+                    )
+                )
+                != 1_000_000
+                or int(
+                    worker_control["temporal_feasibility"].get(
+                        "max_search_nodes_per_episode", 0
+                    )
+                )
+                != 2_000_000
+                or int(
+                    worker_control["temporal_feasibility"].get(
+                        "max_option_evaluations_per_episode", 0
+                    )
+                )
+                != 5_000_000
+                or worker_control["temporal_feasibility"].get(
+                    "search_implementation"
+                )
+                != "strict_recovery_frontier_transposition_budget_v1"
                 or worker_control["temporal_feasibility"].get(
                     "unknown_action"
                 )
@@ -2605,7 +2646,8 @@ class TrainingPhaseController:
                 raise ValueError(
                     "single-objective promotion requires "
                     "temporal_matching_admission_recovery_v3 with the "
-                    "50,000-node fail-open oracle"
+                    "strict recovery frontier, deterministic budgets and "
+                    "the 50,000-node fail-open oracle"
                 )
             shield = (
                 config["environment"].get("production_defer", {}).get(
@@ -5515,6 +5557,21 @@ def _training_effect_fields(metrics: dict) -> dict:
         "worker_matching_deficit_event_count": metrics.get(
             "worker_matching_deficit_event_count"
         ),
+        **{
+            name: metrics.get(name, 0)
+            for name in MATCHING_RECOVERY_DIAGNOSTIC_FIELDS
+        },
+        "temporal_budget_termination_counts": json.dumps(
+            metrics.get("temporal_budget_termination_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        "temporal_search_implementation": metrics.get(
+            "temporal_search_implementation"
+        ),
+        "temporal_oracle_unknown_rate": metrics.get(
+            "temporal_oracle_unknown_rate", 0.0
+        ),
         "resource_admission_masked_action_count": metrics.get(
             "resource_admission_masked_action_count"
         ),
@@ -6208,6 +6265,14 @@ def train(
     write_config(run_directory, config)
     if warm_start_report is not None:
         write_json(run_directory / "warm_start_mapping.json", warm_start_report)
+    agent.save(
+        run_directory / "last_safe_checkpoint.pt",
+        metadata={
+            **_checkpoint_protocol_metadata(config),
+            "checkpoint_role": "pre_training_safe",
+            "safe_episode": 0,
+        },
+    )
     visdom_settings = resolve_visdom_settings(config)
     dashboard = create_training_dashboard(
         config=config,
@@ -7351,6 +7416,14 @@ def _train_parallel(
     write_config(run_directory, config)
     if warm_start_report is not None:
         write_json(run_directory / "warm_start_mapping.json", warm_start_report)
+    agent.save(
+        run_directory / "last_safe_checkpoint.pt",
+        metadata={
+            **_checkpoint_protocol_metadata(config),
+            "checkpoint_role": "pre_training_safe",
+            "safe_episode": 0,
+        },
+    )
     visdom_settings = resolve_visdom_settings(config)
     dashboard = create_training_dashboard(
         config=config,
@@ -7459,7 +7532,9 @@ def _train_parallel(
         template=template,
         episode_count=training_base_instance_count(config, episodes),
         worker_count=runner_worker_count,
+        diagnostic_directory=run_directory,
     ) as runner:
+        runner.pre_generate_training_instances()
         safe_state_pool_report = _build_e2_7_safe_state_pool(
             config,
             agent=agent,
@@ -10124,9 +10199,60 @@ def main() -> int:
             except KeyboardInterrupt:
                 exit_code = 130
                 traceback.print_exc()
-            except Exception:
+            except Exception as error:
                 exit_code = 1
+                failure_traceback = traceback.format_exc()
                 traceback.print_exc()
+                failure_directory = (
+                    expected_run_directory
+                    if expected_run_directory is not None
+                    and expected_run_directory.is_dir()
+                    and not expected_directory_preexisted
+                    else run_directory
+                )
+                if failure_directory is not None:
+                    existing_checkpoints = sorted(
+                        path.name
+                        for path in failure_directory.glob("*.pt")
+                        if path.is_file()
+                    )
+                    write_json(
+                        failure_directory / "failure.json",
+                        {
+                            "version": "training_failure_v1",
+                            "failed_at": datetime.now(timezone.utc).isoformat(),
+                            "exception_type": type(error).__name__,
+                            "message": str(error),
+                            "traceback": failure_traceback,
+                            "checkpoints": existing_checkpoints,
+                            "last_safe_checkpoint": (
+                                "last_safe_checkpoint.pt"
+                                if "last_safe_checkpoint.pt"
+                                in existing_checkpoints
+                                else None
+                            ),
+                            "worker_progress_log": (
+                                "worker_progress.jsonl"
+                                if (
+                                    failure_directory
+                                    / "worker_progress.jsonl"
+                                ).exists()
+                                else None
+                            ),
+                        },
+                    )
+                    write_csv(
+                        failure_directory / "failure_partial.csv",
+                        [
+                            {
+                                "failed_at": datetime.now(
+                                    timezone.utc
+                                ).isoformat(),
+                                "exception_type": type(error).__name__,
+                                "message": str(error),
+                            }
+                        ],
+                    )
             finally:
                 finished_at = datetime.now(timezone.utc).isoformat()
                 print(f"[terminal-log] finished_at={finished_at}")
