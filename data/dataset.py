@@ -18,6 +18,7 @@ from data.models import (
     load_instance_yaml,
     parse_instance_dict,
 )
+from data.feasibility import PRECHECK_VERSION
 
 
 PERSISTED_SPLITS = ("validation", "test", "ood", "stress")
@@ -524,11 +525,46 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             config["generator"],
             config=config,
         )
+        fingerprint_payload = {
+            "generator_version": self.generator.version,
+            "template_sha256": self.generator.template_hash,
+            "episode_count": self.episode_count,
+            "generator_config": config["generator"],
+            "environment_config": config["environment"],
+            "precheck_version": PRECHECK_VERSION,
+        }
+        self.config_fingerprint = sha256_bytes(
+            canonical_json_bytes(fingerprint_payload)
+        )
+        combined_config = {
+            "generator": config["generator"],
+            "environment": config["environment"],
+            "precheck_version": PRECHECK_VERSION,
+        }
+        self.generator_environment_precheck_config_hash = sha256_bytes(
+            canonical_json_bytes(combined_config)
+        )
+        from configs import project_path
+
+        cache_root = project_path(
+            config.get("paths", {}).get(
+                "training_instances_cache",
+                "data/instances/train_cache",
+            )
+        )
+        self.cache_directory = cache_root / self.config_fingerprint
+        self.cache_directory.mkdir(parents=True, exist_ok=True)
 
     def __len__(self) -> int:
         return self.episode_count
 
     def __getitem__(self, index: int) -> GeneratedInstanceRecord:
+        record, _, _, _ = self.get_with_cache_info(index)
+        return record
+
+    def _generation_spec(
+        self, index: int
+    ) -> tuple[int, str, Path]:
         if isinstance(index, slice):
             raise TypeError("OnlineInstanceDataset does not support slicing")
         if index < 0:
@@ -547,12 +583,76 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             weights=[float(weights[name]) for name in weights],
             k=1,
         )[0]
-        return self.generator.generate(
+        return (
+            seed,
+            pressure_type,
+            self.cache_directory / f"instance_{seed}.json",
+        )
+
+    def _training_cache_record_matches(
+        self,
+        record: GeneratedInstanceRecord,
+        *,
+        seed: int,
+        pressure_type: str,
+    ) -> bool:
+        metadata = record.metadata
+        precheck = metadata.get("feasibility_precheck")
+        heuristic = metadata.get("heuristic_metrics")
+        expected = {
+            "generator_version": self.generator.version,
+            "template_instance": self.generator.template_instance,
+            "template_sha256": self.generator.template_hash,
+            "split": "train",
+            "seed": seed,
+            "pressure_type": pressure_type,
+            "training_cache_fingerprint": self.config_fingerprint,
+            "generator_environment_precheck_config_hash": (
+                self.generator_environment_precheck_config_hash
+            ),
+        }
+        return bool(
+            all(metadata.get(key) == value for key, value in expected.items())
+            and isinstance(precheck, dict)
+            and precheck.get("version") == PRECHECK_VERSION
+            and precheck.get("passed") is True
+            and isinstance(heuristic, dict)
+            and "temporal_oracle_option_evaluations" in heuristic
+            and "temporal_budget_termination_counts" in heuristic
+        )
+
+    def get_with_cache_info(
+        self, index: int
+    ) -> tuple[GeneratedInstanceRecord, bool, str, Path]:
+        seed, pressure_type, destination = self._generation_spec(index)
+        if destination.exists():
+            try:
+                cached = load_generated_record(destination)
+                if self._training_cache_record_matches(
+                    cached,
+                    seed=seed,
+                    pressure_type=pressure_type,
+                ):
+                    return cached, True, sha256_file(destination), destination
+            except (OSError, UnicodeError, TypeError, ValueError):
+                pass
+            destination.unlink(missing_ok=True)
+        generated = self.generator.generate(
             seed=seed,
             split="train",
             pressure_type=pressure_type,
             classify_reconfiguration_value=False,
         )
+        metadata = {
+            **generated.metadata,
+            "training_cache_fingerprint": self.config_fingerprint,
+            "generator_environment_precheck_config_hash": (
+                self.generator_environment_precheck_config_hash
+            ),
+        }
+        record = GeneratedInstanceRecord(generated.instance, metadata)
+        digest = save_generated_record_atomic(record, destination)
+        return record, False, digest, destination
 
 
 def _weighted_labels(

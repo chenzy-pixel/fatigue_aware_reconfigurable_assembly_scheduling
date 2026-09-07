@@ -5,6 +5,13 @@ from enum import Enum
 
 import numpy as np
 
+from .preference import (
+    CANONICAL_PREFERENCE,
+    PREFERENCE_NAMES,
+    PreferenceInput,
+    normalize_preference,
+)
+
 
 EdgeType = tuple[str, str, str]
 
@@ -110,12 +117,13 @@ class RewardVector:
     truncation: float = 0.0
     unfinished: float = 0.0
     feasibility_shaping: float = 0.0
+    defer_risk_shaping: float = 0.0
 
     def scalarize(self, config: dict, phase: str | None = None) -> float:
         base = self.base_scalarize(config, phase)
         mode = str(config.get("mode", "legacy_weighted_sum"))
         if mode == "hierarchical_constrained_v1":
-            return base + self.feasibility_shaping
+            return base + self.feasibility_shaping + self.defer_risk_shaping
         return base
 
     def base_scalarize(self, config: dict, phase: str | None = None) -> float:
@@ -156,7 +164,7 @@ class RewardVector:
         )
 
     def as_dict(self) -> dict[str, float]:
-        return {
+        result = {
             "flow": self.flow,
             "cost": self.cost,
             "variance": self.variance,
@@ -167,6 +175,9 @@ class RewardVector:
             "unfinished": self.unfinished,
             "feasibility_shaping": self.feasibility_shaping,
         }
+        if self.defer_risk_shaping != 0.0:
+            result["defer_risk_shaping"] = self.defer_risk_shaping
+        return result
 
 
 def bounded_quality_score(
@@ -174,6 +185,8 @@ def bounded_quality_score(
     cost: float,
     variance: float,
     config: dict,
+    *,
+    preference: PreferenceInput | None = None,
 ) -> float:
     """Return the bounded weighted quality proxy in [0, 1)."""
     values = {
@@ -181,13 +194,17 @@ def bounded_quality_score(
         "cost": float(cost),
         "variance": float(variance),
     }
-    weights = config.get(
-        "quality_weights",
-        {
-            "flow": float(config.get("flow_weight", 1.0)),
-            "cost": float(config.get("cost_weight", 1.0)),
-            "variance": float(config.get("variance_weight", 1.0)),
-        },
+    weights = (
+        normalize_preference(preference).as_dict()
+        if preference is not None
+        else config.get(
+            "quality_weights",
+            {
+                "flow": float(config.get("flow_weight", 1.0)),
+                "cost": float(config.get("cost_weight", 1.0)),
+                "variance": float(config.get("variance_weight", 1.0)),
+            },
+        )
     )
     scales = {
         "flow": float(config["flow_scale"]),
@@ -215,6 +232,8 @@ def proxy_return_from_metrics(
     metrics: dict,
     config: dict,
     phase: str | None = None,
+    *,
+    preference: PreferenceInput | None = None,
 ) -> float:
     """Recompute the trajectory proxy return from terminal metrics."""
     mode = str(config.get("mode", "legacy_weighted_sum"))
@@ -269,6 +288,7 @@ def proxy_return_from_metrics(
         float(metrics["reconfiguration_cost"]),
         float(metrics["worker_load_variance"]),
         config,
+        preference=preference,
     )
     budget = float(config["quality_budget"])
     if not 0.0 <= budget < 1.0:
@@ -330,6 +350,13 @@ class HeterogeneousGraphObservation:
         default_factory=lambda: np.empty((0,), dtype=np.float32)
     )
     action_set_feature_names: tuple[str, ...] = field(default_factory=tuple)
+    preference: np.ndarray = field(
+        default_factory=lambda: np.asarray(
+            CANONICAL_PREFERENCE,
+            dtype=np.float32,
+        )
+    )
+    preference_names: tuple[str, ...] = PREFERENCE_NAMES
 
     def __post_init__(self) -> None:
         normalized_features = {
@@ -359,6 +386,16 @@ class HeterogeneousGraphObservation:
             self,
             "action_set_feature_names",
             tuple(self.action_set_feature_names),
+        )
+        object.__setattr__(
+            self,
+            "preference",
+            np.asarray(self.preference, dtype=np.float32),
+        )
+        object.__setattr__(
+            self,
+            "preference_names",
+            tuple(self.preference_names),
         )
 
     @property
@@ -408,6 +445,8 @@ class HeterogeneousGraphObservation:
             },
             action_set_features=self.action_set_features.copy(),
             action_set_feature_names=tuple(self.action_set_feature_names),
+            preference=self.preference.copy(),
+            preference_names=tuple(self.preference_names),
         )
 
     @property
@@ -438,6 +477,13 @@ class HeterogeneousGraphObservation:
             )
         if not np.all(np.isfinite(self.action_set_features)):
             raise ValueError("action-set features must be finite")
+        if self.preference.shape != (3,):
+            raise ValueError("preference must have shape (3,)")
+        if self.preference_names != PREFERENCE_NAMES:
+            raise ValueError(
+                "preference names must be flow/cost/variance in order"
+            )
+        normalize_preference(self.preference)
         if (
             self.global_feature_names
             and len(self.global_feature_names) != self.global_features.shape[0]
@@ -513,6 +559,13 @@ class PolicyObservation:
     global_features: np.ndarray
     decision_type: DecisionType
     global_feature_names: tuple[str, ...] = field(default_factory=tuple)
+    preference: np.ndarray = field(
+        default_factory=lambda: np.asarray(
+            CANONICAL_PREFERENCE,
+            dtype=np.float32,
+        )
+    )
+    preference_names: tuple[str, ...] = PREFERENCE_NAMES
 
     @classmethod
     def from_observation(
@@ -528,6 +581,8 @@ class PolicyObservation:
             global_features=observation.global_features.copy(),
             decision_type=observation.decision_type,
             global_feature_names=tuple(observation.global_feature_names),
+            preference=observation.preference.copy(),
+            preference_names=tuple(observation.preference_names),
         )
 
     def copy(self) -> "PolicyObservation":
@@ -538,6 +593,8 @@ class PolicyObservation:
             global_features=self.global_features.copy(),
             decision_type=self.decision_type,
             global_feature_names=tuple(self.global_feature_names),
+            preference=self.preference.copy(),
+            preference_names=tuple(self.preference_names),
         )
 
     @property

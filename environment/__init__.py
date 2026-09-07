@@ -1,6 +1,20 @@
 """Fatigue-aware discrete-event assembly scheduling environment."""
 
 from .env import AssemblySchedulingEnv
+from .preference import (
+    CANONICAL_PREFERENCE,
+    PREFERENCE_NAMES,
+    PreferenceInput,
+    PreferenceVector,
+    default_preference,
+    derive_episode_action_seed,
+    derive_preference_sampling_seed,
+    normalize_preference,
+    preference_config,
+    preference_enabled,
+    sample_episode_preference,
+    simplex_lattice,
+)
 from .types import (
     ASSEMBLY_EDGE_TYPES,
     ASSEMBLY_NODE_TYPES,
@@ -34,6 +48,7 @@ __all__ = [
     "CAPABLE_EDGE",
     "CAN_DISASSEMBLE_EDGE",
     "CAN_INSTALL_EDGE",
+    "CANONICAL_PREFERENCE",
     "DecisionType",
     "EdgeStore",
     "EdgeType",
@@ -44,12 +59,23 @@ __all__ = [
     "OPERATION_ORDER_EDGE",
     "ORDER_WAVE_EDGE",
     "PolicyObservation",
+    "PREFERENCE_NAMES",
     "PRECEDES_EDGE",
+    "PreferenceInput",
+    "PreferenceVector",
     "REQUIRES_MODULE_EDGE",
     "RewardVector",
     "SERVICE_CANDIDATE_EDGE",
     "WAVE_MODULE_EDGE",
     "WORKER_MODULE_EDGE",
     "bounded_quality_score",
+    "default_preference",
+    "derive_episode_action_seed",
+    "derive_preference_sampling_seed",
+    "normalize_preference",
+    "preference_config",
+    "preference_enabled",
     "proxy_return_from_metrics",
+    "sample_episode_preference",
+    "simplex_lattice",
 ]

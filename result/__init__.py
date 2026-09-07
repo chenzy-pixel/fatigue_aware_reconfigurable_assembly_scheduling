@@ -4,13 +4,22 @@ from .io import create_run_directory, write_evaluation_outputs
 from .metrics import (
     CANONICAL_QUALITY_METRIC,
     EVALUATION_SCHEMA_VERSION,
+    HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION,
+    MO_ALNS_EVALUATION_SCHEMA_VERSION,
+    NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION,
+    PREFERENCE_EVALUATION_SCHEMA_VERSION,
     QUALITY_METRIC_VERSION,
+    SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION,
+    TIERED_TRAINING_GATES_EVALUATION_SCHEMA_VERSION,
     aggregate_evaluation_rows,
+    aggregate_matching_recovery_diagnostics,
+    aggregate_preference_diagnostics,
     compare_lexicographic,
     evaluation_quality_metric,
     evaluation_selection_key,
     quality_metric_sha256,
     relative_gap_percent,
+    result_schema_version,
     summarize_values,
 )
 from .provenance import (
@@ -22,6 +31,7 @@ from .provenance import (
     provenance_with_network_weights,
     source_state_snapshot,
 )
+from .terminal_log import capture_terminal_output
 from .visdom_dashboard import (
     TrainingDashboard,
     create_training_dashboard,
@@ -29,15 +39,24 @@ from .visdom_dashboard import (
 
 __all__ = [
     "EVALUATION_SCHEMA_VERSION",
+    "HIERARCHICAL_PREFERENCE_EVALUATION_SCHEMA_VERSION",
+    "MO_ALNS_EVALUATION_SCHEMA_VERSION",
+    "NEUTRAL_GATE_SAFE_VARIANCE_EVALUATION_SCHEMA_VERSION",
+    "PREFERENCE_EVALUATION_SCHEMA_VERSION",
+    "SAFE_PRODUCTION_PREFERENCE_EVALUATION_SCHEMA_VERSION",
+    "TIERED_TRAINING_GATES_EVALUATION_SCHEMA_VERSION",
     "QUALITY_METRIC_VERSION",
     "CANONICAL_QUALITY_METRIC",
     "aggregate_evaluation_rows",
+    "aggregate_matching_recovery_diagnostics",
+    "aggregate_preference_diagnostics",
     "compare_lexicographic",
     "create_run_directory",
     "evaluation_selection_key",
     "evaluation_quality_metric",
     "quality_metric_sha256",
     "relative_gap_percent",
+    "result_schema_version",
     "summarize_values",
     "TrainingDashboard",
     "create_training_dashboard",
@@ -49,4 +68,5 @@ __all__ = [
     "network_weights_sha256",
     "provenance_with_network_weights",
     "source_state_snapshot",
+    "capture_terminal_output",
 ]

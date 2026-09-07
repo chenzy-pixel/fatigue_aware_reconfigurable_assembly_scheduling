@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import multiprocessing
+import os
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from multiprocessing.connection import Connection, wait
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 import numpy as np
@@ -18,15 +23,96 @@ from data.dataset import GeneratedInstanceRecord, OnlineInstanceDataset
 from data.models import AssemblyInstance
 from environment import (
     AssemblySchedulingEnv,
+    CAPABLE_EDGE,
+    DecisionType,
     Observation,
     PolicyObservation,
+    PreferenceInput,
+    PreferenceVector,
     RewardVector,
+    SERVICE_CANDIDATE_EDGE,
+    derive_episode_action_seed,
+    normalize_preference,
+    preference_enabled,
     proxy_return_from_metrics,
+    sample_episode_preference,
 )
 from utils import action_trace_sha256, derive_evaluation_sampling_seed
 
 if TYPE_CHECKING:
     from agent.ppo.agent import PPOAgent
+
+
+def _e2_7_production_pair_state_eligible(
+    observation: Observation | PolicyObservation,
+    mask: np.ndarray,
+) -> bool:
+    """Require distinct legal lowest-flow and lowest-cost production pairs."""
+    if (
+        getattr(observation, "decision_type", None) != DecisionType.PRODUCTION
+        or mask.ndim != 1
+        or mask.size < 3
+    ):
+        return False
+    legal = ~mask[:-1]
+    if int(np.count_nonzero(legal)) < 2:
+        return False
+    relation = observation.relations.get(CAPABLE_EDGE)
+    if relation is None:
+        return False
+    pair_count = mask.size - 1
+    machine_count = observation.node_features["machine"].shape[0]
+    dense = np.zeros((pair_count, relation.edge_features.shape[1]), dtype=np.float64)
+    indices = relation.edge_index[0] * machine_count + relation.edge_index[1]
+    dense[indices] = relation.edge_features
+    names = relation.feature_names
+    flow = (
+        dense[:, names.index("processing_time_norm")]
+        + dense[:, names.index("reconfiguration_time_norm")]
+    )
+    cost = sum(
+        dense[:, names.index(name)]
+        for name in (
+            "fixed_disassembly_cost_norm",
+            "fixed_installation_cost_norm",
+            "estimated_labor_cost_norm",
+            "estimated_downtime_cost_norm",
+        )
+    )
+    legal_indices = np.flatnonzero(legal)
+    return bool(
+        legal_indices[np.argmin(flow[legal_indices])]
+        != legal_indices[np.argmin(cost[legal_indices])]
+    )
+
+
+def _e2_7_worker_variance_state_eligible(
+    observation: Observation | PolicyObservation,
+    mask: np.ndarray,
+) -> bool:
+    """Require safe worker pairs with distinct projected load variance."""
+    if (
+        getattr(observation, "decision_type", None) != DecisionType.WORKER
+        or mask.ndim != 1
+        or mask.size < 3
+    ):
+        return False
+    legal = ~mask[:-1]
+    if int(np.count_nonzero(legal)) < 2:
+        return False
+    relation = observation.relations.get(SERVICE_CANDIDATE_EDGE)
+    if relation is None:
+        return False
+    pair_count = mask.size - 1
+    worker_count = observation.node_features["worker"].shape[0]
+    dense = np.zeros((pair_count, relation.edge_features.shape[1]), dtype=np.float64)
+    indices = relation.edge_index[0] * worker_count + relation.edge_index[1]
+    dense[indices] = relation.edge_features
+    variance = dense[
+        :, relation.feature_names.index("incremental_load_variance_norm")
+    ]
+    legal_values = variance[legal]
+    return bool(np.max(legal_values) > np.min(legal_values))
 
 
 @dataclass
@@ -44,11 +130,22 @@ class WorkerResponse:
     environment_step_time_seconds: float = 0.0
     environment_step_count: int = 0
     local_physical_forced_action_count: int = 0
+    cache_hit: bool = False
+    record_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkerProgress:
+    lane_id: int
+    command: str
+    timestamp: float
+    payload: dict[str, Any]
 
 
 @dataclass(frozen=True)
 class _WorkerResetRequest:
     value: int | AssemblyInstance
+    preference: PreferenceVector | None = None
     drain_physical_forced_actions: bool = False
     max_environment_steps: int | None = None
 
@@ -58,6 +155,95 @@ class _WorkerStepRequest:
     action: int
     drain_physical_forced_actions: bool = False
     max_environment_steps: int | None = None
+
+
+@dataclass(frozen=True)
+class TrainingEpisodeAssignment:
+    trajectory_index: int
+    base_instance_index: int
+    preference_slot: int
+    preference_group_id: int
+    preference: PreferenceVector
+    preference_source: str
+
+
+def training_preference_group(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    training = config.get("training", {})
+    if not isinstance(training, Mapping):
+        raise TypeError("config.training must be an object")
+    raw = training.get("preference_grouping")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise TypeError("training.preference_grouping must be an object")
+    if not bool(raw.get("enabled", False)):
+        return None
+    version = str(raw.get("version", "fixed_anchor_group_v1"))
+    if version != "fixed_anchor_group_v1":
+        raise ValueError(
+            "training.preference_grouping.version must be "
+            "'fixed_anchor_group_v1'"
+        )
+    anchors_raw = raw.get("anchors")
+    if not isinstance(anchors_raw, Sequence) or isinstance(
+        anchors_raw, (str, bytes)
+    ):
+        raise TypeError("training.preference_grouping.anchors must be a sequence")
+    anchors = tuple(normalize_preference(value) for value in anchors_raw)
+    if len(anchors) < 2:
+        raise ValueError("grouped preference training requires at least two anchors")
+    return {"version": version, "anchors": anchors, "group_size": len(anchors)}
+
+
+def training_base_instance_count(
+    config: Mapping[str, Any], trajectory_count: int
+) -> int:
+    count = int(trajectory_count)
+    if count < 1:
+        raise ValueError("trajectory_count must be positive")
+    grouping = training_preference_group(config)
+    if grouping is None:
+        return count
+    group_size = int(grouping["group_size"])
+    if count % group_size:
+        raise ValueError(
+            "grouped preference trajectory count must be divisible by group size"
+        )
+    return count // group_size
+
+
+def training_episode_assignment(
+    config: Mapping[str, Any], trajectory_index: int
+) -> TrainingEpisodeAssignment:
+    index = int(trajectory_index)
+    if index < 0:
+        raise ValueError("trajectory_index must be non-negative")
+    grouping = training_preference_group(config)
+    if grouping is None:
+        preference, source = sample_episode_preference(
+            config,
+            algorithm_seed=int(config["seed"]),
+            episode_index=index,
+        )
+        return TrainingEpisodeAssignment(
+            trajectory_index=index,
+            base_instance_index=index,
+            preference_slot=-1,
+            preference_group_id=index,
+            preference=preference,
+            preference_source=source,
+        )
+    anchors: tuple[PreferenceVector, ...] = grouping["anchors"]
+    group_size = int(grouping["group_size"])
+    base_instance_index, preference_slot = divmod(index, group_size)
+    return TrainingEpisodeAssignment(
+        trajectory_index=index,
+        base_instance_index=base_instance_index,
+        preference_slot=preference_slot,
+        preference_group_id=base_instance_index,
+        preference=anchors[preference_slot],
+        preference_source=f"group_anchor_{preference_slot}",
+    )
 
 
 @dataclass
@@ -79,18 +265,25 @@ class EpisodeRollout:
     metrics: dict[str, Any]
     generation_time_seconds: float
     environment_step_time_seconds: float
+    preference: PreferenceVector = field(
+        default_factory=lambda: PreferenceVector(0.5, 0.3, 0.2)
+    )
+    preference_source: str = "fixed_default"
     reward_phase: str = "legacy"
     reward_components: dict[str, float] = field(default_factory=dict)
     expected_reward: float = 0.0
     unattributed_forced_reward: float = 0.0
     worker_step_command_count: int = 0
     worker_local_physical_forced_action_count: int = 0
+    base_instance_index: int | None = None
+    preference_slot: int = -1
+    preference_group_id: int | None = None
 
     @property
     def base_reward_sum(self) -> float:
         return self.reward_sum - float(
             self.reward_components.get("feasibility_shaping", 0.0)
-        )
+        ) - float(self.reward_components.get("defer_risk_shaping", 0.0))
 
     @property
     def policy_step_count(self) -> int:
@@ -411,6 +604,20 @@ def _worker_main(
             episode_count=episode_count,
         )
         environment = AssemblySchedulingEnv(config)
+        progress_context: dict[str, Any] = {}
+
+        def emit_progress(payload: dict[str, Any]) -> None:
+            connection.send(
+                WorkerProgress(
+                    lane_id=lane_id,
+                    command=command,
+                    timestamp=time.time(),
+                    payload={**progress_context, **payload},
+                )
+            )
+
+        dataset.generator.progress_callback = emit_progress
+        environment.temporal_progress_callback = emit_progress
         preserve_graph = network_requires_graph_observation(
             config["network"]
         )
@@ -426,16 +633,28 @@ def _worker_main(
                     if isinstance(payload, _WorkerResetRequest)
                     else _WorkerResetRequest(value=int(payload))
                 )
+                episode_index = int(request.value)
+                progress_context = {
+                    "episode": episode_index,
+                    "seed": dataset.seed_start + episode_index,
+                    "phase": "instance_generation",
+                }
                 generation_start = time.perf_counter()
-                record = dataset[int(request.value)]
+                record, cache_hit, digest, _ = dataset.get_with_cache_info(
+                    episode_index
+                )
                 generation_time = time.perf_counter() - generation_start
-                observation = environment.reset(record.instance)
+                observation = environment.reset(
+                    record.instance,
+                    preference=request.preference,
+                )
                 metadata = {
                     key: record.metadata.get(key)
                     for key in (
                         "seed",
                         "pressure_type",
                         "cost_profile",
+                        "generation_attempt",
                     )
                 }
                 connection.send(
@@ -454,6 +673,31 @@ def _worker_main(
                         instance_id=record.instance.instance_id,
                         metadata=metadata,
                         generation_time_seconds=generation_time,
+                        cache_hit=cache_hit,
+                        record_sha256=digest,
+                    )
+                )
+                continue
+            if command == "generate_online":
+                episode_index = int(payload)
+                progress_context = {
+                    "episode": episode_index,
+                    "seed": dataset.seed_start + episode_index,
+                    "phase": "instance_generation",
+                }
+                generation_start = time.perf_counter()
+                record, cache_hit, digest, _ = dataset.get_with_cache_info(
+                    episode_index
+                )
+                generation_time = time.perf_counter() - generation_start
+                connection.send(
+                    WorkerResponse(
+                        lane_id=lane_id,
+                        instance_id=record.instance.instance_id,
+                        metadata=dict(record.metadata),
+                        generation_time_seconds=generation_time,
+                        cache_hit=cache_hit,
+                        record_sha256=digest,
                     )
                 )
                 continue
@@ -467,7 +711,10 @@ def _worker_main(
                     raise TypeError(
                         "reset_instance requires an AssemblyInstance"
                     )
-                observation = environment.reset(request.value)
+                observation = environment.reset(
+                    request.value,
+                    preference=request.preference,
+                )
                 connection.send(
                     _worker_roll_forward(
                         lane_id,
@@ -544,6 +791,7 @@ class ParallelEpisodeRunner:
         template: AssemblyInstance,
         episode_count: int,
         worker_count: int,
+        diagnostic_directory: str | Path | None = None,
     ):
         if worker_count < 2:
             raise ValueError("parallel runner requires at least two workers")
@@ -559,11 +807,51 @@ class ParallelEpisodeRunner:
             )
         self.config = config
         self.worker_count = int(worker_count)
+        self.episode_count = int(episode_count)
         self.timeout_seconds = float(
             training["worker_timeout_seconds"]
         )
         if self.timeout_seconds <= 0:
             raise ValueError("worker_timeout_seconds must be positive")
+        self.stall_timeout_seconds = float(
+            training.get(
+                "worker_stall_timeout_seconds",
+                min(60.0, self.timeout_seconds),
+            )
+        )
+        if self.stall_timeout_seconds <= 0:
+            raise ValueError("worker_stall_timeout_seconds must be positive")
+        self.slow_instance_seconds = float(
+            training.get("slow_instance_seconds", 30.0)
+        )
+        self.diagnostic_directory = (
+            None
+            if diagnostic_directory is None
+            else Path(diagnostic_directory)
+        )
+        if self.diagnostic_directory is not None:
+            self.diagnostic_directory.mkdir(parents=True, exist_ok=True)
+        self._command_serial = 0
+        self._lane_command_started: dict[int, float] = {}
+        self._lane_command_serial: dict[int, int] = {}
+        self._lane_command_name: dict[int, str] = {}
+        self._latest_progress: dict[int, dict[str, Any]] = {}
+        self._slow_command_keys: set[tuple[int, int]] = set()
+        self._temporal_summary: dict[str, Any] = {
+            "version": "temporal_search_summary_v1",
+            "completed_episode_count": 0,
+            "oracle_calls": 0,
+            "search_nodes": 0,
+            "option_evaluations": 0,
+            "frontier_options_before": 0,
+            "frontier_options_after": 0,
+            "dominated_options": 0,
+            "root_cache_hits": 0,
+            "subproblem_cache_hits": 0,
+            "unknown_count": 0,
+            "termination_reasons": {},
+        }
+        self._persist_temporal_summary()
         context = multiprocessing.get_context(start_method)
         self._connections: list[Connection] = []
         self._processes: list[Any] = []
@@ -587,6 +875,9 @@ class ParallelEpisodeRunner:
                 child_connection.close()
                 self._connections.append(parent_connection)
                 self._processes.append(process)
+                self._lane_command_started[lane_id] = time.monotonic()
+                self._lane_command_serial[lane_id] = 0
+                self._lane_command_name[lane_id] = "startup"
             self._receive_responses(range(self.worker_count))
         except BaseException:
             self.close(force=True)
@@ -604,6 +895,7 @@ class ParallelEpisodeRunner:
     ) -> dict[int, WorkerResponse]:
         if self._closed:
             raise RuntimeError("parallel runner is closed")
+        command_started = time.monotonic()
         for lane_id, message in commands.items():
             process = self._processes[lane_id]
             if not process.is_alive():
@@ -611,8 +903,132 @@ class ParallelEpisodeRunner:
                     f"worker {lane_id} exited with code "
                     f"{process.exitcode}"
                 )
+            self._command_serial += 1
+            self._lane_command_started[lane_id] = command_started
+            self._lane_command_serial[lane_id] = self._command_serial
+            self._lane_command_name[lane_id] = str(message[0])
             self._connections[lane_id].send(message)
         return self._receive_responses(commands)
+
+    def _append_diagnostic_jsonl(
+        self, filename: str, payload: dict[str, Any]
+    ) -> None:
+        if self.diagnostic_directory is None:
+            return
+        destination = self.diagnostic_directory / filename
+        with destination.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+            )
+            handle.flush()
+
+    def _record_worker_progress(self, progress: WorkerProgress) -> None:
+        lane_id = int(progress.lane_id)
+        elapsed = time.monotonic() - self._lane_command_started.get(
+            lane_id, time.monotonic()
+        )
+        record = {
+            "event": "heartbeat",
+            "timestamp": progress.timestamp,
+            "lane": lane_id,
+            "command": progress.command,
+            "command_serial": self._lane_command_serial.get(lane_id),
+            "elapsed_seconds": elapsed,
+            **progress.payload,
+        }
+        self._latest_progress[lane_id] = record
+        self._append_diagnostic_jsonl("worker_progress.jsonl", record)
+        slow_key = (lane_id, self._lane_command_serial.get(lane_id, -1))
+        if (
+            elapsed >= self.slow_instance_seconds
+            and slow_key not in self._slow_command_keys
+        ):
+            self._slow_command_keys.add(slow_key)
+            self._append_diagnostic_jsonl(
+                "slow_instances.jsonl",
+                {**record, "classification": "active_slow_search"},
+            )
+
+    def _record_temporal_response(self, response: WorkerResponse) -> None:
+        metrics = response.metrics
+        if not isinstance(metrics, dict) or not (
+            response.terminated or response.truncated
+        ):
+            return
+        summary = self._temporal_summary
+        summary["completed_episode_count"] += 1
+        mappings = {
+            "oracle_calls": "temporal_oracle_call_count",
+            "search_nodes": "temporal_oracle_searched_nodes",
+            "option_evaluations": "temporal_oracle_option_evaluations",
+            "frontier_options_before": "temporal_frontier_options_before",
+            "frontier_options_after": "temporal_frontier_options_after",
+            "dominated_options": "temporal_dominated_option_count",
+            "root_cache_hits": "temporal_oracle_cache_hit_count",
+            "subproblem_cache_hits": "temporal_subproblem_cache_hit_count",
+            "unknown_count": "temporal_oracle_unknown_count",
+        }
+        for target, source in mappings.items():
+            summary[target] += int(metrics.get(source, 0) or 0)
+        reasons = metrics.get("temporal_budget_termination_counts", {})
+        if isinstance(reasons, dict):
+            totals = summary["termination_reasons"]
+            for reason, count in reasons.items():
+                totals[str(reason)] = totals.get(str(reason), 0) + int(count)
+        calls = max(1, int(summary["oracle_calls"]))
+        summary["unknown_rate"] = float(summary["unknown_count"]) / calls
+        self._persist_temporal_summary()
+
+    def _persist_temporal_summary(self) -> None:
+        if self.diagnostic_directory is None:
+            return
+        destination = self.diagnostic_directory / "temporal_search_summary.json"
+        temporary = destination.with_name(f".{destination.name}.tmp")
+        temporary.write_text(
+            json.dumps(
+                self._temporal_summary,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, destination)
+
+    def _record_completed_response(self, response: WorkerResponse) -> None:
+        lane_id = int(response.lane_id)
+        elapsed = time.monotonic() - self._lane_command_started.get(
+            lane_id, time.monotonic()
+        )
+        record = {
+            "event": "response",
+            "timestamp": time.time(),
+            "lane": lane_id,
+            "command": self._lane_command_name.get(lane_id),
+            "command_serial": self._lane_command_serial.get(lane_id),
+            "elapsed_seconds": elapsed,
+            "instance_id": response.instance_id,
+            "seed": (response.metadata or {}).get("seed"),
+            "generation_attempt": (response.metadata or {}).get(
+                "generation_attempt"
+            ),
+            "generation_time_seconds": response.generation_time_seconds,
+            "environment_step_count": response.environment_step_count,
+            "cache_hit": response.cache_hit,
+        }
+        self._append_diagnostic_jsonl("worker_progress.jsonl", record)
+        slow_key = (lane_id, self._lane_command_serial.get(lane_id, -1))
+        if (
+            max(elapsed, float(response.generation_time_seconds))
+            >= self.slow_instance_seconds
+            and slow_key not in self._slow_command_keys
+        ):
+            self._slow_command_keys.add(slow_key)
+            self._append_diagnostic_jsonl(
+                "slow_instances.jsonl",
+                {**record, "classification": "completed_slow_search"},
+            )
 
     def _receive_responses(
         self,
@@ -623,20 +1039,46 @@ class ParallelEpisodeRunner:
             for lane_id in lane_ids
         }
         responses: dict[int, WorkerResponse] = {}
-        deadline = time.monotonic() + self.timeout_seconds
+        started = time.monotonic()
+        hard_deadline = started + self.timeout_seconds
+        last_heartbeat = {lane_id: started for lane_id in pending.values()}
         while pending:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            now = time.monotonic()
+            if now >= hard_deadline:
                 lanes = sorted(pending.values())
                 raise ParallelWorkerTimeout(
-                    f"workers {lanes} did not respond within "
-                    f"{self.timeout_seconds:.1f} seconds"
+                    "hard_timeout: active slow search exceeded total command "
+                    f"timeout {self.timeout_seconds:.1f}s; workers={lanes}; "
+                    f"latest_progress={self._latest_progress}"
                 )
+            stalled = [
+                lane_id
+                for lane_id in pending.values()
+                if now - last_heartbeat[lane_id]
+                >= self.stall_timeout_seconds
+            ]
+            if stalled:
+                details = {
+                    lane_id: self._latest_progress.get(lane_id)
+                    for lane_id in stalled
+                }
+                raise ParallelWorkerTimeout(
+                    "stall_timeout: no worker heartbeat within "
+                    f"{self.stall_timeout_seconds:.1f}s; workers={stalled}; "
+                    f"latest_progress={details}"
+                )
+            next_stall = min(
+                last_heartbeat[lane_id] + self.stall_timeout_seconds
+                for lane_id in pending.values()
+            )
+            remaining = max(
+                0.0, min(hard_deadline, next_stall) - time.monotonic()
+            )
             ready = wait(list(pending), timeout=remaining)
             if not ready:
                 continue
             for connection in ready:
-                lane_id = pending.pop(connection)
+                lane_id = pending[connection]
                 try:
                     response = connection.recv()
                 except EOFError as error:
@@ -645,6 +1087,11 @@ class ParallelEpisodeRunner:
                         f"worker {lane_id} closed its pipe; exit code "
                         f"{process.exitcode}"
                     ) from error
+                if isinstance(response, WorkerProgress):
+                    last_heartbeat[lane_id] = time.monotonic()
+                    self._record_worker_progress(response)
+                    continue
+                pending.pop(connection)
                 if isinstance(response, WorkerFailure):
                     raise ParallelWorkerError(
                         f"worker {lane_id} failed during "
@@ -656,7 +1103,172 @@ class ParallelEpisodeRunner:
                         f"worker {lane_id} returned an invalid response"
                     )
                 responses[lane_id] = response
+                self._record_completed_response(response)
+                self._record_temporal_response(response)
         return responses
+
+    def pre_generate_training_instances(
+        self,
+        episode_indices: Sequence[int] | None = None,
+    ) -> dict[str, Any]:
+        """Fill and verify the deterministic training cache before rollout."""
+        requested_indices = (
+            list(range(self.episode_count))
+            if episode_indices is None
+            else [int(value) for value in episode_indices]
+        )
+        if (
+            not requested_indices
+            or len(set(requested_indices)) != len(requested_indices)
+            or min(requested_indices) < 0
+            or max(requested_indices) >= self.episode_count
+        ):
+            raise ValueError("invalid training cache episode indices")
+        requested_count = len(requested_indices)
+        entries: list[dict[str, Any]] = []
+        rejection_reasons: dict[str, int] = {}
+        generation_times: list[float] = []
+        cache_hits = 0
+        unknown_total = 0
+        budget_reasons: dict[str, int] = {}
+        for batch_start in range(0, requested_count, self.worker_count):
+            indices = requested_indices[
+                batch_start : batch_start + self.worker_count
+            ]
+            responses = self._exchange(
+                {
+                    lane_id: ("generate_online", episode_index)
+                    for lane_id, episode_index in enumerate(indices)
+                }
+            )
+            for lane_id, episode_index in enumerate(indices):
+                response = responses[lane_id]
+                metadata = response.metadata or {}
+                duration = float(response.generation_time_seconds)
+                generation_times.append(duration)
+                cache_hits += int(response.cache_hit)
+                rejected = metadata.get("generation_rejection_reasons", {})
+                if isinstance(rejected, dict):
+                    for reason, count in rejected.items():
+                        rejection_reasons[str(reason)] = (
+                            rejection_reasons.get(str(reason), 0) + int(count)
+                        )
+                heuristic = metadata.get("heuristic_metrics", {})
+                if isinstance(heuristic, dict):
+                    unknown_total += int(
+                        heuristic.get("temporal_oracle_unknown_count", 0) or 0
+                    )
+                    reasons = heuristic.get(
+                        "temporal_budget_termination_counts", {}
+                    )
+                    if isinstance(reasons, dict):
+                        for reason, count in reasons.items():
+                            budget_reasons[str(reason)] = (
+                                budget_reasons.get(str(reason), 0) + int(count)
+                            )
+                entries.append(
+                    {
+                        "train_index": episode_index,
+                        "seed": metadata.get("seed"),
+                        "instance_id": response.instance_id,
+                        "sha256": response.record_sha256,
+                        "cache_hit": bool(response.cache_hit),
+                        "generation_time_seconds": duration,
+                        "pressure_type": metadata.get("pressure_type"),
+                        "generation_attempt": metadata.get(
+                            "generation_attempt"
+                        ),
+                        "feasibility_precheck": metadata.get(
+                            "feasibility_precheck"
+                        ),
+                    }
+                )
+            print(
+                "[training-cache] generated_or_verified="
+                f"{len(entries)}/{requested_count}",
+                flush=True,
+            )
+        values = np.asarray(generation_times, dtype=np.float64)
+        p99 = float(np.percentile(values, 99)) if values.size else 0.0
+        slow_seeds = [
+            {
+                "seed": entry["seed"],
+                "train_index": entry["train_index"],
+                "generation_time_seconds": entry["generation_time_seconds"],
+            }
+            for entry in entries
+            if float(entry["generation_time_seconds"]) >= p99
+        ]
+        first_metadata = next(
+            (response.metadata for response in responses.values()), {}
+        )
+        summary = {
+            "version": "training_instance_cache_manifest_v1",
+            "instance_count": requested_count,
+            "total_training_episode_count": self.episode_count,
+            "generator_version": (
+                first_metadata or {}
+            ).get("generator_version"),
+            "template_sha256": (first_metadata or {}).get(
+                "template_sha256"
+            ),
+            "cache_fingerprint": (first_metadata or {}).get(
+                "training_cache_fingerprint"
+            ),
+            "generator_environment_precheck_config_hash": (
+                first_metadata or {}
+            ).get("generator_environment_precheck_config_hash"),
+            "cache_hit_count": cache_hits,
+            "cache_hit_rate": cache_hits / max(1, requested_count),
+            "generation_time_seconds": {
+                "p50": float(np.percentile(values, 50)) if values.size else 0.0,
+                "p95": float(np.percentile(values, 95)) if values.size else 0.0,
+                "p99": p99,
+                "max": float(np.max(values)) if values.size else 0.0,
+            },
+            "slow_seeds": slow_seeds,
+            "generation_rejection_reasons": dict(
+                sorted(rejection_reasons.items())
+            ),
+            "temporal_unknown_count": unknown_total,
+            "temporal_budget_termination_reasons": dict(
+                sorted(budget_reasons.items())
+            ),
+            "files": sorted(entries, key=lambda value: value["train_index"]),
+        }
+        if self.diagnostic_directory is not None:
+            for filename, payload in (
+                ("training_instance_manifest.json", summary),
+                (
+                    "training_instance_generation_summary.json",
+                    {key: value for key, value in summary.items() if key != "files"},
+                ),
+            ):
+                destination = self.diagnostic_directory / filename
+                temporary = destination.with_name(f".{destination.name}.tmp")
+                rendered = (
+                    json.dumps(
+                        payload, ensure_ascii=False, indent=2, sort_keys=True
+                    )
+                    + "\n"
+                )
+                temporary.write_text(rendered, encoding="utf-8")
+                os.replace(temporary, destination)
+                if filename == "training_instance_manifest.json":
+                    digest = hashlib.sha256(
+                        rendered.encode("utf-8")
+                    ).hexdigest()
+                    digest_path = self.diagnostic_directory / (
+                        "training_instance_manifest.sha256"
+                    )
+                    digest_temporary = digest_path.with_name(
+                        f".{digest_path.name}.tmp"
+                    )
+                    digest_temporary.write_text(
+                        digest + "\n", encoding="utf-8"
+                    )
+                    os.replace(digest_temporary, digest_path)
+        return summary
 
     def collect_training_batch(
         self,
@@ -710,12 +1322,21 @@ class ParallelEpisodeRunner:
             else str(reward_phase)
         )
         sampling_start = time.perf_counter()
+        assignments = {
+            int(episode_index): training_episode_assignment(
+                self.config, int(episode_index)
+            )
+            for episode_index in episode_indices
+        }
         reset_responses = self._exchange(
             {
                 lane_id: (
                     "reset_online",
                     _WorkerResetRequest(
-                        value=int(episode_index),
+                        value=assignments[
+                            int(episode_index)
+                        ].base_instance_index,
+                        preference=assignments[int(episode_index)].preference,
                         drain_physical_forced_actions=(
                             worker_local_physical_forced_actions
                         ),
@@ -731,6 +1352,7 @@ class ParallelEpisodeRunner:
         completed: list[EpisodeRollout] = []
         reset_cutoff_lanes: list[int] = []
         for lane_id, episode_index in enumerate(episode_indices):
+            assignment = assignments[int(episode_index)]
             response = reset_responses[lane_id]
             if (
                 response.instance_id is None
@@ -741,8 +1363,13 @@ class ParallelEpisodeRunner:
                 )
             context = {
                 "episode_index": int(episode_index),
+                "base_instance_index": assignment.base_instance_index,
+                "preference_slot": assignment.preference_slot,
+                "preference_group_id": assignment.preference_group_id,
                 "instance_id": response.instance_id,
                 "metadata": response.metadata,
+                "preference": assignment.preference,
+                "preference_source": assignment.preference_source,
                 "buffer": RolloutBuffer(
                     preserve_graph=agent.requires_graph_observation
                 ),
@@ -758,6 +1385,16 @@ class ParallelEpisodeRunner:
                     "truncation": 0.0,
                     "unfinished": 0.0,
                     "feasibility_shaping": 0.0,
+                    **(
+                        {"defer_risk_shaping": 0.0}
+                        if bool(
+                            self.config.get("environment", {})
+                            .get("production_defer", {})
+                            .get("shield", {})
+                            .get("enabled", False)
+                        )
+                        else {}
+                    ),
                 },
                 "step_count": response.environment_step_count,
                 "policy_step_count": 0,
@@ -844,6 +1481,19 @@ class ParallelEpisodeRunner:
                     )
                 completed.append(self._episode_result(context, metrics))
         inference_time = 0.0
+        action_generators = (
+            {
+                lane: torch.Generator(device=agent.device).manual_seed(
+                    derive_episode_action_seed(
+                        int(self.config["seed"]),
+                        int(contexts[lane]["episode_index"]),
+                    )
+                )
+                for lane in contexts
+            }
+            if preference_enabled(self.config)
+            else {}
+        )
         while active:
             lanes = sorted(active)
             policy_lanes: list[int] = []
@@ -876,10 +1526,28 @@ class ParallelEpisodeRunner:
                 policy_masks.append(action_mask)
             if policy_lanes:
                 inference_start = time.perf_counter()
-                actions, log_probabilities, values = agent.act_batch(
-                    policy_observations,
-                    policy_masks,
-                )
+                if action_generators:
+                    sampled = [
+                        agent.act(
+                            observation,
+                            mask,
+                            generator=action_generators[lane],
+                        )
+                        for lane, observation, mask in zip(
+                            policy_lanes,
+                            policy_observations,
+                            policy_masks,
+                            strict=True,
+                        )
+                    ]
+                    actions = [item[0] for item in sampled]
+                    log_probabilities = [item[1] for item in sampled]
+                    values = [item[2] for item in sampled]
+                else:
+                    actions, log_probabilities, values = agent.act_batch(
+                        policy_observations,
+                        policy_masks,
+                    )
                 inference_time += time.perf_counter() - inference_start
                 for local_index, lane in enumerate(policy_lanes):
                     context = contexts[lane]
@@ -1097,6 +1765,9 @@ class ParallelEpisodeRunner:
             )
         episode = EpisodeRollout(
             episode_index=context["episode_index"],
+            base_instance_index=context["base_instance_index"],
+            preference_slot=context["preference_slot"],
+            preference_group_id=context["preference_group_id"],
             instance_id=context["instance_id"],
             metadata=context["metadata"],
             buffer=context["buffer"],
@@ -1109,12 +1780,15 @@ class ParallelEpisodeRunner:
             environment_step_time_seconds=context[
                 "environment_step_time_seconds"
             ],
+            preference=context["preference"],
+            preference_source=context["preference_source"],
             reward_phase=context["reward_phase"],
             reward_components=dict(context["reward_components"]),
             expected_reward=proxy_return_from_metrics(
                 metrics,
                 self.config["reward"],
                 context["reward_phase"],
+                preference=context["preference"],
             ),
             unattributed_forced_reward=context[
                 "unattributed_forced_reward"
@@ -1149,6 +1823,12 @@ class ParallelEpisodeRunner:
         max_parallelism: int | None = None,
         deterministic: bool = True,
         sampling_seed: int | None = None,
+        preference: PreferenceInput | None = None,
+        dual_legal_state_sink: list[tuple[Any, np.ndarray]] | None = None,
+        maximum_captured_dual_legal_states: int | None = None,
+        production_pair_state_sink: list[tuple[Any, np.ndarray]] | None = None,
+        worker_variance_state_sink: list[tuple[Any, np.ndarray]] | None = None,
+        maximum_captured_preference_states: int | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1163,13 +1843,24 @@ class ParallelEpisodeRunner:
             raise ValueError(
                 "sampling_seed is required for sampled fixed evaluation"
             )
+        evaluation_preference = (
+            None
+            if preference is None
+            else normalize_preference(preference)
+        )
         results: list[FixedEvaluationRollout] = []
         for start in range(0, len(records), parallelism):
             chunk = records[start : start + parallelism]
             chunk_start = time.perf_counter()
             reset_responses = self._exchange(
                 {
-                    lane_id: ("reset_instance", record.instance)
+                    lane_id: (
+                        "reset_instance",
+                        _WorkerResetRequest(
+                            value=record.instance,
+                            preference=evaluation_preference,
+                        ),
+                    )
                     for lane_id, record in enumerate(chunk)
                 }
             )
@@ -1204,6 +1895,72 @@ class ParallelEpisodeRunner:
                 masks = [
                     states[lane].action_mask for lane in lanes
                 ]
+                if dual_legal_state_sink is not None:
+                    limit = (
+                        math.inf
+                        if maximum_captured_dual_legal_states is None
+                        else int(maximum_captured_dual_legal_states)
+                    )
+                    if limit < 1:
+                        raise ValueError(
+                            "maximum_captured_dual_legal_states must be positive"
+                        )
+                    for observation, mask in zip(observations, masks):
+                        if len(dual_legal_state_sink) >= limit:
+                            break
+                        if (
+                            getattr(observation, "decision_type", None)
+                            == DecisionType.PRODUCTION
+                            and mask.size >= 2
+                            and bool((~mask[:-1]).any())
+                            and not bool(mask[-1])
+                        ):
+                            dual_legal_state_sink.append(
+                                (observation.copy(), mask.copy())
+                            )
+                if (
+                    production_pair_state_sink is not None
+                    or worker_variance_state_sink is not None
+                ):
+                    preference_limit = (
+                        math.inf
+                        if maximum_captured_preference_states is None
+                        else int(maximum_captured_preference_states)
+                    )
+                    if preference_limit < 1:
+                        raise ValueError(
+                            "maximum_captured_preference_states must be positive"
+                        )
+                    for observation, mask in zip(observations, masks):
+                        legal_pair_count = int(np.count_nonzero(~mask[:-1]))
+                        if (
+                            production_pair_state_sink is not None
+                            and len(production_pair_state_sink) < preference_limit
+                            and getattr(observation, "decision_type", None)
+                            == DecisionType.PRODUCTION
+                            and legal_pair_count >= 2
+                            and _e2_7_production_pair_state_eligible(
+                                observation,
+                                mask,
+                            )
+                        ):
+                            production_pair_state_sink.append(
+                                (observation.copy(), mask.copy())
+                            )
+                        if (
+                            worker_variance_state_sink is not None
+                            and len(worker_variance_state_sink) < preference_limit
+                            and getattr(observation, "decision_type", None)
+                            == DecisionType.WORKER
+                            and legal_pair_count >= 2
+                            and _e2_7_worker_variance_state_eligible(
+                                observation,
+                                mask,
+                            )
+                        ):
+                            worker_variance_state_sink.append(
+                                (observation.copy(), mask.copy())
+                            )
                 if deterministic:
                     inference_start = time.perf_counter()
                     actions, _, _ = agent.act_batch(
@@ -1222,13 +1979,19 @@ class ParallelEpisodeRunner:
                         raise RuntimeError(
                             "batched policy diagnostics do not match lanes"
                         )
-                    for lane, action, diagnostic in zip(
-                        lanes, actions, diagnostic_rows
+                    for lane, action, diagnostic, mask in zip(
+                        lanes, actions, diagnostic_rows, masks
                     ):
                         diagnostic["selected_action"] = int(action)
                         diagnostic["ranker_top_selected"] = bool(
                             int(action)
                             == int(diagnostic.get("relative_top_action", -1))
+                        )
+                        diagnostic["unsafe_worker_preference_selected"] = bool(
+                            str(diagnostic.get("decision_type", ""))
+                            == "WORKER"
+                            and int(action) < len(mask)
+                            and bool(mask[int(action)])
                         )
                         policy_diagnostics[lane].append(diagnostic)
                 else:
@@ -1257,6 +2020,14 @@ class ParallelEpisodeRunner:
                                 == int(
                                     diagnostic.get("relative_top_action", -1)
                                 )
+                            )
+                            diagnostic[
+                                "unsafe_worker_preference_selected"
+                            ] = bool(
+                                str(diagnostic.get("decision_type", ""))
+                                == "WORKER"
+                                and int(action) < len(mask)
+                                and bool(mask[int(action)])
                             )
                             policy_diagnostics[lane].append(diagnostic)
                 for lane, action in zip(lanes, actions):

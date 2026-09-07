@@ -1,0 +1,50 @@
+{
+  "extends": "e2_1_preference_pareto.json",
+  "experiment_name": "v7_e2_3_safe_production_preference",
+  "experiment_suite_version": "v7_e2_3_pareto_protocol_v1",
+  "environment": {
+    "worker_resource_control": {
+      "mode": "matching_admission_recovery_v2",
+      "require_full_matching": true,
+      "preserve_matching_on_worker_action": true,
+      "non_delay_worker_dispatch": true,
+      "candidate_recovery_advance": true
+    }
+  },
+  "network": {
+    "production_action_semantics": "pair_plus_defer_v1",
+    "production_commit_set_scorer": false,
+    "preference_action_score": {
+      "enabled": true,
+      "version": "direct_main_rank_v1",
+      "shared_scale": true,
+      "initial_scale": 1.0,
+      "minimum_scale": 0.1,
+      "standardization": "legal_candidate_zscore",
+      "scope": "production_only"
+    }
+  },
+  "training": {
+    "two_stage": {
+      "quality_checkpoint_promotion": "pareto_guarded_e2_3_v1",
+      "quality_validate_every_update": true,
+      "pareto_promotion": {
+        "anchor_validate_every_updates": 5,
+        "full_grid_validate_every_updates": 20,
+        "minimum_hv_improvement": 0.0001,
+        "canonical_relative_tolerance": 0.01,
+        "canonical_absolute_tolerance": 0.000001,
+        "fatigue_absolute_tolerance": 1e-9,
+        "required_full_grid_instance_count": 20,
+        "required_full_grid_preference_count": 22,
+        "required_full_grid_candidate_count": 440,
+        "minimum_mean_unique_action_trace_count": 8.0,
+        "minimum_mean_unique_objective_count": 8.0,
+        "minimum_mean_nondominated_count": 4.0
+      }
+    }
+  },
+  "evaluation": {
+    "result_schema_version": "4.4.0"
+  }
+}

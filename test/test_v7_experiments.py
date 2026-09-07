@@ -7,6 +7,13 @@ from configs import load_config
 from train import TrainingPhaseController
 
 
+def test_default_and_e2_7_training_configs_use_cuda():
+    assert load_config("configs/default.json")["device"] == "cuda"
+    assert load_config(
+        "configs/v7/e2_7_e1_warmstart_safe_gate_v2_1.json"
+    )["device"] == "cuda"
+
+
 def test_recursive_config_extends_replaces_lists_and_detects_cycles(tmp_path):
     base = tmp_path / "base.json"
     child = tmp_path / "child.json"

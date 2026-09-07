@@ -1,0 +1,8 @@
+{
+  "e2_4_control_run": "result/runs/v7_e2_4_calibration_control_seed101",
+  "candidates": {
+    "0.05": "result/runs/v7_e2_6_calibration_l005_seed101",
+    "0.10": "result/runs/v7_e2_6_calibration_l010_seed101",
+    "0.20": "result/runs/v7_e2_6_calibration_l020_seed101"
+  }
+}

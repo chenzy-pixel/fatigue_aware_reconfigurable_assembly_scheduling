@@ -1,0 +1,48 @@
+{
+  "extends": "e1_context_exception.json",
+  "experiment_name": "v7_e1_single_objective",
+  "experiment_suite_version": "v7_e1_single_objective_protocol_v4",
+  "environment": {
+    "worker_resource_control": {
+      "mode": "temporal_matching_admission_recovery_v3",
+      "temporal_feasibility": {
+        "max_search_nodes": 50000,
+        "max_option_evaluations_per_call": 250000,
+        "max_search_nodes_per_decision": 200000,
+        "max_option_evaluations_per_decision": 1000000,
+        "max_search_nodes_per_episode": 2000000,
+        "max_option_evaluations_per_episode": 5000000,
+        "search_implementation": "strict_recovery_frontier_transposition_budget_v1",
+        "unknown_action": "allow"
+      }
+    },
+    "production_defer": {
+      "shield": {
+        "enabled": true,
+        "version": "deadline_progress_viability_shield_v2",
+        "deadline_reserve_ticks": 1,
+        "soft_risk_threshold": 0.8,
+        "soft_risk_coefficient": 0.0
+      }
+    }
+  },
+  "training": {
+    "validation_instance_limit": 50,
+    "two_stage": {
+      "quality_checkpoint_promotion": "single_objective_guarded_v1",
+      "quality_completion_floor": 0.95,
+      "quality_promotion_constraints": null,
+      "single_objective_promotion": {
+        "window_size": 5,
+        "window_statistic": "median",
+        "candidate_improvement_epsilon": 1e-9,
+        "rollback_below_floor_consecutive": 2,
+        "audit_instance_limit": 200,
+        "audit_completion_target": 0.98,
+        "audit_max_failed_instances": 4,
+        "audit_schedule_violation_target": 0,
+        "audit_physical_safety_required": true
+      }
+    }
+  }
+}

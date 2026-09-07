@@ -34,7 +34,9 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(scope="session")
 def config():
-    return load_config("configs/default.json")
+    loaded = load_config("configs/default.json")
+    loaded["device"] = "cpu"
+    return loaded
 
 
 @pytest.fixture(scope="session")

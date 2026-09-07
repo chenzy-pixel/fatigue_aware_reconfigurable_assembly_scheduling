@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -23,8 +24,11 @@ def create_run_directory(
 
 
 def write_json(path: str | Path, value: Any) -> None:
-    with Path(path).open("w", encoding="utf-8") as handle:
+    output = Path(path)
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(temporary, output)
 
 
 def write_config(run_directory: str | Path, config: dict[str, Any]) -> None:
@@ -33,18 +37,21 @@ def write_config(run_directory: str | Path, config: dict[str, Any]) -> None:
 
 def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
     output = Path(path)
+    temporary = output.with_suffix(output.suffix + ".tmp")
     if not rows:
-        output.write_text("", encoding="utf-8")
+        temporary.write_text("", encoding="utf-8")
+        os.replace(temporary, output)
         return
     fieldnames: list[str] = []
     for row in rows:
         for key in row:
             if key not in fieldnames:
                 fieldnames.append(key)
-    with output.open("w", encoding="utf-8-sig", newline="") as handle:
+    with temporary.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+    os.replace(temporary, output)
 
 
 def write_evaluation_outputs(

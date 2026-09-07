@@ -279,6 +279,43 @@ def test_observation_cache_is_versioned_and_returns_isolated_arrays(
     assert relation_builds == 2
 
 
+def test_action_mask_cache_is_versioned_and_returns_isolated_arrays(
+    config,
+    fixed_instance,
+    monkeypatch,
+):
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(fixed_instance, build_observation=False)
+    environment._invalidate_resource_snapshot()
+    opportunity_calls = 0
+    original_opportunity = environment._production_defer_opportunity
+
+    def counted_opportunity():
+        nonlocal opportunity_calls
+        opportunity_calls += 1
+        return original_opportunity()
+
+    monkeypatch.setattr(
+        environment,
+        "_production_defer_opportunity",
+        counted_opportunity,
+    )
+    first = environment.get_action_mask()
+    first_call_count = opportunity_calls
+    assert first_call_count > 0
+    second = environment.get_action_mask()
+    assert opportunity_calls == first_call_count
+    assert np.array_equal(first, second)
+
+    first[:] = ~first
+    third = environment.get_action_mask()
+    assert np.array_equal(third, second)
+
+    environment._invalidate_resource_snapshot()
+    environment.get_action_mask()
+    assert opportunity_calls > first_call_count
+
+
 def test_grouped_capability_features_match_scalar_reference_across_states(
     config,
     fixed_instance,

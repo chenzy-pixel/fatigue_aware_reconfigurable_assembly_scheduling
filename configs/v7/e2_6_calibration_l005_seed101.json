@@ -1,0 +1,8 @@
+{
+  "extends": "e2_6_counterfactual_preference_consistency.json",
+  "experiment_name": "v7_e2_6_calibration_l005_seed101",
+  "seed": 101,
+  "algorithm_seeds": [101],
+  "training": {"episodes": 500, "parallel_envs": 10},
+  "ppo": {"counterfactual_preference_consistency": {"loss_coefficient": 0.05}}
+}

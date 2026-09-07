@@ -1,0 +1,11 @@
+{
+  "extends": "mo_alns.json",
+  "experiment_name": "mo_alns_fatigue_aware_smoke",
+  "mo_alns": {
+    "max_evaluations_per_preference": 8,
+    "max_proposals_multiplier": 2,
+    "regret_position_candidates": 1,
+    "regret_resource_variants": 1,
+    "parallel_workers": 1
+  }
+}

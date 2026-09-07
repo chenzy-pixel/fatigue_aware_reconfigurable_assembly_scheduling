@@ -16,4 +16,5 @@ result/**/provenance/workspace.patch
 result/non_delay_ablation_*_retry/
 data/instances/*.pkl
 data/instances/.build/
+data/instances/train_cache/
 data/manifests/.build/

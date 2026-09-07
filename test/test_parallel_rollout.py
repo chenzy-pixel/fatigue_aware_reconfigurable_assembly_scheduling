@@ -15,6 +15,7 @@ from agent.ppo.parallel import (
     _worker_roll_forward,
     physical_forced_action_from_mask,
 )
+from configs import load_config
 from data.dataset import OnlineInstanceDataset, load_dataset_split
 from environment import AssemblySchedulingEnv, RewardVector
 from eval import evaluate_dataset, evaluate_dataset_parallel
@@ -650,3 +651,82 @@ def test_parallel_worker_error_is_reported_and_all_workers_exit(
         ):
             runner._exchange({0: ("invalid-command", None)})
     assert all(not process.is_alive() for process in processes)
+
+
+def test_training_cache_manifest_and_worker_progress_are_persistent(
+    config,
+    fixed_instance,
+    tmp_path,
+):
+    effective = deepcopy(config)
+    effective["paths"]["training_instances_cache"] = str(
+        tmp_path / "cache"
+    )
+    effective["training"]["worker_timeout_seconds"] = 120
+    effective["training"]["worker_stall_timeout_seconds"] = 30
+    run_directory = tmp_path / "run"
+    with ParallelEpisodeRunner(
+        config=effective,
+        template=fixed_instance,
+        episode_count=2,
+        worker_count=2,
+        diagnostic_directory=run_directory,
+    ) as runner:
+        first = runner.pre_generate_training_instances()
+    assert first["instance_count"] == 2
+    assert first["cache_hit_count"] == 0
+    assert first["cache_fingerprint"]
+    assert (run_directory / "training_instance_manifest.json").exists()
+    assert (run_directory / "training_instance_manifest.sha256").exists()
+    assert (run_directory / "worker_progress.jsonl").exists()
+
+    second_run = tmp_path / "second_run"
+    with ParallelEpisodeRunner(
+        config=effective,
+        template=fixed_instance,
+        episode_count=2,
+        worker_count=2,
+        diagnostic_directory=second_run,
+    ) as runner:
+        second = runner.pre_generate_training_instances()
+    assert second["cache_hit_count"] == 2
+    assert [entry["sha256"] for entry in first["files"]] == [
+        entry["sha256"] for entry in second["files"]
+    ]
+
+
+@pytest.mark.slow
+def test_training_indices_220_239_repeat_three_times_with_twenty_workers(
+    fixed_instance,
+    tmp_path,
+):
+    effective = load_config("configs/v7/e1_single_flow.json")
+    effective["device"] = "cpu"
+    effective["paths"]["training_instances_cache"] = str(
+        tmp_path / "cache"
+    )
+    effective["training"]["worker_timeout_seconds"] = 600
+    effective["training"]["worker_stall_timeout_seconds"] = 60
+    with ParallelEpisodeRunner(
+        config=effective,
+        template=fixed_instance,
+        episode_count=2000,
+        worker_count=20,
+        diagnostic_directory=tmp_path / "diagnostics",
+    ) as runner:
+        reports = [
+            runner.pre_generate_training_instances(range(220, 240))
+            for _ in range(3)
+        ]
+    hashes = [
+        [entry["sha256"] for entry in report["files"]]
+        for report in reports
+    ]
+    assert hashes[0] == hashes[1] == hashes[2]
+    assert all(report["temporal_unknown_count"] == 0 for report in reports)
+    assert all(
+        report["temporal_budget_termination_reasons"] == {}
+        for report in reports
+    )
+    assert reports[1]["cache_hit_count"] == 20
+    assert reports[2]["cache_hit_count"] == 20

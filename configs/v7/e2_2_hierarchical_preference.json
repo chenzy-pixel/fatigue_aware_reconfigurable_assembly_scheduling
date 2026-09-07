@@ -1,0 +1,12 @@
+{
+  "extends": "e2_1_preference_pareto.json",
+  "experiment_name": "v7_e2_2_hierarchical_preference",
+  "experiment_suite_version": "v7_e2_2_pareto_protocol_v1",
+  "network": {
+    "production_action_semantics": "hierarchical_commit_then_pair_v2",
+    "production_commit_set_scorer": true
+  },
+  "evaluation": {
+    "result_schema_version": "4.3.0"
+  }
+}

@@ -4,7 +4,7 @@
 
 `data/instances/fixed_instance.yaml` 是固定标准算例的数值唯一事实源。运行时代码不依赖 `docs/dev_context/` 中的开发上下文或项目根目录下的 PDF；二者仅用于开发和论文背景参考，可独立删除。
 
-当前默认配置 `configs/default.json` 是 `M1_candidate_graph_v6` 稳定基线。主线同时提供通过 `extends` 继承默认配置的 v7 C0/E1 实验：`configs/v7/c0_v6_control.json` 保持 v6 策略头，`configs/v7/e1_context_exception.json` 只加入 E1 有界上下文残差，不启用 E2--E6 或 forced-action compression。v7 C0/E1 的正式评估协议为 `v7_e1_protocol_v2`；通用评估结果 schema 为 `4.1.0`。
+当前默认配置 `configs/default.json` 是 `M1_candidate_graph_v6` 稳定基线。主线同时提供通过 `extends` 继承默认配置的 v7 C0/E1/E2 系列实验：`configs/v7/c0_v6_control.json` 保持 v6 策略头，`configs/v7/e1_context_exception.json` 只加入 E1 有界上下文残差，E2 系列逐步验证偏好条件、Pareto 审计和匹配安全控制。C0/E1 的正式协议与结果 schema 仍为 `v7_e1_protocol_v2`/`4.1.0`；E2、E2.2、E2.3 分别使用 schema `4.2.0`、`4.3.0`、`4.4.0`，不跨实验迁移 checkpoint。
 
 ## 数据依赖
 
@@ -34,7 +34,7 @@
 
 ```text
 configs/                 默认配置与 JSON 继承加载器
-  v7/                    同协议 C0 控制组与 E1 有界残差配置
+  v7/                    C0、E1 有界残差与 E2 偏好条件配置
 agent/
   ppo/                   类型编码器、双策略头、Critic、GAE、PPO
   baselines/             启发式与掩码随机策略
@@ -53,6 +53,7 @@ train.py                 PPO 训练入口
 eval.py                  heuristic/random/PPO 评估入口
 e1_reproducibility_audit.py  C0/E1 串行/并行可复现性审计
 pareto_analysis.py       C0/E1 经验 Pareto 前沿与 Hypervolume 分析
+e2_preference_analysis.py E1/E2 等预算偏好响应与经验 Pareto 分析
 benchmark_parallel.py    并行 rollout 吞吐基准
 ```
 
@@ -154,6 +155,81 @@ v7 checkpoint 使用 `observation_schema_version = 4`。加载器严格比对
 维度；若与当前观测不一致，会报告明确的 observation schema incompatibility，
 不会部分加载。旧最佳 checkpoint 只复用既有 E0 指标作基线，新训练从头初始化。
 
+### E2：偏好条件化多目标策略
+
+`configs/v7/e2_preference_conditioned.json` 继承 E1，并把 episode 级偏好
+`(w_flow,w_cost,w_variance)` 通过独立两层编码器接入 production/worker
+Actor、defer/advance head 和 Critic。训练偏好采用 70% 均匀单纯形
+`Dirichlet(1,1,1)` 与 30% 顶点/中心/canonical 锚点混合采样；采样种子只由
+算法 seed 和 episode index 派生，不受并行环境数影响。
+
+E2 checkpoint 使用 observation schema 5，不能与 E1 部分加载。质量阶段按
+episode 偏好标量化，但正式 `quality_score`、周期验证和 checkpoint 晋升仍固定
+使用 `0.5/0.3/0.2`。完整契约见 `E2_PREFERENCE_CONDITIONING.md`。
+
+### E2.2：分层 commit 与偏好候选选择
+
+`configs/v7/e2_2_hierarchical_preference.json` 保留 E2.1 的五锚点训练、
+22 点验证网格、Tchebycheff 标量化和 Pareto 晋升门槛，但把 production Actor
+改为两层分布。第一层独立决定 `commit/defer`，第二层只在 commit 后对合法
+production pair 做条件 softmax；`direct_main_rank_v1` 直接偏好分数只进入
+第二层，因此候选数量、候选 logit 公共偏移和偏好尺度不会改变 commit 总概率。
+sampled PPO 仍使用相同的扁平动作 ID 和联合 log-prob，greedy 则先解码门控、
+再选候选 top-1。E2.2 使用 `v7_e2_2_pareto_protocol_v1` 和结果 schema
+`4.3.0`，checkpoint 与 E2.1 明确不兼容。
+
+E2.2 结果持久化 `preference_override_count`、
+`preference_override_rate` 和 `mean_preference_logit_std`；跨实例汇总按
+`ranker_top_decision_count` 加权。本机只执行 pytest 契约验证，正式 seed 11
+训练应在远端运行：
+
+```powershell
+.\.venv\Scripts\python.exe train.py `
+  --config configs\v7\e2_2_hierarchical_preference.json `
+  --algorithm-seed 11 `
+  --run-name v7_2000_e2_2_hierarchical_seed11
+```
+
+远端验收要求 canonical validation 连续三次 100%、生成
+`accepted_checkpoint.pt`、最终 22 点 validation 440/440 完成且无截断、
+无调度违规并满足疲劳约束；在此之前不进行正式 test Pareto 分析。
+
+### E2.3：安全生产偏好与可恢复匹配
+
+`configs/v7/e2_3_safe_production_preference.json` 是独立实验，不改写 E2、
+E2.1、E2.2 的配置或历史结论。它回到 E2.1 的扁平
+`pair_plus_defer_v1` production 动作语义；直接三目标偏好只进入 production
+候选排序，worker scorer 仍可学习偏好条件，但不再叠加直接偏好 logit。
+
+worker 动作使用 `matching_admission_recovery_v2`：零 matching deficit 时只
+保留仍为零的动作，正 deficit 时只保留严格减小 deficit 的恢复动作；有恢复
+pair 时屏蔽普通等待，没有即时恢复 pair 但存在未来事件或疲劳恢复时才允许
+推进。production commit 同时对当前拆装任务和所有未来安装任务做联合安全
+匹配，避免先选低成本重构、后续却无法形成完整工人匹配。
+
+canonical validation 连续三次 20/20 只保存 `phase1_checkpoint.pt` 并进入
+quality，不再直接接受。`accepted_checkpoint.pt` 只能由每 20 个 quality
+update 的完整 22 点审计产生，且必须精确覆盖 20×22=440 个候选、全部完成、
+零截断、零调度违规、满足疲劳线，并通过平均唯一动作轨迹数 8、唯一目标
+向量数 8、非支配点数 4 三项最低可控性门槛。后续晋升继续沿用 E2.1 的
+Hypervolume 改善与 canonical quality 容差。结果 schema 为 `4.4.0`，记录
+production/worker 分头偏好覆盖、matching deficit 与未来安装联合准入诊断；
+worker direct-preference override 必须为 0。
+
+本机只运行静态检查和 pytest 契约测试，不运行 smoke、训练或 validation
+rollout。远端 seed 11 启动命令为：
+
+```powershell
+python train.py `
+  --config configs\v7\e2_3_safe_production_preference.json `
+  --algorithm-seed 11 `
+  --run-name v7_2000_e2_3_safe_production_seed11
+```
+
+正式验收还要求 `validation_worker_bottleneck_2000003` 的 22 个偏好全部完成、
+matching deficit 不再形成不可恢复等待链，且三项反坍缩门槛全部通过。在这些
+条件满足前不开展正式 test Pareto 分析。
+
 ## 运行
 
 ```powershell
@@ -230,6 +306,27 @@ sampled 评估采用 `per_instance_sha256_v1`：每个实例根据稳定
 ```powershell
 .\.venv\Scripts\python.exe -m pytest test\test_pareto_analysis.py -q
 ```
+
+### E2 训练、指定偏好推断与等预算 Pareto
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest test\test_e2_preference.py -q
+.\.venv\Scripts\python.exe train.py --config configs\v7\e2_preference_conditioned.json --smoke --run-name e2_preference_smoke
+.\.venv\Scripts\python.exe eval.py --config configs\v7\e2_preference_conditioned.json --dataset test --policy ppo --checkpoint result\runs\v7_2000_e2_seed11\accepted_checkpoint.pt --preference 0.5 0.3 0.2
+```
+
+正式 E1/E2 对照为每实例 22 次等预算推断：E2 使用 21 个分母为 5 的单纯形
+格点加 canonical 点，E1 使用一次 greedy 加 sampled seeds 100001--100021。
+五个算法 seed 及 test/OOD/stress 的示例 manifest 位于
+`configs/v7/e2_analysis_manifest.example.json`：
+
+```powershell
+.\.venv\Scripts\python.exe e2_preference_analysis.py --manifest configs\v7\e2_analysis_manifest.example.json --output-dir result\analysis\e1_e2_equal_budget
+```
+
+输出包括逐候选/逐前沿/逐实例/逐 seed CSV、三维 Hypervolume、偏好响应
+Spearman、单目标顶点相对 canonical 的变化、exact Wilcoxon、PDF/PNG 图和报告。
+这些是经验 rollout 前沿，不作真实 Pareto 最优声明；固定权重单点成绩单独报告。
 
 构建并使用主动压力数据集：
 
@@ -487,3 +584,192 @@ sampled-minus-greedy、平均未完成订单数和 feasibility proxy return。
 `summary.json` 记录最佳可行验证及来源 episode、可行性回滚/cooldown、学习率
 衰减、sampled 验证、后 500 episode 诊断均值、消融 gate、正式训练状态、
 checkpoint 哈希和最终从磁盘复评结果。
+
+## E2.4：偏好中立生产门控与安全方差偏好
+
+E2.4 是独立于 E2、E2.1、E2.2 和 E2.3 的 Pareto 实验。E2.3 已修复 worker
+bottleneck 的不可恢复 matching deficit；E2.4 进一步处理低 flow 偏好在扁平
+`pair_plus_defer_v1` 分布中诱发的 production defer 链。E2.2 虽使用分层
+commit/pair，但其 defer head 仍读取 preference embedding，因此不是偏好中立
+门控。
+
+E2.4 的 `hierarchical_state_only_gate_then_pair_v3` 先用 action-set 状态特征
+输出 `P(commit)` 与 `P(defer)`；该 gate 不读取 preference、pair logits 或
+直接偏好项。仅在 commit 后，条件 pair softmax 接收 production 偏好。PPO
+继续使用相同的扁平动作 ID 和联合 log-prob。worker 保留 E2.3 的
+`matching_admission_recovery_v2` 安全 mask，只在安全候选内加入直接的负载方差
+偏好；worker 的直接 flow/cost 项恒为零。
+
+### E2.4–E2.7 分层训练门禁
+
+这些配置显式启用 `training.gate_policy.version =
+"tiered_training_gates_v1"`（schema `5.0.0`）。训练期的硬门禁只包括数值
+非有限值、非法动作、固定验证清单损坏、canonical identity 漂移，以及调度/疲劳
+物理违规。调度或疲劳违规会先保存 `latest_rejected_candidate.pt`，恢复最近安全
+checkpoint，并将学习率减半后继续；完成率、KL、梯度、pair loss、偏好响应和
+Pareto 指标只记录或驱动 plateau 学习率控制，不再触发完成率回滚或提前停训。
+
+每次固定审计分别记录 `physical_safety_pass`、`completion_pass` 和
+`evaluation_integrity_pass`；`all_safe` 保留为历史兼容字段。通过物理安全和清单
+完整性的状态写入 `last_safe_checkpoint.pt`，完整网格的最佳候选按完成率、
+Hypervolume、update id 排序写入 `best_safe_candidate_checkpoint.pt`。
+
+训练结束后才分别冻结并验收这两个候选，输出
+`final_acceptance_best_safe.json`、`final_acceptance_last_safe.json` 和
+`final_acceptance.json`。任一候选通过即可接受，优先选择 best-safe；此时才生成
+兼容的 `accepted_checkpoint.pt`。E2.7 仅在 validation 前置条件通过后执行
+validation/test/OOD/stress heldout；E2.4–E2.6 将 heldout 标为 `not_configured`。
+旧配置缺少该版本字段时保持原有门禁语义。
+
+远端运行 seed11：
+
+```powershell
+python train.py `
+  --config configs\v7\e2_4_neutral_gate_safe_variance.json `
+  --algorithm-seed 11 `
+  --run-name v7_2000_e2_4_neutral_gate_seed11
+```
+
+E2.4 使用 result schema `5.0.0`。逐实例、validation、Pareto 和 summary 同时
+持久化 matching recovery、production/worker preference、state-only gate 和
+safety guard 字段；provenance 的 schema 版本来自生效配置，不再硬编码为 `4.1.0`。
+
+### MO-ALNS 元启发式强基线
+
+`agent/mo_alns/` 提供环境解码的多目标 ALNS：解编码包含工序优先级、机器与
+拆卸/安装工人的完整偏好排序以及三类等待基因。任何候选均通过
+`AssemblySchedulingEnv` 的合法动作掩码逐步重放，因此保持拆装分阶段、疲劳
+恢复和 matching admission 的原始语义。搜索使用 8 个初始化规则、6 个破坏算子、
+6 个修复算子、Pareto archive、增广 Tchebycheff 标量化与自校准模拟退火。
+
+默认配置每实例–偏好点使用 300 次完整环境评价；全网格是 denominator-five 的
+21 点加 canonical `(0.5, 0.3, 0.2)`，共 22 个端点。先用小预算做 smoke：
+
+```powershell
+.\.venv\Scripts\python.exe mo_alns.py `
+  --config configs\baselines\mo_alns_smoke.json `
+  --dataset test --smoke --instance-limit 1 --parallel-envs 1
+```
+
+正式单种子运行：
+
+```powershell
+.\.venv\Scripts\python.exe mo_alns.py `
+  --config configs\baselines\mo_alns.json `
+  --dataset test --algorithm-seed 11 --parallel-envs 20
+```
+
+`mo_alns_benchmark.py` 可执行 `configs/baselines/mo_alns_manifest.json`
+中的五种子、三数据集协议。它输出 22 个端点、实例级 archive、完整排程日志、
+算子统计和 provenance。用 `mo_alns_analysis.py` 将这些 `candidates.csv` 与既有
+E1/E2 分析结果合并，得到三方法经验 Pareto、Hypervolume、贡献、canonical 质量和
+成对检验。报告明确标注 MO-ALNS 是 solver-budget arm，不把其内部搜索评价次数伪装
+成 E1/E2 的 equal-rollout budget。
+
+```powershell
+.\.venv\Scripts\python.exe mo_alns_analysis.py `
+  --e1-e2-candidate-csv result\analysis\e1_e2_full\candidates.csv `
+  --mo-alns-candidate-csv result\runs\mo_alns_formal\candidates.csv `
+  --output-dir result\analysis\e1_e2_mo_alns_solver_budget_v1
+```
+
+### E1 三个单目标策略
+
+`e1_single_flow.json`、`e1_single_cost.json` 和
+`e1_single_variance.json` 继承同一个 E1 单目标公共配置。三者仅将
+`reward.quality_weights` 分别设为 `(1,0,0)`、`(0,1,0)` 和 `(0,0,1)`。
+公共配置使用 `temporal_matching_admission_recovery_v3`、
+`deadline_progress_viability_shield_v2` 和
+`single_objective_guarded_v1`；soft risk shaping 系数固定为零。v3 保留静态
+快速路径，并在静态检查失败时使用确定性时序 oracle。单目标协议 v4 在 heuristic
+rollout 前增加必要条件预检；时序搜索使用完整恢复支配 frontier、状态版本内子问题缓存，
+并同时限制每次调用、每个决策和每个 episode 的节点数与选项评价数。预算耗尽返回
+`unknown` 并继续采用 fail-open 动作语义；历史 E1/E2 配置仍保留原动作域。
+
+正式 validation 固定为同一份、同一顺序的 200 个 publication 实例。日常 validation
+只读取该 manifest 的前 50 个；改善候选触发完整 200-instance 审计。已有 500-instance
+manifest 也可直接复用其前 200 个。首次在训练电脑生成后，三个策略共用该 manifest：
+
+```powershell
+.\.venv\Scripts\python.exe data\generate_orders.py `
+  --config configs\v7\e1_single_flow.json `
+  --build-split validation --profile publication --count 200 --overwrite
+```
+
+旧 generator fingerprint 不会复用。正式训练启动后会先并行生成或校验 train index
+0–1999 的确定性缓存，再进入 PPO rollout。也可只执行缓存生成与慢 seed 审计：
+
+```powershell
+.\.venv\Scripts\python.exe data\generate_orders.py `
+  --config configs\v7\e1_single_flow.json `
+  --build-train-cache --count 2000 --parallel-envs 20 `
+  --run-name e1_single_flow_train_cache_2000
+```
+
+生成摘要、逐实例 SHA256、预检报告和缓存命中率保存在该 run 目录的
+`training_instance_manifest.json` 与 `training_instance_generation_summary.json`。
+
+阶段一进入质量阶段仍要求连续 3 次 `completion_rate=1.0`。质量阶段采用最近 5 次
+合格日常验证的原始目标中位数：`completion_rate>=0.95`、零 schedule violation 和物理/疲劳
+安全。窗口中位数相对 candidate anchor 严格下降 `1e-9` 时触发一次完整 200-instance 审计；
+连续两次严格低于 0.95 回滚并清空当前窗口。审计以 `failed_count = 200 - completed_count`
+统一计入 incomplete/truncated 实例，最多允许 4 个失败（完成率至少 98%），且 schedule
+violation 和物理/疲劳安全必须为零。只有审计通过且字典序 `(failed_count, window_median)`
+改善时，才原子替换唯一的 `accepted_checkpoint.pt`。该 accepted 是 98% 实验候选，
+`formal_eligible` 保持为 false；项目正式完成标准仍是 100%。
+训练收尾会从磁盘隔离重载 accepted checkpoint，并另启短生命周期验证进程池，按
+`training.validation_parallel_envs` 并行复核 200 个实例；`summary.json` 的
+`final_checkpoint_evaluation.evaluation_config` 记录实际执行模式与并行度。
+
+本机 smoke 命令如下。Smoke 只验证配置、rollout/PPO 更新、安全机制诊断字段和
+reward identity，不用于判断收敛，也不进入后续 payoff matrix：
+
+```powershell
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_flow.json --smoke --algorithm-seed 11 --run-name e1_single_flow_smoke_seed11
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_cost.json --smoke --algorithm-seed 11 --run-name e1_single_cost_smoke_seed11
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_variance.json --smoke --algorithm-seed 11 --run-name e1_single_variance_smoke_seed11
+```
+
+另一台训练电脑运行 seed 11、2000 episodes 的正式实验。配置已固定
+`training.episodes=2000`：
+
+```powershell
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_flow.json --algorithm-seed 11 --run-name e1_single_flow_seed11_2000
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_cost.json --algorithm-seed 11 --run-name e1_single_cost_seed11_2000
+.\.venv\Scripts\python.exe train.py --config configs\v7\e1_single_variance.json --algorithm-seed 11 --run-name e1_single_variance_seed11_2000
+```
+
+`train.py` 会自动同时显示并保存 stdout/stderr；无需在命令外添加
+`Tee-Object`。正常完成或训练阶段异常退出后，日志位于本次 run 目录内的
+`terminal.log`，并包含实际命令、UTC 起止时间与退出码。因此原训练命令可直接使用：
+
+```powershell
+$train = ".\.venv\Scripts\python.exe"
+& $train train.py --config configs\v7\e1_single_flow.json --algorithm-seed 11 --parallel-envs 20 --run-name e1_single_flow_seed11_2000_diagnostic
+```
+
+运行期间还会持续写入 `worker_progress.jsonl`、`slow_instances.jsonl` 和
+`temporal_search_summary.json`。60 秒无心跳记为 `stall_timeout`；有心跳但超过
+600 秒总上限记为活跃慢搜索。异常时保留 `failure.json`、`failure_partial.csv`、
+已有训练/更新/验证日志以及最近安全 checkpoint。
+
+训练完成后，将三个正式 run 目录传给收敛分析入口：
+
+```powershell
+.\.venv\Scripts\python.exe single_objective_analysis.py `
+  --flow-run result\runs\e1_single_flow_seed11_2000 `
+  --cost-run result\runs\e1_single_cost_seed11_2000 `
+  --variance-run result\runs\e1_single_variance_seed11_2000 `
+  --output-dir result\analysis\e1_single_objective_seed11
+```
+
+每个策略输出一张五面板 PDF、300-dpi PNG 和对应的原始 50-instance validation 数据 CSV，
+并标记 feasibility→quality 切换点、200-instance 审计触发点及 accepted checkpoint episode。
+completion 面板同时绘制 1.0 和 0.95 参考线。汇总文件
+`convergence_diagnostics.json` 和 `convergence_report.md` 报告 95% 合格点数、审计数量、
+accepted 数量、98% 审计结果以及另外两个目标的原始变化。审计逐实例失败保存在
+`single_objective_audit_failures.csv`；审计摘要保存在 `single_objective_audit_log.csv`。
+正式 accepted checkpoint 之后再在同一 calibration set 上计算 payoff matrix。
+
+`configs/baselines/mo_alns_temporal_v3.json` 提供与三个单目标策略相同的 v3
+动作域，用于 MO-ALNS 对照；原 `mo_alns.json` 保持历史 v2/静态动作域语义。
