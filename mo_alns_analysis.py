@@ -1,9 +1,4 @@
-"""Three-arm empirical Pareto analysis for E1, E2 and MO-ALNS results.
-
-This intentionally does *not* overwrite the E1/E2 equal-budget protocol: the
-report labels MO-ALNS as a solver-budget arm because each of its 22 endpoints
-is searched with an internal environment-evaluation budget.
-"""
+"""Empirical Pareto comparison for current E1 and MO-ALNS results."""
 
 from __future__ import annotations
 
@@ -23,8 +18,8 @@ from pareto_analysis import hypervolume_3d, nondominated_indices, normalize_obje
 from result.io import write_csv, write_json
 
 
-PROTOCOL_VERSION = "e1_e2_mo_alns_solver_budget_v1"
-ARMS = ("e1", "e2", "mo_alns")
+PROTOCOL_VERSION = "e1_mo_alns_solver_budget_v1"
+ARMS = ("e1", "mo_alns")
 OBJECTIVE_FIELDS = (
     "flow_time_objective",
     "reconfiguration_cost",
@@ -132,7 +127,7 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]
             continue
         groups[(str(row["dataset"]), int(row["algorithm_seed"]), str(row["instance_id"]))].append(row)
     if not groups:
-        raise ValueError("no E1/E2/MO-ALNS candidate rows were supplied")
+        raise ValueError("no E1/MO-ALNS candidate rows were supplied")
 
     annotated: list[dict[str, Any]] = []
     instance_summary: list[dict[str, Any]] = []
@@ -225,7 +220,7 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]
     for dataset in sorted({str(row["dataset"]) for row in seed_summary}):
         values = [row for row in seed_summary if row["dataset"] == dataset]
         comparisons = {}
-        for first, second in (("e1", "mo_alns"), ("e2", "mo_alns")):
+        for first, second in (("e1", "mo_alns"),):
             comparisons[f"{second}_vs_{first}"] = {
                 "hypervolume": _paired(
                     [_finite(row[f"mean_{first}_hypervolume"]) for row in values],
@@ -251,7 +246,7 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]
         "instance_count": len(instance_summary),
         "seed_count": len(seed_summary),
         "arms": list(ARMS),
-        "budget_note": "E1/E2 submit 22 rollout candidates; MO-ALNS selects 22 endpoints after a configured internal environment-evaluation budget per preference.",
+        "budget_note": "E1 submits 22 rollout candidates; MO-ALNS selects 22 endpoints after a configured internal environment-evaluation budget per preference.",
         "statistics": statistics,
     }
     return annotated, instance_summary, seed_summary, summary
@@ -264,7 +259,7 @@ def _read_csv(path: str | Path) -> list[dict[str, Any]]:
 
 def _report(summary: Mapping[str, Any]) -> str:
     lines = [
-        "# E1/E2/MO-ALNS empirical Pareto analysis",
+        "# E1/MO-ALNS empirical Pareto analysis",
         "",
         "This report compares empirical candidate sets; it does not certify a true Pareto frontier.",
         "",
@@ -297,13 +292,13 @@ def analyze_candidate_files(paths: Sequence[str | Path], output_dir: str | Path)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Analyze E1/E2/MO-ALNS candidate fronts")
-    parser.add_argument("--e1-e2-candidate-csv", action="append", required=True)
+    parser = argparse.ArgumentParser(description="Analyze E1/MO-ALNS candidate fronts")
+    parser.add_argument("--e1-candidate-csv", action="append", required=True)
     parser.add_argument("--mo-alns-candidate-csv", action="append", required=True)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
     summary = analyze_candidate_files(
-        [*args.e1_e2_candidate_csv, *args.mo_alns_candidate_csv], args.output_dir
+        [*args.e1_candidate_csv, *args.mo_alns_candidate_csv], args.output_dir
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print(f"results: {project_path(args.output_dir)}")

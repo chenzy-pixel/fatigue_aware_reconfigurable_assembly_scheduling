@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from agent.ppo import PPOAgent, RolloutBuffer, TypedActorCritic
+from agent.ppo import PPOAgent, RolloutBuffer, build_actor_critic
 from environment import AssemblySchedulingEnv
 from utils import set_seed
 
@@ -13,9 +13,7 @@ from utils import set_seed
 def test_ppo_agent_reports_unavailable_cuda(config, fixed_instance, monkeypatch):
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(fixed_instance)
-    network = TypedActorCritic(
-        observation.feature_dimensions, config["network"]["hidden_dim"]
-    )
+    network = build_actor_critic(observation, config["network"])
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
     with pytest.raises(RuntimeError, match="CUDA training was requested"):
@@ -28,11 +26,9 @@ def test_ppo_update_changes_parameters_and_checkpoint_reloads(
     set_seed(config["seed"])
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(fixed_instance)
-    network = TypedActorCritic(
-        observation.feature_dimensions, config["network"]["hidden_dim"]
-    )
+    network = build_actor_critic(observation, config["network"])
     agent = PPOAgent(network, config["ppo"], device="cpu")
-    buffer = RolloutBuffer()
+    buffer = RolloutBuffer(preserve_graph=True)
     for _ in range(16):
         mask = environment.get_action_mask()
         action, log_probability, value = agent.act(observation, mask)
@@ -86,9 +82,7 @@ def test_ppo_update_changes_parameters_and_checkpoint_reloads(
 
     checkpoint = tmp_path / "checkpoint.pt"
     agent.save(checkpoint, metadata={"test": True})
-    reloaded_network = TypedActorCritic(
-        observation.feature_dimensions, config["network"]["hidden_dim"]
-    )
+    reloaded_network = build_actor_critic(observation, config["network"])
     reloaded = PPOAgent(reloaded_network, config["ppo"], device="cpu")
     metadata = reloaded.load(checkpoint)
     assert metadata["test"] is True

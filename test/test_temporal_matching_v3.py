@@ -13,7 +13,7 @@ from environment.types import ReconfigurationStage
 
 
 def _single_worker_temporal_env(fixed_instance):
-    config = load_config("configs/v7/e1_single_flow.json")
+    config = load_config("configs/e1/single_flow.json")
     orders = (
         replace(fixed_instance.orders[5], release_time=0.0),
         replace(fixed_instance.orders[10], release_time=0.0),

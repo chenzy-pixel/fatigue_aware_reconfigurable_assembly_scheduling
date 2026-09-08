@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from agent.baselines import HeuristicPolicy
-from agent.ppo import PPOAgent, RolloutBuffer, TypedActorCritic
+from agent.ppo import PPOAgent, RolloutBuffer, build_actor_critic
 from data.dataset import load_dataset_split
 from environment import (
     AssemblySchedulingEnv,
@@ -54,10 +54,7 @@ def test_mixed_variable_size_batch_matches_individual_forward(
         worker_observation,
     ]
     masks = [first_mask, second_mask, worker_mask]
-    network = TypedActorCritic(
-        first_observation.feature_dimensions,
-        int(config["network"]["hidden_dim"]),
-    )
+    network = build_actor_critic(first_observation, config["network"])
     network.eval()
     individual = [
         network(observation, mask, device="cpu")
@@ -106,10 +103,7 @@ def test_sampled_batch_uses_independent_reproducible_generator(
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(fixed_instance)
     mask = environment.get_action_mask()
-    network = TypedActorCritic(
-        observation.feature_dimensions,
-        int(config["network"]["hidden_dim"]),
-    )
+    network = build_actor_critic(observation, config["network"])
     agent = PPOAgent(network, config["ppo"], device="cpu")
     observations = [observation] * 32
     masks = [mask] * 32
@@ -142,12 +136,9 @@ def test_ppo_update_uses_one_batched_forward_per_minibatch(
     effective_config["ppo"]["epochs"] = 2
     environment = AssemblySchedulingEnv(effective_config)
     observation = environment.reset(fixed_instance)
-    network = TypedActorCritic(
-        observation.feature_dimensions,
-        int(effective_config["network"]["hidden_dim"]),
-    )
+    network = build_actor_critic(observation, effective_config["network"])
     agent = PPOAgent(network, effective_config["ppo"], device="cpu")
-    buffer = RolloutBuffer()
+    buffer = RolloutBuffer(preserve_graph=True)
     for _ in range(10):
         mask = environment.get_action_mask()
         action, log_probability, value = agent.act(observation, mask)

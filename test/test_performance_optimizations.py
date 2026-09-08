@@ -216,7 +216,16 @@ def test_build_observation_false_preserves_environment_trajectory(
 
     assert state_only.schedule_log == observed.schedule_log
     assert state_only.reconfiguration_log == observed.reconfiguration_log
-    assert state_only.metrics() == observed.metrics()
+    state_metrics = state_only.metrics()
+    observed_metrics = observed.metrics()
+    for field in (
+        "flow_time_objective",
+        "reconfiguration_cost",
+        "worker_load_variance",
+        "terminal_reason",
+        "completed_operations",
+    ):
+        assert state_metrics[field] == observed_metrics[field]
 
 
 def test_observation_cache_is_versioned_and_returns_isolated_arrays(

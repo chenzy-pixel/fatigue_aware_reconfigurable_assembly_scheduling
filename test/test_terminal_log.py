@@ -65,7 +65,7 @@ def test_original_train_command_automatically_saves_terminal_log(
         [
             "train.py",
             "--config",
-            "configs/v7/e1_single_flow.json",
+            "configs/e1/single_flow.json",
             "--algorithm-seed",
             "11",
             "--parallel-envs",

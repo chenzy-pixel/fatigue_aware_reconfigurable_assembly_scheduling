@@ -6,6 +6,8 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
+from .runtime import attach_runtime_manifest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -69,8 +71,10 @@ def load_config(path: str | Path) -> dict[str, Any]:
     """Load a JSON config with optional single-parent ``extends`` support."""
 
     config_path = project_path(path).resolve()
-    config, _ = _load_config_path(config_path, stack=())
+    config, chain = _load_config_path(config_path, stack=())
+    attach_runtime_manifest(config)
     config["_config_path"] = str(config_path)
+    config["_config_chain"] = tuple(str(item) for item in chain)
     return config
 
 

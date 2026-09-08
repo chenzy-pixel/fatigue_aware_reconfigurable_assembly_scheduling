@@ -6,7 +6,6 @@ from .agent import (
 from .buffer import RolloutBuffer
 from .network import (
     HeteroGraphActorCritic,
-    TypedActorCritic,
     assert_network_config_matches_spec,
     build_actor_critic,
     infer_checkpoint_network_spec,
@@ -26,7 +25,6 @@ __all__ = [
     "ParallelWorkerError",
     "ParallelWorkerTimeout",
     "RolloutBuffer",
-    "TypedActorCritic",
     "assert_network_config_matches_spec",
     "build_actor_critic",
     "infer_checkpoint_network_spec",

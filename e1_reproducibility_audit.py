@@ -1,4 +1,4 @@
-"""Audit current C0/E1 checkpoints under the E1 protocol v2 evaluator."""
+"""Audit the accepted latest E1 checkpoint under the current evaluator."""
 
 from __future__ import annotations
 
@@ -27,12 +27,8 @@ from result.io import write_csv, write_json
 
 SAMPLING_SEEDS = (100011, 100012, 100013)
 AUDIT_ARMS = {
-    "c0": (
-        "configs/v7/c0_v6_control.json",
-        "result/runs/v7_2000_c0_seed11/accepted_checkpoint.pt",
-    ),
     "e1": (
-        "configs/v7/e1_context_exception.json",
+        "configs/e1/single_flow.json",
         "result/runs/v7_2000_e1_seed11/accepted_checkpoint.pt",
     ),
 }

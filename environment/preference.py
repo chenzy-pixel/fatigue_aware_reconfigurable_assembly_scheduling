@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
@@ -69,172 +67,15 @@ def normalize_preference(value: PreferenceInput) -> PreferenceVector:
     return PreferenceVector(*values)
 
 
-def preference_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate and normalize the optional repository-level preference config."""
+def default_preference(config: Mapping[str, object]) -> PreferenceVector:
+    """Use the run's fixed objective weights; policy conditioning is unsupported."""
 
-    raw = config.get("preference")
-    if raw is None:
-        reward = config.get("reward", {})
-        weights = reward.get("quality_weights", CANONICAL_PREFERENCE)
-        if isinstance(weights, Mapping):
-            default = normalize_preference(weights)
-        else:
-            default = normalize_preference(weights)
-        return {
-            "enabled": False,
-            "names": PREFERENCE_NAMES,
-            "default": default,
-            "sampler": None,
-        }
-    if not isinstance(raw, Mapping):
-        raise TypeError("config.preference must be an object")
-    enabled = raw.get("enabled", False)
-    if not isinstance(enabled, bool):
-        raise TypeError("preference.enabled must be boolean")
-    network = config.get("network", {})
-    if not isinstance(network, Mapping):
-        raise TypeError("config.network must be an object")
-    conditioning = str(network.get("preference_conditioning", "none"))
-    centered_adapter = bool(
-        network.get("production_action_semantics")
-        == "hierarchical_e1_logsumexp_gate_then_pair_v4"
-        and isinstance(network.get("centered_preference_adapter"), Mapping)
-        and network["centered_preference_adapter"].get("enabled", False)
+    reward = config.get("reward", {})
+    if not isinstance(reward, Mapping):
+        raise TypeError("config.reward must be an object")
+    return normalize_preference(
+        reward.get("quality_weights", CANONICAL_PREFERENCE)
     )
-    if enabled and conditioning != "separate_encoder_v1" and not centered_adapter:
-        raise ValueError(
-            "enabled preferences require "
-            "network.preference_conditioning='separate_encoder_v1' or the "
-            "E1-centered parallel adapter"
-        )
-    if not enabled and conditioning != "none":
-        raise ValueError(
-            "preference conditioning requires preference.enabled=true"
-        )
-    names = tuple(raw.get("names", PREFERENCE_NAMES))
-    if names != PREFERENCE_NAMES:
-        raise ValueError("preference.names must be flow/cost/variance in order")
-    default = normalize_preference(raw.get("default", CANONICAL_PREFERENCE))
-    sampler_raw = raw.get("sampler")
-    sampler = None
-    if enabled:
-        if not isinstance(sampler_raw, Mapping):
-            raise TypeError("preference.sampler must be an object when enabled")
-        version = str(sampler_raw.get("version", ""))
-        if version != "dirichlet_anchor_mixture_v1":
-            raise ValueError(
-                "preference.sampler.version must be "
-                "'dirichlet_anchor_mixture_v1'"
-            )
-        probability = float(sampler_raw.get("dirichlet_probability", 0.7))
-        if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
-            raise ValueError("dirichlet_probability must be in [0, 1]")
-        concentration = tuple(
-            float(value)
-            for value in sampler_raw.get("concentration", (1.0, 1.0, 1.0))
-        )
-        if len(concentration) != 3 or any(
-            not math.isfinite(value) or value <= 0.0
-            for value in concentration
-        ):
-            raise ValueError(
-                "preference sampler concentration must contain three "
-                "finite positive values"
-            )
-        anchors_raw = sampler_raw.get("anchors")
-        if not isinstance(anchors_raw, Sequence) or isinstance(
-            anchors_raw, (str, bytes)
-        ):
-            raise TypeError("preference sampler anchors must be a sequence")
-        anchors = tuple(normalize_preference(value) for value in anchors_raw)
-        if not anchors:
-            raise ValueError("preference sampler must contain at least one anchor")
-        sampler = {
-            "version": version,
-            "dirichlet_probability": probability,
-            "concentration": concentration,
-            "anchors": anchors,
-            "seed_derivation": "algorithm_seed_episode_sha256_v1",
-        }
-    elif sampler_raw is not None:
-        raise ValueError("disabled preference conditioning cannot define a sampler")
-    return {
-        "enabled": enabled,
-        "names": names,
-        "default": default,
-        "sampler": sampler,
-    }
-
-
-def default_preference(config: Mapping[str, Any]) -> PreferenceVector:
-    return preference_config(config)["default"]
-
-
-def preference_enabled(config: Mapping[str, Any]) -> bool:
-    return bool(preference_config(config)["enabled"])
-
-
-def derive_preference_sampling_seed(
-    algorithm_seed: int,
-    episode_index: int,
-) -> int:
-    return _derive_episode_seed(
-        "e2_preference_v1",
-        algorithm_seed,
-        episode_index,
-    )
-
-
-def derive_episode_action_seed(
-    algorithm_seed: int,
-    episode_index: int,
-) -> int:
-    """Derive an E2 policy-sampling stream independent of batch scheduling."""
-
-    return _derive_episode_seed(
-        "e2_policy_action_v1",
-        algorithm_seed,
-        episode_index,
-    )
-
-
-def _derive_episode_seed(
-    domain: str,
-    algorithm_seed: int,
-    episode_index: int,
-) -> int:
-    if int(algorithm_seed) < 0:
-        raise ValueError("algorithm_seed must be non-negative")
-    if int(episode_index) < 0:
-        raise ValueError("episode_index must be non-negative")
-    payload = f"{domain}|{int(algorithm_seed)}|{int(episode_index)}".encode(
-        "ascii"
-    )
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
-
-
-def sample_episode_preference(
-    config: Mapping[str, Any],
-    *,
-    algorithm_seed: int,
-    episode_index: int,
-) -> tuple[PreferenceVector, str]:
-    """Sample an episode preference without touching any global RNG."""
-
-    normalized = preference_config(config)
-    if not normalized["enabled"]:
-        return normalized["default"], "fixed_default"
-    sampler = normalized["sampler"]
-    if sampler is None:
-        raise RuntimeError("enabled preference conditioning has no sampler")
-    rng = np.random.default_rng(
-        derive_preference_sampling_seed(algorithm_seed, episode_index)
-    )
-    if float(rng.random()) < sampler["dirichlet_probability"]:
-        values = rng.dirichlet(sampler["concentration"])
-        return normalize_preference(values), "dirichlet"
-    anchor_index = int(rng.integers(0, len(sampler["anchors"])))
-    return sampler["anchors"][anchor_index], f"anchor_{anchor_index}"
 
 
 def simplex_lattice(

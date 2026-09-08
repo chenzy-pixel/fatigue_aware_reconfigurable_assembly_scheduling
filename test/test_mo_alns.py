@@ -153,14 +153,14 @@ def test_all_repairs_preserve_topology_for_adjacent_removed_operations(config, f
         assert repaired.feasible
 
 
-def test_three_arm_analysis_accepts_22_endpoint_cells():
+def test_e1_mo_alns_analysis_accepts_22_endpoint_cells():
     preferences = [
         (first / 5.0, second / 5.0, (5 - first - second) / 5.0)
         for first in range(6)
         for second in range(6 - first)
     ] + [(0.5, 0.3, 0.2)]
     rows = []
-    for arm_index, arm in enumerate(("e1", "e2", "mo_alns")):
+    for arm_index, arm in enumerate(("e1", "mo_alns")):
         for index, (flow_weight, cost_weight, variance_weight) in enumerate(preferences):
             rows.append(
                 {
@@ -188,7 +188,7 @@ def test_three_arm_analysis_accepts_22_endpoint_cells():
                 }
             )
     annotated, instances, seeds, summary = analyze_rows(rows)
-    assert len(annotated) == 66
+    assert len(annotated) == 44
     assert len(instances) == 1
     assert len(seeds) == 1
-    assert summary["analysis_protocol"] == "e1_e2_mo_alns_solver_budget_v1"
+    assert summary["analysis_protocol"] == "e1_mo_alns_solver_budget_v1"

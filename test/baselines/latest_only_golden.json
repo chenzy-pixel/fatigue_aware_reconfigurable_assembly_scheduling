@@ -1,0 +1,38 @@
+{
+  "archive_tag": "archive/pre-latest-only-20260908",
+  "archive_commit": "dc1436bfa5e5b2a69b15cf15a025cff7471e67f1",
+  "pre_refactor_expanded_config_sha256": {
+    "flow": "5c25e0fd2d776399bd9d0141e93ebea54609b8b6e5332fbbfe4e44e6aebba502",
+    "cost": "0a9d204333ad80f79d89e6368f86ace5a7daeba4a2766866d9882eed21d40199",
+    "variance": "18242699331edc16b1eb63da33ce067f8a2581346cf07f4388332f06cb4f4abd"
+  },
+  "accepted_checkpoint": {
+    "path": "result/runs/v7_2000_e1_seed11/accepted_checkpoint.pt",
+    "sha256": "084184afa53cebfb04d691f5f70a9abb630a1aa0d7f4ecfdb28caeca87299533"
+  },
+  "fixed_instance": {
+    "initial_observation_sha256": "d5b4431af61216df043ba27dae591ff410f84a96993742561a60a7a2c056c814",
+    "initial_mask_sha256": "69551f5bdc109858744d1e2777801dfdc4cabfd64a2574547c5a76e1b9bfad75",
+    "checkpoint_output_sha256": "399c2976de07efc7d430ec200dac1aacd9fe66c019fe3d3adafe809c2e0ea8bf",
+    "checkpoint_value": 1.722648024559021,
+    "heuristic_action_trace_sha256": "9be87e63d93a3740976526c280811061c9ba9f4c8adff4f02e5172ebe3adda19",
+    "heuristic_reward_trace_sha256": "de2b68d9a979393e48d786be237b6112dc3d004905d63ea25aa513ed2f060fd4",
+    "heuristic_action_count": 211,
+    "terminal_reason": "completed",
+    "metrics": {
+      "flow_time_objective": 724.4000000000001,
+      "reconfiguration_cost": 589.45,
+      "worker_load_variance": 2.4166666666666674,
+      "completed_operations": 60
+    },
+    "feature_dimensions": {
+      "operation": 13,
+      "machine": 19,
+      "worker": 10,
+      "order": 6,
+      "module": 9,
+      "wave": 8,
+      "global": 11
+    }
+  }
+}

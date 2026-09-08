@@ -1,0 +1,11 @@
+{
+  "extends": "../default.json",
+  "experiment_name": "e1_single_variance",
+  "reward": {
+    "quality_weights": {
+      "flow": 0.0,
+      "cost": 0.0,
+      "variance": 1.0
+    }
+  }
+}

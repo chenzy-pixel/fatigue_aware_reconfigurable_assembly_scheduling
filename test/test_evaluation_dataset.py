@@ -14,7 +14,7 @@ import torch
 
 import eval as evaluation_module
 from agent.baselines import HeuristicPolicy
-from agent.ppo import PPOAgent, TypedActorCritic
+from agent.ppo import PPOAgent, build_actor_critic
 from data.dataset import load_dataset_split
 from environment import AssemblySchedulingEnv
 from result.metrics import (
@@ -103,7 +103,7 @@ def test_aggregate_uses_completed_and_all_instance_populations():
         policy="ppo",
         manifest="manifest.json",
     )
-    assert aggregate["evaluation_schema_version"] == "4.1.0"
+    assert aggregate["evaluation_schema_version"] == "5.1.0"
     assert aggregate["quality_metric_version"] == (
         "canonical_bounded_quality_v1"
     )
@@ -185,7 +185,7 @@ def test_fixed_validation_evaluation_is_read_only_and_reports_zero_gap(
     saved_metrics = json.loads(
         (tmp_path / "metrics.json").read_text(encoding="utf-8")
     )
-    assert saved_metrics["evaluation_schema_version"] == "4.1.0"
+    assert saved_metrics["evaluation_schema_version"] == "5.1.0"
     with (tmp_path / "instance_metrics.csv").open(
         "r",
         encoding="utf-8-sig",
@@ -217,10 +217,7 @@ def test_representative_diagnostic_preserves_rng_and_training_mode(
     record = load_dataset_split(config, "validation")[0]
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(record.instance)
-    network = TypedActorCritic(
-        observation.feature_dimensions,
-        config["network"]["hidden_dim"],
-    )
+    network = build_actor_critic(observation, config["network"])
     agent = PPOAgent(network, config["ppo"], device="cpu")
     network.train()
     random.seed(91)
@@ -263,17 +260,10 @@ def test_ppo_checkpoint_loads_once_and_validation_preserves_rng(
     monkeypatch,
 ):
     effective_config = deepcopy(config)
-    effective_config["network"] = {
-        "encoder_type": "typed_mlp",
-        "hidden_dim": int(config["network"]["hidden_dim"]),
-    }
     dataset = load_dataset_split(effective_config, "validation")
     environment = AssemblySchedulingEnv(effective_config)
     observation = environment.reset(dataset[0].instance)
-    network = TypedActorCritic(
-        observation.feature_dimensions,
-        int(config["network"]["hidden_dim"]),
-    )
+    network = build_actor_critic(observation, effective_config["network"])
     agent = PPOAgent(network, effective_config["ppo"], device="cpu")
     checkpoint = tmp_path / "checkpoint.pt"
     agent.save(checkpoint)

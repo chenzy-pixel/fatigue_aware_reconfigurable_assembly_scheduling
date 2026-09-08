@@ -1,6 +1,7 @@
 {
-  "experiment_name": "fatigue_aware_reconfigurable_assembly_mvp",
-  "method_version": "M1_candidate_graph_v6",
+  "experiment_name": "e1_latest",
+  "experiment_suite_version": "v7_e1_single_objective_protocol_v4",
+  "method_version": "M1_candidate_graph_v7",
   "seed": 11,
   "algorithm_seeds": [11, 23, 37, 53, 71],
   "device": "cuda",
@@ -58,7 +59,7 @@
     }
   },
   "generator": {
-    "version": "1.3.0",
+    "version": "1.2.0",
     "max_generation_attempts": 100,
     "max_counterfactual_candidates": 3,
     "wave_count": 3,
@@ -223,14 +224,22 @@
     "max_decisions": 5000,
     "max_zero_time_actions": 1000,
     "worker_resource_control": {
-      "mode": "matching_admission_v1",
-      "require_full_matching": true,
-      "preserve_matching_on_worker_action": true,
-      "non_delay_worker_dispatch": true,
-      "candidate_recovery_advance": true
+      "temporal_feasibility": {
+        "max_search_nodes": 50000,
+        "max_option_evaluations_per_call": 250000,
+        "max_search_nodes_per_decision": 200000,
+        "max_option_evaluations_per_decision": 1000000,
+        "max_search_nodes_per_episode": 2000000,
+        "max_option_evaluations_per_episode": 5000000,
+        "unknown_action": "allow"
+      }
     },
     "production_defer": {
-      "allow_recovery_improvement": true
+      "shield": {
+        "deadline_reserve_ticks": 1,
+        "soft_risk_threshold": 0.8,
+        "soft_risk_coefficient": 0.0
+      }
     }
   },
   "reward": {
@@ -242,9 +251,9 @@
     "cost_weight": 1.0,
     "variance_weight": 1.0,
     "quality_weights": {
-      "flow": 0.5,
-      "cost": 0.3,
-      "variance": 0.2
+      "flow": 1.0,
+      "cost": 0.0,
+      "variance": 0.0
     },
     "quality_budget": 0.5,
     "truncation_penalty": 0.5,
@@ -260,6 +269,7 @@
     }
   },
   "evaluation": {
+    "result_schema_version": "5.1.0",
     "quality_metric": {
       "version": "canonical_bounded_quality_v1",
       "flow_scale": 1200.0,
@@ -273,38 +283,14 @@
     }
   },
   "network": {
-    "encoder_type": "hetero_gnn",
     "hidden_dim": 128,
     "message_passing_layers": 2,
     "dropout": 0.0,
-    "production_action_edge_features": true,
-    "worker_action_edge_features": true,
-    "production_candidate_relative_features": true,
-    "worker_candidate_relative_features": true,
-    "policy_head_version": 6,
-    "production_action_semantics": "pair_plus_defer_v1",
-    "production_relative_feature_names": [
-      "processing_time_norm",
-      "reconfiguration_time_norm",
-      "fixed_reconfiguration_cost_norm",
-      "estimated_labor_cost_norm",
-      "estimated_downtime_cost_norm",
-      "horizon_slack_norm"
-    ],
-    "worker_relative_feature_names": [
-      "stage_duration_norm",
-      "projected_fatigue_ratio",
-      "incremental_labor_cost_norm",
-      "incremental_downtime_cost_norm",
-      "incremental_load_variance_norm"
-    ],
-    "relative_weight_parameterization": "independent_softplus_signed_v6",
     "production_relative_initial_weights": [0.30, 0.30, 0.20, 0.20, 0.20, 0.30],
     "worker_relative_initial_weights": [0.30, 0.30, 0.20, 0.20, 0.20],
-    "candidate_context_mode": "common_plus_gated_residual_v6",
-    "worker_relative_weight_sharing": "independent_softplus_v6",
     "common_context_gate_initial_logit": -4.0,
-    "residual_context_gate_initial_logit": -4.0
+    "residual_context_gate_initial_logit": -2.0,
+    "residual_scale_ratio": 2.0
   },
   "ppo": {
     "learning_rate": 0.0001,
@@ -324,7 +310,7 @@
     "smoke_rollout_steps": 64,
     "validation_split": "validation",
     "validation_interval_episodes": 20,
-    "validation_instance_limit": null,
+    "validation_instance_limit": 50,
     "smoke_validation_instance_limit": 2,
     "parallel_envs": 20,
     "smoke_parallel_envs": 2,
@@ -335,9 +321,21 @@
     "two_stage": {
       "completion_target": 1.0,
       "consecutive_validations": 3,
-      "quality_completion_floor": 1.0,
-      "quality_checkpoint_promotion": "aligned_quality",
-      "quality_validate_every_update": true
+      "quality_completion_floor": 0.95,
+      "quality_checkpoint_promotion": "single_objective_guarded_v1",
+      "quality_validate_every_update": true,
+      "quality_promotion_constraints": null,
+      "single_objective_promotion": {
+        "window_size": 5,
+        "window_statistic": "median",
+        "candidate_improvement_epsilon": 1e-9,
+        "rollback_below_floor_consecutive": 2,
+        "audit_instance_limit": 200,
+        "audit_completion_target": 0.98,
+        "audit_max_failed_instances": 4,
+        "audit_schedule_violation_target": 0,
+        "audit_physical_safety_required": true
+      }
     },
     "validation_control": {
       "feasibility_rollback": {
@@ -356,53 +354,11 @@
         "seed_offset": 100000
       }
     },
-    "ablation_gate": {
-      "training_window_instances": 200,
-      "reconfiguration_completion_rate": 0.60,
-      "failure_instance_id": "validation_reconfiguration_bottleneck_2000009",
-      "failure_instance_max_worker_wait": 100.0,
-      "last_ten_validation_completion_rate": 0.95,
-      "maximum_rollback_rate": 0.20,
-      "minimum_learning_rate": 0.000025,
-      "reward_identity_tolerance": 1e-8
-    },
     "worker_timeout_seconds": 600,
     "worker_stall_timeout_seconds": 60,
     "slow_instance_seconds": 30,
     "multiprocessing_start_method": "spawn",
     "torch_num_threads": 4
-  },
-  "m1_gates": {
-    "diagnostic_seed_start": 1900000,
-    "diagnostic_instance_count": 20,
-    "bc_train_instance_count": 15,
-    "bc": {
-      "algorithm_seed": 190,
-      "learning_rate": 0.0003,
-      "weight_decay": 0.00001,
-      "batch_size": 256,
-      "maximum_epochs": 200,
-      "patience_epochs": 20,
-      "maximum_ranking_pairs_per_state": 64,
-      "select_context_pruned_diagnostic": true
-    },
-    "thresholds": {
-      "minimum_production_spearman": 0.8,
-      "minimum_worker_spearman": 0.8,
-      "maximum_production_regret_percent": 5.0,
-      "maximum_worker_fatigue_regret": 0.02,
-      "maximum_worker_variance_regret_percent": 5.0,
-      "maximum_flow_gap_percent": 5.0,
-      "maximum_cost_gap_percent": 5.0,
-      "maximum_variance_gap_percent": 5.0,
-      "maximum_quality_gap_percent": 0.0
-    },
-    "overfit": {
-      "instance_stages": [5, 10, 20],
-      "maximum_updates_per_stage": 100,
-      "consecutive_passes": 3,
-      "algorithm_seed": 101
-    }
   },
   "logging": {
     "visdom": {

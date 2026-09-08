@@ -23,96 +23,15 @@ from data.dataset import GeneratedInstanceRecord, OnlineInstanceDataset
 from data.models import AssemblyInstance
 from environment import (
     AssemblySchedulingEnv,
-    CAPABLE_EDGE,
-    DecisionType,
     Observation,
     PolicyObservation,
-    PreferenceInput,
-    PreferenceVector,
     RewardVector,
-    SERVICE_CANDIDATE_EDGE,
-    derive_episode_action_seed,
-    normalize_preference,
-    preference_enabled,
     proxy_return_from_metrics,
-    sample_episode_preference,
 )
 from utils import action_trace_sha256, derive_evaluation_sampling_seed
 
 if TYPE_CHECKING:
     from agent.ppo.agent import PPOAgent
-
-
-def _e2_7_production_pair_state_eligible(
-    observation: Observation | PolicyObservation,
-    mask: np.ndarray,
-) -> bool:
-    """Require distinct legal lowest-flow and lowest-cost production pairs."""
-    if (
-        getattr(observation, "decision_type", None) != DecisionType.PRODUCTION
-        or mask.ndim != 1
-        or mask.size < 3
-    ):
-        return False
-    legal = ~mask[:-1]
-    if int(np.count_nonzero(legal)) < 2:
-        return False
-    relation = observation.relations.get(CAPABLE_EDGE)
-    if relation is None:
-        return False
-    pair_count = mask.size - 1
-    machine_count = observation.node_features["machine"].shape[0]
-    dense = np.zeros((pair_count, relation.edge_features.shape[1]), dtype=np.float64)
-    indices = relation.edge_index[0] * machine_count + relation.edge_index[1]
-    dense[indices] = relation.edge_features
-    names = relation.feature_names
-    flow = (
-        dense[:, names.index("processing_time_norm")]
-        + dense[:, names.index("reconfiguration_time_norm")]
-    )
-    cost = sum(
-        dense[:, names.index(name)]
-        for name in (
-            "fixed_disassembly_cost_norm",
-            "fixed_installation_cost_norm",
-            "estimated_labor_cost_norm",
-            "estimated_downtime_cost_norm",
-        )
-    )
-    legal_indices = np.flatnonzero(legal)
-    return bool(
-        legal_indices[np.argmin(flow[legal_indices])]
-        != legal_indices[np.argmin(cost[legal_indices])]
-    )
-
-
-def _e2_7_worker_variance_state_eligible(
-    observation: Observation | PolicyObservation,
-    mask: np.ndarray,
-) -> bool:
-    """Require safe worker pairs with distinct projected load variance."""
-    if (
-        getattr(observation, "decision_type", None) != DecisionType.WORKER
-        or mask.ndim != 1
-        or mask.size < 3
-    ):
-        return False
-    legal = ~mask[:-1]
-    if int(np.count_nonzero(legal)) < 2:
-        return False
-    relation = observation.relations.get(SERVICE_CANDIDATE_EDGE)
-    if relation is None:
-        return False
-    pair_count = mask.size - 1
-    worker_count = observation.node_features["worker"].shape[0]
-    dense = np.zeros((pair_count, relation.edge_features.shape[1]), dtype=np.float64)
-    indices = relation.edge_index[0] * worker_count + relation.edge_index[1]
-    dense[indices] = relation.edge_features
-    variance = dense[
-        :, relation.feature_names.index("incremental_load_variance_norm")
-    ]
-    legal_values = variance[legal]
-    return bool(np.max(legal_values) > np.min(legal_values))
 
 
 @dataclass
@@ -145,7 +64,6 @@ class WorkerProgress:
 @dataclass(frozen=True)
 class _WorkerResetRequest:
     value: int | AssemblyInstance
-    preference: PreferenceVector | None = None
     drain_physical_forced_actions: bool = False
     max_environment_steps: int | None = None
 
@@ -155,95 +73,6 @@ class _WorkerStepRequest:
     action: int
     drain_physical_forced_actions: bool = False
     max_environment_steps: int | None = None
-
-
-@dataclass(frozen=True)
-class TrainingEpisodeAssignment:
-    trajectory_index: int
-    base_instance_index: int
-    preference_slot: int
-    preference_group_id: int
-    preference: PreferenceVector
-    preference_source: str
-
-
-def training_preference_group(config: Mapping[str, Any]) -> dict[str, Any] | None:
-    training = config.get("training", {})
-    if not isinstance(training, Mapping):
-        raise TypeError("config.training must be an object")
-    raw = training.get("preference_grouping")
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise TypeError("training.preference_grouping must be an object")
-    if not bool(raw.get("enabled", False)):
-        return None
-    version = str(raw.get("version", "fixed_anchor_group_v1"))
-    if version != "fixed_anchor_group_v1":
-        raise ValueError(
-            "training.preference_grouping.version must be "
-            "'fixed_anchor_group_v1'"
-        )
-    anchors_raw = raw.get("anchors")
-    if not isinstance(anchors_raw, Sequence) or isinstance(
-        anchors_raw, (str, bytes)
-    ):
-        raise TypeError("training.preference_grouping.anchors must be a sequence")
-    anchors = tuple(normalize_preference(value) for value in anchors_raw)
-    if len(anchors) < 2:
-        raise ValueError("grouped preference training requires at least two anchors")
-    return {"version": version, "anchors": anchors, "group_size": len(anchors)}
-
-
-def training_base_instance_count(
-    config: Mapping[str, Any], trajectory_count: int
-) -> int:
-    count = int(trajectory_count)
-    if count < 1:
-        raise ValueError("trajectory_count must be positive")
-    grouping = training_preference_group(config)
-    if grouping is None:
-        return count
-    group_size = int(grouping["group_size"])
-    if count % group_size:
-        raise ValueError(
-            "grouped preference trajectory count must be divisible by group size"
-        )
-    return count // group_size
-
-
-def training_episode_assignment(
-    config: Mapping[str, Any], trajectory_index: int
-) -> TrainingEpisodeAssignment:
-    index = int(trajectory_index)
-    if index < 0:
-        raise ValueError("trajectory_index must be non-negative")
-    grouping = training_preference_group(config)
-    if grouping is None:
-        preference, source = sample_episode_preference(
-            config,
-            algorithm_seed=int(config["seed"]),
-            episode_index=index,
-        )
-        return TrainingEpisodeAssignment(
-            trajectory_index=index,
-            base_instance_index=index,
-            preference_slot=-1,
-            preference_group_id=index,
-            preference=preference,
-            preference_source=source,
-        )
-    anchors: tuple[PreferenceVector, ...] = grouping["anchors"]
-    group_size = int(grouping["group_size"])
-    base_instance_index, preference_slot = divmod(index, group_size)
-    return TrainingEpisodeAssignment(
-        trajectory_index=index,
-        base_instance_index=base_instance_index,
-        preference_slot=preference_slot,
-        preference_group_id=base_instance_index,
-        preference=anchors[preference_slot],
-        preference_source=f"group_anchor_{preference_slot}",
-    )
 
 
 @dataclass
@@ -265,25 +94,18 @@ class EpisodeRollout:
     metrics: dict[str, Any]
     generation_time_seconds: float
     environment_step_time_seconds: float
-    preference: PreferenceVector = field(
-        default_factory=lambda: PreferenceVector(0.5, 0.3, 0.2)
-    )
-    preference_source: str = "fixed_default"
     reward_phase: str = "legacy"
     reward_components: dict[str, float] = field(default_factory=dict)
     expected_reward: float = 0.0
     unattributed_forced_reward: float = 0.0
     worker_step_command_count: int = 0
     worker_local_physical_forced_action_count: int = 0
-    base_instance_index: int | None = None
-    preference_slot: int = -1
-    preference_group_id: int | None = None
 
     @property
     def base_reward_sum(self) -> float:
         return self.reward_sum - float(
             self.reward_components.get("feasibility_shaping", 0.0)
-        ) - float(self.reward_components.get("defer_risk_shaping", 0.0))
+        )
 
     @property
     def policy_step_count(self) -> int:
@@ -644,10 +466,7 @@ def _worker_main(
                     episode_index
                 )
                 generation_time = time.perf_counter() - generation_start
-                observation = environment.reset(
-                    record.instance,
-                    preference=request.preference,
-                )
+                observation = environment.reset(record.instance)
                 metadata = {
                     key: record.metadata.get(key)
                     for key in (
@@ -711,10 +530,7 @@ def _worker_main(
                     raise TypeError(
                         "reset_instance requires an AssemblyInstance"
                     )
-                observation = environment.reset(
-                    request.value,
-                    preference=request.preference,
-                )
+                observation = environment.reset(request.value)
                 connection.send(
                     _worker_roll_forward(
                         lane_id,
@@ -793,8 +609,8 @@ class ParallelEpisodeRunner:
         worker_count: int,
         diagnostic_directory: str | Path | None = None,
     ):
-        if worker_count < 2:
-            raise ValueError("parallel runner requires at least two workers")
+        if worker_count < 1:
+            raise ValueError("episode runner requires at least one worker")
         if episode_count < 1:
             raise ValueError("episode_count must be positive")
         training = config["training"]
@@ -1322,21 +1138,12 @@ class ParallelEpisodeRunner:
             else str(reward_phase)
         )
         sampling_start = time.perf_counter()
-        assignments = {
-            int(episode_index): training_episode_assignment(
-                self.config, int(episode_index)
-            )
-            for episode_index in episode_indices
-        }
         reset_responses = self._exchange(
             {
                 lane_id: (
                     "reset_online",
                     _WorkerResetRequest(
-                        value=assignments[
-                            int(episode_index)
-                        ].base_instance_index,
-                        preference=assignments[int(episode_index)].preference,
+                        value=int(episode_index),
                         drain_physical_forced_actions=(
                             worker_local_physical_forced_actions
                         ),
@@ -1352,7 +1159,6 @@ class ParallelEpisodeRunner:
         completed: list[EpisodeRollout] = []
         reset_cutoff_lanes: list[int] = []
         for lane_id, episode_index in enumerate(episode_indices):
-            assignment = assignments[int(episode_index)]
             response = reset_responses[lane_id]
             if (
                 response.instance_id is None
@@ -1363,13 +1169,8 @@ class ParallelEpisodeRunner:
                 )
             context = {
                 "episode_index": int(episode_index),
-                "base_instance_index": assignment.base_instance_index,
-                "preference_slot": assignment.preference_slot,
-                "preference_group_id": assignment.preference_group_id,
                 "instance_id": response.instance_id,
                 "metadata": response.metadata,
-                "preference": assignment.preference,
-                "preference_source": assignment.preference_source,
                 "buffer": RolloutBuffer(
                     preserve_graph=agent.requires_graph_observation
                 ),
@@ -1385,16 +1186,6 @@ class ParallelEpisodeRunner:
                     "truncation": 0.0,
                     "unfinished": 0.0,
                     "feasibility_shaping": 0.0,
-                    **(
-                        {"defer_risk_shaping": 0.0}
-                        if bool(
-                            self.config.get("environment", {})
-                            .get("production_defer", {})
-                            .get("shield", {})
-                            .get("enabled", False)
-                        )
-                        else {}
-                    ),
                 },
                 "step_count": response.environment_step_count,
                 "policy_step_count": 0,
@@ -1481,19 +1272,6 @@ class ParallelEpisodeRunner:
                     )
                 completed.append(self._episode_result(context, metrics))
         inference_time = 0.0
-        action_generators = (
-            {
-                lane: torch.Generator(device=agent.device).manual_seed(
-                    derive_episode_action_seed(
-                        int(self.config["seed"]),
-                        int(contexts[lane]["episode_index"]),
-                    )
-                )
-                for lane in contexts
-            }
-            if preference_enabled(self.config)
-            else {}
-        )
         while active:
             lanes = sorted(active)
             policy_lanes: list[int] = []
@@ -1526,28 +1304,10 @@ class ParallelEpisodeRunner:
                 policy_masks.append(action_mask)
             if policy_lanes:
                 inference_start = time.perf_counter()
-                if action_generators:
-                    sampled = [
-                        agent.act(
-                            observation,
-                            mask,
-                            generator=action_generators[lane],
-                        )
-                        for lane, observation, mask in zip(
-                            policy_lanes,
-                            policy_observations,
-                            policy_masks,
-                            strict=True,
-                        )
-                    ]
-                    actions = [item[0] for item in sampled]
-                    log_probabilities = [item[1] for item in sampled]
-                    values = [item[2] for item in sampled]
-                else:
-                    actions, log_probabilities, values = agent.act_batch(
-                        policy_observations,
-                        policy_masks,
-                    )
+                actions, log_probabilities, values = agent.act_batch(
+                    policy_observations,
+                    policy_masks,
+                )
                 inference_time += time.perf_counter() - inference_start
                 for local_index, lane in enumerate(policy_lanes):
                     context = contexts[lane]
@@ -1765,9 +1525,6 @@ class ParallelEpisodeRunner:
             )
         episode = EpisodeRollout(
             episode_index=context["episode_index"],
-            base_instance_index=context["base_instance_index"],
-            preference_slot=context["preference_slot"],
-            preference_group_id=context["preference_group_id"],
             instance_id=context["instance_id"],
             metadata=context["metadata"],
             buffer=context["buffer"],
@@ -1780,15 +1537,12 @@ class ParallelEpisodeRunner:
             environment_step_time_seconds=context[
                 "environment_step_time_seconds"
             ],
-            preference=context["preference"],
-            preference_source=context["preference_source"],
             reward_phase=context["reward_phase"],
             reward_components=dict(context["reward_components"]),
             expected_reward=proxy_return_from_metrics(
                 metrics,
                 self.config["reward"],
                 context["reward_phase"],
-                preference=context["preference"],
             ),
             unattributed_forced_reward=context[
                 "unattributed_forced_reward"
@@ -1800,11 +1554,7 @@ class ParallelEpisodeRunner:
                 "worker_local_physical_forced_action_count"
             ],
         )
-        reward_identity_tolerance = float(
-            self.config["training"]
-            .get("ablation_gate", {})
-            .get("reward_identity_tolerance", 1e-8)
-        )
+        reward_identity_tolerance = 1e-8
         reward_identity_error = (
             episode.base_reward_sum - episode.expected_reward
         )
@@ -1823,12 +1573,6 @@ class ParallelEpisodeRunner:
         max_parallelism: int | None = None,
         deterministic: bool = True,
         sampling_seed: int | None = None,
-        preference: PreferenceInput | None = None,
-        dual_legal_state_sink: list[tuple[Any, np.ndarray]] | None = None,
-        maximum_captured_dual_legal_states: int | None = None,
-        production_pair_state_sink: list[tuple[Any, np.ndarray]] | None = None,
-        worker_variance_state_sink: list[tuple[Any, np.ndarray]] | None = None,
-        maximum_captured_preference_states: int | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1843,24 +1587,13 @@ class ParallelEpisodeRunner:
             raise ValueError(
                 "sampling_seed is required for sampled fixed evaluation"
             )
-        evaluation_preference = (
-            None
-            if preference is None
-            else normalize_preference(preference)
-        )
         results: list[FixedEvaluationRollout] = []
         for start in range(0, len(records), parallelism):
             chunk = records[start : start + parallelism]
             chunk_start = time.perf_counter()
             reset_responses = self._exchange(
                 {
-                    lane_id: (
-                        "reset_instance",
-                        _WorkerResetRequest(
-                            value=record.instance,
-                            preference=evaluation_preference,
-                        ),
-                    )
+                    lane_id: ("reset_instance", record.instance)
                     for lane_id, record in enumerate(chunk)
                 }
             )
@@ -1895,72 +1628,6 @@ class ParallelEpisodeRunner:
                 masks = [
                     states[lane].action_mask for lane in lanes
                 ]
-                if dual_legal_state_sink is not None:
-                    limit = (
-                        math.inf
-                        if maximum_captured_dual_legal_states is None
-                        else int(maximum_captured_dual_legal_states)
-                    )
-                    if limit < 1:
-                        raise ValueError(
-                            "maximum_captured_dual_legal_states must be positive"
-                        )
-                    for observation, mask in zip(observations, masks):
-                        if len(dual_legal_state_sink) >= limit:
-                            break
-                        if (
-                            getattr(observation, "decision_type", None)
-                            == DecisionType.PRODUCTION
-                            and mask.size >= 2
-                            and bool((~mask[:-1]).any())
-                            and not bool(mask[-1])
-                        ):
-                            dual_legal_state_sink.append(
-                                (observation.copy(), mask.copy())
-                            )
-                if (
-                    production_pair_state_sink is not None
-                    or worker_variance_state_sink is not None
-                ):
-                    preference_limit = (
-                        math.inf
-                        if maximum_captured_preference_states is None
-                        else int(maximum_captured_preference_states)
-                    )
-                    if preference_limit < 1:
-                        raise ValueError(
-                            "maximum_captured_preference_states must be positive"
-                        )
-                    for observation, mask in zip(observations, masks):
-                        legal_pair_count = int(np.count_nonzero(~mask[:-1]))
-                        if (
-                            production_pair_state_sink is not None
-                            and len(production_pair_state_sink) < preference_limit
-                            and getattr(observation, "decision_type", None)
-                            == DecisionType.PRODUCTION
-                            and legal_pair_count >= 2
-                            and _e2_7_production_pair_state_eligible(
-                                observation,
-                                mask,
-                            )
-                        ):
-                            production_pair_state_sink.append(
-                                (observation.copy(), mask.copy())
-                            )
-                        if (
-                            worker_variance_state_sink is not None
-                            and len(worker_variance_state_sink) < preference_limit
-                            and getattr(observation, "decision_type", None)
-                            == DecisionType.WORKER
-                            and legal_pair_count >= 2
-                            and _e2_7_worker_variance_state_eligible(
-                                observation,
-                                mask,
-                            )
-                        ):
-                            worker_variance_state_sink.append(
-                                (observation.copy(), mask.copy())
-                            )
                 if deterministic:
                     inference_start = time.perf_counter()
                     actions, _, _ = agent.act_batch(
@@ -1979,19 +1646,13 @@ class ParallelEpisodeRunner:
                         raise RuntimeError(
                             "batched policy diagnostics do not match lanes"
                         )
-                    for lane, action, diagnostic, mask in zip(
-                        lanes, actions, diagnostic_rows, masks
+                    for lane, action, diagnostic in zip(
+                        lanes, actions, diagnostic_rows
                     ):
                         diagnostic["selected_action"] = int(action)
                         diagnostic["ranker_top_selected"] = bool(
                             int(action)
                             == int(diagnostic.get("relative_top_action", -1))
-                        )
-                        diagnostic["unsafe_worker_preference_selected"] = bool(
-                            str(diagnostic.get("decision_type", ""))
-                            == "WORKER"
-                            and int(action) < len(mask)
-                            and bool(mask[int(action)])
                         )
                         policy_diagnostics[lane].append(diagnostic)
                 else:
@@ -2020,14 +1681,6 @@ class ParallelEpisodeRunner:
                                 == int(
                                     diagnostic.get("relative_top_action", -1)
                                 )
-                            )
-                            diagnostic[
-                                "unsafe_worker_preference_selected"
-                            ] = bool(
-                                str(diagnostic.get("decision_type", ""))
-                                == "WORKER"
-                                and int(action) < len(mask)
-                                and bool(mask[int(action)])
                             )
                             policy_diagnostics[lane].append(diagnostic)
                 for lane, action in zip(lanes, actions):

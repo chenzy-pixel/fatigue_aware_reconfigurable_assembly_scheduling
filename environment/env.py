@@ -11,9 +11,22 @@ import numpy as np
 from data.feasibility import maximum_matching_size as _maximum_matching_size
 from data.models import (
     AssemblyInstance,
-    MachineSpec,
-    OperationSpec,
-    WorkerSpec,
+)
+from environment.actions import ActionCodec
+from environment.dynamics import EPSILON, quantize_to_ticks, ticks_to_minutes
+from environment.state import (
+    MachineRuntime,
+    OperationRuntime,
+    ReconfigurationRuntime,
+    WorkerRuntime,
+)
+from environment.temporal import (
+    TemporalBudgetExhausted as _TemporalBudgetExhausted,
+    TemporalFeasibilityResult,
+    TemporalSearchBudget as _TemporalSearchBudget,
+    TemporalWorkerState,
+    TemporalWorkerTask,
+    WorkerTaskSnapshot,
 )
 from environment.preference import (
     PreferenceInput,
@@ -49,7 +62,6 @@ from environment.types import (
 )
 
 
-EPSILON = 1e-9
 ACTIVE_RECONFIGURATION_STAGES = (
     ReconfigurationStage.WAIT_DIS,
     ReconfigurationStage.DIS,
@@ -74,114 +86,6 @@ def _as_edge_index(pairs: list[tuple[int, int]]) -> np.ndarray:
         return np.empty((2, 0), dtype=np.int64)
     ordered = sorted(pairs)
     return np.asarray(ordered, dtype=np.int64).T
-
-
-@dataclass
-class OperationRuntime:
-    spec: OperationSpec
-    state: OperationState
-    machine_id: str | None = None
-    start_tick: int | None = None
-    end_tick: int | None = None
-
-
-@dataclass
-class MachineRuntime:
-    spec: MachineSpec
-    state: MachineState
-    current_module: str
-    busy_until_tick: int | None = None
-    locked_operation_id: str | None = None
-    source_module: str | None = None
-    target_module: str | None = None
-
-
-@dataclass
-class WorkerRuntime:
-    spec: WorkerSpec
-    state: WorkerState
-    fatigue: float
-    peak_fatigue: float = 0.0
-    load: float = 0.0
-    busy_until_tick: int | None = None
-
-
-@dataclass
-class ReconfigurationRuntime:
-    id: str
-    machine_id: str
-    operation_id: str
-    source_module: str
-    target_module: str
-    lock_tick: int
-    stage: ReconfigurationStage = ReconfigurationStage.WAIT_DIS
-    disassembly_worker_id: str | None = None
-    installation_worker_id: str | None = None
-    disassembly_start_tick: int | None = None
-    disassembly_end_tick: int | None = None
-    installation_start_tick: int | None = None
-    installation_end_tick: int | None = None
-
-
-@dataclass(frozen=True)
-class WorkerTaskSnapshot:
-    """A worker-requiring reconfiguration stage at the current tick."""
-
-    task_id: str
-    machine_index: int
-    stage: ReconfigurationStage
-    module: str
-
-
-@dataclass(frozen=True)
-class TemporalWorkerTask:
-    """One worker stage in the finite-horizon temporal feasibility search."""
-
-    task_id: str
-    machine_index: int
-    stage: ReconfigurationStage
-    module: str
-    ready_tick: int
-    predecessor_id: str | None = None
-    candidate: bool = False
-
-
-@dataclass(frozen=True)
-class TemporalWorkerState:
-    """Hypothetical worker availability and fatigue at that availability."""
-
-    available_tick: int
-    fatigue: float
-
-
-@dataclass(frozen=True)
-class TemporalFeasibilityResult:
-    """Deterministic tri-state outcome of the temporal feasibility oracle."""
-
-    status: str
-    searched_nodes: int
-    candidate_completion_tick: int | None = None
-    termination_reason: str | None = None
-    option_evaluations: int = 0
-    frontier_options_before: int = 0
-    frontier_options_after: int = 0
-
-
-@dataclass
-class _TemporalSearchBudget:
-    searched_nodes: int = 0
-    option_evaluations: int = 0
-    frontier_options_before: int = 0
-    frontier_options_after: int = 0
-    dominated_options: int = 0
-    last_options_before: int = 0
-    last_options_after: int = 0
-
-
-class _TemporalBudgetExhausted(RuntimeError):
-    def __init__(self, reason: str):
-        super().__init__(reason)
-        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -374,8 +278,6 @@ class AssemblySchedulingEnv:
         self._maximum_consecutive_conditional_waits = 0
         self._reconfiguration_reuse_count = 0
         self._post_reconfiguration_process_count: dict[str, int] = {}
-        self._qualification_scarcity_regret = 0.0
-        self._qualification_scarcity_decision_count = 0
         self._action_type_counts: dict[str, int] = {}
         self._minimum_worker_alternatives_seen: int | None = None
         self._resource_snapshot_cache: ResourceFeasibilitySnapshot | None = None
@@ -417,12 +319,20 @@ class AssemblySchedulingEnv:
         return ticks_to_minutes(self.current_tick, self.resolution)
 
     @property
+    def _action_codec(self) -> ActionCodec:
+        return ActionCodec(
+            operation_count=len(self.operations),
+            machine_count=len(self.machines),
+            worker_count=len(self.workers),
+        )
+
+    @property
     def production_action_size(self) -> int:
-        return len(self.operations) * len(self.machines) + 1
+        return self._action_codec.production_size
 
     @property
     def worker_action_size(self) -> int:
-        return len(self.machines) * len(self.workers) + 1
+        return self._action_codec.worker_size
 
     @property
     def production_defer_action(self) -> int:
@@ -445,7 +355,7 @@ class AssemblySchedulingEnv:
     def production_defer(self) -> dict[str, Any]:
         settings = self.config.get("environment", {}).get(
             "production_defer",
-            {"allow_recovery_improvement": True},
+            {},
         )
         if not isinstance(settings, dict):
             raise TypeError("environment.production_defer must be a mapping")
@@ -456,29 +366,16 @@ class AssemblySchedulingEnv:
         raw = self.production_defer.get("shield", {})
         if not isinstance(raw, dict):
             raise TypeError("environment.production_defer.shield must be a mapping")
-        if not raw:
-            return {"enabled": False}
-        enabled = bool(raw.get("enabled", False))
-        if not enabled:
-            return {"enabled": False}
         expected = {
-            "enabled",
-            "version",
             "deadline_reserve_ticks",
             "soft_risk_threshold",
             "soft_risk_coefficient",
         }
-        if set(raw) != expected:
+        if not set(raw).issubset(expected):
             raise ValueError("production defer shield has an invalid schema")
-        version = str(raw["version"])
-        if version not in {
-            "deadline_progress_shield_v1",
-            "deadline_progress_viability_shield_v2",
-        }:
-            raise ValueError("unsupported production defer shield version")
-        reserve = int(raw["deadline_reserve_ticks"])
-        threshold = float(raw["soft_risk_threshold"])
-        coefficient = float(raw["soft_risk_coefficient"])
+        reserve = int(raw.get("deadline_reserve_ticks", 1))
+        threshold = float(raw.get("soft_risk_threshold", 0.8))
+        coefficient = float(raw.get("soft_risk_coefficient", 0.0))
         if reserve < 1:
             raise ValueError("defer shield deadline reserve must be positive")
         if not 0.0 <= threshold < 1.0:
@@ -486,8 +383,7 @@ class AssemblySchedulingEnv:
         if not math.isfinite(coefficient) or coefficient < 0.0:
             raise ValueError("defer shield soft risk coefficient must be non-negative")
         return {
-            **raw,
-            "version": version,
+            "enabled": True,
             "deadline_reserve_ticks": reserve,
             "soft_risk_threshold": threshold,
             "soft_risk_coefficient": coefficient,
@@ -495,55 +391,35 @@ class AssemblySchedulingEnv:
 
     @property
     def completion_viability_shield_enabled(self) -> bool:
-        """Whether production masks use the E2.7 suffix-completion certificate."""
-        shield = self.production_defer_shield
-        return bool(shield.get("enabled", False)) and (
-            str(shield.get("version"))
-            == "deadline_progress_viability_shield_v2"
-        )
+        """The current completion-viability shield is always active."""
+        return True
 
     @property
     def worker_resource_control(self) -> dict[str, Any]:
         settings = self.config.get("environment", {}).get(
             "worker_resource_control",
-            {"mode": "legacy_postcheck"},
+            {},
         )
         if not isinstance(settings, dict):
             raise TypeError("environment.worker_resource_control must be a mapping")
-        mode = str(settings.get("mode", "legacy_postcheck"))
-        if mode not in {
-            "legacy_postcheck",
-            "matching_admission_v1",
-            "matching_admission_recovery_v2",
-            "temporal_matching_admission_recovery_v3",
-        }:
+        if "mode" in settings:
             raise ValueError(
-                "worker_resource_control.mode must be 'legacy_postcheck', "
-                "'matching_admission_v1', 'matching_admission_recovery_v2', "
-                "or 'temporal_matching_admission_recovery_v3'"
+                "worker_resource_control.mode was removed; temporal matching "
+                "is always active"
             )
         return settings
 
     @property
     def matching_admission_enabled(self) -> bool:
-        return str(self.worker_resource_control.get("mode")) in {
-            "matching_admission_v1",
-            "matching_admission_recovery_v2",
-            "temporal_matching_admission_recovery_v3",
-        }
+        return True
 
     @property
     def matching_recovery_enabled(self) -> bool:
-        return str(self.worker_resource_control.get("mode")) in {
-            "matching_admission_recovery_v2",
-            "temporal_matching_admission_recovery_v3",
-        }
+        return True
 
     @property
     def temporal_matching_enabled(self) -> bool:
-        return str(self.worker_resource_control.get("mode")) == (
-            "temporal_matching_admission_recovery_v3"
-        )
+        return True
 
     @property
     def temporal_feasibility_settings(self) -> dict[str, Any]:
@@ -591,35 +467,6 @@ class AssemblySchedulingEnv:
         if result["unknown_action"] != "allow":
             raise ValueError("temporal feasibility unknown_action must be 'allow'")
         return result
-
-    def _resource_setting(self, name: str, default: bool) -> bool:
-        return bool(self.worker_resource_control.get(name, default))
-
-    @property
-    def network_settings(self) -> dict[str, Any]:
-        settings = self.config.get("network", {})
-        if not isinstance(settings, dict):
-            raise TypeError("network configuration must be a mapping")
-        return settings
-
-    @property
-    def future_value_features_enabled(self) -> bool:
-        return bool(self.network_settings.get("future_value_features", False))
-
-    @property
-    def production_commit_set_enabled(self) -> bool:
-        return bool(
-            self.network_settings.get("production_commit_set_scorer", False)
-        )
-
-    @property
-    def e1_centered_gate_enabled(self) -> bool:
-        gate = self.network_settings.get("production_gate", {})
-        return bool(
-            isinstance(gate, dict)
-            and str(gate.get("version"))
-            == "e1_logsumexp_centered_three_objective_gate_v4"
-        )
 
     @property
     def conditional_worker_wait(self) -> dict[str, Any]:
@@ -807,8 +654,6 @@ class AssemblySchedulingEnv:
         self._maximum_consecutive_conditional_waits = 0
         self._reconfiguration_reuse_count = 0
         self._post_reconfiguration_process_count = {}
-        self._qualification_scarcity_regret = 0.0
-        self._qualification_scarcity_decision_count = 0
         self._action_type_counts = {}
         self._minimum_worker_alternatives_seen = None
         self._invalidate_resource_snapshot()
@@ -1249,8 +1094,6 @@ class AssemblySchedulingEnv:
             relations=relations,
             action_set_features=action_set_features,
             action_set_feature_names=action_set_feature_names,
-            preference=self.preference.as_array(),
-            preference_names=("flow", "cost", "variance"),
         )
         self._observation_cache = observation.copy()
         self._observation_cache_version = self._state_version
@@ -1473,16 +1316,6 @@ class AssemblySchedulingEnv:
             "estimated_labor_cost_norm",
             "estimated_downtime_cost_norm",
         )
-        if self.future_value_features_enabled:
-            feature_names += (
-                "current_wave_target_demand_ratio",
-                "future_wave_target_demand_ratio",
-                "target_remaining_workload_norm",
-                "configured_machine_support_ratio",
-                "future_configuration_reuse_value_norm",
-                "configuration_opportunity_cost_norm",
-                "future_horizon_risk_norm",
-            )
         if edge_count == 0:
             return EdgeStore(
                 edge_index=edge_index.copy(),
@@ -1616,85 +1449,6 @@ class AssemblySchedulingEnv:
         features[:, 11] = fixed_installation[group_ids] / cost_scale
         features[:, 12] = labor_cost[group_ids] / cost_scale
         features[:, 13] = downtime_cost[group_ids] / cost_scale
-        if self.future_value_features_enabled:
-            remaining_by_module = {
-                module: [
-                    operation
-                    for operation in self.operations
-                    if operation.state != OperationState.DONE
-                    and operation.spec.required_module == module
-                ]
-                for module in self.instance.modules
-            }
-            total_remaining = max(
-                1,
-                sum(len(values) for values in remaining_by_module.values()),
-            )
-            total_remaining_workload = max(
-                EPSILON,
-                sum(
-                    operation.spec.base_processing_time
-                    for values in remaining_by_module.values()
-                    for operation in values
-                ),
-            )
-            configured_support = {
-                module: sum(
-                    machine.current_module == module
-                    or machine.target_module == module
-                    for machine in self.machines
-                )
-                for module in self.instance.modules
-            }
-            for edge, (operation_index, machine_index) in enumerate(
-                edge_index.T
-            ):
-                operation = self.operations[int(operation_index)]
-                machine = self.machines[int(machine_index)]
-                target_module = operation.spec.required_module
-                target_remaining = remaining_by_module[target_module]
-                current_demand = sum(
-                    self._order_released[value.spec.order_id]
-                    for value in target_remaining
-                )
-                future_demand = sum(
-                    not self._order_released[value.spec.order_id]
-                    for value in target_remaining
-                )
-                target_workload = sum(
-                    value.spec.base_processing_time
-                    for value in target_remaining
-                )
-                source_module = machine.current_module
-                source_workload = sum(
-                    value.spec.base_processing_time
-                    for value in remaining_by_module.get(source_module, ())
-                )
-                source_support = configured_support.get(source_module, 0)
-                opportunity_cost = (
-                    0.0
-                    if source_module in {
-                        self.instance.no_module_state,
-                        target_module,
-                    }
-                    else (source_workload / total_remaining_workload)
-                    / max(1, source_support)
-                )
-                features[edge, 14] = current_demand / total_remaining
-                features[edge, 15] = future_demand / total_remaining
-                features[edge, 16] = target_workload / max(
-                    self.instance.horizon,
-                    total_remaining_workload,
-                )
-                features[edge, 17] = configured_support[
-                    target_module
-                ] / max(1, len(self.machines))
-                features[edge, 18] = target_workload / total_remaining_workload
-                features[edge, 19] = opportunity_cost
-                features[edge, 20] = max(
-                    0.0,
-                    -horizon_slack[edge] / horizon_tick,
-                )
         return EdgeStore(
             edge_index=edge_index.copy(),
             edge_features=features,
@@ -1894,75 +1648,6 @@ class AssemblySchedulingEnv:
                     (projected_variance - current_load_variance)
                     / variance_scale,
                 ]
-                if self.future_value_features_enabled:
-                    headroom = max(0.0, safe_fatigue - projected_fatigue)
-                    weighted_future_workload = sum(
-                        remaining_workload_by_module[module]
-                        / max(1, qualified_worker_count[module])
-                        for module in worker.spec.qualified_modules
-                    )
-                    exclusive_workload = sum(
-                        remaining_workload_by_module[module]
-                        for module in worker.spec.qualified_modules
-                        if qualified_worker_count[module] == 1
-                    )
-                    breadth = len(worker.spec.qualified_modules) / max(
-                        1, len(self.instance.modules)
-                    )
-                    qualification_opportunity = (
-                        0.5
-                        * weighted_future_workload
-                        / total_remaining_workload
-                        + 0.25
-                        * exclusive_workload
-                        / total_remaining_workload
-                        + 0.25 * breadth
-                    )
-                    recovery_rate = (
-                        self.instance.fatigue.idle_recovery_rate_per_minute
-                    )
-                    recovery_minutes = (
-                        max(
-                            0.0,
-                            projected_fatigue - worker.spec.initial_fatigue,
-                        )
-                        / recovery_rate
-                        if recovery_rate > 0.0
-                        else self.instance.horizon
-                    )
-                    accumulation_rate = self._stage_accumulation_rate(
-                        reconfiguration
-                    )
-                    service_capacity = (
-                        headroom / accumulation_rate
-                        if accumulation_rate > 0.0
-                        else self.instance.horizon
-                    )
-                    alternative_count = sum(
-                        other_index != worker_index
-                        and self._worker_can_start(reconfiguration, other)
-                        for other_index, other in enumerate(self.workers)
-                    )
-                    values.extend(
-                        [
-                            headroom / safe_fatigue,
-                            (fixed_cost + labor_cost + downtime_cost)
-                            / cost_scale,
-                            alternative_count / max(1, len(self.workers) - 1),
-                            qualification_opportunity,
-                            min(
-                                2.0,
-                                (duration + recovery_minutes)
-                                / self.instance.horizon,
-                            ),
-                            min(
-                                2.0,
-                                service_capacity / self.instance.horizon,
-                            ),
-                            weighted_future_workload
-                            / total_remaining_workload,
-                        ]
-                    )
                 service_pairs.append((machine_index, worker_index))
                 service_features.append(values)
         service_feature_names = (
@@ -1975,16 +1660,6 @@ class AssemblySchedulingEnv:
             "incremental_downtime_cost_norm",
             "incremental_load_variance_norm",
         )
-        if self.future_value_features_enabled:
-            service_feature_names += (
-                "fatigue_headroom_ratio",
-                "total_incremental_cost_norm",
-                "qualified_alternative_worker_ratio",
-                "qualification_opportunity_cost_norm",
-                "recovery_eta_norm",
-                "remaining_service_capacity_norm",
-                "future_qualified_workload_norm",
-            )
         service_candidate = EdgeStore(
             edge_index=_as_edge_index(service_pairs),
             edge_features=np.asarray(
@@ -2013,114 +1688,8 @@ class AssemblySchedulingEnv:
         self,
         relations: dict[EdgeType, EdgeStore],
     ) -> tuple[np.ndarray, tuple[str, ...]]:
-        """Return absolute set-level inputs without changing pair embeddings."""
-
-        if (
-            self.decision_type != DecisionType.PRODUCTION
-            or not self.production_commit_set_enabled
-        ):
-            return np.empty((0,), dtype=np.float32), ()
-        base_names = (
-            "legal_candidate_count_norm",
-            "configuration_match_rate",
-            "minimum_reconfiguration_time_norm",
-            "mean_reconfiguration_time_norm",
-            "minimum_total_reconfiguration_cost_norm",
-            "mean_total_reconfiguration_cost_norm",
-            "minimum_horizon_slack_norm",
-            "next_defer_event_distance_norm",
-            "projected_legal_candidate_gain_norm",
-        )
-        names = (
-            *base_names,
-            "defer_remaining_work_lower_bound_norm",
-            "defer_deadline_slack_norm",
-            "defer_risk",
-        ) if self.e1_centered_gate_enabled else base_names
-        capable = relations[CAPABLE_EDGE]
-        mask = self.get_action_mask()
-        machine_count = len(self.machines)
-        action_indices = (
-            capable.edge_index[0] * machine_count + capable.edge_index[1]
-        )
-        legal_edges = ~mask[action_indices]
-        legal_count = int(np.count_nonzero(legal_edges))
-        maximum_pairs = max(1, len(self.operations) * machine_count)
-        edge_names = capable.feature_names
-
-        def column(name: str) -> np.ndarray:
-            return capable.edge_features[:, edge_names.index(name)]
-
-        configuration = column("configuration_match")
-        reconfiguration = column("reconfiguration_time_norm")
-        total_cost = (
-            column("fixed_disassembly_cost_norm")
-            + column("fixed_installation_cost_norm")
-            + column("estimated_labor_cost_norm")
-            + column("estimated_downtime_cost_norm")
-        )
-        slack = column("horizon_slack_norm")
-
-        def minimum(values: np.ndarray) -> float:
-            return float(np.min(values[legal_edges])) if legal_count else 0.0
-
-        def mean(values: np.ndarray) -> float:
-            return float(np.mean(values[legal_edges])) if legal_count else 0.0
-
-        defer = self._production_defer_opportunity()
-        defer_tick = defer[0] if defer is not None else self.current_tick
-        future_legal = legal_count
-        if defer_tick > self.current_tick:
-            for operation_index, machine_index in capable.edge_index.T:
-                action = self.encode_production_action(
-                    int(operation_index), int(machine_index)
-                )
-                if not mask[action]:
-                    continue
-                operation = self.operations[int(operation_index)]
-                machine = self.machines[int(machine_index)]
-                if (
-                    operation.state != OperationState.READY
-                    or machine.state != MachineState.IDLE
-                ):
-                    continue
-                profile = self._production_candidate_profile(
-                    int(operation_index), int(machine_index)
-                )
-                if (
-                    profile.resource_ready_tick <= defer_tick
-                    and profile.predicted_finish_tick <= self.horizon_tick
-                ):
-                    future_legal += 1
-        base_values = [
-                legal_count / maximum_pairs,
-                mean(configuration),
-                minimum(reconfiguration),
-                mean(reconfiguration),
-                minimum(total_cost),
-                mean(total_cost),
-                minimum(slack),
-                max(0, defer_tick - self.current_tick)
-                / max(1, self.horizon_tick),
-                max(0, future_legal - legal_count) / maximum_pairs,
-            ]
-        if self.e1_centered_gate_enabled:
-            certificate = self._last_production_defer_certificate or {}
-            base_values.extend(
-                [
-                    float(
-                        certificate.get(
-                            "remaining_work_lower_bound_ticks", 0
-                        )
-                    )
-                    / max(1, self.horizon_tick),
-                    float(certificate.get("deadline_slack_ticks", 0))
-                    / max(1, self.horizon_tick),
-                    min(2.0, float(certificate.get("risk", 0.0))),
-                ]
-            )
-        values = np.asarray(base_values, dtype=np.float32)
-        return values, names
+        del relations
+        return np.empty((0,), dtype=np.float32), ()
 
     def _build_locked_edges(self) -> EdgeStore:
         self._require_instance()
@@ -2375,13 +1944,7 @@ class AssemblySchedulingEnv:
                                 worker.spec.id,
                             )
                         )
-                elif (
-                    legal
-                    and self.matching_admission_enabled
-                    and self._resource_setting(
-                        "preserve_matching_on_worker_action", True
-                    )
-                ):
+                elif legal and self.matching_admission_enabled:
                     legal = self._worker_action_preserves_matching(
                         reconfiguration,
                         worker_index,
@@ -2400,10 +1963,7 @@ class AssemblySchedulingEnv:
                                 worker.spec.id,
                             )
                         )
-        non_delay = bool(
-            self.matching_admission_enabled
-            and self._resource_setting("non_delay_worker_dispatch", True)
-        )
+        non_delay = self.matching_admission_enabled
         strict_future = self._has_strict_future()
         conditional_preview = None
         recovering = self.matching_recovery_enabled and matching_deficit > 0
@@ -2683,20 +2243,18 @@ class AssemblySchedulingEnv:
     def encode_production_action(
         self, operation_index: int, machine_index: int
     ) -> int:
-        return operation_index * len(self.machines) + machine_index
+        return self._action_codec.encode_production(
+            operation_index, machine_index
+        )
 
     def decode_production_action(self, action: int) -> tuple[int, int]:
-        if action < 0 or action >= self.production_action_size - 1:
-            raise ValueError("not a production pair action")
-        return divmod(action, len(self.machines))
+        return self._action_codec.decode_production(action)
 
     def encode_worker_action(self, machine_index: int, worker_index: int) -> int:
-        return machine_index * len(self.workers) + worker_index
+        return self._action_codec.encode_worker(machine_index, worker_index)
 
     def decode_worker_action(self, action: int) -> tuple[int, int]:
-        if action < 0 or action >= self.worker_action_size - 1:
-            raise ValueError("not a worker pair action")
-        return divmod(action, len(self.workers))
+        return self._action_codec.decode_worker(action)
 
     def step(
         self,
@@ -2777,11 +2335,6 @@ class AssemblySchedulingEnv:
                         self._deficit_reducing_worker_action_candidates
                     ):
                         self._deficit_reducing_worker_actions.add(recovery_key)
-            if (
-                action != self.worker_advance_action
-                and self.future_value_features_enabled
-            ):
-                self._record_qualification_scarcity_regret(action, mask)
         self._invalidate_resource_snapshot()
         if phase == DecisionType.PRODUCTION:
             if action == self.production_defer_action:
@@ -3499,12 +3052,6 @@ class AssemblySchedulingEnv:
                 int(self.conditional_worker_wait["max_consecutive_waits"]),
             ),
             "reconfiguration_reuse_count": self._reconfiguration_reuse_count,
-            "qualification_scarcity_regret": (
-                self._qualification_scarcity_regret
-            ),
-            "qualification_scarcity_decision_count": (
-                self._qualification_scarcity_decision_count
-            ),
             **self._forced_action_metrics(),
             "machine_waiting_for_worker_time": (
                 self._machine_waiting_for_worker_time()
@@ -4319,43 +3866,6 @@ class AssemblySchedulingEnv:
                     minimum_alternatives,
                 )
         return snapshot
-
-    def _record_qualification_scarcity_regret(
-        self,
-        action: int,
-        action_mask: np.ndarray,
-    ) -> None:
-        observation = self.observe()
-        if not isinstance(observation, HeterogeneousGraphObservation):
-            return
-        service = observation.relations[SERVICE_CANDIDATE_EDGE]
-        if "qualification_opportunity_cost_norm" not in service.feature_names:
-            return
-        feature_index = service.feature_names.index(
-            "qualification_opportunity_cost_norm"
-        )
-        worker_count = len(self.workers)
-        costs: dict[int, float] = {}
-        for edge_offset in range(service.num_edges):
-            machine_index = int(service.edge_index[0, edge_offset])
-            worker_index = int(service.edge_index[1, edge_offset])
-            action_index = machine_index * worker_count + worker_index
-            costs[action_index] = float(
-                service.edge_features[edge_offset, feature_index]
-            )
-        legal_costs = [
-            value
-            for action_index, value in costs.items()
-            if action_index < len(action_mask) - 1
-            and not bool(action_mask[action_index])
-        ]
-        selected = costs.get(int(action))
-        if selected is None or not legal_costs:
-            return
-        self._qualification_scarcity_regret += max(
-            0.0, selected - min(legal_costs)
-        )
-        self._qualification_scarcity_decision_count += 1
 
     def _worker_action_preserves_matching(
         self,
@@ -5610,9 +5120,7 @@ class AssemblySchedulingEnv:
                 self._maximum_projected_installation_deficit,
                 future_installation_deficit,
             )
-        require_full_matching = self._resource_setting(
-            "require_full_matching", True
-        )
+        require_full_matching = True
         static_base_admissible = bool(
             candidate_edges
             and (not require_full_matching or matching_deficit == 0)
@@ -5725,10 +5233,7 @@ class AssemblySchedulingEnv:
         return profile
 
     def _earliest_candidate_recovery_tick(self) -> int | None:
-        if not (
-            self.matching_admission_enabled
-            and self._resource_setting("candidate_recovery_advance", True)
-        ):
+        if not self.matching_admission_enabled:
             return None
         candidates: list[int] = []
         for operation_index, operation in enumerate(self.operations):
@@ -6474,10 +5979,6 @@ class AssemblySchedulingEnv:
             return self._production_defer_recovery_cache
         self._production_defer_recovery_cache_version = self._state_version
         self._production_defer_recovery_cache = None
-        if not bool(
-            self.production_defer.get("allow_recovery_improvement", True)
-        ):
-            return None
         recovery_rate = self.instance.fatigue.idle_recovery_rate_per_minute
         if recovery_rate <= 0.0 or self.current_tick >= self.horizon_tick:
             return None

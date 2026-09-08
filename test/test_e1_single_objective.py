@@ -25,9 +25,9 @@ from train import (
 
 
 CONFIGS = {
-    "flow": "configs/v7/e1_single_flow.json",
-    "cost": "configs/v7/e1_single_cost.json",
-    "variance": "configs/v7/e1_single_variance.json",
+    "flow": "configs/e1/single_flow.json",
+    "cost": "configs/e1/single_cost.json",
+    "variance": "configs/e1/single_variance.json",
 }
 
 
@@ -81,83 +81,35 @@ def _raw_json(path: str) -> dict:
         return json.load(handle)
 
 
-def test_single_objective_base_changes_only_requested_e1_protocol_fields():
-    e1 = load_config("configs/v7/e1_context_exception.json")
-    base = load_config("configs/v7/e1_single_objective_base.json")
-
-    expected = public_config(e1)
-    expected["experiment_name"] = "v7_e1_single_objective"
-    expected["experiment_suite_version"] = (
-        "v7_e1_single_objective_protocol_v4"
-    )
-    expected["environment"]["worker_resource_control"]["mode"] = (
-        "temporal_matching_admission_recovery_v3"
-    )
-    expected["environment"]["worker_resource_control"][
-        "temporal_feasibility"
-    ] = {
-        "max_search_nodes": 50000,
-        "max_option_evaluations_per_call": 250000,
-        "max_search_nodes_per_decision": 200000,
-        "max_option_evaluations_per_decision": 1000000,
-        "max_search_nodes_per_episode": 2000000,
-        "max_option_evaluations_per_episode": 5000000,
-        "search_implementation": (
-            "strict_recovery_frontier_transposition_budget_v1"
-        ),
-        "unknown_action": "allow",
+def test_default_is_the_complete_latest_single_objective_protocol():
+    base = load_config("configs/default.json")
+    assert base["experiment_suite_version"] == "v7_e1_single_objective_protocol_v4"
+    assert base["training"]["two_stage"]["quality_checkpoint_promotion"] == SINGLE_OBJECTIVE_PROMOTION_MODE
+    assert base["runtime_manifest"]["candidate_ranker"] == "bounded_ranker_scale_v7"
+    assert base["runtime_manifest"]["worker_feasibility"] == "temporal_matching_admission_recovery_v3"
+    assert base["runtime_manifest"]["observation_schema"] == 3
+    assert "mode" not in base["environment"]["worker_resource_control"]
+    assert set(base["environment"]["production_defer"]["shield"]) == {
+        "deadline_reserve_ticks", "soft_risk_threshold", "soft_risk_coefficient"
     }
-    expected["environment"]["production_defer"]["shield"] = {
-        "enabled": True,
-        "version": "deadline_progress_viability_shield_v2",
-        "deadline_reserve_ticks": 1,
-        "soft_risk_threshold": 0.8,
-        "soft_risk_coefficient": 0.0,
-    }
-    expected["training"]["two_stage"][
-        "quality_checkpoint_promotion"
-    ] = SINGLE_OBJECTIVE_PROMOTION_MODE
-    expected["training"]["validation_instance_limit"] = 50
-    expected["training"]["two_stage"]["quality_completion_floor"] = 0.95
-    expected["training"]["two_stage"]["quality_promotion_constraints"] = None
-    expected["training"]["two_stage"]["single_objective_promotion"] = {
-        "window_size": 5,
-        "window_statistic": "median",
-        "candidate_improvement_epsilon": 1e-9,
-        "rollback_below_floor_consecutive": 2,
-        "audit_instance_limit": 200,
-        "audit_completion_target": 0.98,
-        "audit_max_failed_instances": 4,
-        "audit_schedule_violation_target": 0,
-        "audit_physical_safety_required": True,
-    }
-
-    assert public_config(base) == expected
-    assert base["network"] == e1["network"]
-    assert base["ppo"] == e1["ppo"]
-    assert base["reward"] == e1["reward"]
-    assert "preference_adapter" not in base["network"]
-    assert "preference_stage_schedule" not in base["training"]
-    assert "warm_start" not in base["training"]
-    assert "pareto_promotion" not in base["training"]["two_stage"]
 
 
 @pytest.mark.parametrize("objective", tuple(CONFIGS))
 def test_child_config_only_changes_strict_one_hot_weights(objective: str):
-    base = load_config("configs/v7/e1_single_objective_base.json")
+    base = load_config("configs/default.json")
     child = load_config(CONFIGS[objective])
     expected_weights = {
         name: 1.0 if name == objective else 0.0 for name in CONFIGS
     }
     expected = public_config(base)
     expected["reward"]["quality_weights"] = expected_weights
+    expected["experiment_name"] = f"e1_single_{objective}"
     assert public_config(child) == expected
 
     raw = _raw_json(CONFIGS[objective])
-    assert set(raw) == {"extends", "reward"}
+    assert set(raw) == {"extends", "experiment_name", "reward"}
     assert raw["reward"] == {"quality_weights": expected_weights}
     shield = child["environment"]["production_defer"]["shield"]
-    assert shield["enabled"] is True
     assert shield["soft_risk_coefficient"] == 0.0
 
 
@@ -526,7 +478,7 @@ def test_formal_run_requires_at_least_the_200_audit_instances(tmp_path: Path):
     write_json(
         manifest_path,
         {
-            "generator_version": "1.2.0",
+            "generator_version": "0.0.0",
             "instance_count": 200,
             "files": [None] * 200,
         },
