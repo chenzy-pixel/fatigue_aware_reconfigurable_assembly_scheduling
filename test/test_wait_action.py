@@ -12,14 +12,16 @@ def _step_requested_pair(environment, *, reconfiguration: bool) -> dict:
     for _ in range(500):
         if environment.decision_type == DecisionType.PRODUCTION:
             for action in np.flatnonzero(~environment.get_action_mask()):
-                if int(action) == environment.production_defer_action:
+                if int(action) == environment.wait_action:
                     continue
-                operation_index, machine_index = environment.decode_production_action(
-                    int(action)
+                operation_index, machine_index = (
+                    environment.decode_production_action(int(action))
                 )
                 operation = environment.operations[operation_index]
                 machine = environment.machines[machine_index]
-                mismatch = machine.current_module != operation.spec.required_module
+                mismatch = (
+                    machine.current_module != operation.spec.required_module
+                )
                 if mismatch == reconfiguration:
                     return environment.step(int(action))[-1]
         environment.step(policy.select_action(environment))
@@ -37,25 +39,32 @@ def test_pair_action_has_stable_direct_or_reconfiguration_semantics(
 ):
     environment = AssemblySchedulingEnv(config)
     environment.reset(fixed_instance)
-    info = _step_requested_pair(environment, reconfiguration=reconfiguration)
+    info = _step_requested_pair(
+        environment, reconfiguration=reconfiguration
+    )
     assert info["action_type"] == expected
 
 
-def test_latest_production_action_space_is_pairs_plus_one_defer(config, fixed_instance):
+def test_production_action_space_is_pairs_plus_one_wait(
+    config, fixed_instance
+):
     environment = AssemblySchedulingEnv(config)
     environment.reset(fixed_instance)
     pair_count = len(environment.operations) * len(environment.machines)
-    assert environment.production_defer_action == pair_count
+    assert environment.wait_action == pair_count
     assert len(environment.get_action_mask()) == pair_count + 1
 
 
-def test_initial_defer_waits_without_reconfiguration_cost(config, fixed_instance):
+def test_initial_wait_advances_without_reconfiguration_cost(
+    config, fixed_instance
+):
     environment = AssemblySchedulingEnv(config)
     environment.reset(fixed_instance)
-    assert not environment.get_action_mask()[environment.production_defer_action]
+    assert not environment.get_action_mask()[environment.wait_action]
     before_tick = environment.current_tick
-    _, reward, _, _, info = environment.step(environment.production_defer_action)
+    _, reward, _, _, info = environment.step(environment.wait_action)
     assert environment.current_tick > before_tick
     assert environment.metrics()["reconfiguration_cost"] == pytest.approx(0.0)
     assert reward.cost == pytest.approx(0.0)
-    assert info["action_type"] == "DEFER_PRODUCTION"
+    assert info["action_type"] == "WAIT"
+    assert info["wait_certificate"]["allowed"] is True

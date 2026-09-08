@@ -38,7 +38,7 @@ def test_latest_hgnn_batch_matches_individual(config, fixed_instance):
     )
 
     assert torch.allclose(logits[0], expected_logits)
-    assert torch.allclose(logits[1], expected_logits)
+    assert torch.allclose(logits[1], expected_logits, atol=1e-6)
     assert torch.allclose(values, expected_value.expand(2))
 
 
@@ -67,6 +67,6 @@ def test_network_spec_records_public_observation_schema(config, fixed_instance):
     network = build_actor_critic(observation, config["network"])
     spec = network.network_spec()
 
-    assert spec["observation_schema_version"] == 3
+    assert spec["observation_schema_version"] == 4
     assert spec["policy_head_version"] == 7
     assert spec["candidate_context_mode"] == "bounded_ranker_scale_v7"

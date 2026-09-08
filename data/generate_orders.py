@@ -109,7 +109,6 @@ def _rollout_metrics(
     from environment.types import MachineState, OperationState
 
     environment = AssemblySchedulingEnv(config)
-    environment.temporal_progress_callback = progress_callback
     environment.reset(instance, build_observation=False)
     policy = HeuristicPolicy()
     seen_ready: set[str] = set()
@@ -190,19 +189,11 @@ def _rollout_metrics(
         **{
             name: base_metrics.get(name)
             for name in (
-                "temporal_oracle_call_count",
-                "temporal_oracle_cache_hit_count",
-                "temporal_subproblem_cache_hit_count",
-                "temporal_oracle_searched_nodes",
-                "temporal_oracle_option_evaluations",
-                "temporal_frontier_options_before",
-                "temporal_frontier_options_after",
-                "temporal_dominated_option_count",
-                "temporal_oracle_feasible_count",
-                "temporal_oracle_infeasible_count",
-                "temporal_oracle_unknown_count",
-                "temporal_budget_termination_counts",
-                "temporal_search_implementation",
+                "wait_action_count",
+                "production_wait_action_count",
+                "worker_wait_action_count",
+                "wait_total_ticks",
+                "wait_reason_counts",
             )
         },
     }
@@ -425,21 +416,6 @@ class InstanceGenerator:
                     seed=seed,
                     generation_attempt=attempt,
                     pressure_type=pressure_type,
-                    oracle_calls=heuristic_metrics.get(
-                        "temporal_oracle_call_count", 0
-                    ),
-                    search_nodes=heuristic_metrics.get(
-                        "temporal_oracle_searched_nodes", 0
-                    ),
-                    option_evaluations=heuristic_metrics.get(
-                        "temporal_oracle_option_evaluations", 0
-                    ),
-                    root_cache_hits=heuristic_metrics.get(
-                        "temporal_oracle_cache_hit_count", 0
-                    ),
-                    subproblem_cache_hits=heuristic_metrics.get(
-                        "temporal_subproblem_cache_hit_count", 0
-                    ),
                 )
                 return GeneratedInstanceRecord(instance, metadata)
             except (RuntimeError, ValueError) as error:
@@ -976,7 +952,7 @@ class InstanceGenerator:
             if (
                 len(values) < maximum
                 and environment.decision_type == DecisionType.PRODUCTION
-                and action != environment.advance_action
+                and action != environment.wait_action
             ):
                 operation_index, machine_index = (
                     environment.decode_production_action(action)
@@ -995,13 +971,13 @@ class InstanceGenerator:
                 if (
                     is_reconfiguration
                     and has_waiting_target_machine
-                    and not mask[environment.advance_action]
+                    and not mask[environment.wait_action]
                 ):
                     switch_environment = copy.deepcopy(environment)
                     wait_environment = copy.deepcopy(environment)
                     switch_environment.step(action, build_observation=False)
                     wait_environment.step(
-                        wait_environment.advance_action,
+                        wait_environment.wait_action,
                         build_observation=False,
                     )
                     switch_valid = self._finish_counterfactual(
@@ -1071,7 +1047,7 @@ class InstanceGenerator:
         mask = environment.get_action_mask().copy()
         for action in np.flatnonzero(~mask):
             action = int(action)
-            if action == environment.advance_action:
+            if action == environment.wait_action:
                 continue
             operation_index, machine_index = (
                 environment.decode_production_action(action)
@@ -1086,12 +1062,12 @@ class InstanceGenerator:
         pair_actions = [
             int(value)
             for value in np.flatnonzero(~mask)
-            if int(value) != environment.advance_action
+            if int(value) != environment.wait_action
         ]
         if not pair_actions:
             return (
-                environment.advance_action
-                if not mask[environment.advance_action]
+                environment.wait_action
+                if not mask[environment.wait_action]
                 else None
             )
         scored = []

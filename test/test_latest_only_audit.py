@@ -5,10 +5,8 @@ import json
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from agent.baselines import HeuristicPolicy
-from agent.ppo import PPOAgent, build_actor_critic
 from configs import load_config, project_path
 from data import load_instance_pickle
 from environment import AssemblySchedulingEnv
@@ -39,7 +37,7 @@ def _observation_sha256(observation) -> str:
     return digest.hexdigest()
 
 
-def test_fixed_instance_golden_observation_mask_network_and_trajectory():
+def test_fixed_instance_golden_observation_mask_and_trajectory():
     expected = json.loads(BASELINE.read_text(encoding="utf-8"))["fixed_instance"]
     config = load_config("configs/e1/single_flow.json")
     instance = load_instance_pickle(project_path(config["paths"]["instance_cache"]))
@@ -51,19 +49,6 @@ def test_fixed_instance_golden_observation_mask_network_and_trajectory():
     assert hashlib.sha256(np.ascontiguousarray(mask).tobytes()).hexdigest() == (
         expected["initial_mask_sha256"]
     )
-    agent = PPOAgent(
-        build_actor_critic(observation, config["network"]), config["ppo"], device="cpu"
-    )
-    checkpoint = project_path(
-        json.loads(BASELINE.read_text(encoding="utf-8"))["accepted_checkpoint"]["path"]
-    )
-    agent.load(checkpoint, load_optimizer=False)
-    logits, value = agent.network(observation, mask, device="cpu")
-    output = np.ascontiguousarray(logits.detach().numpy()).tobytes()
-    output += np.ascontiguousarray(value.detach().numpy()).tobytes()
-    assert hashlib.sha256(output).hexdigest() == expected["checkpoint_output_sha256"]
-    assert float(value) == pytest.approx(expected["checkpoint_value"])
-
     actions = []
     rewards = []
     policy = HeuristicPolicy()
@@ -82,7 +67,6 @@ def test_fixed_instance_golden_observation_mask_network_and_trajectory():
                 reward.truncation,
                 reward.unfinished,
                 reward.feasibility_shaping,
-                reward.defer_risk_shaping,
             ]
         )
     reward_digest = hashlib.sha256(

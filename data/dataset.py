@@ -617,8 +617,8 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             and precheck.get("version") == PRECHECK_VERSION
             and precheck.get("passed") is True
             and isinstance(heuristic, dict)
-            and "temporal_oracle_option_evaluations" in heuristic
-            and "temporal_budget_termination_counts" in heuristic
+            and "wait_action_count" in heuristic
+            and "wait_reason_counts" in heuristic
         )
 
     def get_with_cache_info(

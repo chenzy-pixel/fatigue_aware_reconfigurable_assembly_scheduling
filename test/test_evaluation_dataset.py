@@ -103,7 +103,7 @@ def test_aggregate_uses_completed_and_all_instance_populations():
         policy="ppo",
         manifest="manifest.json",
     )
-    assert aggregate["evaluation_schema_version"] == "5.1.0"
+    assert aggregate["evaluation_schema_version"] == "6.0.0"
     assert aggregate["quality_metric_version"] == (
         "canonical_bounded_quality_v1"
     )
@@ -185,7 +185,7 @@ def test_fixed_validation_evaluation_is_read_only_and_reports_zero_gap(
     saved_metrics = json.loads(
         (tmp_path / "metrics.json").read_text(encoding="utf-8")
     )
-    assert saved_metrics["evaluation_schema_version"] == "5.1.0"
+    assert saved_metrics["evaluation_schema_version"] == "6.0.0"
     with (tmp_path / "instance_metrics.csv").open(
         "r",
         encoding="utf-8-sig",

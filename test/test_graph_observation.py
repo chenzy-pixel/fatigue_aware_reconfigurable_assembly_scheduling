@@ -42,7 +42,7 @@ def _edge_feature(
 def _select_production_pair(environment, *, requires_reconfiguration: bool):
     mask = environment.get_action_mask()
     for action in np.flatnonzero(~mask):
-        if int(action) == environment.advance_action:
+        if int(action) == environment.wait_action:
             continue
         operation_index, machine_index = environment.decode_production_action(
             int(action)
@@ -77,9 +77,9 @@ def _reach_reconfiguration_pair(environment):
                         environment, requires_reconfiguration=False
                     )
                 except AssertionError:
-                    action = environment.advance_action
+                    action = environment.wait_action
             else:
-                action = environment.advance_action
+                action = environment.wait_action
             environment.step(action)
     raise AssertionError("failed to reach a feasible reconfiguration pair")
 
@@ -92,7 +92,7 @@ def _advance_until_reconfiguration_stage(
         if reconfiguration.stage == target_stage:
             return observation
         observation, _, terminated, truncated, _ = environment.step(
-            environment.advance_action
+            environment.wait_action
         )
         assert not terminated and not truncated
     raise AssertionError(f"failed to reach reconfiguration stage {target_stage}")
@@ -321,7 +321,7 @@ def test_dynamic_lock_and_worker_machine_edges(config, fixed_instance):
         )
     )
 
-    environment.step(environment.advance_action)
+    environment.step(environment.wait_action)
     disassembly_action = _select_worker_for_machine(
         environment, machine_index
     )
@@ -350,7 +350,7 @@ def test_dynamic_lock_and_worker_machine_edges(config, fixed_instance):
     disassembly_edges = observation.relations[CAN_DISASSEMBLE_EDGE]
     assert not np.any(disassembly_edges.edge_index[1] == machine_index)
 
-    environment.step(environment.advance_action)
+    environment.step(environment.wait_action)
     installation_action = _select_worker_for_machine(
         environment, machine_index
     )
@@ -466,10 +466,10 @@ def test_fixed_cost_counterfactual_changes_state_and_candidate_edges(
     baseline_env.step(action)
     changed_env.step(action)
     baseline_worker, _, _, _, _ = baseline_env.step(
-        baseline_env.advance_action
+        baseline_env.wait_action
     )
     changed_worker, _, _, _, _ = changed_env.step(
-        changed_env.advance_action
+        changed_env.wait_action
     )
     assert np.array_equal(
         baseline_env.get_action_mask(), changed_env.get_action_mask()

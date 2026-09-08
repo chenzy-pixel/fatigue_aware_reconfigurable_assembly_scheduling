@@ -212,13 +212,7 @@ def physical_forced_action_from_mask(
     environment: AssemblySchedulingEnv,
     action_mask: np.ndarray,
 ) -> int | None:
-    """Return a physically forced action that is safe to execute locally.
-
-    A singleton created by the non-delay worker-dispatch rule remains visible
-    to the parent process.  It is still compressed there, but is deliberately
-    excluded from worker-local chaining so policy masking is not mistaken for
-    physical determinism.
-    """
+    """Return a physically forced pair or WAIT action for local chaining."""
 
     action = forced_action_from_mask(action_mask)
     if action is None:
@@ -228,10 +222,8 @@ def physical_forced_action_from_mask(
         raise RuntimeError(
             "singleton action mask has no forced-action diagnostic"
         )
-    if bool(diagnostic["non_delay_blocked_advance"]):
-        return None
     if not (
-        bool(diagnostic["advance_physically_unavailable"])
+        bool(diagnostic["wait_physically_unavailable"])
         or bool(diagnostic["pair_physically_unavailable"])
     ):
         return None
@@ -439,7 +431,6 @@ def _worker_main(
             )
 
         dataset.generator.progress_callback = emit_progress
-        environment.temporal_progress_callback = emit_progress
         preserve_graph = network_requires_graph_observation(
             config["network"]
         )
@@ -653,21 +644,6 @@ class ParallelEpisodeRunner:
         self._lane_command_name: dict[int, str] = {}
         self._latest_progress: dict[int, dict[str, Any]] = {}
         self._slow_command_keys: set[tuple[int, int]] = set()
-        self._temporal_summary: dict[str, Any] = {
-            "version": "temporal_search_summary_v1",
-            "completed_episode_count": 0,
-            "oracle_calls": 0,
-            "search_nodes": 0,
-            "option_evaluations": 0,
-            "frontier_options_before": 0,
-            "frontier_options_after": 0,
-            "dominated_options": 0,
-            "root_cache_hits": 0,
-            "subproblem_cache_hits": 0,
-            "unknown_count": 0,
-            "termination_reasons": {},
-        }
-        self._persist_temporal_summary()
         context = multiprocessing.get_context(start_method)
         self._connections: list[Connection] = []
         self._processes: list[Any] = []
@@ -764,53 +740,6 @@ class ParallelEpisodeRunner:
                 "slow_instances.jsonl",
                 {**record, "classification": "active_slow_search"},
             )
-
-    def _record_temporal_response(self, response: WorkerResponse) -> None:
-        metrics = response.metrics
-        if not isinstance(metrics, dict) or not (
-            response.terminated or response.truncated
-        ):
-            return
-        summary = self._temporal_summary
-        summary["completed_episode_count"] += 1
-        mappings = {
-            "oracle_calls": "temporal_oracle_call_count",
-            "search_nodes": "temporal_oracle_searched_nodes",
-            "option_evaluations": "temporal_oracle_option_evaluations",
-            "frontier_options_before": "temporal_frontier_options_before",
-            "frontier_options_after": "temporal_frontier_options_after",
-            "dominated_options": "temporal_dominated_option_count",
-            "root_cache_hits": "temporal_oracle_cache_hit_count",
-            "subproblem_cache_hits": "temporal_subproblem_cache_hit_count",
-            "unknown_count": "temporal_oracle_unknown_count",
-        }
-        for target, source in mappings.items():
-            summary[target] += int(metrics.get(source, 0) or 0)
-        reasons = metrics.get("temporal_budget_termination_counts", {})
-        if isinstance(reasons, dict):
-            totals = summary["termination_reasons"]
-            for reason, count in reasons.items():
-                totals[str(reason)] = totals.get(str(reason), 0) + int(count)
-        calls = max(1, int(summary["oracle_calls"]))
-        summary["unknown_rate"] = float(summary["unknown_count"]) / calls
-        self._persist_temporal_summary()
-
-    def _persist_temporal_summary(self) -> None:
-        if self.diagnostic_directory is None:
-            return
-        destination = self.diagnostic_directory / "temporal_search_summary.json"
-        temporary = destination.with_name(f".{destination.name}.tmp")
-        temporary.write_text(
-            json.dumps(
-                self._temporal_summary,
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, destination)
 
     def _record_completed_response(self, response: WorkerResponse) -> None:
         lane_id = int(response.lane_id)
@@ -920,7 +849,6 @@ class ParallelEpisodeRunner:
                     )
                 responses[lane_id] = response
                 self._record_completed_response(response)
-                self._record_temporal_response(response)
         return responses
 
     def pre_generate_training_instances(
@@ -945,8 +873,6 @@ class ParallelEpisodeRunner:
         rejection_reasons: dict[str, int] = {}
         generation_times: list[float] = []
         cache_hits = 0
-        unknown_total = 0
-        budget_reasons: dict[str, int] = {}
         for batch_start in range(0, requested_count, self.worker_count):
             indices = requested_indices[
                 batch_start : batch_start + self.worker_count
@@ -969,19 +895,6 @@ class ParallelEpisodeRunner:
                         rejection_reasons[str(reason)] = (
                             rejection_reasons.get(str(reason), 0) + int(count)
                         )
-                heuristic = metadata.get("heuristic_metrics", {})
-                if isinstance(heuristic, dict):
-                    unknown_total += int(
-                        heuristic.get("temporal_oracle_unknown_count", 0) or 0
-                    )
-                    reasons = heuristic.get(
-                        "temporal_budget_termination_counts", {}
-                    )
-                    if isinstance(reasons, dict):
-                        for reason, count in reasons.items():
-                            budget_reasons[str(reason)] = (
-                                budget_reasons.get(str(reason), 0) + int(count)
-                            )
                 entries.append(
                     {
                         "train_index": episode_index,
@@ -1045,10 +958,6 @@ class ParallelEpisodeRunner:
             "slow_seeds": slow_seeds,
             "generation_rejection_reasons": dict(
                 sorted(rejection_reasons.items())
-            ),
-            "temporal_unknown_count": unknown_total,
-            "temporal_budget_termination_reasons": dict(
-                sorted(budget_reasons.items())
             ),
             "files": sorted(entries, key=lambda value: value["train_index"]),
         }

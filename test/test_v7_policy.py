@@ -44,22 +44,16 @@ def test_v7_bounded_residual_has_gradient_and_ranker_scaled_bound():
     assert network.production_residual_context_gate.grad is not None
 
 
-def test_current_checkpoint_strict_load_and_schema_alias():
+def test_previous_action_semantics_checkpoint_is_rejected():
     config, environment, observation = _environment()
     agent = PPOAgent(
         build_actor_critic(observation, config["network"]),
         config["ppo"],
         device="cpu",
     )
-    metadata = agent.load(project_path(ACCEPTED), load_optimizer=False)
-    assert metadata
-    assert agent.network.network_spec()["observation_schema_version"] == 3
-    logits, value = agent.network(
-        observation, environment.get_action_mask(), device="cpu"
-    )
-    assert logits.shape == (environment.production_action_size,)
-    assert torch.isfinite(logits).all()
-    assert float(value) == pytest.approx(1.722648024559021)
+    with pytest.raises(ValueError, match="production_action_semantics"):
+        agent.load(project_path(ACCEPTED), load_optimizer=False)
+    assert agent.network.network_spec()["observation_schema_version"] == 4
 
 
 def test_checkpoint_round_trip_and_incompatible_spec_rejected(tmp_path):

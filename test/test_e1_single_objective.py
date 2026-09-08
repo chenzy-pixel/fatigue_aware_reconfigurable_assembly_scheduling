@@ -83,14 +83,15 @@ def _raw_json(path: str) -> dict:
 
 def test_default_is_the_complete_latest_single_objective_protocol():
     base = load_config("configs/default.json")
-    assert base["experiment_suite_version"] == "v7_e1_single_objective_protocol_v4"
+    assert base["experiment_suite_version"] == "v7_e1_single_objective_protocol_v5"
     assert base["training"]["two_stage"]["quality_checkpoint_promotion"] == SINGLE_OBJECTIVE_PROMOTION_MODE
     assert base["runtime_manifest"]["candidate_ranker"] == "bounded_ranker_scale_v7"
-    assert base["runtime_manifest"]["worker_feasibility"] == "temporal_matching_admission_recovery_v3"
-    assert base["runtime_manifest"]["observation_schema"] == 3
-    assert "mode" not in base["environment"]["worker_resource_control"]
-    assert set(base["environment"]["production_defer"]["shield"]) == {
-        "deadline_reserve_ticks", "soft_risk_threshold", "soft_risk_coefficient"
+    assert base["runtime_manifest"]["worker_feasibility"] == "instant_physical_pair_mask_v1"
+    assert base["runtime_manifest"]["wait_mask"] == "progress_completion_lower_bound_v1"
+    assert base["runtime_manifest"]["observation_schema"] == 4
+    assert set(base["environment"]) == {
+        "max_decisions",
+        "max_zero_time_actions",
     }
 
 
@@ -109,8 +110,6 @@ def test_child_config_only_changes_strict_one_hot_weights(objective: str):
     raw = _raw_json(CONFIGS[objective])
     assert set(raw) == {"extends", "experiment_name", "reward"}
     assert raw["reward"] == {"quality_weights": expected_weights}
-    shield = child["environment"]["production_defer"]["shield"]
-    assert shield["soft_risk_coefficient"] == 0.0
 
 
 @pytest.mark.parametrize("objective", tuple(CONFIGS))
@@ -519,9 +518,6 @@ def test_one_hot_quality_reward_identity(
     config = load_config(CONFIGS[objective])
     environment = AssemblySchedulingEnv(config)
     environment.reset(fixed_instance)
-    assert environment.matching_admission_enabled
-    assert environment.matching_recovery_enabled
-    assert environment.completion_viability_shield_enabled
     policy = HeuristicPolicy()
     base_reward_sum = 0.0
     while not (environment.terminated or environment.truncated):
@@ -529,8 +525,8 @@ def test_one_hot_quality_reward_identity(
         _, reward, _, _, _ = environment.step(action)
         base_reward_sum += reward.base_scalarize(config["reward"], "quality")
     metrics = environment.metrics()
-    assert metrics["production_defer_shield_candidate_count"] > 0
-    assert metrics["future_installation_admission_candidate_count"] > 0
+    assert metrics["wait_action_count"] > 0
+    assert metrics["wait_total_ticks"] >= 0
     assert base_reward_sum == pytest.approx(
         proxy_return_from_metrics(metrics, config["reward"], "quality"),
         abs=1e-8,

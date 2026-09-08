@@ -36,8 +36,16 @@ def _scalar_capability_features(environment):
         machine_index = int(machine_index)
         operation = environment.operations[operation_index]
         machine = environment.machines[machine_index]
-        profile = environment._production_candidate_profile(
-            operation_index, machine_index
+        profile = environment._production_resource_profile(
+            machine_index, operation.spec.required_module
+        )
+        predicted_finish_tick = (
+            profile.processing_start_tick
+            + environment.estimate_processing_ticks(
+                operation_index, machine_index
+            )
+            if profile.processing_start_tick is not None
+            else environment.horizon_tick + 1
         )
         configuration_match = (
             machine.current_module == operation.spec.required_module
@@ -88,7 +96,7 @@ def _scalar_capability_features(environment):
                 min(2.0, max(0.0, profile.resource_ready_tick / horizon_tick)),
                 min(
                     2.0,
-                    max(0.0, profile.predicted_finish_tick / horizon_tick),
+                    max(0.0, predicted_finish_tick / horizon_tick),
                 ),
                 profile.safe_disassembly_workers
                 / max(1, len(environment.workers)),
@@ -98,7 +106,11 @@ def _scalar_capability_features(environment):
                 / max(1, len(environment.workers)),
                 max(
                     -1.0,
-                    min(1.0, profile.horizon_slack_ticks / horizon_tick),
+                    min(
+                        1.0,
+                        (environment.horizon_tick - predicted_finish_tick)
+                        / horizon_tick,
+                    ),
                 ),
                 environment.estimate_reconfiguration_ticks(
                     operation_index, machine_index
@@ -297,7 +309,7 @@ def test_action_mask_cache_is_versioned_and_returns_isolated_arrays(
     environment.reset(fixed_instance, build_observation=False)
     environment._invalidate_resource_snapshot()
     opportunity_calls = 0
-    original_opportunity = environment._production_defer_opportunity
+    original_opportunity = environment._wait_opportunity
 
     def counted_opportunity():
         nonlocal opportunity_calls
@@ -306,7 +318,7 @@ def test_action_mask_cache_is_versioned_and_returns_isolated_arrays(
 
     monkeypatch.setattr(
         environment,
-        "_production_defer_opportunity",
+        "_wait_opportunity",
         counted_opportunity,
     )
     first = environment.get_action_mask()

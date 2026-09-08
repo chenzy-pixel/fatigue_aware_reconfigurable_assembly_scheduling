@@ -1,4 +1,4 @@
-"""Stable pair-plus-defer action encoding."""
+"""Stable pair-plus-wait action encoding."""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ class ActionCodec:
         return self.machine_count * self.worker_count + 1
 
     @property
-    def production_defer(self) -> int:
+    def production_wait(self) -> int:
         return self.production_size - 1
 
     @property
-    def worker_advance(self) -> int:
+    def worker_wait(self) -> int:
         return self.worker_size - 1
 
     def encode_production(self, operation_index: int, machine_index: int) -> int:
@@ -35,7 +35,7 @@ class ActionCodec:
         return operation_index * self.machine_count + machine_index
 
     def decode_production(self, action: int) -> tuple[int, int]:
-        if action < 0 or action >= self.production_defer:
+        if action < 0 or action >= self.production_wait:
             raise ValueError("not a production pair action")
         return divmod(action, self.machine_count)
 
@@ -47,6 +47,6 @@ class ActionCodec:
         return machine_index * self.worker_count + worker_index
 
     def decode_worker(self, action: int) -> tuple[int, int]:
-        if action < 0 or action >= self.worker_advance:
+        if action < 0 or action >= self.worker_wait:
             raise ValueError("not a worker pair action")
         return divmod(action, self.worker_count)

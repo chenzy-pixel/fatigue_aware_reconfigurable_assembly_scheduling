@@ -9,41 +9,18 @@ import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "5.1.0"
+EVALUATION_SCHEMA_VERSION = "6.0.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
     "maximum_worker_matching_deficit",
-    "deficit_reducing_worker_action_candidate_count",
-    "deficit_reducing_worker_action_count",
-    "matching_deficit_recovery_advance_count",
-    "current_matching_admission_masked_action_count",
-    "future_installation_admission_candidate_count",
-    "future_installation_admission_masked_action_count",
-    "future_installation_admission_masked_action_ratio",
-    "future_installation_matching_deficit_after_commit",
-    "maximum_projected_installation_deficit",
-    "temporal_oracle_call_count",
-    "temporal_oracle_cache_hit_count",
-    "temporal_subproblem_cache_hit_count",
-    "temporal_oracle_searched_nodes",
-    "temporal_oracle_option_evaluations",
-    "temporal_frontier_options_before",
-    "temporal_frontier_options_after",
-    "temporal_dominated_option_count",
-    "temporal_oracle_feasible_count",
-    "temporal_oracle_infeasible_count",
-    "temporal_oracle_unknown_count",
-    "temporal_oracle_unknown_rate",
-    "temporal_worker_action_rescued_count",
-    "temporal_future_installation_rescued_count",
-    "temporal_delayed_disassembly_rescued_count",
-    "production_defer_shield_candidate_count",
-    "production_defer_shield_masked_count",
-    "production_defer_shield_max_risk",
-    "production_defer_shield_max_wait_ticks",
-    "production_defer_shield_max_work_lower_bound_ticks",
-    "production_defer_shield_min_deadline_slack_ticks",
+    "wait_total_ticks",
+    "wait_total_time",
+    "production_wait_ticks",
+    "production_wait_time",
+    "worker_wait_ticks",
+    "worker_wait_time",
+    "wait_min_deadline_slack_ticks",
 )
 
 
@@ -54,7 +31,7 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         raise TypeError("config.evaluation must be an object")
     configured = evaluation.get("result_schema_version")
     if configured is not None and str(configured) != EVALUATION_SCHEMA_VERSION:
-        raise ValueError("only result schema 5.1.0 is supported")
+        raise ValueError("only result schema 6.0.0 is supported")
     return EVALUATION_SCHEMA_VERSION
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,
@@ -332,46 +309,29 @@ def aggregate_evaluation_rows(
         "worker_matching_deficit_event_count": summarize_values(
             row.get("worker_matching_deficit_event_count") for row in rows
         ),
-        "resource_admission_masked_action_count": summarize_values(
-            row.get("resource_admission_masked_action_count") for row in rows
-        ),
-        "resource_admission_masked_action_ratio": summarize_values(
-            row.get("resource_admission_masked_action_ratio") for row in rows
-        ),
         "minimum_worker_alternatives": summarize_values(
             row.get("minimum_worker_alternatives") for row in rows
         ),
-        "matching_preserving_worker_action_count": summarize_values(
-            row.get("matching_preserving_worker_action_count") for row in rows
+        "wait_total_time": summarize_values(
+            row.get("wait_total_time") for row in rows
         ),
-        "candidate_recovery_advance_count": summarize_values(
-            row.get("candidate_recovery_advance_count") for row in rows
+        "production_wait_time": summarize_values(
+            row.get("production_wait_time") for row in rows
         ),
-        "production_defer_recovery_improvement_count": summarize_values(
-            row.get("production_defer_recovery_improvement_count")
-            for row in rows
-        ),
-        "production_defer_wait_time": summarize_values(
-            row.get("production_defer_wait_time") for row in rows
+        "worker_wait_time": summarize_values(
+            row.get("worker_wait_time") for row in rows
         ),
         **{
             name: summarize_values(row.get(name) for row in rows)
             for name in (
                 "ranker_top_selection_rate",
                 "context_override_rate",
-                "production_pair_plus_defer_state_count",
+                "production_pair_plus_wait_state_count",
                 "production_decision_state_count",
-                "production_pair_plus_defer_ratio",
-                "worker_pair_plus_advance_state_count",
+                "production_pair_plus_wait_ratio",
+                "worker_pair_plus_wait_state_count",
                 "worker_decision_state_count",
-                "worker_pair_plus_advance_ratio",
-                "conditional_worker_wait_opportunity_count",
-                "conditional_worker_wait_selected_count",
-                "conditional_worker_wait_total_ticks",
-                "conditional_worker_wait_pair_gain_sum",
-                "conditional_worker_wait_fatigue_improvement_sum",
-                "conditional_worker_wait_duration_improvement_ticks_sum",
-                "conditional_worker_wait_max_consecutive_observed",
+                "worker_pair_plus_wait_ratio",
                 "reconfiguration_reuse_count",
                 *CURRENT_RUNTIME_DIAGNOSTIC_FIELDS,
             )
@@ -381,9 +341,10 @@ def aggregate_evaluation_rows(
             for name in (
                 "direct_process_action_count",
                 "commit_reconfig_action_count",
-                "defer_production_action_count",
                 "worker_assign_action_count",
-                "advance_event_action_count",
+                "wait_action_count",
+                "production_wait_action_count",
+                "worker_wait_action_count",
             )
         },
         "machine_waiting_for_worker_time": summarize_values(
@@ -408,21 +369,19 @@ def aggregate_evaluation_rows(
                 "forced_production_count",
                 "forced_worker_count",
                 "forced_pair_count",
-                "forced_advance_count",
+                "forced_wait_count",
                 "forced_production_pair_count",
-                "forced_production_advance_count",
+                "forced_production_wait_count",
                 "forced_worker_pair_count",
-                "forced_worker_advance_count",
-                "forced_pair_advance_blocked_non_delay_count",
-                "forced_worker_pair_non_delay_count",
-                "forced_pair_advance_physically_unavailable_count",
-                "forced_advance_pair_physically_unavailable_count",
+                "forced_worker_wait_count",
+                "forced_pair_wait_physically_unavailable_count",
+                "forced_wait_pair_physically_unavailable_count",
                 "forced_wait_dis_count",
                 "forced_wait_ins_count",
                 "forced_mixed_wait_stage_count",
                 "forced_phase_handoff_count",
-                "forced_recovery_advance_count",
-                "forced_future_event_advance_count",
+                "forced_recovery_wait_count",
+                "forced_future_event_wait_count",
                 "forced_action_chain_count",
                 "longest_forced_action_chain",
                 "mean_forced_action_chain_length",

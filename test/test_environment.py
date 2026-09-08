@@ -18,13 +18,13 @@ def _run(environment, policy):
     return actions, rewards
 
 
-def test_initial_pair_defer_action_contract(config, fixed_instance):
+def test_initial_pair_wait_action_contract(config, fixed_instance):
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(fixed_instance)
     mask = environment.get_action_mask()
     assert observation.decision_type == DecisionType.PRODUCTION
     assert len(mask) == len(environment.operations) * len(environment.machines) + 1
-    assert environment.production_defer_action == len(mask) - 1
+    assert environment.wait_action == len(mask) - 1
     assert np.count_nonzero(~mask) > 0
 
 
@@ -61,4 +61,4 @@ def test_observe_and_public_metrics_are_available(config, fixed_instance):
     initial = environment.reset(fixed_instance)
     observed = environment.observe()
     assert observed.feature_dimensions == initial.feature_dimensions
-    assert config["runtime_manifest"]["observation_schema"] == 3
+    assert config["runtime_manifest"]["observation_schema"] == 4

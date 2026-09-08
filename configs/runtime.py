@@ -6,14 +6,14 @@ from typing import Any, Mapping
 
 _RUNTIME_MANIFEST: dict[str, Any] = {
     "core_profile": "e1_latest",
-    "production_action": "pair_plus_defer_v1",
+    "production_action": "pair_plus_wait_v1",
+    "worker_action": "pair_plus_wait_v1",
     "policy_head": 7,
     "candidate_ranker": "bounded_ranker_scale_v7",
-    "worker_feasibility": "temporal_matching_admission_recovery_v3",
-    "temporal_search": "strict_recovery_frontier_transposition_budget_v1",
-    "defer_shield": "deadline_progress_viability_shield_v2",
-    "observation_schema": 3,
-    "training_protocol": "v7_e1_single_objective_protocol_v4",
+    "worker_feasibility": "instant_physical_pair_mask_v1",
+    "wait_mask": "progress_completion_lower_bound_v1",
+    "observation_schema": 4,
+    "training_protocol": "v7_e1_single_objective_protocol_v5",
 }
 
 _REMOVED_NETWORK_FIELDS = frozenset(
@@ -25,6 +25,7 @@ _REMOVED_NETWORK_FIELDS = frozenset(
         "production_candidate_relative_features",
         "worker_candidate_relative_features",
         "production_action_semantics",
+        "worker_action_semantics",
         "production_relative_feature_names",
         "worker_relative_feature_names",
         "relative_weight_parameterization",
@@ -63,37 +64,15 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
     environment = config.get("environment", {})
     if not isinstance(environment, Mapping):
         raise TypeError("environment config must be a mapping")
-    worker_control = environment.get("worker_resource_control", {})
-    if not isinstance(worker_control, Mapping):
-        raise TypeError("environment.worker_resource_control must be a mapping")
-    if "mode" in worker_control:
-        raise ValueError(
-            "worker_resource_control.mode was removed; temporal matching v3 "
-            "is always active"
+    removed_environment = sorted(
+        {"worker_resource_control", "production_defer"}.intersection(
+            environment
         )
-    unknown_worker_control = sorted(set(worker_control) - {"temporal_feasibility"})
-    if unknown_worker_control:
+    )
+    if removed_environment:
         raise ValueError(
-            "latest-only worker_resource_control accepts only temporal budgets: "
-            + ", ".join(unknown_worker_control)
-        )
-    production_defer = environment.get("production_defer", {})
-    if not isinstance(production_defer, Mapping):
-        raise TypeError("environment.production_defer must be a mapping")
-    unknown_defer = sorted(set(production_defer) - {"shield"})
-    if unknown_defer:
-        raise ValueError(
-            "latest-only production_defer accepts only shield parameters: "
-            + ", ".join(unknown_defer)
-        )
-    shield = production_defer.get("shield", {})
-    if not isinstance(shield, Mapping):
-        raise TypeError("environment.production_defer.shield must be a mapping")
-    removed_shield = sorted({"enabled", "version"}.intersection(shield))
-    if removed_shield:
-        raise ValueError(
-            "latest-only configuration cannot select the defer shield: "
-            + ", ".join(removed_shield)
+            "latest-only configuration rejects removed environment controls: "
+            + ", ".join(removed_environment)
         )
 
 

@@ -13,11 +13,7 @@ class HeuristicPolicy:
     def select_action(self, env: AssemblySchedulingEnv) -> int:
         mask = env.get_action_mask()
         feasible = np.flatnonzero(~mask)
-        terminal_action = (
-            env.production_defer_action
-            if env.decision_type == DecisionType.PRODUCTION
-            else env.worker_advance_action
-        )
+        terminal_action = env.wait_action
         pair_actions = [
             int(value) for value in feasible if value != terminal_action
         ]

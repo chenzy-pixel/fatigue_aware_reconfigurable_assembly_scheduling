@@ -16,7 +16,7 @@
     "checkpoint_output_sha256": "399c2976de07efc7d430ec200dac1aacd9fe66c019fe3d3adafe809c2e0ea8bf",
     "checkpoint_value": 1.722648024559021,
     "heuristic_action_trace_sha256": "9be87e63d93a3740976526c280811061c9ba9f4c8adff4f02e5172ebe3adda19",
-    "heuristic_reward_trace_sha256": "de2b68d9a979393e48d786be237b6112dc3d004905d63ea25aa513ed2f060fd4",
+    "heuristic_reward_trace_sha256": "58292aa27c8b3d34b5c35c49f947bd36eb5b26767106f525935b2b1fd75bc0d4",
     "heuristic_action_count": 211,
     "terminal_reason": "completed",
     "metrics": {

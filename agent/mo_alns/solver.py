@@ -150,7 +150,7 @@ def _rank_index(values: Sequence[str]) -> dict[str, int]:
 
 
 def _choose_production_action(env: AssemblySchedulingEnv, solution: MOALNSSolution, mask: np.ndarray) -> int:
-    terminal = env.production_defer_action
+    terminal = env.wait_action
     legal_pairs = [int(value) for value in np.flatnonzero(~mask) if int(value) != terminal]
     if not legal_pairs:
         return terminal
@@ -186,7 +186,7 @@ def _choose_production_action(env: AssemblySchedulingEnv, solution: MOALNSSoluti
 
 
 def _choose_worker_action(env: AssemblySchedulingEnv, solution: MOALNSSolution, mask: np.ndarray) -> int:
-    terminal = env.worker_advance_action
+    terminal = env.wait_action
     legal_pairs = [int(value) for value in np.flatnonzero(~mask) if int(value) != terminal]
     if not legal_pairs:
         return terminal
@@ -321,7 +321,7 @@ def decode_solution(
         phase = env.decision_type
         if phase == DecisionType.PRODUCTION:
             action = _choose_production_action(env, solution, mask)
-            if action == env.production_defer_action:
+            if action == env.wait_action:
                 ready = [
                     operation for operation in env.operations if operation.state == OperationState.READY
                 ]
@@ -335,7 +335,7 @@ def decode_solution(
                 realized["machines"][env.operations[operation_index].spec.id] = env.machines[machine_index].spec.id
         elif phase == DecisionType.WORKER:
             action = _choose_worker_action(env, solution, mask)
-            if action == env.worker_advance_action:
+            if action == env.wait_action:
                 pending = [
                     _pending_reconfiguration(env, machine_index)
                     for machine_index in range(len(env.machines))
@@ -439,7 +439,7 @@ def _heuristic_trace_seed(
         phase = env.decision_type
         action = policy.select_action(env)
         if phase == DecisionType.PRODUCTION:
-            if action == env.production_defer_action:
+            if action == env.wait_action:
                 ready = [operation for operation in env.operations if operation.state == OperationState.READY]
                 if ready:
                     production_wait[min(ready, key=lambda value: value.spec.id).spec.id] = True
@@ -450,7 +450,7 @@ def _heuristic_trace_seed(
                     operation_order.append(operation_id)
                 machine_first[operation_id] = env.machines[machine_index].spec.id
         else:
-            if action == env.worker_advance_action:
+            if action == env.wait_action:
                 pending = [
                     _pending_reconfiguration(env, index) for index in range(len(env.machines))
                 ]

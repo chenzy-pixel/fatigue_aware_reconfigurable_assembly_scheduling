@@ -414,26 +414,22 @@ def _evaluation_row(
                 "forced_production_count",
                 "forced_worker_count",
                 "forced_pair_count",
-                "forced_advance_count",
+                "forced_wait_count",
                 "forced_production_pair_count",
-                "forced_production_advance_count",
+                "forced_production_wait_count",
                 "forced_worker_pair_count",
-                "forced_worker_advance_count",
-                "forced_pair_advance_blocked_non_delay_count",
-                "forced_worker_pair_non_delay_count",
-                "forced_pair_advance_physically_unavailable_count",
-                "forced_advance_pair_physically_unavailable_count",
+                "forced_worker_wait_count",
+                "forced_pair_wait_physically_unavailable_count",
+                "forced_wait_pair_physically_unavailable_count",
                 "forced_wait_dis_count",
                 "forced_wait_ins_count",
                 "forced_mixed_wait_stage_count",
                 "forced_phase_handoff_count",
-                "forced_recovery_advance_count",
-                "forced_future_event_advance_count",
+                "forced_recovery_wait_count",
+                "forced_future_event_wait_count",
                 "forced_direct_process_count",
                 "forced_commit_reconfig_count",
-                "forced_defer_production_count",
                 "forced_worker_assign_count",
-                "forced_advance_event_count",
                 "forced_action_chain_count",
                 "longest_forced_action_chain",
                 "mean_forced_action_chain_length",
@@ -519,26 +515,18 @@ def _evaluation_row(
         "worker_matching_deficit_event_count": metrics[
             "worker_matching_deficit_event_count"
         ],
-        "resource_admission_masked_action_count": metrics[
-            "resource_admission_masked_action_count"
-        ],
-        "resource_admission_masked_action_ratio": metrics[
-            "resource_admission_masked_action_ratio"
-        ],
         "minimum_worker_alternatives": metrics[
             "minimum_worker_alternatives"
         ],
-        "matching_preserving_worker_action_count": metrics[
-            "matching_preserving_worker_action_count"
+        "wait_total_ticks": metrics["wait_total_ticks"],
+        "wait_total_time": metrics["wait_total_time"],
+        "production_wait_ticks": metrics["production_wait_ticks"],
+        "production_wait_time": metrics["production_wait_time"],
+        "worker_wait_ticks": metrics["worker_wait_ticks"],
+        "worker_wait_time": metrics["worker_wait_time"],
+        "wait_min_deadline_slack_ticks": metrics[
+            "wait_min_deadline_slack_ticks"
         ],
-        "candidate_recovery_advance_count": metrics[
-            "candidate_recovery_advance_count"
-        ],
-        "production_defer_recovery_improvement_count": metrics[
-            "production_defer_recovery_improvement_count"
-        ],
-        "production_defer_wait_ticks": metrics["production_defer_wait_ticks"],
-        "production_defer_wait_time": metrics["production_defer_wait_time"],
         **{
             name: metrics.get(name, 0)
             for name in (
@@ -547,28 +535,25 @@ def _evaluation_row(
                 "ranker_top_selection_rate",
                 "context_override_count",
                 "context_override_rate",
-                "production_pair_plus_defer_state_count",
+                "production_pair_plus_wait_state_count",
                 "production_decision_state_count",
-                "production_pair_plus_defer_ratio",
-                "worker_pair_plus_advance_state_count",
+                "production_pair_plus_wait_ratio",
+                "worker_pair_plus_wait_state_count",
                 "worker_decision_state_count",
-                "worker_pair_plus_advance_ratio",
+                "worker_pair_plus_wait_ratio",
                 "mean_commit_set_logit",
-                "conditional_worker_wait_opportunity_count",
-                "conditional_worker_wait_selected_count",
-                "conditional_worker_wait_total_ticks",
-                "conditional_worker_wait_total_time",
-                "conditional_worker_wait_pair_gain_sum",
-                "conditional_worker_wait_fatigue_improvement_sum",
-                "conditional_worker_wait_duration_improvement_ticks_sum",
-                "conditional_worker_wait_max_consecutive_observed",
                 "reconfiguration_reuse_count",
                 "qualification_scarcity_regret",
                 "qualification_scarcity_decision_count",
             )
         },
-        "conditional_worker_wait_reason_counts": json.dumps(
-            metrics.get("conditional_worker_wait_reason_counts", {}),
+        "wait_reason_counts": json.dumps(
+            metrics.get("wait_reason_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        "wait_mask_reason_counts": json.dumps(
+            metrics.get("wait_mask_reason_counts", {}),
             ensure_ascii=False,
             sort_keys=True,
         ),
@@ -577,9 +562,10 @@ def _evaluation_row(
             for name in (
                 "direct_process_action_count",
                 "commit_reconfig_action_count",
-                "defer_production_action_count",
                 "worker_assign_action_count",
-                "advance_event_action_count",
+                "wait_action_count",
+                "production_wait_action_count",
+                "worker_wait_action_count",
             )
         },
         "machine_waiting_for_worker_time": metrics[

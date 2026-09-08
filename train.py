@@ -558,11 +558,10 @@ def _validation_log_row(
                 "fatigue_masked_action_ratio",
                 "worker_competition_event_count",
                 "worker_matching_deficit_event_count",
-                "resource_admission_masked_action_count",
-                "resource_admission_masked_action_ratio",
                 "minimum_worker_alternatives",
-                "matching_preserving_worker_action_count",
-                "candidate_recovery_advance_count",
+                "wait_total_time",
+                "production_wait_time",
+                "worker_wait_time",
                 "machine_waiting_for_worker_time",
                 "completed_reconfigurations",
                 "worker_switch_ratio",
@@ -1082,9 +1081,10 @@ def _attach_sampled_validation(
 ACTION_TYPE_COUNT_FIELDS = (
     "direct_process_action_count",
     "commit_reconfig_action_count",
-    "defer_production_action_count",
     "worker_assign_action_count",
-    "advance_event_action_count",
+    "wait_action_count",
+    "production_wait_action_count",
+    "worker_wait_action_count",
 )
 
 
@@ -1093,26 +1093,22 @@ FORCED_ACTION_COUNT_FIELDS = (
     "forced_production_count",
     "forced_worker_count",
     "forced_pair_count",
-    "forced_advance_count",
+    "forced_wait_count",
     "forced_production_pair_count",
-    "forced_production_advance_count",
+    "forced_production_wait_count",
     "forced_worker_pair_count",
-    "forced_worker_advance_count",
-    "forced_pair_advance_blocked_non_delay_count",
-    "forced_worker_pair_non_delay_count",
-    "forced_pair_advance_physically_unavailable_count",
-    "forced_advance_pair_physically_unavailable_count",
+    "forced_worker_wait_count",
+    "forced_pair_wait_physically_unavailable_count",
+    "forced_wait_pair_physically_unavailable_count",
     "forced_wait_dis_count",
     "forced_wait_ins_count",
     "forced_mixed_wait_stage_count",
     "forced_phase_handoff_count",
-    "forced_recovery_advance_count",
-    "forced_future_event_advance_count",
+    "forced_recovery_wait_count",
+    "forced_future_event_wait_count",
     "forced_direct_process_count",
     "forced_commit_reconfig_count",
-    "forced_defer_production_count",
     "forced_worker_assign_count",
-    "forced_advance_event_count",
     "forced_action_chain_count",
 )
 
@@ -1170,62 +1166,36 @@ def _training_effect_fields(metrics: dict) -> dict:
             name: metrics.get(name, 0)
             for name in CURRENT_RUNTIME_DIAGNOSTIC_FIELDS
         },
-        "temporal_budget_termination_counts": json.dumps(
-            metrics.get("temporal_budget_termination_counts", {}),
+        "wait_reason_counts": json.dumps(
+            metrics.get("wait_reason_counts", {}),
             ensure_ascii=False,
             sort_keys=True,
         ),
-        "temporal_search_implementation": metrics.get(
-            "temporal_search_implementation"
-        ),
-        "temporal_oracle_unknown_rate": metrics.get(
-            "temporal_oracle_unknown_rate", 0.0
-        ),
-        "resource_admission_masked_action_count": metrics.get(
-            "resource_admission_masked_action_count"
-        ),
-        "resource_admission_masked_action_ratio": metrics.get(
-            "resource_admission_masked_action_ratio"
+        "wait_mask_reason_counts": json.dumps(
+            metrics.get("wait_mask_reason_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
         ),
         "minimum_worker_alternatives": metrics.get(
             "minimum_worker_alternatives"
         ),
-        "matching_preserving_worker_action_count": metrics.get(
-            "matching_preserving_worker_action_count"
-        ),
-        "candidate_recovery_advance_count": metrics.get(
-            "candidate_recovery_advance_count"
-        ),
-        "production_defer_recovery_improvement_count": metrics.get(
-            "production_defer_recovery_improvement_count"
-        ),
-        "production_defer_wait_ticks": metrics.get(
-            "production_defer_wait_ticks"
-        ),
-        "production_defer_wait_time": metrics.get(
-            "production_defer_wait_time"
+        "wait_total_ticks": metrics.get("wait_total_ticks"),
+        "wait_total_time": metrics.get("wait_total_time"),
+        "production_wait_ticks": metrics.get("production_wait_ticks"),
+        "production_wait_time": metrics.get("production_wait_time"),
+        "worker_wait_ticks": metrics.get("worker_wait_ticks"),
+        "worker_wait_time": metrics.get("worker_wait_time"),
+        "wait_min_deadline_slack_ticks": metrics.get(
+            "wait_min_deadline_slack_ticks"
         ),
         **{
             name: metrics.get(name, 0)
             for name in (
-                "conditional_worker_wait_opportunity_count",
-                "conditional_worker_wait_selected_count",
-                "conditional_worker_wait_total_ticks",
-                "conditional_worker_wait_total_time",
-                "conditional_worker_wait_pair_gain_sum",
-                "conditional_worker_wait_fatigue_improvement_sum",
-                "conditional_worker_wait_duration_improvement_ticks_sum",
-                "conditional_worker_wait_max_consecutive_observed",
                 "reconfiguration_reuse_count",
                 "qualification_scarcity_regret",
                 "qualification_scarcity_decision_count",
             )
         },
-        "conditional_worker_wait_reason_counts": json.dumps(
-            metrics.get("conditional_worker_wait_reason_counts", {}),
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
         "machine_waiting_for_worker_time": metrics.get(
             "machine_waiting_for_worker_time"
         ),
@@ -1294,14 +1264,11 @@ def _late_training_diagnostics(
         "completed_operation_ratio",
         "machine_waiting_for_worker_time",
         "fatigue_masked_action_ratio",
-        "resource_admission_masked_action_count",
-        "resource_admission_masked_action_ratio",
         "worker_matching_deficit_event_count",
         "minimum_worker_alternatives",
-        "matching_preserving_worker_action_count",
-        "candidate_recovery_advance_count",
-        "production_defer_recovery_improvement_count",
-        "production_defer_wait_time",
+        "wait_total_time",
+        "production_wait_time",
+        "worker_wait_time",
         "reward_base",
         "reward_shaping",
         "reward_training",

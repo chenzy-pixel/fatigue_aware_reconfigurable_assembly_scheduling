@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import heapq
 import math
-import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
@@ -18,15 +17,8 @@ from environment.state import (
     MachineRuntime,
     OperationRuntime,
     ReconfigurationRuntime,
-    WorkerRuntime,
-)
-from environment.temporal import (
-    TemporalBudgetExhausted as _TemporalBudgetExhausted,
-    TemporalFeasibilityResult,
-    TemporalSearchBudget as _TemporalSearchBudget,
-    TemporalWorkerState,
-    TemporalWorkerTask,
     WorkerTaskSnapshot,
+    WorkerRuntime,
 )
 from environment.preference import (
     PreferenceInput,
@@ -100,21 +92,6 @@ class ResourceFeasibilitySnapshot:
 
 
 @dataclass(frozen=True)
-class ProductionCandidateProfile:
-    resource_ready_tick: int
-    predicted_finish_tick: int
-    safe_disassembly_workers: int
-    safe_installation_workers: int
-    matching_deficit_after_commit: int
-    future_installation_matching_deficit_after_commit: int
-    horizon_slack_ticks: int
-    completion_lower_bound_ticks: int
-    completion_slack_ticks: int
-    temporal_feasibility_status: str
-    admissible: bool
-
-
-@dataclass(frozen=True)
 class ProductionResourceProfile:
     """Operation-independent resource projection for a machine/module pair."""
 
@@ -123,23 +100,6 @@ class ProductionResourceProfile:
     safe_disassembly_workers: int
     safe_installation_workers: int
     matching_deficit_after_commit: int
-    future_installation_matching_deficit_after_commit: int
-    temporal_feasibility_status: str
-    base_admissible: bool
-
-
-@dataclass(frozen=True)
-class ConditionalWorkerWaitPreview:
-    next_tick: int
-    wait_ticks: int
-    current_legal_pairs: int
-    future_legal_pairs: int
-    fatigue_ratio_improvement: float
-    duration_improvement_ticks: int
-    future_matching_size: int
-    future_task_count: int
-    horizon_feasible: bool
-    reason: str
 
 
 class AssemblySchedulingEnv:
@@ -197,107 +157,31 @@ class AssemblySchedulingEnv:
         self._fatigue_masked_actions: set[tuple[int, str, str, str]] = set()
         self._worker_competition_ticks: set[int] = set()
         self._worker_matching_deficit_ticks: set[int] = set()
-        self._resource_admission_candidates: set[tuple[int, int, int]] = set()
-        self._resource_admission_masked: set[tuple[int, int, int]] = set()
-        self._current_matching_admission_masked: set[
-            tuple[int, int, int]
-        ] = set()
-        self._future_installation_admission_candidates: set[
-            tuple[int, int, int]
-        ] = set()
-        self._future_installation_admission_masked: set[
-            tuple[int, int, int]
-        ] = set()
-        self._matching_preserving_worker_actions: set[
-            tuple[int, str, str, str]
-        ] = set()
-        self._deficit_reducing_worker_action_candidates: set[
-            tuple[int, str, str, str]
-        ] = set()
-        self._deficit_reducing_worker_actions: set[
-            tuple[int, str, str, str]
-        ] = set()
-        self._matching_deficit_recovery_advance_count = 0
         self._maximum_worker_matching_deficit = 0
-        self._maximum_projected_installation_deficit = 0
-        self._temporal_oracle_call_count = 0
-        self._temporal_oracle_cache_hit_count = 0
-        self._temporal_subproblem_cache_hit_count = 0
-        self._temporal_oracle_searched_nodes = 0
-        self._temporal_oracle_option_evaluations = 0
-        self._temporal_frontier_options_before = 0
-        self._temporal_frontier_options_after = 0
-        self._temporal_dominated_option_count = 0
-        self._temporal_decision_searched_nodes = 0
-        self._temporal_decision_option_evaluations = 0
-        self._temporal_decision_budget_exhausted_reason: str | None = None
-        self._temporal_episode_budget_exhausted_reason: str | None = None
-        self._temporal_budget_termination_counts: dict[str, int] = {}
-        self.temporal_progress_callback: (
-            Callable[[dict[str, Any]], None] | None
-        ) = None
-        self._temporal_progress_last_time = time.monotonic()
-        self._temporal_progress_last_work = 0
-        self._temporal_oracle_result_counts = {
-            "feasible": 0,
-            "infeasible": 0,
-            "unknown": 0,
-        }
-        self._temporal_worker_action_rescued: set[
-            tuple[int, str, str, str]
-        ] = set()
-        self._temporal_future_installation_rescued: set[
-            tuple[int, int, str]
-        ] = set()
-        self._temporal_delayed_disassembly_rescued: set[
-            tuple[int, int, str]
-        ] = set()
-        self._candidate_recovery_advance_count = 0
-        self._production_defer_recovery_improvement_count = 0
-        self._production_defer_wait_ticks = 0
-        self._production_defer_reason_counts: dict[str, int] = {}
-        self._production_defer_shield_candidates: set[int] = set()
-        self._production_defer_shield_masked: set[int] = set()
-        self._production_defer_shield_reason_counts: dict[str, int] = {}
-        self._production_defer_shield_max_risk = 0.0
-        self._production_defer_shield_max_wait_ticks = 0
-        self._production_defer_shield_max_work_lower_bound_ticks = 0
-        self._production_defer_shield_min_deadline_slack_ticks: int | None = None
-        self._last_production_defer_certificate: dict[str, Any] | None = None
-        self._last_completion_viability_certificate: dict[str, Any] | None = None
+        self._wait_action_count = 0
+        self._production_wait_action_count = 0
+        self._worker_wait_action_count = 0
+        self._production_wait_ticks = 0
+        self._worker_wait_ticks = 0
+        self._wait_reason_counts: dict[str, int] = {}
+        self._wait_mask_reason_counts: dict[str, int] = {}
+        self._wait_masked_states: set[tuple[int, str]] = set()
+        self._wait_min_deadline_slack_ticks: int | None = None
+        self._last_wait_certificate: dict[str, Any] | None = None
         self._first_unrecoverable_deadlock_diagnostic: dict[str, Any] | None = None
-        self._conditional_wait_opportunity_count = 0
-        self._conditional_wait_selected_count = 0
-        self._conditional_wait_total_ticks = 0
-        self._conditional_wait_pair_gain_sum = 0
-        self._conditional_wait_fatigue_improvement_sum = 0.0
-        self._conditional_wait_duration_improvement_sum = 0
-        self._conditional_wait_reason_counts: dict[str, int] = {}
-        self._conditional_wait_opportunity_states: set[int] = set()
-        self._consecutive_conditional_waits = 0
-        self._maximum_consecutive_conditional_waits = 0
         self._reconfiguration_reuse_count = 0
         self._post_reconfiguration_process_count: dict[str, int] = {}
         self._action_type_counts: dict[str, int] = {}
         self._minimum_worker_alternatives_seen: int | None = None
         self._resource_snapshot_cache: ResourceFeasibilitySnapshot | None = None
-        self._candidate_profile_cache: dict[
-            tuple[int, int], ProductionCandidateProfile
-        ] = {}
         self._production_resource_profile_cache: dict[
             tuple[int, str], ProductionResourceProfile
         ] = {}
         self._stage_projection_cache: dict[
             tuple[int, int, str, bool, int], tuple[int, int] | None
         ] = {}
-        self._temporal_oracle_cache: dict[
-            tuple[Any, ...], TemporalFeasibilityResult
-        ] = {}
-        self._temporal_subproblem_cache: dict[
-            tuple[Any, ...], tuple[str, int | None]
-        ] = {}
-        self._production_defer_recovery_cache_version = -1
-        self._production_defer_recovery_cache: int | None = None
+        self._reconfiguration_duration_improvement_cache_version = -1
+        self._reconfiguration_duration_improvement_cache: int | None = None
         self._state_version = 0
         self._action_mask_cache_version = -1
         self._action_mask_cache: np.ndarray | None = None
@@ -335,193 +219,21 @@ class AssemblySchedulingEnv:
         return self._action_codec.worker_size
 
     @property
-    def production_defer_action(self) -> int:
-        return self.production_action_size - 1
-
-    @property
-    def worker_advance_action(self) -> int:
-        return self.worker_action_size - 1
-
-    @property
-    def advance_action(self) -> int:
-        """Compatibility alias for the phase-specific terminal action slot."""
+    def wait_action(self) -> int:
+        """Return the phase-specific WAIT slot."""
         if self.decision_type == DecisionType.PRODUCTION:
-            return self.production_defer_action
+            return self._action_codec.production_wait
         if self.decision_type == DecisionType.WORKER:
-            return self.worker_advance_action
+            return self._action_codec.worker_wait
         raise RuntimeError("terminal state has no action")
-
-    @property
-    def production_defer(self) -> dict[str, Any]:
-        settings = self.config.get("environment", {}).get(
-            "production_defer",
-            {},
-        )
-        if not isinstance(settings, dict):
-            raise TypeError("environment.production_defer must be a mapping")
-        return settings
-
-    @property
-    def production_defer_shield(self) -> dict[str, Any]:
-        raw = self.production_defer.get("shield", {})
-        if not isinstance(raw, dict):
-            raise TypeError("environment.production_defer.shield must be a mapping")
-        expected = {
-            "deadline_reserve_ticks",
-            "soft_risk_threshold",
-            "soft_risk_coefficient",
-        }
-        if not set(raw).issubset(expected):
-            raise ValueError("production defer shield has an invalid schema")
-        reserve = int(raw.get("deadline_reserve_ticks", 1))
-        threshold = float(raw.get("soft_risk_threshold", 0.8))
-        coefficient = float(raw.get("soft_risk_coefficient", 0.0))
-        if reserve < 1:
-            raise ValueError("defer shield deadline reserve must be positive")
-        if not 0.0 <= threshold < 1.0:
-            raise ValueError("defer shield soft risk threshold must be in [0, 1)")
-        if not math.isfinite(coefficient) or coefficient < 0.0:
-            raise ValueError("defer shield soft risk coefficient must be non-negative")
-        return {
-            "enabled": True,
-            "deadline_reserve_ticks": reserve,
-            "soft_risk_threshold": threshold,
-            "soft_risk_coefficient": coefficient,
-        }
-
-    @property
-    def completion_viability_shield_enabled(self) -> bool:
-        """The current completion-viability shield is always active."""
-        return True
-
-    @property
-    def worker_resource_control(self) -> dict[str, Any]:
-        settings = self.config.get("environment", {}).get(
-            "worker_resource_control",
-            {},
-        )
-        if not isinstance(settings, dict):
-            raise TypeError("environment.worker_resource_control must be a mapping")
-        if "mode" in settings:
-            raise ValueError(
-                "worker_resource_control.mode was removed; temporal matching "
-                "is always active"
-            )
-        return settings
-
-    @property
-    def matching_admission_enabled(self) -> bool:
-        return True
-
-    @property
-    def matching_recovery_enabled(self) -> bool:
-        return True
-
-    @property
-    def temporal_matching_enabled(self) -> bool:
-        return True
-
-    @property
-    def temporal_feasibility_settings(self) -> dict[str, Any]:
-        raw = self.worker_resource_control.get("temporal_feasibility", {})
-        if not isinstance(raw, dict):
-            raise TypeError(
-                "environment.worker_resource_control.temporal_feasibility "
-                "must be a mapping"
-            )
-        result = {
-            "max_search_nodes": int(raw.get("max_search_nodes", 50_000)),
-            "max_option_evaluations_per_call": int(
-                raw.get("max_option_evaluations_per_call", 250_000)
-            ),
-            "max_search_nodes_per_decision": int(
-                raw.get("max_search_nodes_per_decision", 200_000)
-            ),
-            "max_option_evaluations_per_decision": int(
-                raw.get("max_option_evaluations_per_decision", 1_000_000)
-            ),
-            "max_search_nodes_per_episode": int(
-                raw.get("max_search_nodes_per_episode", 2_000_000)
-            ),
-            "max_option_evaluations_per_episode": int(
-                raw.get("max_option_evaluations_per_episode", 5_000_000)
-            ),
-            "unknown_action": str(raw.get("unknown_action", "allow")),
-            "search_implementation": str(
-                raw.get(
-                    "search_implementation",
-                    "strict_recovery_frontier_transposition_budget_v1",
-                )
-            ),
-        }
-        budget_names = (
-            "max_search_nodes",
-            "max_option_evaluations_per_call",
-            "max_search_nodes_per_decision",
-            "max_option_evaluations_per_decision",
-            "max_search_nodes_per_episode",
-            "max_option_evaluations_per_episode",
-        )
-        if any(int(result[name]) < 1 for name in budget_names):
-            raise ValueError("temporal feasibility budgets must be positive")
-        if result["unknown_action"] != "allow":
-            raise ValueError("temporal feasibility unknown_action must be 'allow'")
-        return result
-
-    @property
-    def conditional_worker_wait(self) -> dict[str, Any]:
-        raw = self.worker_resource_control.get("conditional_wait", {})
-        if not isinstance(raw, dict):
-            raise TypeError(
-                "environment.worker_resource_control.conditional_wait "
-                "must be a mapping"
-            )
-        result = {
-            "enabled": bool(raw.get("enabled", False)),
-            "max_wait_minutes": float(raw.get("max_wait_minutes", 10.0)),
-            "max_consecutive_waits": int(raw.get("max_consecutive_waits", 2)),
-            "minimum_fatigue_ratio_improvement": float(
-                raw.get("minimum_fatigue_ratio_improvement", 0.05)
-            ),
-            "minimum_duration_improvement_ticks": int(
-                raw.get("minimum_duration_improvement_ticks", 1)
-            ),
-            "require_full_matching": bool(
-                raw.get("require_full_matching", True)
-            ),
-            "require_horizon_feasible": bool(
-                raw.get("require_horizon_feasible", True)
-            ),
-        }
-        if result["max_wait_minutes"] <= 0.0:
-            raise ValueError("conditional wait max_wait_minutes must be positive")
-        if result["max_consecutive_waits"] < 1:
-            raise ValueError(
-                "conditional wait max_consecutive_waits must be positive"
-            )
-        if result["minimum_fatigue_ratio_improvement"] < 0.0:
-            raise ValueError(
-                "conditional wait fatigue improvement must be non-negative"
-            )
-        if result["minimum_duration_improvement_ticks"] < 1:
-            raise ValueError(
-                "conditional wait duration improvement must be positive"
-            )
-        return result
 
     def _invalidate_resource_snapshot(self) -> None:
         self._state_version += 1
         self._resource_snapshot_cache = None
-        self._candidate_profile_cache = {}
         self._production_resource_profile_cache = {}
         self._stage_projection_cache = {}
-        self._temporal_oracle_cache = {}
-        self._temporal_subproblem_cache = {}
-        self._temporal_decision_searched_nodes = 0
-        self._temporal_decision_option_evaluations = 0
-        self._temporal_decision_budget_exhausted_reason = None
-        self._production_defer_recovery_cache_version = -1
-        self._production_defer_recovery_cache = None
+        self._reconfiguration_duration_improvement_cache_version = -1
+        self._reconfiguration_duration_improvement_cache = None
         self._action_mask_cache_version = -1
         self._action_mask_cache = None
         self._observation_cache_version = -1
@@ -594,64 +306,18 @@ class AssemblySchedulingEnv:
         self._fatigue_masked_actions = set()
         self._worker_competition_ticks = set()
         self._worker_matching_deficit_ticks = set()
-        self._resource_admission_candidates = set()
-        self._resource_admission_masked = set()
-        self._current_matching_admission_masked = set()
-        self._future_installation_admission_candidates = set()
-        self._future_installation_admission_masked = set()
-        self._matching_preserving_worker_actions = set()
-        self._deficit_reducing_worker_action_candidates = set()
-        self._deficit_reducing_worker_actions = set()
-        self._matching_deficit_recovery_advance_count = 0
         self._maximum_worker_matching_deficit = 0
-        self._maximum_projected_installation_deficit = 0
-        self._temporal_oracle_call_count = 0
-        self._temporal_oracle_cache_hit_count = 0
-        self._temporal_subproblem_cache_hit_count = 0
-        self._temporal_oracle_searched_nodes = 0
-        self._temporal_oracle_option_evaluations = 0
-        self._temporal_frontier_options_before = 0
-        self._temporal_frontier_options_after = 0
-        self._temporal_dominated_option_count = 0
-        self._temporal_decision_searched_nodes = 0
-        self._temporal_decision_option_evaluations = 0
-        self._temporal_decision_budget_exhausted_reason = None
-        self._temporal_episode_budget_exhausted_reason = None
-        self._temporal_budget_termination_counts = {}
-        self._temporal_progress_last_time = time.monotonic()
-        self._temporal_progress_last_work = 0
-        self._temporal_oracle_result_counts = {
-            "feasible": 0,
-            "infeasible": 0,
-            "unknown": 0,
-        }
-        self._temporal_worker_action_rescued = set()
-        self._temporal_future_installation_rescued = set()
-        self._temporal_delayed_disassembly_rescued = set()
-        self._candidate_recovery_advance_count = 0
-        self._production_defer_recovery_improvement_count = 0
-        self._production_defer_wait_ticks = 0
-        self._production_defer_reason_counts = {}
-        self._production_defer_shield_candidates = set()
-        self._production_defer_shield_masked = set()
-        self._production_defer_shield_reason_counts = {}
-        self._production_defer_shield_max_risk = 0.0
-        self._production_defer_shield_max_wait_ticks = 0
-        self._production_defer_shield_max_work_lower_bound_ticks = 0
-        self._production_defer_shield_min_deadline_slack_ticks = None
-        self._last_production_defer_certificate = None
-        self._last_completion_viability_certificate = None
+        self._wait_action_count = 0
+        self._production_wait_action_count = 0
+        self._worker_wait_action_count = 0
+        self._production_wait_ticks = 0
+        self._worker_wait_ticks = 0
+        self._wait_reason_counts = {}
+        self._wait_mask_reason_counts = {}
+        self._wait_masked_states = set()
+        self._wait_min_deadline_slack_ticks = None
+        self._last_wait_certificate = None
         self._first_unrecoverable_deadlock_diagnostic = None
-        self._conditional_wait_opportunity_count = 0
-        self._conditional_wait_selected_count = 0
-        self._conditional_wait_total_ticks = 0
-        self._conditional_wait_pair_gain_sum = 0
-        self._conditional_wait_fatigue_improvement_sum = 0.0
-        self._conditional_wait_duration_improvement_sum = 0
-        self._conditional_wait_reason_counts = {}
-        self._conditional_wait_opportunity_states = set()
-        self._consecutive_conditional_waits = 0
-        self._maximum_consecutive_conditional_waits = 0
         self._reconfiguration_reuse_count = 0
         self._post_reconfiguration_process_count = {}
         self._action_type_counts = {}
@@ -1014,16 +680,24 @@ class AssemblySchedulingEnv:
                     and operation.spec.required_module
                     in machine.spec.module_parameters
                 ):
-                    profile = self._production_candidate_profile(
-                        operation_index,
+                    profile = self._production_resource_profile(
                         machine_index,
+                        operation.spec.required_module,
+                    )
+                    predicted_finish_tick = (
+                        profile.processing_start_tick
+                        + self.estimate_processing_ticks(
+                            operation_index, machine_index
+                        )
+                        if profile.processing_start_tick is not None
+                        else self.horizon_tick + 1
                     )
                     candidate_slacks.append(
                         max(
                             -1.0,
                             min(
                                 1.0,
-                                profile.horizon_slack_ticks
+                                (self.horizon_tick - predicted_finish_tick)
                                 / max(1, self.horizon_tick),
                             ),
                         )
@@ -1768,230 +1442,53 @@ class AssemblySchedulingEnv:
                         and operation.spec.required_module
                         in machine.spec.module_parameters
                     ):
-                        direct = (
-                            machine.current_module
-                            == operation.spec.required_module
-                        )
-                        needs_profile = (
-                            self.matching_admission_enabled
-                            or self.completion_viability_shield_enabled
-                        )
-                        admissible = direct or not self.matching_admission_enabled
-                        profile: ProductionCandidateProfile | None = None
-                        if needs_profile:
-                            profile = self._production_candidate_profile(
-                                operation_index,
-                                machine_index,
+                        mask[
+                            self.encode_production_action(
+                                operation_index, machine_index
                             )
-                            if self.completion_viability_shield_enabled:
-                                admissible = admissible and profile.admissible
-                                self._last_completion_viability_certificate = {
-                                    "action": self.encode_production_action(
-                                        operation_index,
-                                        machine_index,
-                                    ),
-                                    "operation_id": operation.spec.id,
-                                    "machine_id": machine.spec.id,
-                                    "predicted_finish_tick": (
-                                        profile.predicted_finish_tick
-                                    ),
-                                    "completion_lower_bound_ticks": (
-                                        profile.completion_lower_bound_ticks
-                                    ),
-                                    "completion_slack_ticks": (
-                                        profile.completion_slack_ticks
-                                    ),
-                                    "allowed": bool(admissible),
-                                    "reason": (
-                                        "certified_completion"
-                                        if admissible
-                                        else "completion_viability_exceeded"
-                                    ),
-                                }
-                        if not direct and self.matching_admission_enabled:
-                            key = (
-                                self.current_tick,
-                                operation_index,
-                                machine_index,
-                            )
-                            self._resource_admission_candidates.add(key)
-                            if profile is None:
-                                profile = self._production_candidate_profile(
-                                    operation_index,
-                                    machine_index,
-                                )
-                            admissible = profile.admissible
-                            if self.matching_recovery_enabled:
-                                self._future_installation_admission_candidates.add(
-                                    key
-                                )
-                                temporal_rejected = bool(
-                                    self.temporal_matching_enabled
-                                    and profile.temporal_feasibility_status
-                                    == "infeasible"
-                                )
-                                if profile.matching_deficit_after_commit > 0 and (
-                                    not self.temporal_matching_enabled
-                                    or temporal_rejected
-                                ):
-                                    self._current_matching_admission_masked.add(
-                                        key
-                                    )
-                                if (
-                                    profile.future_installation_matching_deficit_after_commit
-                                    > 0
-                                    and (
-                                        not self.temporal_matching_enabled
-                                        or temporal_rejected
-                                    )
-                                ):
-                                    self._future_installation_admission_masked.add(
-                                        key
-                                    )
-                            if not admissible:
-                                self._resource_admission_masked.add(key)
-                        if admissible:
-                            mask[
-                                self.encode_production_action(
-                                    operation_index, machine_index
-                                )
-                            ] = False
-            defer_opportunity = self._production_defer_opportunity()
+                        ] = False
             legal_pair_count = int(np.count_nonzero(~mask[:-1]))
-            defer_certificate = self._production_defer_safety_certificate(
-                legal_pair_count,
-                defer_opportunity,
-            )
-            defer_allowed = bool(defer_certificate["allowed"])
-            if defer_allowed:
-                mask[self.production_defer_action] = False
+            wait_certificate = self._wait_certificate()
+            if wait_certificate["allowed"]:
+                mask[self.wait_action] = False
+            self._record_wait_mask_certificate(wait_certificate)
             self._last_action_mask_analysis = {
                 "state_version": self._state_version,
                 "phase": self.decision_type.value,
-                "advance_allowed": defer_allowed,
-                "defer_allowed": defer_allowed,
-                "defer_reason": (
-                    defer_opportunity[1]
-                    if defer_opportunity is not None
-                    else None
-                ),
-                "defer_until_tick": (
-                    defer_opportunity[0]
-                    if defer_opportunity is not None
-                    else None
-                ),
                 "legal_pair_count": legal_pair_count,
-                "completion_viability_certificate": dict(
-                    self._last_completion_viability_certificate or {}
-                ),
-                "non_delay": False,
-                "strict_future": defer_allowed,
-                "defer_shield": dict(defer_certificate),
+                "wait_allowed": bool(wait_certificate["allowed"]),
+                "wait": dict(wait_certificate),
             }
             return self._cache_action_mask(mask)
         mask = np.ones(self.worker_action_size, dtype=bool)
         legal_worker_pairs = 0
-        matching_deficit = 0
-        if self.matching_recovery_enabled:
-            snapshot = self._resource_feasibility_snapshot()
-            matching_deficit = len(snapshot.tasks) - snapshot.matching_size
-            self._maximum_worker_matching_deficit = max(
-                self._maximum_worker_matching_deficit,
-                matching_deficit,
-            )
         for machine_index, machine in enumerate(self.machines):
             reconfiguration = self._pending_reconfiguration(machine.spec.id)
             if reconfiguration is None:
                 continue
             for worker_index, worker in enumerate(self.workers):
-                legal = self._worker_can_start(reconfiguration, worker)
-                after_deficit: int | None = None
-                if legal and self.matching_recovery_enabled:
-                    before_deficit, after_deficit = (
-                        self._worker_action_matching_deficits(
-                            reconfiguration,
-                            worker_index,
-                        )
-                    )
-                    static_legal = (
-                        after_deficit == 0
-                        if before_deficit == 0
-                        else after_deficit < before_deficit
-                    )
-                    if self.temporal_matching_enabled and not static_legal:
-                        temporal_result = self._temporal_worker_action_result(
-                            reconfiguration,
-                            worker_index,
-                        )
-                        legal = temporal_result.status != "infeasible"
-                        if legal:
-                            self._temporal_worker_action_rescued.add(
-                                (
-                                    self.current_tick,
-                                    reconfiguration.id,
-                                    reconfiguration.stage.value,
-                                    worker.spec.id,
-                                )
-                            )
-                    else:
-                        legal = static_legal
-                    if legal and before_deficit > 0:
-                        self._deficit_reducing_worker_action_candidates.add(
-                            (
-                                self.current_tick,
-                                reconfiguration.id,
-                                reconfiguration.stage.value,
-                                worker.spec.id,
-                            )
-                        )
-                elif legal and self.matching_admission_enabled:
-                    legal = self._worker_action_preserves_matching(
-                        reconfiguration,
-                        worker_index,
-                    )
-                if legal:
+                if self._worker_can_start(reconfiguration, worker):
                     mask[
                         self.encode_worker_action(machine_index, worker_index)
                     ] = False
                     legal_worker_pairs += 1
-                    if after_deficit in {None, 0}:
-                        self._matching_preserving_worker_actions.add(
-                            (
-                                self.current_tick,
-                                reconfiguration.id,
-                                reconfiguration.stage.value,
-                                worker.spec.id,
-                            )
-                        )
-        non_delay = self.matching_admission_enabled
-        strict_future = self._has_strict_future()
-        conditional_preview = None
-        recovering = self.matching_recovery_enabled and matching_deficit > 0
-        if non_delay and legal_worker_pairs > 0 and not recovering:
-            conditional_preview = self._conditional_worker_wait_preview()
-        if conditional_preview is not None:
-            mask[-1] = False
-            if self._state_version not in self._conditional_wait_opportunity_states:
-                self._conditional_wait_opportunity_states.add(self._state_version)
-                self._conditional_wait_opportunity_count += 1
-        elif strict_future and not (
-            non_delay and legal_worker_pairs > 0
-        ):
-            mask[-1] = False
+        snapshot = self._resource_feasibility_snapshot()
+        matching_deficit = len(snapshot.tasks) - snapshot.matching_size
+        self._maximum_worker_matching_deficit = max(
+            self._maximum_worker_matching_deficit,
+            matching_deficit,
+        )
+        wait_certificate = self._wait_certificate()
+        if wait_certificate["allowed"]:
+            mask[self.wait_action] = False
+        self._record_wait_mask_certificate(wait_certificate)
         self._last_action_mask_analysis = {
             "state_version": self._state_version,
             "phase": self.decision_type.value,
-            "advance_allowed": bool(not mask[-1]),
             "legal_pair_count": legal_worker_pairs,
-            "non_delay": non_delay,
-            "strict_future": strict_future,
-            "conditional_wait": (
-                conditional_preview.__dict__
-                if conditional_preview is not None
-                else None
-            ),
+            "wait_allowed": bool(wait_certificate["allowed"]),
+            "wait": dict(wait_certificate),
             "matching_deficit": matching_deficit,
-            "matching_recovery": recovering,
         }
         return self._cache_action_mask(mask)
 
@@ -2009,9 +1506,8 @@ class AssemblySchedulingEnv:
     ) -> dict[str, Any] | None:
         """Classify a state whose mask contains exactly one legal action.
 
-        The classification separates physical/event constraints from the
-        optional non-delay worker-dispatch restriction.  It is independent of
-        whether PPO forced-action compression is enabled.
+        The classification separates physical pair availability from progress
+        opportunities. It is independent of forced-action compression.
         """
 
         mask = (
@@ -2037,7 +1533,7 @@ class AssemblySchedulingEnv:
             action = int(legal_actions[0])
             analysis = self._last_action_mask_analysis or {}
 
-        action_kind = "advance" if action == len(mask) - 1 else "pair"
+        action_kind = "wait" if action == len(mask) - 1 else "pair"
         action_type = self._action_type(self.decision_type, action)
         stage_tags: set[str] = set()
         if self.decision_type == DecisionType.WORKER and action_kind == "pair":
@@ -2058,24 +1554,17 @@ class AssemblySchedulingEnv:
                 }
             )
 
-        non_delay_blocked_advance = bool(
-            self.decision_type == DecisionType.WORKER
-            and action_kind == "pair"
-            and analysis.get("non_delay", False)
-            and analysis.get("strict_future", False)
-            and int(analysis.get("legal_pair_count", 0)) > 0
-        )
         phase_handoff = bool(
             self.decision_type == DecisionType.PRODUCTION
-            and action_kind == "advance"
+            and action_kind == "wait"
             and self._has_pending_worker_task()
         )
         recovery = bool(
-            action_kind == "advance"
-            and self._forced_advance_has_recovery_candidate()
+            action_kind == "wait"
+            and self._forced_wait_has_recovery_candidate()
         )
         future_event = bool(
-            action_kind == "advance"
+            action_kind == "wait"
             and any(event[0] > self.current_tick for event in self._events)
         )
         return {
@@ -2084,19 +1573,16 @@ class AssemblySchedulingEnv:
             "action_kind": action_kind,
             "action_type": action_type,
             "stage_tags": tuple(sorted(stage_tags)),
-            "non_delay_blocked_advance": non_delay_blocked_advance,
-            "advance_physically_unavailable": bool(
-                action_kind == "pair" and not non_delay_blocked_advance
-            ),
-            "pair_physically_unavailable": action_kind == "advance",
+            "wait_physically_unavailable": action_kind == "pair",
+            "pair_physically_unavailable": action_kind == "wait",
             "phase_handoff": phase_handoff,
             "recovery": recovery,
             "future_event": future_event,
-            "defer_reason": analysis.get("defer_reason"),
+            "wait_reason": (analysis.get("wait") or {}).get("reason"),
         }
 
-    def _forced_advance_has_recovery_candidate(self) -> bool:
-        """Return whether an advance-only state is waiting on fatigue recovery."""
+    def _forced_wait_has_recovery_candidate(self) -> bool:
+        """Return whether a WAIT-only state is waiting on worker recovery."""
 
         for reconfiguration in self.reconfigurations.values():
             if reconfiguration.stage not in {
@@ -2116,16 +1602,7 @@ class AssemblySchedulingEnv:
                     and not self._worker_can_start(reconfiguration, worker)
                 ):
                     return True
-        if self.decision_type != DecisionType.PRODUCTION:
-            return False
-        candidate_recovery = any(
-            profile.resource_ready_tick > self.current_tick
-            for profile in self._candidate_profile_cache.values()
-        )
-        return candidate_recovery or (
-            self._earliest_production_defer_recovery_improvement_tick()
-            is not None
-        )
+        return self._earliest_worker_pair_recovery_tick() is not None
 
     def _record_forced_action_diagnostic(
         self,
@@ -2155,20 +1632,16 @@ class AssemblySchedulingEnv:
         increment(f"forced_{action_kind}_count")
         increment(f"forced_{phase}_{action_kind}_count")
         increment(f"forced_{str(diagnostic['action_type']).lower()}_count")
-        if diagnostic["non_delay_blocked_advance"]:
-            increment("forced_pair_advance_blocked_non_delay_count")
-            if phase == "worker":
-                increment("forced_worker_pair_non_delay_count")
-        if diagnostic["advance_physically_unavailable"]:
-            increment("forced_pair_advance_physically_unavailable_count")
+        if diagnostic["wait_physically_unavailable"]:
+            increment("forced_pair_wait_physically_unavailable_count")
         if diagnostic["pair_physically_unavailable"]:
-            increment("forced_advance_pair_physically_unavailable_count")
+            increment("forced_wait_pair_physically_unavailable_count")
         if diagnostic["phase_handoff"]:
             increment("forced_phase_handoff_count")
         if diagnostic["recovery"]:
-            increment("forced_recovery_advance_count")
+            increment("forced_recovery_wait_count")
         if diagnostic["future_event"]:
-            increment("forced_future_event_advance_count")
+            increment("forced_future_event_wait_count")
         stage_tags = set(diagnostic["stage_tags"])
         if ReconfigurationStage.WAIT_DIS.value in stage_tags:
             increment("forced_wait_dis_count")
@@ -2183,26 +1656,22 @@ class AssemblySchedulingEnv:
             "forced_production_count",
             "forced_worker_count",
             "forced_pair_count",
-            "forced_advance_count",
+            "forced_wait_count",
             "forced_production_pair_count",
-            "forced_production_advance_count",
+            "forced_production_wait_count",
             "forced_worker_pair_count",
-            "forced_worker_advance_count",
-            "forced_pair_advance_blocked_non_delay_count",
-            "forced_worker_pair_non_delay_count",
-            "forced_pair_advance_physically_unavailable_count",
-            "forced_advance_pair_physically_unavailable_count",
+            "forced_worker_wait_count",
+            "forced_pair_wait_physically_unavailable_count",
+            "forced_wait_pair_physically_unavailable_count",
             "forced_wait_dis_count",
             "forced_wait_ins_count",
             "forced_mixed_wait_stage_count",
             "forced_phase_handoff_count",
-            "forced_recovery_advance_count",
-            "forced_future_event_advance_count",
+            "forced_recovery_wait_count",
+            "forced_future_event_wait_count",
             "forced_direct_process_count",
             "forced_commit_reconfig_count",
-            "forced_defer_production_count",
             "forced_worker_assign_count",
-            "forced_advance_event_count",
         )
         result: dict[str, int | float] = {
             name: int(self._forced_action_counts.get(name, 0))
@@ -2226,8 +1695,8 @@ class AssemblySchedulingEnv:
 
     def _action_type(self, phase: DecisionType, action: int) -> str:
         if phase == DecisionType.PRODUCTION:
-            if action == self.production_defer_action:
-                return "DEFER_PRODUCTION"
+            if action == self._action_codec.production_wait:
+                return "WAIT"
             operation_index, machine_index = self.decode_production_action(action)
             operation = self.operations[operation_index]
             machine = self.machines[machine_index]
@@ -2235,8 +1704,8 @@ class AssemblySchedulingEnv:
                 return "DIRECT_PROCESS"
             return "COMMIT_RECONFIG"
         if phase == DecisionType.WORKER:
-            if action == self.worker_advance_action:
-                return "ADVANCE_EVENT"
+            if action == self._action_codec.worker_wait:
+                return "WAIT"
             return "WORKER_ASSIGN"
         raise RuntimeError("terminal state has no action type")
 
@@ -2283,101 +1752,36 @@ class AssemblySchedulingEnv:
         )
         phase = self.decision_type
         action_type = self._action_type(phase, action)
-        defer_certificate = (
-            dict(self._last_production_defer_certificate or {})
-            if phase == DecisionType.PRODUCTION
-            and action == self.production_defer_action
+        is_wait_action = action == self.wait_action
+        wait_certificate = (
+            dict((self._last_action_mask_analysis or {}).get("wait") or {})
+            if is_wait_action
             else {}
         )
         action_outcome: dict[str, Any] = {}
-        conditional_wait_analysis = (
-            dict(self._last_action_mask_analysis.get("conditional_wait"))
-            if phase == DecisionType.WORKER
-            and action == self.worker_advance_action
-            and self._last_action_mask_analysis is not None
-            and self._last_action_mask_analysis.get("conditional_wait")
-            is not None
-            else None
-        )
         if phase == DecisionType.WORKER:
             self._record_worker_pressure_snapshot()
-            if action == self.worker_advance_action:
-                if (
-                    self.matching_recovery_enabled
-                    and self._last_action_mask_analysis is not None
-                    and int(
-                        self._last_action_mask_analysis.get(
-                            "matching_deficit", 0
-                        )
-                    )
-                    > 0
-                    and int(
-                        self._last_action_mask_analysis.get(
-                            "legal_pair_count", 0
-                        )
-                    )
-                    == 0
-                ):
-                    self._matching_deficit_recovery_advance_count += 1
-            else:
-                machine_index, worker_index = self.decode_worker_action(action)
-                reconfiguration = self._pending_reconfiguration(
-                    self.machines[machine_index].spec.id
-                )
-                if reconfiguration is not None:
-                    recovery_key = (
-                        self.current_tick,
-                        reconfiguration.id,
-                        reconfiguration.stage.value,
-                        self.workers[worker_index].spec.id,
-                    )
-                    if recovery_key in (
-                        self._deficit_reducing_worker_action_candidates
-                    ):
-                        self._deficit_reducing_worker_actions.add(recovery_key)
         self._invalidate_resource_snapshot()
-        if phase == DecisionType.PRODUCTION:
-            if action == self.production_defer_action:
-                action_outcome = self._execute_production_defer()
+        if is_wait_action:
+            action_outcome = self._execute_wait(wait_certificate)
+            wait_ticks = int(action_outcome.get("wait_ticks", 0))
+            wait_reason = str(action_outcome.get("wait_reason", "unknown"))
+            self._wait_action_count += 1
+            self._wait_reason_counts[wait_reason] = (
+                self._wait_reason_counts.get(wait_reason, 0) + 1
+            )
+            if phase == DecisionType.PRODUCTION:
+                self._production_wait_action_count += 1
+                self._production_wait_ticks += wait_ticks
             else:
-                operation_index, machine_index = self.decode_production_action(action)
-                self._execute_production_action(operation_index, machine_index)
+                self._worker_wait_action_count += 1
+                self._worker_wait_ticks += wait_ticks
+        elif phase == DecisionType.PRODUCTION:
+            operation_index, machine_index = self.decode_production_action(action)
+            self._execute_production_action(operation_index, machine_index)
         else:
-            if action == self.worker_advance_action:
-                action_outcome = self._advance_to_next_event()
-                if conditional_wait_analysis is not None:
-                    self._conditional_wait_selected_count += 1
-                    self._consecutive_conditional_waits += 1
-                    self._maximum_consecutive_conditional_waits = max(
-                        self._maximum_consecutive_conditional_waits,
-                        self._consecutive_conditional_waits,
-                    )
-                    self._conditional_wait_total_ticks += int(
-                        conditional_wait_analysis["wait_ticks"]
-                    )
-                    self._conditional_wait_pair_gain_sum += max(
-                        0,
-                        int(conditional_wait_analysis["future_legal_pairs"])
-                        - int(conditional_wait_analysis["current_legal_pairs"]),
-                    )
-                    self._conditional_wait_fatigue_improvement_sum += float(
-                        conditional_wait_analysis[
-                            "fatigue_ratio_improvement"
-                        ]
-                    )
-                    self._conditional_wait_duration_improvement_sum += int(
-                        conditional_wait_analysis[
-                            "duration_improvement_ticks"
-                        ]
-                    )
-                    reason = str(conditional_wait_analysis["reason"])
-                    self._conditional_wait_reason_counts[reason] = (
-                        self._conditional_wait_reason_counts.get(reason, 0) + 1
-                    )
-            else:
-                machine_index, worker_index = self.decode_worker_action(action)
-                self._execute_worker_action(machine_index, worker_index)
-                self._consecutive_conditional_waits = 0
+            machine_index, worker_index = self.decode_worker_action(action)
+            self._execute_worker_action(machine_index, worker_index)
         self._action_type_counts[action_type] = (
             self._action_type_counts.get(action_type, 0) + 1
         )
@@ -2414,17 +1818,6 @@ class AssemblySchedulingEnv:
             if shaping_enabled
             else 0.0
         )
-        shield = self.production_defer_shield
-        defer_risk_shaping = 0.0
-        if defer_certificate and bool(shield.get("enabled", False)):
-            excess = max(
-                0.0,
-                float(defer_certificate.get("risk", 0.0))
-                - float(shield["soft_risk_threshold"]),
-            )
-            defer_risk_shaping = -float(
-                shield["soft_risk_coefficient"]
-            ) * excess * excess
         reward = RewardVector(
             flow=-(after[0] - before[0]),
             cost=-(after[1] - before[1]),
@@ -2445,12 +1838,8 @@ class AssemblySchedulingEnv:
                 else 0.0
             ),
             feasibility_shaping=feasibility_shaping,
-            defer_risk_shaping=defer_risk_shaping,
         )
-        if (
-            phase == DecisionType.WORKER
-            and action != self.worker_advance_action
-        ):
+        if phase == DecisionType.WORKER and not is_wait_action:
             self._worker_assignment_count += 1
             self._worker_assignment_variance_reward_sum += reward.variance
             self._worker_assignment_variance_reward_abs_sum += abs(
@@ -2468,18 +1857,13 @@ class AssemblySchedulingEnv:
             "decision_type": self.decision_type.value,
             "action_phase": phase.value,
             "action_type": action_type,
-            "defer_reason": action_outcome.get("defer_reason"),
+            "wait_reason": action_outcome.get("wait_reason"),
             "wait_ticks": int(action_outcome.get("wait_ticks", 0)),
             "wait_time": ticks_to_minutes(
                 int(action_outcome.get("wait_ticks", 0)),
                 self.resolution,
             ),
-            "recovery_improvement": bool(
-                action_outcome.get("recovery_improvement", False)
-            ),
-            "conditional_wait": conditional_wait_analysis,
-            "defer_shield": defer_certificate or None,
-            "defer_risk_shaping": defer_risk_shaping,
+            "wait_certificate": wait_certificate or None,
             "terminal_reason": self.terminal_reason,
         }
         observation = self.observe() if build_observation else None
@@ -2777,11 +2161,14 @@ class AssemblySchedulingEnv:
         self._require_instance()
         completed_orders = len(self._order_completion_tick)
         completed_operations = sum(
-            operation.state == OperationState.DONE for operation in self.operations
+            operation.state == OperationState.DONE
+            for operation in self.operations
         )
         completion_times = {
             order.id: (
-                ticks_to_minutes(self._order_completion_tick[order.id], self.resolution)
+                ticks_to_minutes(
+                    self._order_completion_tick[order.id], self.resolution
+                )
                 if order.id in self._order_completion_tick
                 else None
             )
@@ -2795,13 +2182,11 @@ class AssemblySchedulingEnv:
         switches = [
             int(
                 value.installation_worker_id is not None
-                and value.disassembly_worker_id != value.installation_worker_id
+                and value.disassembly_worker_id
+                != value.installation_worker_id
             )
             for value in completed_reconfigurations
         ]
-        switch_ratio = (
-            float(sum(switches) / len(switches)) if switches else None
-        )
         resource_snapshot = self._resource_feasibility_snapshot()
         current_matching_deficit = (
             len(resource_snapshot.tasks) - resource_snapshot.matching_size
@@ -2810,6 +2195,7 @@ class AssemblySchedulingEnv:
             self._maximum_worker_matching_deficit,
             current_matching_deficit,
         )
+        total_wait_ticks = self._production_wait_ticks + self._worker_wait_ticks
         return {
             "instance_id": self.instance.instance_id,
             "terminated": self.terminated,
@@ -2821,22 +2207,23 @@ class AssemblySchedulingEnv:
             "completed_operations": completed_operations,
             "total_operations": len(self.operations),
             "unfinished_orders": len(self.instance.orders) - completed_orders,
-            "total_flow_time": self._flow_integral
-            if self.terminated
-            else None,
+            "total_flow_time": self._flow_integral if self.terminated else None,
             "censored_flow_time": self._flow_integral,
             "flow_time_objective": self._flow_integral + self._flow_penalty,
             "reconfiguration_cost": self._reconfiguration_cost,
             "worker_load_variance": self._load_variance(),
             "maximum_worker_fatigue": self._maximum_fatigue_seen,
-            "safe_fatigue_limit": (
-                self.instance.fatigue.maximum_safe_fatigue
-            ),
+            "safe_fatigue_limit": self.instance.fatigue.maximum_safe_fatigue,
             "worker_peak_fatigue": {
-                worker.spec.id: worker.peak_fatigue for worker in self.workers
+                worker.spec.id: worker.peak_fatigue
+                for worker in self.workers
             },
             "mean_peak_worker_fatigue": (
-                float(np.mean([worker.peak_fatigue for worker in self.workers]))
+                float(
+                    np.mean(
+                        [worker.peak_fatigue for worker in self.workers]
+                    )
+                )
                 if self.workers
                 else 0.0
             ),
@@ -2857,104 +2244,10 @@ class AssemblySchedulingEnv:
             "maximum_worker_matching_deficit": (
                 self._maximum_worker_matching_deficit
             ),
-            "deficit_reducing_worker_action_candidate_count": len(
-                self._deficit_reducing_worker_action_candidates
-            ),
-            "deficit_reducing_worker_action_count": len(
-                self._deficit_reducing_worker_actions
-            ),
-            "matching_deficit_recovery_advance_count": (
-                self._matching_deficit_recovery_advance_count
-            ),
-            "resource_admission_masked_action_count": len(
-                self._resource_admission_masked
-            ),
-            "resource_admission_masked_action_ratio": (
-                len(self._resource_admission_masked)
-                / len(self._resource_admission_candidates)
-                if self._resource_admission_candidates
-                else 0.0
-            ),
-            "current_matching_admission_masked_action_count": len(
-                self._current_matching_admission_masked
-            ),
-            "future_installation_admission_candidate_count": len(
-                self._future_installation_admission_candidates
-            ),
-            "future_installation_admission_masked_action_count": len(
-                self._future_installation_admission_masked
-            ),
-            "future_installation_admission_masked_action_ratio": (
-                len(self._future_installation_admission_masked)
-                / len(self._future_installation_admission_candidates)
-                if self._future_installation_admission_candidates
-                else 0.0
-            ),
-            "maximum_projected_installation_deficit": (
-                self._maximum_projected_installation_deficit
-            ),
-            "future_installation_matching_deficit_after_commit": (
-                self._maximum_projected_installation_deficit
-            ),
-            "temporal_oracle_call_count": self._temporal_oracle_call_count,
-            "temporal_oracle_cache_hit_count": (
-                self._temporal_oracle_cache_hit_count
-            ),
-            "temporal_subproblem_cache_hit_count": (
-                self._temporal_subproblem_cache_hit_count
-            ),
-            "temporal_oracle_searched_nodes": (
-                self._temporal_oracle_searched_nodes
-            ),
-            "temporal_oracle_option_evaluations": (
-                self._temporal_oracle_option_evaluations
-            ),
-            "temporal_frontier_options_before": (
-                self._temporal_frontier_options_before
-            ),
-            "temporal_frontier_options_after": (
-                self._temporal_frontier_options_after
-            ),
-            "temporal_dominated_option_count": (
-                self._temporal_dominated_option_count
-            ),
-            "temporal_budget_termination_counts": dict(
-                sorted(self._temporal_budget_termination_counts.items())
-            ),
-            "temporal_search_implementation": (
-                self.temporal_feasibility_settings["search_implementation"]
-            ),
-            "temporal_oracle_feasible_count": (
-                self._temporal_oracle_result_counts["feasible"]
-            ),
-            "temporal_oracle_infeasible_count": (
-                self._temporal_oracle_result_counts["infeasible"]
-            ),
-            "temporal_oracle_unknown_count": (
-                self._temporal_oracle_result_counts["unknown"]
-            ),
-            "temporal_oracle_unknown_rate": (
-                self._temporal_oracle_result_counts["unknown"]
-                / self._temporal_oracle_call_count
-                if self._temporal_oracle_call_count
-                else 0.0
-            ),
-            "temporal_worker_action_rescued_count": len(
-                self._temporal_worker_action_rescued
-            ),
-            "temporal_future_installation_rescued_count": len(
-                self._temporal_future_installation_rescued
-            ),
-            "temporal_delayed_disassembly_rescued_count": len(
-                self._temporal_delayed_disassembly_rescued
-            ),
             "minimum_worker_alternatives": (
                 self._minimum_worker_alternatives_seen
                 if self._minimum_worker_alternatives_seen is not None
                 else len(self.workers)
-            ),
-            "matching_preserving_worker_action_count": len(
-                self._matching_preserving_worker_actions
             ),
             "worker_assignment_count": self._worker_assignment_count,
             "worker_assignment_variance_reward_sum": (
@@ -2966,9 +2259,6 @@ class AssemblySchedulingEnv:
             "worker_assignment_nonzero_variance_reward_count": (
                 self._worker_assignment_nonzero_variance_reward_count
             ),
-            "candidate_recovery_advance_count": (
-                self._candidate_recovery_advance_count
-            ),
             "action_type_counts": dict(self._action_type_counts),
             "direct_process_action_count": self._action_type_counts.get(
                 "DIRECT_PROCESS", 0
@@ -2976,80 +2266,35 @@ class AssemblySchedulingEnv:
             "commit_reconfig_action_count": self._action_type_counts.get(
                 "COMMIT_RECONFIG", 0
             ),
-            "defer_production_action_count": self._action_type_counts.get(
-                "DEFER_PRODUCTION", 0
-            ),
             "worker_assign_action_count": self._action_type_counts.get(
                 "WORKER_ASSIGN", 0
             ),
-            "advance_event_action_count": self._action_type_counts.get(
-                "ADVANCE_EVENT", 0
+            "wait_action_count": self._wait_action_count,
+            "production_wait_action_count": self._production_wait_action_count,
+            "worker_wait_action_count": self._worker_wait_action_count,
+            "wait_total_ticks": total_wait_ticks,
+            "wait_total_time": ticks_to_minutes(
+                total_wait_ticks, self.resolution
             ),
-            "production_defer_reason_counts": dict(
-                self._production_defer_reason_counts
+            "production_wait_ticks": self._production_wait_ticks,
+            "production_wait_time": ticks_to_minutes(
+                self._production_wait_ticks, self.resolution
             ),
-            "production_defer_wait_ticks": self._production_defer_wait_ticks,
-            "production_defer_wait_time": ticks_to_minutes(
-                self._production_defer_wait_ticks,
-                self.resolution,
+            "worker_wait_ticks": self._worker_wait_ticks,
+            "worker_wait_time": ticks_to_minutes(
+                self._worker_wait_ticks, self.resolution
             ),
-            "production_defer_recovery_improvement_count": (
-                self._production_defer_recovery_improvement_count
+            "wait_reason_counts": dict(sorted(self._wait_reason_counts.items())),
+            "wait_mask_reason_counts": dict(
+                sorted(self._wait_mask_reason_counts.items())
             ),
-            "production_defer_shield_candidate_count": len(
-                self._production_defer_shield_candidates
-            ),
-            "production_defer_shield_masked_count": len(
-                self._production_defer_shield_masked
-            ),
-            "production_defer_shield_reason_counts": dict(
-                self._production_defer_shield_reason_counts
-            ),
-            "production_defer_shield_max_risk": (
-                self._production_defer_shield_max_risk
-            ),
-            "production_defer_shield_max_wait_ticks": (
-                self._production_defer_shield_max_wait_ticks
-            ),
-            "production_defer_shield_max_work_lower_bound_ticks": (
-                self._production_defer_shield_max_work_lower_bound_ticks
-            ),
-            "production_defer_shield_min_deadline_slack_ticks": (
-                self._production_defer_shield_min_deadline_slack_ticks
+            "wait_min_deadline_slack_ticks": (
+                self._wait_min_deadline_slack_ticks
             ),
             "first_unrecoverable_deadlock_diagnostic": (
                 dict(self._first_unrecoverable_deadlock_diagnostic)
                 if self._first_unrecoverable_deadlock_diagnostic is not None
                 else None
-            ),
-            "conditional_worker_wait_opportunity_count": (
-                self._conditional_wait_opportunity_count
-            ),
-            "conditional_worker_wait_selected_count": (
-                self._conditional_wait_selected_count
-            ),
-            "conditional_worker_wait_total_ticks": (
-                self._conditional_wait_total_ticks
-            ),
-            "conditional_worker_wait_total_time": ticks_to_minutes(
-                self._conditional_wait_total_ticks,
-                self.resolution,
-            ),
-            "conditional_worker_wait_pair_gain_sum": (
-                self._conditional_wait_pair_gain_sum
-            ),
-            "conditional_worker_wait_fatigue_improvement_sum": (
-                self._conditional_wait_fatigue_improvement_sum
-            ),
-            "conditional_worker_wait_duration_improvement_ticks_sum": (
-                self._conditional_wait_duration_improvement_sum
-            ),
-            "conditional_worker_wait_reason_counts": dict(
-                self._conditional_wait_reason_counts
-            ),
-            "conditional_worker_wait_max_consecutive_observed": min(
-                self._maximum_consecutive_conditional_waits,
-                int(self.conditional_worker_wait["max_consecutive_waits"]),
             ),
             "reconfiguration_reuse_count": self._reconfiguration_reuse_count,
             **self._forced_action_metrics(),
@@ -3058,7 +2303,9 @@ class AssemblySchedulingEnv:
             ),
             "completed_reconfigurations": len(completed_reconfigurations),
             "worker_switch_indicators": switches,
-            "worker_switch_ratio": switch_ratio,
+            "worker_switch_ratio": (
+                float(sum(switches) / len(switches)) if switches else None
+            ),
             "completion_times": completion_times,
             "cumulative_reward": {
                 "flow": float(self._cumulative_reward[0]),
@@ -3217,50 +2464,34 @@ class AssemblySchedulingEnv:
         machine.source_module = machine.current_module
         machine.target_module = operation.spec.required_module
 
-    def _execute_production_defer(self) -> dict[str, Any]:
-        opportunity = self._production_defer_opportunity()
-        if opportunity is None:
-            if not bool(self.production_defer_shield.get("enabled", False)):
-                raise RuntimeError(
-                    "production defer has no decision-relevant future"
-                )
-            if self.completion_viability_shield_enabled:
-                self._record_unrecoverable_deadlock_diagnostic()
-                self._truncate_at_horizon("unrecoverable_deadlock")
-                outcome: dict[str, Any] = {
-                    "defer_reason": "unrecoverable_deadlock",
-                    "wait_ticks": 0,
-                    "recovery_improvement": False,
-                }
-            else:
-                before_tick = self.current_tick
-                self._truncate_at_horizon("deadlock")
-                outcome = {
-                    "defer_reason": "terminal_or_deadlock_resolution",
-                    "wait_ticks": self.current_tick - before_tick,
-                    "recovery_improvement": False,
-                }
-        else:
-            _, defer_reason = opportunity
-            if self._has_pending_worker_task():
-                self.decision_type = DecisionType.WORKER
-                outcome = {
-                    "defer_reason": "worker_phase_handoff",
-                    "wait_ticks": 0,
-                    "recovery_improvement": False,
-                }
-            else:
-                advance_outcome = self._advance_to_next_event()
-                outcome = {
-                    **advance_outcome,
-                    "defer_reason": defer_reason,
-                }
-        reason = str(outcome["defer_reason"])
-        self._production_defer_reason_counts[reason] = (
-            self._production_defer_reason_counts.get(reason, 0) + 1
-        )
-        self._production_defer_wait_ticks += int(outcome["wait_ticks"])
-        return outcome
+    def _execute_wait(self, certificate: dict[str, Any]) -> dict[str, Any]:
+        """Apply the exact progress transition certified by the action mask."""
+
+        if not certificate or not bool(certificate.get("allowed", False)):
+            raise RuntimeError("WAIT action has no valid progress certificate")
+        progress_kind = str(certificate["progress_kind"])
+        wait_ticks = int(certificate["wait_ticks"])
+        if progress_kind == "worker_phase_handoff":
+            if self.decision_type != DecisionType.PRODUCTION:
+                raise RuntimeError("worker phase handoff requires production phase")
+            self.decision_type = DecisionType.WORKER
+            return {
+                "wait_reason": progress_kind,
+                "wait_ticks": 0,
+            }
+
+        next_tick = int(certificate["next_tick"])
+        if next_tick <= self.current_tick or wait_ticks != next_tick - self.current_tick:
+            raise RuntimeError("WAIT certificate does not advance time consistently")
+        self._advance_interval(next_tick)
+        self.current_tick = next_tick
+        self._process_events_at_current_tick()
+        self._invalidate_resource_snapshot()
+        self.decision_type = DecisionType.PRODUCTION
+        return {
+            "wait_reason": progress_kind,
+            "wait_ticks": wait_ticks,
+        }
 
     def _execute_worker_action(
         self, machine_index: int, worker_index: int
@@ -3377,84 +2608,6 @@ class AssemblySchedulingEnv:
                 "duration": ticks_to_minutes(duration_ticks, self.resolution),
             }
         )
-
-    def _advance_to_next_event(self) -> dict[str, Any]:
-        event_ticks = [event[0] for event in self._events if event[0] > self.current_tick]
-        recovery_tick = self._earliest_recovery_tick()
-        candidate_recovery_tick = self._earliest_candidate_recovery_tick()
-        recovery_improvement_tick = (
-            self._earliest_production_defer_recovery_improvement_tick()
-        )
-        candidates = event_ticks + (
-            [recovery_tick] if recovery_tick is not None else []
-        ) + (
-            [candidate_recovery_tick]
-            if candidate_recovery_tick is not None
-            else []
-        ) + (
-            [recovery_improvement_tick]
-            if recovery_improvement_tick is not None
-            else []
-        )
-        if not candidates:
-            before_tick = self.current_tick
-            self._truncate_at_horizon("deadlock")
-            return {
-                "event_reason": "deadlock",
-                "wait_ticks": self.current_tick - before_tick,
-                "recovery_improvement": False,
-            }
-        next_tick = min(candidates)
-        if (
-            candidate_recovery_tick is not None
-            and next_tick == candidate_recovery_tick
-        ):
-            self._candidate_recovery_advance_count += 1
-        recovery_improvement = bool(
-            recovery_improvement_tick is not None
-            and next_tick == recovery_improvement_tick
-        )
-        if recovery_improvement:
-            self._production_defer_recovery_improvement_count += 1
-        if next_tick > self.horizon_tick:
-            before_tick = self.current_tick
-            self._truncate_at_horizon("horizon")
-            return {
-                "event_reason": "horizon",
-                "wait_ticks": self.current_tick - before_tick,
-                "recovery_improvement": recovery_improvement,
-            }
-        before_tick = self.current_tick
-        event_types = sorted(
-            {
-                event[3].value
-                for event in self._events
-                if event[0] == next_tick
-            }
-        )
-        if event_types:
-            event_reason = "external_event:" + "+".join(event_types)
-        elif recovery_tick is not None and next_tick == recovery_tick:
-            event_reason = "worker_recovery_feasible"
-        elif (
-            candidate_recovery_tick is not None
-            and next_tick == candidate_recovery_tick
-        ):
-            event_reason = "candidate_recovery_feasible"
-        elif recovery_improvement:
-            event_reason = "reconfiguration_duration_improved"
-        else:
-            raise RuntimeError("next decision event has no classified cause")
-        self._advance_interval(next_tick)
-        self.current_tick = next_tick
-        self._process_events_at_current_tick()
-        self._invalidate_resource_snapshot()
-        self.decision_type = DecisionType.PRODUCTION
-        return {
-            "event_reason": event_reason,
-            "wait_ticks": self.current_tick - before_tick,
-            "recovery_improvement": recovery_improvement,
-        }
 
     def _advance_interval(self, next_tick: int) -> None:
         delta_ticks = next_tick - self.current_tick
@@ -3741,93 +2894,6 @@ class AssemblySchedulingEnv:
             temporary, worker, fatigue_override=fatigue
         )
 
-    def _projected_safe_edges_for_tasks(
-        self,
-        tasks: tuple[WorkerTaskSnapshot, ...],
-        tick: int,
-    ) -> tuple[tuple[int, ...], ...]:
-        edges: list[tuple[int, ...]] = []
-        safe_limit = float(self.instance.fatigue.maximum_safe_fatigue)
-        for task in tasks:
-            accumulation_rate = (
-                self.instance.fatigue.disassembly_accumulation_rate_per_minute
-                if task.stage == ReconfigurationStage.WAIT_DIS
-                else self.instance.fatigue.installation_accumulation_rate_per_minute
-            )
-            safe_workers = []
-            for worker_index, worker in enumerate(self.workers):
-                if task.module not in worker.spec.qualified_modules:
-                    continue
-                fatigue = self._worker_fatigue_at_tick(worker_index, tick)
-                if fatigue is None:
-                    continue
-                duration_ticks = self._projected_stage_duration_ticks(
-                    task, worker_index, tick
-                )
-                predicted = fatigue + accumulation_rate * ticks_to_minutes(
-                    duration_ticks, self.resolution
-                )
-                if predicted <= safe_limit + EPSILON:
-                    safe_workers.append(worker_index)
-            edges.append(tuple(safe_workers))
-        return tuple(edges)
-
-    def _matching_preserving_pair_count(
-        self,
-        edges: tuple[tuple[int, ...], ...],
-        matching_size: int,
-    ) -> int:
-        if matching_size != len(edges):
-            return 0
-        count = 0
-        for task_index, edge in enumerate(edges):
-            for worker_index in edge:
-                remaining = [
-                    [candidate for candidate in other if candidate != worker_index]
-                    for index, other in enumerate(edges)
-                    if index != task_index
-                ]
-                if _maximum_matching_size(
-                    remaining, len(self.workers)
-                ) == len(remaining):
-                    count += 1
-        return count
-
-    def _best_projected_worker_candidate(
-        self,
-        tasks: tuple[WorkerTaskSnapshot, ...],
-        edges: tuple[tuple[int, ...], ...],
-        *,
-        tick: int | None = None,
-    ) -> tuple[float, int]:
-        effective_tick = self.current_tick if tick is None else int(tick)
-        safe_limit = float(self.instance.fatigue.maximum_safe_fatigue)
-        fatigue_values: list[float] = []
-        durations: list[int] = []
-        for task, edge in zip(tasks, edges):
-            accumulation_rate = (
-                self.instance.fatigue.disassembly_accumulation_rate_per_minute
-                if task.stage == ReconfigurationStage.WAIT_DIS
-                else self.instance.fatigue.installation_accumulation_rate_per_minute
-            )
-            for worker_index in edge:
-                fatigue = self._worker_fatigue_at_tick(
-                    worker_index, effective_tick
-                )
-                if fatigue is None:
-                    continue
-                duration_ticks = self._projected_stage_duration_ticks(
-                    task, worker_index, effective_tick
-                )
-                projected = fatigue + accumulation_rate * ticks_to_minutes(
-                    duration_ticks, self.resolution
-                )
-                fatigue_values.append(projected / safe_limit)
-                durations.append(duration_ticks)
-        if not fatigue_values:
-            return math.inf, self.horizon_tick + 1
-        return min(fatigue_values), min(durations)
-
     def _resource_feasibility_snapshot(
         self,
     ) -> ResourceFeasibilitySnapshot:
@@ -3866,62 +2932,6 @@ class AssemblySchedulingEnv:
                     minimum_alternatives,
                 )
         return snapshot
-
-    def _worker_action_preserves_matching(
-        self,
-        reconfiguration: ReconfigurationRuntime,
-        worker_index: int,
-    ) -> bool:
-        _, after_deficit = self._worker_action_matching_deficits(
-            reconfiguration,
-            worker_index,
-        )
-        return after_deficit == 0
-
-    def _worker_action_matching_deficits(
-        self,
-        reconfiguration: ReconfigurationRuntime,
-        worker_index: int,
-    ) -> tuple[int, int]:
-        """Return matching deficits before and after assigning one worker."""
-
-        snapshot = self._resource_feasibility_snapshot()
-        before_deficit = len(snapshot.tasks) - snapshot.matching_size
-        self._maximum_worker_matching_deficit = max(
-            self._maximum_worker_matching_deficit,
-            before_deficit,
-        )
-        task_index = next(
-            (
-                index
-                for index, task in enumerate(snapshot.tasks)
-                if task.task_id == reconfiguration.id
-            ),
-            None,
-        )
-        if task_index is None or worker_index not in snapshot.safe_edges[task_index]:
-            return before_deficit, len(snapshot.tasks)
-        # In an already-deficient state, the assigned task is resolved and the
-        # worker may serve another waiting task after this stage completes.  A
-        # zero-deficit state stays conservative and reserves the worker now.
-        remaining_edges = [
-            (
-                list(edge)
-                if before_deficit > 0
-                else [
-                    candidate
-                    for candidate in edge
-                    if candidate != worker_index
-                ]
-            )
-            for index, edge in enumerate(snapshot.safe_edges)
-            if index != task_index
-        ]
-        remaining_matching = _maximum_matching_size(
-            remaining_edges,
-            len(self.workers),
-        )
-        return before_deficit, len(remaining_edges) - remaining_matching
 
     def _worker_fatigue_at_availability(
         self,
@@ -4085,813 +3095,6 @@ class AssemblySchedulingEnv:
             duration_ticks,
         )
 
-    def _temporal_task_reconfiguration(
-        self, task: TemporalWorkerTask
-    ) -> ReconfigurationRuntime:
-        machine = self.machines[task.machine_index]
-        return ReconfigurationRuntime(
-            id=task.task_id,
-            machine_id=machine.spec.id,
-            operation_id="",
-            source_module=(
-                task.module
-                if task.stage == ReconfigurationStage.WAIT_DIS
-                else self.instance.no_module_state
-            ),
-            target_module=(
-                task.module
-                if task.stage == ReconfigurationStage.WAIT_INS
-                else self.instance.no_module_state
-            ),
-            lock_tick=self.current_tick,
-            stage=task.stage,
-        )
-
-    def _temporal_worker_tasks(
-        self,
-        *,
-        candidate_machine_index: int | None = None,
-        candidate_target_module: str | None = None,
-    ) -> tuple[TemporalWorkerTask, ...]:
-        tasks: list[TemporalWorkerTask] = []
-        for reconfiguration in sorted(
-            self.reconfigurations.values(), key=lambda value: value.id
-        ):
-            machine_index = self.instance.machine_index[
-                reconfiguration.machine_id
-            ]
-            if reconfiguration.stage == ReconfigurationStage.WAIT_DIS:
-                disassembly_id = f"dis:{reconfiguration.id}"
-                tasks.append(
-                    TemporalWorkerTask(
-                        task_id=disassembly_id,
-                        machine_index=machine_index,
-                        stage=ReconfigurationStage.WAIT_DIS,
-                        module=reconfiguration.source_module,
-                        ready_tick=self.current_tick,
-                    )
-                )
-                tasks.append(
-                    TemporalWorkerTask(
-                        task_id=f"ins:{reconfiguration.id}",
-                        machine_index=machine_index,
-                        stage=ReconfigurationStage.WAIT_INS,
-                        module=reconfiguration.target_module,
-                        ready_tick=self.current_tick,
-                        predecessor_id=disassembly_id,
-                    )
-                )
-            elif reconfiguration.stage == ReconfigurationStage.DIS:
-                ready_tick = reconfiguration.disassembly_end_tick
-                if ready_tick is not None:
-                    tasks.append(
-                        TemporalWorkerTask(
-                            task_id=f"ins:{reconfiguration.id}",
-                            machine_index=machine_index,
-                            stage=ReconfigurationStage.WAIT_INS,
-                            module=reconfiguration.target_module,
-                            ready_tick=int(ready_tick),
-                        )
-                    )
-            elif reconfiguration.stage == ReconfigurationStage.WAIT_INS:
-                tasks.append(
-                    TemporalWorkerTask(
-                        task_id=f"ins:{reconfiguration.id}",
-                        machine_index=machine_index,
-                        stage=ReconfigurationStage.WAIT_INS,
-                        module=reconfiguration.target_module,
-                        ready_tick=self.current_tick,
-                    )
-                )
-        if candidate_machine_index is not None:
-            if candidate_target_module is None:
-                raise ValueError("candidate target module is required")
-            machine = self.machines[candidate_machine_index]
-            disassembly_id = (
-                f"candidate-dis:{candidate_machine_index}:"
-                f"{candidate_target_module}"
-            )
-            tasks.extend(
-                (
-                    TemporalWorkerTask(
-                        task_id=disassembly_id,
-                        machine_index=candidate_machine_index,
-                        stage=ReconfigurationStage.WAIT_DIS,
-                        module=machine.current_module,
-                        ready_tick=self.current_tick,
-                        candidate=True,
-                    ),
-                    TemporalWorkerTask(
-                        task_id=(
-                            f"candidate-ins:{candidate_machine_index}:"
-                            f"{candidate_target_module}"
-                        ),
-                        machine_index=candidate_machine_index,
-                        stage=ReconfigurationStage.WAIT_INS,
-                        module=candidate_target_module,
-                        ready_tick=self.current_tick,
-                        predecessor_id=disassembly_id,
-                        candidate=True,
-                    ),
-                )
-            )
-        return tuple(sorted(tasks, key=lambda value: value.task_id))
-
-    def _temporal_initial_worker_states(
-        self,
-    ) -> tuple[TemporalWorkerState, ...]:
-        return tuple(
-            TemporalWorkerState(
-                available_tick=int(available_tick),
-                fatigue=float(fatigue),
-            )
-            for available_tick, fatigue in (
-                self._worker_fatigue_at_availability(worker_index)
-                for worker_index in range(len(self.workers))
-            )
-        )
-
-    def _temporal_charge_search_node(
-        self,
-        budget: _TemporalSearchBudget,
-    ) -> None:
-        settings = self.temporal_feasibility_settings
-        limits = (
-            (
-                budget.searched_nodes,
-                int(settings["max_search_nodes"]),
-                "call_node_budget_exhausted",
-            ),
-            (
-                self._temporal_decision_searched_nodes,
-                int(settings["max_search_nodes_per_decision"]),
-                "decision_node_budget_exhausted",
-            ),
-            (
-                self._temporal_oracle_searched_nodes,
-                int(settings["max_search_nodes_per_episode"]),
-                "episode_node_budget_exhausted",
-            ),
-        )
-        for used, maximum, reason in limits:
-            if used >= maximum:
-                if reason.startswith("decision_"):
-                    self._temporal_decision_budget_exhausted_reason = reason
-                elif reason.startswith("episode_"):
-                    self._temporal_episode_budget_exhausted_reason = reason
-                raise _TemporalBudgetExhausted(reason)
-        budget.searched_nodes += 1
-        self._temporal_decision_searched_nodes += 1
-        self._temporal_oracle_searched_nodes += 1
-        self._temporal_emit_progress(budget)
-
-    def _temporal_charge_option_evaluations(
-        self,
-        budget: _TemporalSearchBudget,
-        count: int,
-    ) -> None:
-        if count <= 0:
-            return
-        settings = self.temporal_feasibility_settings
-        limits = (
-            (
-                budget.option_evaluations,
-                int(settings["max_option_evaluations_per_call"]),
-                "call_option_budget_exhausted",
-            ),
-            (
-                self._temporal_decision_option_evaluations,
-                int(settings["max_option_evaluations_per_decision"]),
-                "decision_option_budget_exhausted",
-            ),
-            (
-                self._temporal_oracle_option_evaluations,
-                int(settings["max_option_evaluations_per_episode"]),
-                "episode_option_budget_exhausted",
-            ),
-        )
-        for used, maximum, reason in limits:
-            if used + count > maximum:
-                if reason.startswith("decision_"):
-                    self._temporal_decision_budget_exhausted_reason = reason
-                elif reason.startswith("episode_"):
-                    self._temporal_episode_budget_exhausted_reason = reason
-                raise _TemporalBudgetExhausted(reason)
-        budget.option_evaluations += count
-        self._temporal_decision_option_evaluations += count
-        self._temporal_oracle_option_evaluations += count
-        self._temporal_emit_progress(budget)
-
-    def _temporal_emit_progress(
-        self,
-        budget: _TemporalSearchBudget,
-        *,
-        force: bool = False,
-    ) -> None:
-        callback = self.temporal_progress_callback
-        if callback is None:
-            return
-        now = time.monotonic()
-        work = (
-            self._temporal_oracle_searched_nodes
-            + self._temporal_oracle_option_evaluations
-        )
-        if not force and (
-            now - self._temporal_progress_last_time < 5.0
-            and work - self._temporal_progress_last_work < 25_000
-        ):
-            return
-        self._temporal_progress_last_time = now
-        self._temporal_progress_last_work = work
-        callback(
-            {
-                "phase": "temporal_search",
-                "environment_step": self._decision_count,
-                "state_version": self._state_version,
-                "current_tick": self.current_tick,
-                "oracle_calls": self._temporal_oracle_call_count,
-                "search_nodes": self._temporal_oracle_searched_nodes,
-                "option_evaluations": (
-                    self._temporal_oracle_option_evaluations
-                ),
-                "root_cache_hits": self._temporal_oracle_cache_hit_count,
-                "subproblem_cache_hits": (
-                    self._temporal_subproblem_cache_hit_count
-                ),
-                "call_search_nodes": budget.searched_nodes,
-                "call_option_evaluations": budget.option_evaluations,
-                "frontier_options_before": budget.frontier_options_before,
-                "frontier_options_after": budget.frontier_options_after,
-            }
-        )
-
-    @staticmethod
-    def _temporal_option_dominates(
-        option_a: tuple[int, int, int, float],
-        option_b: tuple[int, int, int, float],
-        *,
-        recovery_rate: float,
-        resolution: float,
-        epsilon: float = EPSILON,
-    ) -> bool:
-        """Return the full recovery-aware dominance certificate for A over B."""
-        worker_a, _, end_a, end_fatigue_a = option_a
-        worker_b, _, end_b, end_fatigue_b = option_b
-        if worker_a != worker_b or end_a > end_b:
-            return False
-        recovered_at_b = max(
-            0.0,
-            float(end_fatigue_a)
-            - float(recovery_rate)
-            * (int(end_b) - int(end_a))
-            * float(resolution),
-        )
-        return recovered_at_b <= float(end_fatigue_b) + float(epsilon)
-
-    @classmethod
-    def _temporal_strict_frontier(
-        cls,
-        options: list[tuple[int, int, int, float]],
-        *,
-        recovery_rate: float,
-        resolution: float,
-    ) -> tuple[
-        list[tuple[int, int, int, float]],
-        dict[
-            tuple[int, int, int, float],
-            tuple[int, int, int, float],
-        ],
-    ]:
-        """Delete only options carrying an explicit full-dominance witness."""
-        frontier: list[tuple[int, int, int, float]] = []
-        witnesses: dict[
-            tuple[int, int, int, float], tuple[int, int, int, float]
-        ] = {}
-        by_worker: dict[int, list[tuple[int, int, int, float]]] = {}
-        for option in options:
-            by_worker.setdefault(int(option[0]), []).append(option)
-        for worker_index in sorted(by_worker):
-            ordered = sorted(
-                by_worker[worker_index],
-                key=lambda value: (value[2], value[3], value[1], value[0]),
-            )
-            minimum_key_option: tuple[int, int, int, float] | None = None
-            minimum_key = math.inf
-            for option in ordered:
-                witness = minimum_key_option
-                if witness is not None:
-                    candidate_key = (
-                        float(option[3])
-                        + float(recovery_rate)
-                        * int(option[2])
-                        * float(resolution)
-                    )
-                    if minimum_key <= candidate_key + EPSILON and (
-                        cls._temporal_option_dominates(
-                            witness,
-                            option,
-                            recovery_rate=recovery_rate,
-                            resolution=resolution,
-                        )
-                    ):
-                        witnesses[option] = witness
-                        continue
-                frontier.append(option)
-                recovery_key = (
-                    float(option[3])
-                    + float(recovery_rate)
-                    * int(option[2])
-                    * float(resolution)
-                )
-                if (
-                    recovery_key,
-                    option[2],
-                    option[3],
-                    option[1],
-                ) < (
-                    minimum_key,
-                    minimum_key_option[2]
-                    if minimum_key_option is not None
-                    else math.inf,
-                    minimum_key_option[3]
-                    if minimum_key_option is not None
-                    else math.inf,
-                    minimum_key_option[1]
-                    if minimum_key_option is not None
-                    else math.inf,
-                ):
-                    minimum_key = recovery_key
-                    minimum_key_option = option
-        return (
-            sorted(frontier, key=lambda value: (value[2], value[1], value[0])),
-            witnesses,
-        )
-
-    def _temporal_assignment_options(
-        self,
-        task: TemporalWorkerTask,
-        worker_states: tuple[TemporalWorkerState, ...],
-        *,
-        minimum_start_tick: int,
-        exact_worker_index: int | None = None,
-        exact_start_tick: int | None = None,
-        budget: _TemporalSearchBudget | None = None,
-    ) -> list[tuple[int, int, int, float]]:
-        options: list[tuple[int, int, int, float]] = []
-        reconfiguration = self._temporal_task_reconfiguration(task)
-        safe_limit = float(self.instance.fatigue.maximum_safe_fatigue)
-        recovery_rate = float(
-            self.instance.fatigue.idle_recovery_rate_per_minute
-        )
-        accumulation_rate = self._stage_accumulation_rate(reconfiguration)
-        resolution = float(self.resolution)
-        duration_parameters: tuple[float, float] | None = None
-        worker_indices = (
-            (int(exact_worker_index),)
-            if exact_worker_index is not None
-            else tuple(range(len(self.workers)))
-        )
-        for worker_index in worker_indices:
-            worker = self.workers[worker_index]
-            if task.module not in worker.spec.qualified_modules:
-                continue
-            if duration_parameters is None:
-                duration_parameters = self._stage_duration_parameters(
-                    reconfiguration
-                )
-            base_duration, fatigue_coefficient = duration_parameters
-            state = worker_states[worker_index]
-            earliest = max(
-                int(task.ready_tick),
-                int(minimum_start_tick),
-                int(state.available_tick),
-            )
-            if exact_start_tick is not None:
-                starts = np.asarray((int(exact_start_tick),), dtype=np.int64)
-            elif earliest < self.horizon_tick:
-                def scalar_projection(start_tick: int) -> tuple[int, float]:
-                    recovered_fatigue = max(
-                        0.0,
-                        float(state.fatigue)
-                        - recovery_rate
-                        * (start_tick - int(state.available_tick))
-                        * resolution,
-                    )
-                    duration = max(
-                        1,
-                        quantize_to_ticks(
-                            base_duration
-                            * (
-                                1.0
-                                + fatigue_coefficient * recovered_fatigue
-                            ),
-                            resolution,
-                        ),
-                    )
-                    projected_fatigue = (
-                        recovered_fatigue
-                        + accumulation_rate * duration * resolution
-                    )
-                    return duration, projected_fatigue
-
-                first_start = earliest
-                last_start = self.horizon_tick - 1
-                duration_drop_per_start_tick = (
-                    base_duration * fatigue_coefficient * recovery_rate
-                )
-                monotone_completion = (
-                    duration_drop_per_start_tick <= 1.0 + EPSILON
-                )
-                if monotone_completion:
-                    _, latest_fatigue = scalar_projection(last_start)
-                    if latest_fatigue > safe_limit + EPSILON:
-                        continue
-                    lower = first_start
-                    upper = last_start
-                    while lower < upper:
-                        middle = (lower + upper) // 2
-                        _, middle_fatigue = scalar_projection(middle)
-                        if middle_fatigue <= safe_limit + EPSILON:
-                            upper = middle
-                        else:
-                            lower = middle + 1
-                    first_start = lower
-                    first_duration, _ = scalar_projection(first_start)
-                    if first_start + first_duration > self.horizon_tick:
-                        continue
-                    lower = first_start
-                    upper = last_start
-                    while lower < upper:
-                        middle = (lower + upper + 1) // 2
-                        middle_duration, _ = scalar_projection(middle)
-                        if middle + middle_duration <= self.horizon_tick:
-                            lower = middle
-                        else:
-                            upper = middle - 1
-                    last_start = lower
-                # The old oracle evaluated every tick in Python.  Temporal
-                # admission calls this path thousands of times per rollout,
-                # so locate the feasible interval logarithmically and evaluate
-                # the identical discrete candidate set in one vectorized batch.
-                starts = np.arange(
-                    first_start,
-                    last_start + 1,
-                    dtype=np.int64,
-                )
-            else:
-                continue
-            if budget is not None:
-                self._temporal_charge_option_evaluations(
-                    budget, int(starts.size)
-                )
-            valid_start = (starts >= earliest) & (starts <= self.horizon_tick)
-            if not bool(valid_start.any()):
-                continue
-            starts = starts[valid_start]
-            recovery_minutes = (
-                starts.astype(np.float64) - int(state.available_tick)
-            ) * resolution
-            recovered = np.maximum(
-                0.0,
-                float(state.fatigue) - recovery_rate * recovery_minutes,
-            )
-            duration_ticks = np.maximum(
-                1,
-                np.ceil(
-                    (
-                        base_duration
-                        * (1.0 + fatigue_coefficient * recovered)
-                        - EPSILON
-                    )
-                    / resolution
-                ).astype(np.int64),
-            )
-            end_ticks = starts + duration_ticks
-            end_fatigue = (
-                recovered + accumulation_rate * duration_ticks * resolution
-            )
-            feasible = (end_ticks <= self.horizon_tick) & (
-                end_fatigue <= safe_limit + EPSILON
-            )
-            for start_tick, end_tick, projected_fatigue in zip(
-                starts[feasible],
-                end_ticks[feasible],
-                end_fatigue[feasible],
-                strict=True,
-            ):
-                options.append(
-                    (
-                        int(worker_index),
-                        int(start_tick),
-                        int(end_tick),
-                        float(projected_fatigue),
-                    )
-                )
-        ordered_options = sorted(
-            options, key=lambda value: (value[2], value[1], value[0])
-        )
-        if budget is None:
-            return ordered_options
-        budget.last_options_before = len(ordered_options)
-        budget.frontier_options_before += len(ordered_options)
-        if exact_start_tick is not None:
-            budget.last_options_after = len(ordered_options)
-            budget.frontier_options_after += len(ordered_options)
-            return ordered_options
-        frontier, witnesses = self._temporal_strict_frontier(
-            ordered_options,
-            recovery_rate=recovery_rate,
-            resolution=resolution,
-        )
-        budget.frontier_options_after += len(frontier)
-        budget.dominated_options += len(witnesses)
-        budget.last_options_after = len(frontier)
-        return frontier
-
-    @staticmethod
-    def _temporal_remove_task(
-        tasks: tuple[TemporalWorkerTask, ...],
-        selected: TemporalWorkerTask,
-        end_tick: int,
-    ) -> tuple[TemporalWorkerTask, ...]:
-        remaining: list[TemporalWorkerTask] = []
-        for task in tasks:
-            if task.task_id == selected.task_id:
-                continue
-            if task.predecessor_id == selected.task_id:
-                task = TemporalWorkerTask(
-                    task_id=task.task_id,
-                    machine_index=task.machine_index,
-                    stage=task.stage,
-                    module=task.module,
-                    ready_tick=max(int(task.ready_tick), int(end_tick)),
-                    predecessor_id=None,
-                    candidate=task.candidate,
-                )
-            remaining.append(task)
-        return tuple(sorted(remaining, key=lambda value: value.task_id))
-
-    @staticmethod
-    def _temporal_state_key(
-        tasks: tuple[TemporalWorkerTask, ...],
-        worker_states: tuple[TemporalWorkerState, ...],
-        minimum_start_tick: int,
-        candidate_completion_tick: int | None = None,
-    ) -> tuple[Any, ...]:
-        return (
-            int(minimum_start_tick),
-            candidate_completion_tick,
-            tuple(
-                (
-                    task.task_id,
-                    task.machine_index,
-                    task.stage.value,
-                    task.module,
-                    task.ready_tick,
-                    task.predecessor_id,
-                    task.candidate,
-                )
-                for task in tasks
-            ),
-            tuple(
-                (state.available_tick, float(state.fatigue).hex())
-                for state in worker_states
-            ),
-        )
-
-    def _run_temporal_feasibility_search(
-        self,
-        tasks: tuple[TemporalWorkerTask, ...],
-        *,
-        minimum_start_tick: int | None = None,
-        forced_task_id: str | None = None,
-        forced_worker_index: int | None = None,
-    ) -> TemporalFeasibilityResult:
-        """Search deterministically, returning unknown only at a work budget."""
-
-        self._temporal_oracle_call_count += 1
-        effective_minimum = (
-            self.current_tick
-            if minimum_start_tick is None
-            else int(minimum_start_tick)
-        )
-        worker_states = self._temporal_initial_worker_states()
-        candidate_completion_tick: int | None = None
-        budget = _TemporalSearchBudget()
-
-        def finish(
-            status: str,
-            completion_tick: int | None,
-            reason: str,
-        ) -> TemporalFeasibilityResult:
-            result = TemporalFeasibilityResult(
-                status=status,
-                searched_nodes=budget.searched_nodes,
-                candidate_completion_tick=completion_tick,
-                termination_reason=reason,
-                option_evaluations=budget.option_evaluations,
-                frontier_options_before=budget.frontier_options_before,
-                frontier_options_after=budget.frontier_options_after,
-            )
-            self._temporal_frontier_options_before += (
-                budget.frontier_options_before
-            )
-            self._temporal_frontier_options_after += (
-                budget.frontier_options_after
-            )
-            self._temporal_dominated_option_count += budget.dominated_options
-            self._temporal_oracle_result_counts[status] += 1
-            if status == "unknown":
-                self._temporal_budget_termination_counts[reason] = (
-                    self._temporal_budget_termination_counts.get(reason, 0) + 1
-                )
-            return result
-
-        exhausted_reason = (
-            self._temporal_episode_budget_exhausted_reason
-            or self._temporal_decision_budget_exhausted_reason
-        )
-        if exhausted_reason is not None:
-            return finish("unknown", None, exhausted_reason)
-
-        try:
-            if forced_task_id is not None:
-                forced_task = next(
-                    (task for task in tasks if task.task_id == forced_task_id),
-                    None,
-                )
-                if forced_task is None or forced_worker_index is None:
-                    return finish(
-                        "infeasible", None, "invalid_forced_assignment"
-                    )
-                forced_options = self._temporal_assignment_options(
-                    forced_task,
-                    worker_states,
-                    minimum_start_tick=self.current_tick,
-                    exact_worker_index=int(forced_worker_index),
-                    exact_start_tick=self.current_tick,
-                    budget=budget,
-                )
-                if not forced_options:
-                    return finish(
-                        "infeasible", None, "forced_assignment_unsafe"
-                    )
-                worker_index, _, end_tick, end_fatigue = forced_options[0]
-                updated_states = list(worker_states)
-                updated_states[worker_index] = TemporalWorkerState(
-                    available_tick=end_tick,
-                    fatigue=end_fatigue,
-                )
-                worker_states = tuple(updated_states)
-                tasks = self._temporal_remove_task(
-                    tasks, forced_task, end_tick
-                )
-                if forced_task.candidate and (
-                    forced_task.stage == ReconfigurationStage.WAIT_INS
-                ):
-                    candidate_completion_tick = end_tick
-
-            cache_key = self._temporal_state_key(
-                tasks,
-                worker_states,
-                effective_minimum,
-                candidate_completion_tick,
-            )
-            cached = self._temporal_oracle_cache.get(cache_key)
-            if cached is not None:
-                self._temporal_oracle_cache_hit_count += 1
-                self._temporal_oracle_result_counts[cached.status] += 1
-                return cached
-
-            def search(
-                remaining: tuple[TemporalWorkerTask, ...],
-                states: tuple[TemporalWorkerState, ...],
-                candidate_tick: int | None,
-            ) -> tuple[str, int | None]:
-                self._temporal_charge_search_node(budget)
-                state_key = self._temporal_state_key(
-                    remaining,
-                    states,
-                    effective_minimum,
-                    candidate_tick,
-                )
-                cached_subproblem = self._temporal_subproblem_cache.get(
-                    state_key
-                )
-                if cached_subproblem is not None:
-                    self._temporal_subproblem_cache_hit_count += 1
-                    return cached_subproblem
-                if not remaining:
-                    answer = ("feasible", candidate_tick)
-                    self._temporal_subproblem_cache[state_key] = answer
-                    return answer
-                ready_tasks = [
-                    task for task in remaining if task.predecessor_id is None
-                ]
-                if not ready_tasks:
-                    answer = ("infeasible", None)
-                    self._temporal_subproblem_cache[state_key] = answer
-                    return answer
-                selected: TemporalWorkerTask | None = None
-                selected_options: list[
-                    tuple[int, int, int, float]
-                ] | None = None
-                selected_raw_option_count: int | None = None
-                for task in ready_tasks:
-                    options = self._temporal_assignment_options(
-                        task,
-                        states,
-                        minimum_start_tick=effective_minimum,
-                        budget=budget,
-                    )
-                    if not options:
-                        answer = ("infeasible", None)
-                        self._temporal_subproblem_cache[state_key] = answer
-                        return answer
-                    raw_option_count = budget.last_options_before
-                    if selected_options is None or (
-                        raw_option_count,
-                        task.task_id,
-                    ) < (
-                        int(selected_raw_option_count),
-                        selected.task_id,
-                    ):
-                        selected = task
-                        selected_options = options
-                        selected_raw_option_count = raw_option_count
-                if selected is None or selected_options is None:
-                    answer = ("infeasible", None)
-                    self._temporal_subproblem_cache[state_key] = answer
-                    return answer
-                for worker_index, _, end_tick, end_fatigue in selected_options:
-                    updated_states = list(states)
-                    updated_states[worker_index] = TemporalWorkerState(
-                        available_tick=end_tick,
-                        fatigue=end_fatigue,
-                    )
-                    updated_tasks = self._temporal_remove_task(
-                        remaining, selected, end_tick
-                    )
-                    updated_candidate_tick = candidate_tick
-                    if selected.candidate and (
-                        selected.stage == ReconfigurationStage.WAIT_INS
-                    ):
-                        updated_candidate_tick = end_tick
-                    status, completion_tick = search(
-                        updated_tasks,
-                        tuple(updated_states),
-                        updated_candidate_tick,
-                    )
-                    if status == "feasible":
-                        answer = (status, completion_tick)
-                        self._temporal_subproblem_cache[state_key] = answer
-                        return answer
-                answer = ("infeasible", None)
-                self._temporal_subproblem_cache[state_key] = answer
-                return answer
-
-            status, completion_tick = search(
-                tasks, worker_states, candidate_completion_tick
-            )
-            reason = (
-                "feasible_solution_found"
-                if status == "feasible"
-                else "infeasible_search_exhausted"
-            )
-            result = finish(status, completion_tick, reason)
-            self._temporal_oracle_cache[cache_key] = result
-            return result
-        except _TemporalBudgetExhausted as exhausted:
-            return finish("unknown", None, exhausted.reason)
-
-    def _temporal_worker_action_result(
-        self,
-        reconfiguration: ReconfigurationRuntime,
-        worker_index: int,
-    ) -> TemporalFeasibilityResult:
-        prefix = (
-            "dis"
-            if reconfiguration.stage == ReconfigurationStage.WAIT_DIS
-            else "ins"
-        )
-        return self._run_temporal_feasibility_search(
-            self._temporal_worker_tasks(),
-            forced_task_id=f"{prefix}:{reconfiguration.id}",
-            forced_worker_index=worker_index,
-        )
-
-    def _temporal_production_result(
-        self,
-        machine_index: int,
-        target_module: str,
-    ) -> TemporalFeasibilityResult:
-        return self._run_temporal_feasibility_search(
-            self._temporal_worker_tasks(
-                candidate_machine_index=machine_index,
-                candidate_target_module=target_module,
-            )
-        )
-
     def _production_resource_profile(
         self,
         machine_index: int,
@@ -4908,113 +3111,6 @@ class AssemblySchedulingEnv:
         self._production_resource_profile_cache[key] = profile
         return profile
 
-    def _earliest_disassembly_completion_tick(
-        self,
-        machine_index: int,
-        module: str,
-    ) -> int | None:
-        projections = [
-            projection
-            for worker_index in range(len(self.workers))
-            if (
-                projection := self._earliest_safe_stage_projection(
-                    machine_index,
-                    worker_index,
-                    module,
-                    installation=False,
-                    earliest_tick=self.current_tick,
-                )
-            )
-            is not None
-        ]
-        if not projections:
-            return None
-        start_tick, duration_ticks = min(
-            projections,
-            key=lambda value: (value[0] + value[1], value[0]),
-        )
-        return start_tick + duration_ticks
-
-    def _projected_future_installation_matching(
-        self,
-        *,
-        candidate_machine_index: int,
-        candidate_target_module: str,
-        candidate_installation_ready_tick: int | None,
-    ) -> tuple[int, int]:
-        """Conservatively match all pending and candidate installations."""
-
-        projected: list[tuple[WorkerTaskSnapshot, int | None]] = []
-        for reconfiguration in sorted(
-            self.reconfigurations.values(), key=lambda value: value.id
-        ):
-            if reconfiguration.stage not in {
-                ReconfigurationStage.WAIT_DIS,
-                ReconfigurationStage.DIS,
-                ReconfigurationStage.WAIT_INS,
-            }:
-                continue
-            machine_index = self.instance.machine_index[
-                reconfiguration.machine_id
-            ]
-            if reconfiguration.stage == ReconfigurationStage.WAIT_DIS:
-                ready_tick = self._earliest_disassembly_completion_tick(
-                    machine_index,
-                    reconfiguration.source_module,
-                )
-            elif reconfiguration.stage == ReconfigurationStage.DIS:
-                ready_tick = reconfiguration.disassembly_end_tick
-            else:
-                ready_tick = self.current_tick
-            projected.append(
-                (
-                    WorkerTaskSnapshot(
-                        task_id=f"installation:{reconfiguration.id}",
-                        machine_index=machine_index,
-                        stage=ReconfigurationStage.WAIT_INS,
-                        module=reconfiguration.target_module,
-                    ),
-                    ready_tick,
-                )
-            )
-        projected.append(
-            (
-                WorkerTaskSnapshot(
-                    task_id=(
-                        "candidate-installation:"
-                        f"{candidate_machine_index}:{candidate_target_module}"
-                    ),
-                    machine_index=candidate_machine_index,
-                    stage=ReconfigurationStage.WAIT_INS,
-                    module=candidate_target_module,
-                ),
-                candidate_installation_ready_tick,
-            )
-        )
-        safe_edges: list[list[int]] = []
-        for task, ready_tick in projected:
-            if ready_tick is None or ready_tick > self.horizon_tick:
-                safe_edges.append([])
-                continue
-            edge = [
-                worker_index
-                for worker_index in range(len(self.workers))
-                if self._earliest_safe_stage_projection(
-                    task.machine_index,
-                    worker_index,
-                    task.module,
-                    installation=True,
-                    earliest_tick=ready_tick,
-                )
-                is not None
-            ]
-            safe_edges.append(edge)
-        matching_size = _maximum_matching_size(
-            safe_edges,
-            len(self.workers),
-        )
-        return len(projected) - matching_size, len(safe_edges[-1])
-
     def _compute_production_resource_profile(
         self,
         machine_index: int,
@@ -5030,9 +3126,6 @@ class AssemblySchedulingEnv:
                 safe_disassembly_workers=len(self.workers),
                 safe_installation_workers=len(self.workers),
                 matching_deficit_after_commit=0,
-                future_installation_matching_deficit_after_commit=0,
-                temporal_feasibility_status="static_fast_path",
-                base_admissible=True,
             )
 
         candidate_task = WorkerTaskSnapshot(
@@ -5104,161 +3197,13 @@ class AssemblySchedulingEnv:
             else:
                 processing_start_tick = None
 
-        future_installation_deficit = 0
-        if self.matching_recovery_enabled:
-            (
-                future_installation_deficit,
-                safe_installation_workers,
-            ) = self._projected_future_installation_matching(
-                candidate_machine_index=machine_index,
-                candidate_target_module=target_module,
-                candidate_installation_ready_tick=(
-                    disassembly_end if disassembly_projections else None
-                ),
-            )
-            self._maximum_projected_installation_deficit = max(
-                self._maximum_projected_installation_deficit,
-                future_installation_deficit,
-            )
-        require_full_matching = True
-        static_base_admissible = bool(
-            candidate_edges
-            and (not require_full_matching or matching_deficit == 0)
-            and (
-                not self.matching_recovery_enabled
-                or not require_full_matching
-                or future_installation_deficit == 0
-            )
-            and resource_ready_tick == self.current_tick
-        )
-        temporal_status = "static_fast_path"
-        base_admissible = static_base_admissible
-        if self.temporal_matching_enabled and not static_base_admissible:
-            temporal_result = self._temporal_production_result(
-                machine_index,
-                target_module,
-            )
-            temporal_status = temporal_result.status
-            if (
-                temporal_result.status == "feasible"
-                and temporal_result.candidate_completion_tick is not None
-            ):
-                processing_start_tick = max(
-                    processing_start_tick or 0,
-                    int(temporal_result.candidate_completion_tick),
-                )
-            base_admissible = bool(
-                disassembly_projections
-                and processing_start_tick is not None
-                and temporal_result.status != "infeasible"
-            )
-            key = (self.current_tick, machine_index, str(target_module))
-            if base_admissible:
-                if matching_deficit > 0 or future_installation_deficit > 0:
-                    self._temporal_future_installation_rescued.add(key)
-                if resource_ready_tick > self.current_tick:
-                    self._temporal_delayed_disassembly_rescued.add(key)
         return ProductionResourceProfile(
             resource_ready_tick=resource_ready_tick,
             processing_start_tick=processing_start_tick,
             safe_disassembly_workers=len(candidate_edges),
             safe_installation_workers=safe_installation_workers,
             matching_deficit_after_commit=matching_deficit,
-            future_installation_matching_deficit_after_commit=(
-                future_installation_deficit
-            ),
-            temporal_feasibility_status=temporal_status,
-            base_admissible=base_admissible,
         )
-
-    def _production_candidate_profile(
-        self,
-        operation_index: int,
-        machine_index: int,
-    ) -> ProductionCandidateProfile:
-        key = (int(operation_index), int(machine_index))
-        if key in self._candidate_profile_cache:
-            return self._candidate_profile_cache[key]
-        operation = self.operations[operation_index]
-        resource_profile = self._production_resource_profile(
-            machine_index, operation.spec.required_module
-        )
-        processing_ticks = self.estimate_processing_ticks(
-            operation_index, machine_index
-        )
-        predicted_finish_tick = (
-            self.horizon_tick + 1
-            if resource_profile.processing_start_tick is None
-            else resource_profile.processing_start_tick + processing_ticks
-        )
-        completion_lower_bound = self._candidate_completion_lower_bound_ticks(
-            operation_index,
-            predicted_finish_tick,
-        )
-        completion_slack = (
-            self.horizon_tick - self.current_tick - completion_lower_bound
-        )
-        reserve = int(self.production_defer_shield.get("deadline_reserve_ticks", 0))
-        profile = ProductionCandidateProfile(
-            resource_ready_tick=resource_profile.resource_ready_tick,
-            predicted_finish_tick=predicted_finish_tick,
-            safe_disassembly_workers=(
-                resource_profile.safe_disassembly_workers
-            ),
-            safe_installation_workers=(
-                resource_profile.safe_installation_workers
-            ),
-            matching_deficit_after_commit=(
-                resource_profile.matching_deficit_after_commit
-            ),
-            future_installation_matching_deficit_after_commit=(
-                resource_profile.future_installation_matching_deficit_after_commit
-            ),
-            horizon_slack_ticks=self.horizon_tick - predicted_finish_tick,
-            completion_lower_bound_ticks=completion_lower_bound,
-            completion_slack_ticks=completion_slack,
-            temporal_feasibility_status=(
-                resource_profile.temporal_feasibility_status
-            ),
-            admissible=(
-                resource_profile.base_admissible
-                and predicted_finish_tick <= self.horizon_tick
-                and (
-                    not self.completion_viability_shield_enabled
-                    or completion_slack >= reserve
-                )
-            ),
-        )
-        self._candidate_profile_cache[key] = profile
-        return profile
-
-    def _earliest_candidate_recovery_tick(self) -> int | None:
-        if not self.matching_admission_enabled:
-            return None
-        candidates: list[int] = []
-        for operation_index, operation in enumerate(self.operations):
-            if operation.state != OperationState.READY:
-                continue
-            for machine_index, machine in enumerate(self.machines):
-                if (
-                    machine.state != MachineState.IDLE
-                    or machine.current_module == self.instance.no_module_state
-                    or operation.spec.required_module
-                    not in machine.spec.module_parameters
-                    or machine.current_module == operation.spec.required_module
-                ):
-                    continue
-                profile = self._production_candidate_profile(
-                    operation_index,
-                    machine_index,
-                )
-                if (
-                    self.current_tick < profile.resource_ready_tick
-                    <= self.horizon_tick
-                    and profile.predicted_finish_tick <= self.horizon_tick
-                ):
-                    candidates.append(profile.resource_ready_tick)
-        return min(candidates) if candidates else None
 
     def feasibility_potential(self) -> float:
         if self.terminated or self.truncated:
@@ -5286,16 +3231,24 @@ class AssemblySchedulingEnv:
                     and operation.spec.required_module
                     in machine.spec.module_parameters
                 ):
-                    profile = self._production_candidate_profile(
-                        operation_index,
+                    profile = self._production_resource_profile(
                         machine_index,
+                        operation.spec.required_module,
+                    )
+                    predicted_finish_tick = (
+                        profile.processing_start_tick
+                        + self.estimate_processing_ticks(
+                            operation_index, machine_index
+                        )
+                        if profile.processing_start_tick is not None
+                        else self.horizon_tick + 1
                     )
                     slacks.append(
                         max(
                             0.0,
                             min(
                                 1.0,
-                                profile.horizon_slack_ticks
+                                (self.horizon_tick - predicted_finish_tick)
                                 / max(1, self.horizon_tick),
                             ),
                         )
@@ -5396,7 +3349,7 @@ class AssemblySchedulingEnv:
             )
         return self.instance.fatigue.installation_accumulation_rate_per_minute
 
-    def _earliest_recovery_tick(self) -> int | None:
+    def _earliest_worker_pair_recovery_tick(self) -> int | None:
         pending = [
             value
             for value in self.reconfigurations.values()
@@ -5418,6 +3371,7 @@ class AssemblySchedulingEnv:
                     if (
                         worker.state != WorkerState.IDLE
                         or module not in worker.spec.qualified_modules
+                        or self._worker_can_start(reconfiguration, worker)
                     ):
                         continue
                     fatigue = max(0.0, worker.fatigue - recovery_rate * elapsed)
@@ -5443,173 +3397,127 @@ class AssemblySchedulingEnv:
             for value in self.reconfigurations.values()
         )
 
-    def _next_decision_event_tick(self) -> int | None:
-        event_ticks = [
-            event[0] for event in self._events if event[0] > self.current_tick
+    def _wait_opportunity(self) -> tuple[int, str] | None:
+        """Return the earliest deterministic transition that WAIT can reach."""
+
+        if self.current_tick >= self.horizon_tick:
+            return None
+        if (
+            self.decision_type == DecisionType.PRODUCTION
+            and self._has_pending_worker_task()
+        ):
+            return self.current_tick, "worker_phase_handoff"
+
+        candidates: list[tuple[int, int, str]] = []
+        future_events = [
+            event for event in self._events if event[0] > self.current_tick
         ]
-        recovery_tick = self._earliest_recovery_tick()
-        candidate_recovery_tick = self._earliest_candidate_recovery_tick()
-        recovery_improvement_tick = (
-            self._earliest_production_defer_recovery_improvement_tick()
-        )
-        candidates = event_ticks
-        candidates += [recovery_tick] if recovery_tick is not None else []
-        candidates += (
-            [candidate_recovery_tick]
-            if candidate_recovery_tick is not None
-            else []
-        )
-        candidates += (
-            [recovery_improvement_tick]
-            if recovery_improvement_tick is not None
-            else []
-        )
-        return min(candidates) if candidates else None
-
-    def _conditional_worker_wait_preview(
-        self,
-    ) -> ConditionalWorkerWaitPreview | None:
-        settings = self.conditional_worker_wait
-        if not settings["enabled"]:
-            return None
-        if self._consecutive_conditional_waits >= settings[
-            "max_consecutive_waits"
-        ]:
-            return None
-        next_tick = self._next_decision_event_tick()
-        if next_tick is None or next_tick <= self.current_tick:
-            return None
-        wait_ticks = next_tick - self.current_tick
-        maximum_wait_ticks = quantize_to_ticks(
-            settings["max_wait_minutes"], self.resolution
-        )
-        if wait_ticks > maximum_wait_ticks:
-            return None
-
-        current_tasks = self._current_worker_tasks()
-        current_edges = self._projected_safe_edges_for_tasks(
-            current_tasks,
-            self.current_tick,
-        )
-        future_tasks = list(current_tasks)
-        current_task_ids = {task.task_id for task in future_tasks}
-        for event in self._events:
-            if event[0] != next_tick or event[3] != EventType.DIS_COMPLETE:
-                continue
-            reconfiguration = self.reconfigurations[
-                str(event[4]["reconfiguration_id"])
-            ]
-            if reconfiguration.id in current_task_ids:
-                continue
-            future_tasks.append(
-                WorkerTaskSnapshot(
-                    task_id=reconfiguration.id,
-                    machine_index=self.instance.machine_index[
-                        reconfiguration.machine_id
-                    ],
-                    stage=ReconfigurationStage.WAIT_INS,
-                    module=reconfiguration.target_module,
+        if future_events:
+            event_tick = min(event[0] for event in future_events)
+            event_types = sorted(
+                {
+                    event[3].value
+                    for event in future_events
+                    if event[0] == event_tick
+                }
+            )
+            candidates.append(
+                (
+                    event_tick,
+                    0,
+                    "external_event:" + "+".join(event_types),
                 )
             )
-        future_tasks_tuple = tuple(
-            sorted(future_tasks, key=lambda value: value.task_id)
-        )
-        future_edges = self._projected_safe_edges_for_tasks(
-            future_tasks_tuple,
-            next_tick,
-        )
-        current_matching = _maximum_matching_size(
-            [list(edge) for edge in current_edges], len(self.workers)
-        )
-        future_matching = _maximum_matching_size(
-            [list(edge) for edge in future_edges], len(self.workers)
-        )
-        temporal_future_status = "static_fast_path"
-        if (
-            self.temporal_matching_enabled
-            and future_matching != len(future_tasks_tuple)
-        ):
-            temporal_future_status = self._run_temporal_feasibility_search(
-                self._temporal_worker_tasks(),
-                minimum_start_tick=next_tick,
-            ).status
-        if settings["require_full_matching"] and (
-            future_matching != len(future_tasks_tuple)
-            and temporal_future_status == "infeasible"
-        ):
-            return None
-
-        horizon_feasible = all(
-            any(
-                next_tick
-                + self._projected_stage_duration_ticks(task, worker_index, next_tick)
-                <= self.horizon_tick
-                for worker_index in edge
+        recovery_tick = self._earliest_worker_pair_recovery_tick()
+        if recovery_tick is not None:
+            candidates.append(
+                (recovery_tick, 1, "worker_recovery_feasible")
             )
-            for task, edge in zip(future_tasks_tuple, future_edges)
+        improvement_tick = (
+            self._earliest_reconfiguration_duration_improvement_tick()
         )
-        if temporal_future_status in {"feasible", "unknown"}:
-            # The temporal oracle includes qualification, recovery and horizon
-            # checks; a static projection is diagnostic only after it rescues
-            # an otherwise over-constrained matching.
-            horizon_feasible = True
-        if settings["require_horizon_feasible"] and not horizon_feasible:
-            return None
-
-        current_pairs = self._matching_preserving_pair_count(
-            current_edges, current_matching
-        )
-        future_pairs = self._matching_preserving_pair_count(
-            future_edges, future_matching
-        )
-        current_best_fatigue, current_best_duration = (
-            self._best_projected_worker_candidate(current_tasks, current_edges)
-        )
-        future_best_fatigue, future_best_duration = (
-            self._best_projected_worker_candidate(
-                future_tasks_tuple,
-                future_edges,
-                tick=next_tick,
+        if improvement_tick is not None:
+            candidates.append(
+                (
+                    improvement_tick,
+                    2,
+                    "reconfiguration_duration_improved",
+                )
             )
-        )
-        fatigue_improvement = max(
-            0.0, current_best_fatigue - future_best_fatigue
-        )
-        duration_improvement = max(
-            0, current_best_duration - future_best_duration
-        )
-        reasons = []
-        if future_pairs > current_pairs:
-            reasons.append("legal_pair_gain")
-        if fatigue_improvement >= settings[
-            "minimum_fatigue_ratio_improvement"
-        ]:
-            reasons.append("fatigue_improvement")
-        if duration_improvement >= settings[
-            "minimum_duration_improvement_ticks"
-        ]:
-            reasons.append("duration_improvement")
-        if (
-            temporal_future_status in {"feasible", "unknown"}
-            and future_matching < len(future_tasks_tuple)
-        ):
-            reasons.append(f"temporal_{temporal_future_status}")
-        if not reasons:
+        feasible = [
+            candidate
+            for candidate in candidates
+            if self.current_tick < candidate[0] <= self.horizon_tick
+        ]
+        if not feasible:
             return None
-        return ConditionalWorkerWaitPreview(
-            next_tick=next_tick,
-            wait_ticks=wait_ticks,
-            current_legal_pairs=current_pairs,
-            future_legal_pairs=future_pairs,
-            fatigue_ratio_improvement=fatigue_improvement,
-            duration_improvement_ticks=duration_improvement,
-            future_matching_size=future_matching,
-            future_task_count=len(future_tasks_tuple),
-            horizon_feasible=horizon_feasible,
-            reason="+".join(
-                reasons
-            ),
+        tick, _, reason = min(feasible)
+        return tick, reason
+
+    def _wait_certificate(self) -> dict[str, Any]:
+        """Certify that WAIT makes progress without exceeding the horizon."""
+
+        opportunity = self._wait_opportunity()
+        lower_bound = self._remaining_completion_lower_bound_ticks()
+        if opportunity is None:
+            certificate = {
+                "allowed": False,
+                "reason": "no_state_progress",
+                "progress_kind": "",
+                "next_tick": None,
+                "wait_ticks": 0,
+                "remaining_completion_lower_bound_ticks": lower_bound,
+                "projected_completion_tick": self.current_tick + lower_bound,
+                "horizon_tick": self.horizon_tick,
+                "deadline_slack_ticks": (
+                    self.horizon_tick - self.current_tick - lower_bound
+                ),
+            }
+        else:
+            next_tick, progress_kind = opportunity
+            wait_ticks = next_tick - self.current_tick
+            projected_completion_tick = next_tick + lower_bound
+            allowed = projected_completion_tick <= self.horizon_tick
+            certificate = {
+                "allowed": bool(allowed),
+                "reason": (
+                    progress_kind
+                    if allowed
+                    else "completion_lower_bound_exceeded"
+                ),
+                "progress_kind": progress_kind,
+                "next_tick": next_tick,
+                "wait_ticks": wait_ticks,
+                "remaining_completion_lower_bound_ticks": lower_bound,
+                "projected_completion_tick": projected_completion_tick,
+                "horizon_tick": self.horizon_tick,
+                "deadline_slack_ticks": (
+                    self.horizon_tick - projected_completion_tick
+                ),
+            }
+        self._last_wait_certificate = dict(certificate)
+        return certificate
+
+    def _record_wait_mask_certificate(
+        self,
+        certificate: dict[str, Any],
+    ) -> None:
+        """Record one WAIT-mask decision per environment state."""
+
+        reason = str(certificate["reason"])
+        key = (self._state_version, reason)
+        if key in self._wait_masked_states:
+            return
+        self._wait_masked_states.add(key)
+        self._wait_mask_reason_counts[reason] = (
+            self._wait_mask_reason_counts.get(reason, 0) + 1
         )
+        slack = int(certificate["deadline_slack_ticks"])
+        if (
+            self._wait_min_deadline_slack_ticks is None
+            or slack < self._wait_min_deadline_slack_ticks
+        ):
+            self._wait_min_deadline_slack_ticks = slack
 
     def _remaining_work_lower_bound_ticks(self) -> int:
         """Return an optimistic resource/precedence lower bound in ticks."""
@@ -5766,219 +3674,19 @@ class AssemblySchedulingEnv:
             chain_bounds.append(chain)
         return int(max(baseline, max(chain_bounds, default=0)))
 
-    def _candidate_completion_lower_bound_ticks(
-        self,
-        operation_index: int,
-        predicted_finish_tick: int,
-    ) -> int:
-        """Completion bound after committing a specific production pair."""
-        operation = self.operations[operation_index]
-        order = self._order_by_id(operation.spec.order_id)
-        successor_specs = [
-            spec
-            for spec in order.operations
-            if spec.sequence > operation.spec.sequence
-            and self.operations[self.instance.operation_index[spec.id]].state
-            != OperationState.DONE
-        ]
-        chain = max(0, int(predicted_finish_tick) - self.current_tick)
-        previous_module = operation.spec.required_module
-        for successor in successor_specs:
-            values = self._capability_processing_ticks[
-                self._capability_operation_indices
-                == self.instance.operation_index[successor.id]
-            ]
-            chain += int(values.min()) if values.size else self.horizon_tick + 1
-            chain += self._minimum_module_transition_ticks(
-                previous_module,
-                successor.required_module,
-            )
-            previous_module = successor.required_module
-        return int(max(self._remaining_completion_lower_bound_ticks(), chain))
-
-    def _production_defer_safety_certificate(
-        self,
-        legal_pair_count: int,
-        opportunity: tuple[int, str] | None,
-    ) -> dict[str, Any]:
-        settings = self.production_defer_shield
-        remaining_horizon = max(0, self.horizon_tick - self.current_tick)
-        viability_v2 = self.completion_viability_shield_enabled
-        lower_bound = (
-            self._remaining_completion_lower_bound_ticks()
-            if viability_v2
-            else self._remaining_work_lower_bound_ticks()
-        )
-        if opportunity is None:
-            only_defer = (
-                bool(settings.get("enabled", False))
-                and legal_pair_count == 0
-                and not viability_v2
-            )
-            certificate = {
-                "allowed": only_defer,
-                "reason": (
-                    "only_defer_legal"
-                    if only_defer
-                    else (
-                        "unrecoverable_deadlock"
-                        if viability_v2 and legal_pair_count == 0
-                        else "no_state_progress"
-                    )
-                ),
-                "progress_kind": (
-                    "terminal_or_deadlock_resolution" if only_defer else ""
-                ),
-                "wait_ticks": 0,
-                "remaining_work_lower_bound_ticks": lower_bound,
-                "deadline_slack_ticks": remaining_horizon - lower_bound,
-                "risk": 1.0,
-            }
-            self._last_production_defer_certificate = certificate
-            self._record_production_defer_shield_certificate(
-                certificate, legal_pair_count
-            )
-            return certificate
-        defer_tick, progress_kind = opportunity
-        wait_ticks = max(0, int(defer_tick) - self.current_tick)
-        reserve = int(settings.get("deadline_reserve_ticks", 1))
-        required = wait_ticks + lower_bound + reserve
-        risk = required / max(1, remaining_horizon)
-        if not bool(settings.get("enabled", False)):
-            allowed = True
-            reason = "shield_disabled"
-        elif legal_pair_count == 0 and not viability_v2:
-            allowed = True
-            reason = "only_defer_legal"
-        elif wait_ticks == 0:
-            allowed = True
-            reason = "zero_time_worker_handoff"
-        elif not progress_kind:
-            allowed = False
-            reason = "no_state_progress"
-        elif required > remaining_horizon:
-            allowed = False
-            reason = (
-                "completion_viability_exceeded"
-                if viability_v2
-                else "deadline_budget_exceeded"
-            )
-        else:
-            allowed = True
-            reason = "certified_progress_with_budget"
-        certificate = {
-            "allowed": bool(allowed),
-            "reason": reason,
-            "progress_kind": str(progress_kind),
-            "wait_ticks": wait_ticks,
-            "remaining_work_lower_bound_ticks": lower_bound,
-            "deadline_slack_ticks": remaining_horizon - required,
-            "risk": float(max(0.0, risk)),
-        }
-        self._last_production_defer_certificate = certificate
-        self._record_production_defer_shield_certificate(
-            certificate, legal_pair_count
-        )
-        return certificate
-
-    def _record_production_defer_shield_certificate(
-        self,
-        certificate: dict[str, Any],
-        legal_pair_count: int,
-    ) -> None:
-        settings = self.production_defer_shield
-        if bool(settings.get("enabled", False)) and legal_pair_count > 0:
-            state_key = int(self._state_version)
-            if state_key not in self._production_defer_shield_candidates:
-                self._production_defer_shield_candidates.add(state_key)
-                self._production_defer_shield_max_risk = max(
-                    self._production_defer_shield_max_risk,
-                    float(certificate["risk"]),
-                )
-                self._production_defer_shield_max_wait_ticks = max(
-                    self._production_defer_shield_max_wait_ticks,
-                    int(certificate.get("wait_ticks", 0)),
-                )
-                self._production_defer_shield_max_work_lower_bound_ticks = max(
-                    self._production_defer_shield_max_work_lower_bound_ticks,
-                    int(certificate.get("remaining_work_lower_bound_ticks", 0)),
-                )
-                slack = int(certificate.get("deadline_slack_ticks", 0))
-                if (
-                    self._production_defer_shield_min_deadline_slack_ticks is None
-                    or slack
-                    < self._production_defer_shield_min_deadline_slack_ticks
-                ):
-                    self._production_defer_shield_min_deadline_slack_ticks = slack
-                if not bool(certificate.get("allowed", False)):
-                    reason = str(certificate.get("reason", "unknown"))
-                    self._production_defer_shield_masked.add(state_key)
-                    self._production_defer_shield_reason_counts[reason] = (
-                        self._production_defer_shield_reason_counts.get(reason, 0)
-                        + 1
-                    )
-
-    def _production_defer_opportunity(self) -> tuple[int, str] | None:
-        """Return the next state-changing consequence of production defer."""
-        if self.current_tick >= self.horizon_tick:
-            return None
-        if self._has_pending_worker_task():
-            return self.current_tick, "worker_phase_handoff"
-
-        candidates: list[tuple[int, int, str]] = []
-        future_events = [
-            event for event in self._events if event[0] > self.current_tick
-        ]
-        if future_events:
-            event_tick = min(event[0] for event in future_events)
-            event_types = sorted(
-                {event[3].value for event in future_events if event[0] == event_tick}
-            )
-            candidates.append(
-                (
-                    event_tick,
-                    0,
-                    "external_event:" + "+".join(event_types),
-                )
-            )
-        candidate_recovery_tick = self._earliest_candidate_recovery_tick()
-        if candidate_recovery_tick is not None:
-            candidates.append(
-                (
-                    candidate_recovery_tick,
-                    1,
-                    "candidate_recovery_feasible",
-                )
-            )
-        recovery_improvement_tick = (
-            self._earliest_production_defer_recovery_improvement_tick()
-        )
-        if recovery_improvement_tick is not None:
-            candidates.append(
-                (
-                    recovery_improvement_tick,
-                    2,
-                    "reconfiguration_duration_improved",
-                )
-            )
-        candidates = [
-            candidate
-            for candidate in candidates
-            if self.current_tick < candidate[0] <= self.horizon_tick
-        ]
-        if not candidates:
-            return None
-        tick, _, reason = min(candidates)
-        return tick, reason
-
-    def _earliest_production_defer_recovery_improvement_tick(
+    def _earliest_reconfiguration_duration_improvement_tick(
         self,
     ) -> int | None:
-        """Find the first tick where idle recovery lowers a legal mismatch duration."""
-        if self._production_defer_recovery_cache_version == self._state_version:
-            return self._production_defer_recovery_cache
-        self._production_defer_recovery_cache_version = self._state_version
-        self._production_defer_recovery_cache = None
+        """Find the first tick where idle recovery lowers a legal stage duration."""
+        if (
+            self._reconfiguration_duration_improvement_cache_version
+            == self._state_version
+        ):
+            return self._reconfiguration_duration_improvement_cache
+        self._reconfiguration_duration_improvement_cache_version = (
+            self._state_version
+        )
+        self._reconfiguration_duration_improvement_cache = None
         recovery_rate = self.instance.fatigue.idle_recovery_rate_per_minute
         if recovery_rate <= 0.0 or self.current_tick >= self.horizon_tick:
             return None
@@ -6007,14 +3715,6 @@ class AssemblySchedulingEnv:
                     not in machine.spec.module_parameters
                 ):
                     continue
-                if (
-                    self.matching_admission_enabled
-                    and not self._production_candidate_profile(
-                        operation_index,
-                        machine_index,
-                    ).admissible
-                ):
-                    continue
                 current_duration = self._idle_worker_reconfiguration_ticks_at(
                     machine,
                     operation.spec.required_module,
@@ -6025,6 +3725,36 @@ class AssemblySchedulingEnv:
                         (machine, operation.spec.required_module, current_duration)
                     )
 
+        stage_candidates: list[
+            tuple[ReconfigurationRuntime, WorkerRuntime, int]
+        ] = []
+        for reconfiguration in self.reconfigurations.values():
+            if reconfiguration.stage not in {
+                ReconfigurationStage.WAIT_DIS,
+                ReconfigurationStage.WAIT_INS,
+            }:
+                continue
+            module = (
+                reconfiguration.source_module
+                if reconfiguration.stage == ReconfigurationStage.WAIT_DIS
+                else reconfiguration.target_module
+            )
+            for worker in self.workers:
+                if (
+                    worker.state == WorkerState.IDLE
+                    and module in worker.spec.qualified_modules
+                    and self._worker_can_start(reconfiguration, worker)
+                ):
+                    stage_candidates.append(
+                        (
+                            reconfiguration,
+                            worker,
+                            self._stage_duration_ticks(
+                                reconfiguration, worker
+                            ),
+                        )
+                    )
+
         for tick in range(self.current_tick + 1, scan_end_tick + 1):
             for machine, target_module, current_duration in mismatch_candidates:
                 duration = self._idle_worker_reconfiguration_ticks_at(
@@ -6033,7 +3763,24 @@ class AssemblySchedulingEnv:
                     tick,
                 )
                 if duration is not None and duration < current_duration:
-                    self._production_defer_recovery_cache = tick
+                    self._reconfiguration_duration_improvement_cache = tick
+                    return tick
+            elapsed = ticks_to_minutes(
+                tick - self.current_tick, self.resolution
+            )
+            for reconfiguration, worker, current_duration in stage_candidates:
+                fatigue = max(
+                    0.0,
+                    worker.fatigue
+                    - recovery_rate * elapsed,
+                )
+                duration = self._stage_duration_ticks(
+                    reconfiguration,
+                    worker,
+                    fatigue_override=fatigue,
+                )
+                if duration < current_duration:
+                    self._reconfiguration_duration_improvement_cache = tick
                     return tick
         return None
 
@@ -6082,22 +3829,6 @@ class AssemblySchedulingEnv:
             )
         return total_ticks
 
-    def _production_advance_allowed(self) -> bool:
-        """Deprecated compatibility wrapper for the old production action name."""
-        return self._production_defer_opportunity() is not None
-
-    def _has_strict_future(self) -> bool:
-        if any(event[0] > self.current_tick for event in self._events):
-            return True
-        if self._earliest_recovery_tick() is not None:
-            return True
-        if self._earliest_candidate_recovery_tick() is not None:
-            return True
-        return (
-            self._earliest_production_defer_recovery_improvement_tick()
-            is not None
-        )
-
     def _pending_reconfiguration(
         self, machine_id: str
     ) -> ReconfigurationRuntime | None:
@@ -6127,20 +3858,8 @@ class AssemblySchedulingEnv:
         if self.decision_type != DecisionType.TERMINAL:
             mask = self.get_action_mask()
             if bool(mask.all()):
-                has_event_beyond_horizon = any(
-                    event[0] > self.horizon_tick for event in self._events
-                )
-                if self.completion_viability_shield_enabled:
-                    self._record_unrecoverable_deadlock_diagnostic()
-                self._truncate_at_horizon(
-                    (
-                        "unrecoverable_deadlock"
-                        if self.completion_viability_shield_enabled
-                        else (
-                            "horizon" if has_event_beyond_horizon else "deadlock"
-                        )
-                    )
-                )
+                self._record_unrecoverable_deadlock_diagnostic()
+                self._truncate_at_horizon("unrecoverable_deadlock")
 
     def _record_unrecoverable_deadlock_diagnostic(self) -> None:
         if self._first_unrecoverable_deadlock_diagnostic is not None:
@@ -6173,11 +3892,9 @@ class AssemblySchedulingEnv:
                 - self._remaining_completion_lower_bound_ticks()
             ),
             "certificate_reason": (
-                self._last_production_defer_certificate or {}
+                self._last_wait_certificate or {}
             ).get("reason"),
-            "candidate_certificate": dict(
-                self._last_completion_viability_certificate or {}
-            ),
+            "wait_certificate": dict(self._last_wait_certificate or {}),
         }
 
     def _truncate_at_horizon(self, reason: str) -> None:

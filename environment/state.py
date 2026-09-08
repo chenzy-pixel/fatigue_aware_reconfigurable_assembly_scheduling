@@ -54,3 +54,13 @@ class ReconfigurationRuntime:
     disassembly_end_tick: int | None = None
     installation_start_tick: int | None = None
     installation_end_tick: int | None = None
+
+
+@dataclass(frozen=True)
+class WorkerTaskSnapshot:
+    """Lightweight pending worker task used by observations and diagnostics."""
+
+    task_id: str
+    machine_index: int
+    stage: ReconfigurationStage
+    module: str

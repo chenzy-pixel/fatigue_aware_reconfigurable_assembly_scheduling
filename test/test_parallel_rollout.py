@@ -55,17 +55,16 @@ class _LocalForcedChainEnvironment:
             return None
         physical = bool(self.physical[self.state])
         action_kind = (
-            "advance"
+            "wait"
             if int(legal[0]) == len(action_mask) - 1
             else "pair"
         )
         return {
-            "non_delay_blocked_advance": not physical,
-            "advance_physically_unavailable": (
+            "wait_physically_unavailable": (
                 physical and action_kind == "pair"
             ),
             "pair_physically_unavailable": (
-                physical and action_kind == "advance"
+                physical and action_kind == "wait"
             ),
         }
 
@@ -96,16 +95,16 @@ class _LocalForcedChainEnvironment:
         return []
 
 
-def test_physical_forced_detection_excludes_non_delay_singletons():
+def test_physical_forced_detection_accepts_pair_and_wait_singletons():
     physical_pair = _LocalForcedChainEnvironment(
         [[False, True]],
         [True],
     )
-    physical_advance = _LocalForcedChainEnvironment(
+    physical_wait = _LocalForcedChainEnvironment(
         [[True, False]],
         [True],
     )
-    non_delay_pair = _LocalForcedChainEnvironment(
+    non_physical_pair = _LocalForcedChainEnvironment(
         [[False, True]],
         [False],
     )
@@ -115,12 +114,12 @@ def test_physical_forced_detection_excludes_non_delay_singletons():
         physical_pair.get_action_mask(),
     ) == 0
     assert physical_forced_action_from_mask(
-        physical_advance,
-        physical_advance.get_action_mask(),
+        physical_wait,
+        physical_wait.get_action_mask(),
     ) == 1
     assert physical_forced_action_from_mask(
-        non_delay_pair,
-        non_delay_pair.get_action_mask(),
+        non_physical_pair,
+        non_physical_pair.get_action_mask(),
     ) is None
 
 
@@ -659,10 +658,6 @@ def test_training_indices_220_239_repeat_three_times_with_twenty_workers(
         for report in reports
     ]
     assert hashes[0] == hashes[1] == hashes[2]
-    assert all(report["temporal_unknown_count"] == 0 for report in reports)
-    assert all(
-        report["temporal_budget_termination_reasons"] == {}
-        for report in reports
-    )
+    assert all(report["generator_version"] == "1.3.0" for report in reports)
     assert reports[1]["cache_hit_count"] == 20
     assert reports[2]["cache_hit_count"] == 20

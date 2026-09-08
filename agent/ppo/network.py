@@ -140,11 +140,11 @@ def _validate_policy_head_config(config: Mapping[str, Any]) -> dict[str, Any]:
             "only policy_head_version=7 is supported by the latest-only tree"
         )
     semantics = str(
-        config.get("production_action_semantics", "pair_plus_defer_v1")
+        config.get("production_action_semantics", "pair_plus_wait_v1")
     )
-    if semantics != "pair_plus_defer_v1":
+    if semantics != "pair_plus_wait_v1":
         raise ValueError(
-            "network.production_action_semantics must be 'pair_plus_defer_v1'"
+            "network.production_action_semantics must be 'pair_plus_wait_v1'"
         )
     production_enabled = bool(
         config.get("production_candidate_relative_features", True)
@@ -321,6 +321,7 @@ _CURRENT_SPEC_FIELDS = (
     "worker_candidate_relative_features",
     "policy_head_version",
     "production_action_semantics",
+    "worker_action_semantics",
     "production_relative_feature_names",
     "worker_relative_feature_names",
     "relative_weight_parameterization",
@@ -356,7 +357,7 @@ def assert_network_config_matches_spec(
     config: Mapping[str, Any],
     checkpoint_spec: Mapping[str, Any],
 ) -> None:
-    """Require the current E1 architecture; only schema-4 E1 metadata is aliased."""
+    """Require the current pair-plus-WAIT architecture exactly."""
 
     configured = dict(config)
     saved = dict(checkpoint_spec)
@@ -364,7 +365,8 @@ def assert_network_config_matches_spec(
     normalize_network_config(saved)
     required_identity = {
         "policy_head_version": POLICY_HEAD_VERSION,
-        "production_action_semantics": "pair_plus_defer_v1",
+        "production_action_semantics": "pair_plus_wait_v1",
+        "worker_action_semantics": "pair_plus_wait_v1",
         "candidate_context_mode": CURRENT_CANDIDATE_CONTEXT_MODE,
         "production_commit_set_scorer": False,
         "future_value_features": False,
@@ -391,9 +393,9 @@ def assert_network_config_matches_spec(
                 f"checkpoint {field} is incompatible with the current E1 network: "
                 f"configured={left}, checkpoint={right}"
             )
-    configured_schema = int(configured.get("observation_schema_version", 3))
-    saved_schema = int(saved.get("observation_schema_version", 3))
-    if configured_schema != 3 or saved_schema not in {3, 4}:
+    configured_schema = int(configured.get("observation_schema_version", 4))
+    saved_schema = int(saved.get("observation_schema_version", 0))
+    if configured_schema != 4 or saved_schema != 4:
         raise ValueError(
             "checkpoint observation schema is incompatible with the current "
             f"environment: configured={configured_schema}, checkpoint={saved_schema}"
@@ -743,12 +745,12 @@ class HeteroGraphActorCritic(nn.Module):
             self.register_parameter("worker_context_gate", None)
             self.register_parameter("worker_residual_context_gate", None)
         context_dim = self.hidden_dim * (len(NODE_TYPES) + 1)
-        self.production_defer = make_scalar_head(
+        self.production_wait = make_scalar_head(
             context_dim,
             self.hidden_dim,
             self.dropout_probability,
         )
-        self.worker_advance = make_scalar_head(
+        self.worker_wait = make_scalar_head(
             context_dim,
             self.hidden_dim,
             self.dropout_probability,
@@ -777,7 +779,8 @@ class HeteroGraphActorCritic(nn.Module):
                 self.use_worker_candidate_relative_features
             ),
             "policy_head_version": self.policy_head_version,
-            "production_action_semantics": "pair_plus_defer_v1",
+            "production_action_semantics": "pair_plus_wait_v1",
+            "worker_action_semantics": "pair_plus_wait_v1",
             "production_relative_feature_names": (
                 self.production_relative_feature_names
                 if self.use_production_candidate_relative_features
@@ -811,7 +814,7 @@ class HeteroGraphActorCritic(nn.Module):
             "residual_context_gate_initial_logit": (
                 self.residual_context_gate_initial_logit
             ),
-            "observation_schema_version": 3,
+            "observation_schema_version": 4,
             "feature_dimensions": dict(self.feature_dimensions),
             "edge_feature_dimensions": dict(self.edge_feature_dimensions),
         }
@@ -937,7 +940,7 @@ class HeteroGraphActorCritic(nn.Module):
                     masks[batch_index],
                     device=device,
                 )
-                terminal_logit = self.production_defer(
+                terminal_logit = self.production_wait(
                     context[batch_index]
                 ).reshape(1)
             elif observation.decision_type == DecisionType.WORKER:
@@ -950,7 +953,7 @@ class HeteroGraphActorCritic(nn.Module):
                     masks[batch_index],
                     device=device,
                 )
-                terminal_logit = self.worker_advance(
+                terminal_logit = self.worker_wait(
                     context[batch_index]
                 ).reshape(1)
             else:

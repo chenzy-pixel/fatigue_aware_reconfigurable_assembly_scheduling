@@ -5,11 +5,11 @@ fatigue-aware reconfigurable assembly scheduling.
 
 The executable stack is fixed to:
 
-- pair-plus-defer production actions;
+- pair-plus-WAIT actions in both decision phases;
 - V7 HGNN actor-critic with bounded ranker-scale context residual;
-- deterministic temporal matching admission/recovery v3;
-- completion-viability defer shield v2;
-- single-objective guarded promotion protocol v4.
+- instantaneous physical legality for production and worker pairs;
+- progress- and completion-lower-bound-certified WAIT transitions;
+- single-objective guarded promotion protocol v5.
 
 Implementation identities are generated in `runtime_manifest`; configuration
 files cannot select alternative implementations.
@@ -25,8 +25,8 @@ call graph, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - `configs/e1/`: flow, cost, and variance objective overrides.
 - `configs/baselines/`: current MO-ALNS comparison settings.
 - `data/`: instance models, generators, fixed datasets, and manifests.
-- `environment/`: facade, runtime state, action codec, dynamics, temporal
-  contracts, graph observation, reward, and diagnostics.
+- `environment/`: facade, runtime state, action codec, dynamics, graph
+  observation, reward, and diagnostics.
 - `training/`: single-objective promotion protocol.
 - `result/`: persistence, provenance, metrics, and dashboards.
 
@@ -53,14 +53,13 @@ The same `TrainingEngine` is used for all worker counts. A serial run is
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_variance.json --smoke --run-name variance_smoke
 ```
 
-Resume the current accepted architecture with:
+Resume a checkpoint produced by the current architecture with:
 
 ```powershell
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --initial-checkpoint result\runs\v7_2000_e1_seed11\accepted_checkpoint.pt --run-name flow_resume
 ```
 
-Checkpoint loading is strict. The current accepted checkpoint is supported;
-historical network specs should be run from the archive tag.
+Checkpoint loading is strict and requires the pair-plus-WAIT/schema-4 network spec.
 
 ## Evaluate
 
@@ -87,5 +86,5 @@ control PPO checkpoint promotion.
 ```
 
 The latest-only audit checks configuration identity, environment golden
-outputs, temporal oracle boundaries, strict checkpoint loading, PPO updates,
+outputs, pair and WAIT contracts, strict checkpoint loading, PPO updates,
 serial/parallel reproducibility, and the MO-ALNS/offline Pareto path.

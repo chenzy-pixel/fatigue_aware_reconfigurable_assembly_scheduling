@@ -53,14 +53,14 @@ def summarize_policy_decision_diagnostics(
         "context_override_rate": (
             context_override_count / len(ranked) if ranked else 0.0
         ),
-        "production_pair_plus_defer_state_count": production_terminal_count,
+        "production_pair_plus_wait_state_count": production_terminal_count,
         "production_decision_state_count": len(production),
-        "production_pair_plus_defer_ratio": (
+        "production_pair_plus_wait_ratio": (
             production_terminal_count / len(production) if production else 0.0
         ),
-        "worker_pair_plus_advance_state_count": worker_terminal_count,
+        "worker_pair_plus_wait_state_count": worker_terminal_count,
         "worker_decision_state_count": len(worker),
-        "worker_pair_plus_advance_ratio": (
+        "worker_pair_plus_wait_ratio": (
             worker_terminal_count / len(worker) if worker else 0.0
         ),
     }

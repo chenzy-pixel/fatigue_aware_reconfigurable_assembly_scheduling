@@ -30,14 +30,14 @@
 | 领域 | 当前实现 |
 |---|---|
 | 主线 | `e1_latest` |
-| 生产动作 | `pair_plus_defer_v1` |
+| 生产动作 | `pair_plus_wait_v1` |
+| 工人动作 | `pair_plus_wait_v1` |
 | 策略头 | V7 |
 | 候选排序 | `bounded_ranker_scale_v7` |
-| 工人可行性 | `temporal_matching_admission_recovery_v3` |
-| Temporal search | `strict_recovery_frontier_transposition_budget_v1` |
-| Defer shield | `deadline_progress_viability_shield_v2` |
-| Observation | schema 3 |
-| 训练协议 | `v7_e1_single_objective_protocol_v4` |
+| Pair 可行性 | `instant_physical_pair_mask_v1` |
+| WAIT mask | `progress_completion_lower_bound_v1` |
+| Observation | schema 4 |
+| 训练协议 | `v7_e1_single_objective_protocol_v5` |
 
 ## 3. 根目录入口
 
@@ -68,7 +68,7 @@
 | `configs/baselines/mo_alns_smoke.json` | 最小基线冒烟参数 |
 | `configs/baselines/mo_alns_manifest*.json` | 基线批量运行清单及示例 |
 
-配置允许改变真实实验参数，例如 reward weights、temporal search budget、deadline reserve、网络宽度、PPO 超参数、数据规模、seed 和 worker 数；动作语义、策略头版本、matching 版本及 shield 版本由代码固定。
+配置允许改变真实实验参数，例如 reward weights、网络宽度、PPO 超参数、数据规模、seed 和 worker 数；动作语义、策略头版本、pair 可行性和 WAIT 证书版本由代码固定。
 
 ## 5. 数据层 `data/`
 
@@ -90,13 +90,12 @@
 
 | 文件 | 主要组件或逻辑 |
 |---|---|
-| `environment/actions.py` | `ActionCodec`；稳定编码/解码 `operation × machine`、`machine × worker`，并定义 production defer 与 worker advance 的动作 ID |
-| `environment/state.py` | `OperationRuntime`、`MachineRuntime`、`WorkerRuntime`、`ReconfigurationRuntime`；episode 内可变状态 |
+| `environment/actions.py` | `ActionCodec`；稳定编码/解码 `operation × machine`、`machine × worker`，并定义两个阶段的 WAIT 动作 ID |
+| `environment/state.py` | `OperationRuntime`、`MachineRuntime`、`WorkerRuntime`、`ReconfigurationRuntime` 和轻量 worker task snapshot |
 | `environment/dynamics.py` | 时间与 tick 的确定性量化转换、数值容差 |
-| `environment/temporal.py` | Temporal oracle 的不可变输入/输出结构、worker/task snapshot、搜索预算和预算耗尽异常 |
 | `environment/preference.py` | 三目标 `PreferenceVector`、归一化、默认权重和 simplex lattice；供 reward 标量化及 MO-ALNS 离线网格使用 |
 | `environment/types.py` | 状态枚举；`RewardVector`；异质图节点/边类型；`EdgeStore`；`HeterogeneousGraphObservation`；`PolicyObservation` |
-| `environment/env.py` | `AssemblySchedulingEnv` 门面及当前离散事件内核：reset、观测、mask、step、事件推进、加工/重构/疲劳、temporal v3、defer shield v2、reward、metrics 和 schedule validation |
+| `environment/env.py` | `AssemblySchedulingEnv` 门面及当前离散事件内核：reset、观测、pair/WAIT mask、step、事件推进、加工/重构/疲劳、reward、metrics 和 schedule validation |
 | `environment/__init__.py` | 环境包的稳定导出面；入口代码应优先从这里导入公共类型 |
 
 ### 6.2 环境公开契约
@@ -106,13 +105,13 @@
 | 方法 | 契约 |
 |---|---|
 | `reset(instance, ...)` | 装载实例、初始化事件队列和运行时状态，返回初始 observation |
-| `observe()` | 生成 schema 3 的异质图 observation 与动作候选特征 |
+| `observe()` | 生成 schema 4 的异质图 observation 与动作候选特征 |
 | `get_action_mask()` | 返回当前决策阶段的合法动作布尔 mask |
 | `step(action)` | 解码动作、推进生产/工人决策或离散事件，返回 observation、reward、done 和 info |
-| `metrics()` | 汇总 flow time、cost、load variance、安全性、matching 和 defer 诊断 |
+| `metrics()` | 汇总 flow time、cost、load variance、安全性、matching 和 WAIT 诊断 |
 | `validate_schedule()` | 对最终 schedule 做先后约束、资源占用和一致性校验，返回错误列表 |
 
-`env.py` 目前仍承载 temporal search、defer certificate、事件推进和图构建的具体私有方法；已经抽出的 `actions/state/dynamics/temporal/types` 是稳定领域边界。后续继续瘦身时，应保持上述六个接口、动作 ID、observation schema 和 reward 恒等式不变。
+`env.py` 承载 pair/WAIT mask、WAIT certificate、事件推进和图构建的具体私有方法；`actions/state/dynamics/types` 是稳定领域边界。后续继续瘦身时，应保持上述六个接口、动作 ID、observation schema 和 reward 恒等式不变。
 
 ### 6.3 一次环境决策
 
@@ -120,13 +119,12 @@
 observe()
   └─ 构建异质图节点/关系/候选特征
 get_action_mask()
-  ├─ 静态资源与 precedence 快速检查
-  ├─ 静态 matching
-  ├─ 必要时 temporal oracle v3
-  └─ 对 defer 动作生成 completion-viability shield v2 certificate
+  ├─ production pair: READY、机器 IDLE、已装模块、目标模块可加工
+  ├─ worker pair: 待分配任务、工人 IDLE、资质、预测疲劳安全
+  └─ WAIT: 可达进展与剩余完成下界证书
 step(action)
-  ├─ production: pair 或 defer
-  ├─ worker: machine-worker pair 或 advance
+  ├─ production: operation-machine pair 或 WAIT
+  ├─ worker: machine-worker pair 或 WAIT
   ├─ 推进离散事件与疲劳/成本/负载
   └─ 生成 RewardVector、终止原因和诊断
 ```
@@ -244,9 +242,9 @@ mo_alns.py
 | 测试文件 | 主要保护内容 |
 |---|---|
 | `test/test_latest_only_audit.py` | 配置清单、runtime identity、旧模式零引用、黄金 observation/mask/action/reward、checkpoint hash |
-| `test/test_temporal_matching_v3.py` | 静态快路径、temporal recovery、预算耗尽、horizon 边界 |
-| `test/test_production_defer.py` | pair/defer 动作和 shield certificate |
-| `test/test_graph_observation.py`、`test/test_hetero_gnn.py` | schema 3 图结构、关系和 HGNN 前向 |
+| `test/test_pair_masks.py` | production/worker pair 的即时物理合法性与 WAIT horizon 证书 |
+| `test/test_wait_action.py` | 两阶段 pair-plus-WAIT 编码与状态转移 |
+| `test/test_graph_observation.py`、`test/test_hetero_gnn.py` | schema 4 图结构、关系和 HGNN 前向 |
 | `test/test_v7_policy.py` | V7 logits、ranker、checkpoint 严格兼容和冻结输出 |
 | `test/test_ppo*.py` | GAE、batching、PPO 更新、保存和恢复 |
 | `test/test_parallel_rollout.py`、`test/test_reproducibility.py` | 单/多 worker 的 seed、实例序列和采样复现契约 |
@@ -258,7 +256,7 @@ mo_alns.py
 ## 12. 当前架构检查结论
 
 - 配置、数据、环境、agent、训练协议和结果模块之间的顶层边界清晰，训练与评测共享相同 collector 和环境语义。
-- 动作 codec、运行时状态、temporal 数据契约、网络 building blocks、训练协议和 provenance 已形成独立组件。
-- `environment/env.py` 仍是最大的实现聚合点，门面与事件推进、图构建、temporal search、defer shield 逻辑位于同一个类中。它是下一轮等价拆分的主要候选，但不影响当前公开契约和黄金结果。
+- 动作 codec、运行时状态、网络 building blocks、训练协议和 provenance 已形成独立组件。
+- `environment/env.py` 仍是最大的实现聚合点，门面与事件推进、图构建和 WAIT 证书逻辑位于同一个类中。它是下一轮等价拆分的主要候选，但不影响当前公开契约和黄金结果。
 - `train.py` 同时承担入口装配、验证稳定性、checkpoint audit 和训练循环；后续可把验证/audit orchestration 进一步移入 `training/`，同时保持 `train.py --config ...` 不变。
 - `agent/ppo/network.py` 集中了图批处理、message passing 和两类动作 head。当前 checkpoint key 兼容性依赖这一组织方式，继续拆分时需要保留 module attribute 名和 `state_dict` key。
