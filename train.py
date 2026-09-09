@@ -90,6 +90,46 @@ def _checkpoint_eligible_validation_event(event: str, promotion: str) -> bool:
     return event == "accepted"
 
 
+def _promote_accepted_checkpoint(
+    *,
+    event: str,
+    config: dict,
+    phase_controller: TrainingPhaseController,
+    agent: PPOAgent,
+    accepted_checkpoint: Path,
+    best_checkpoint: Path,
+    completed_episodes: int,
+    parallel_envs: int,
+    validation_row: dict,
+) -> bool:
+    """Persist an audited accepted model and its exact best-checkpoint copy."""
+
+    if not _checkpoint_eligible_validation_event(
+        event,
+        phase_controller.quality_checkpoint_promotion,
+    ):
+        return False
+    if not phase_controller.is_formally_accepted:
+        raise RuntimeError("accepted event lacks complete formal audit state")
+    agent.save(
+        accepted_checkpoint,
+        metadata={
+            **_checkpoint_protocol_metadata(config),
+            **_single_objective_checkpoint_metadata(
+                phase_controller,
+                checkpoint_role="accepted",
+            ),
+            "checkpoint_role": "accepted",
+            "seed": config["seed"],
+            "parallel_envs": parallel_envs,
+            "accepted_episode": completed_episodes,
+            "validation": validation_row,
+        },
+    )
+    shutil.copyfile(accepted_checkpoint, best_checkpoint)
+    return True
+
+
 def _validation_manifest_path(config: dict) -> Path:
     split = str(config["training"]["validation_split"])
     return project_path(config["paths"]["manifests_root"]) / split / "manifest.json"
@@ -687,22 +727,6 @@ def _single_objective_guard_score(
     )
 
 
-def _official_evaluation_sampling_seeds(config: dict) -> list[int]:
-    seeds = [
-        int(value)
-        for value in config["training"].get(
-            "final_evaluation_sampling_seeds",
-            (100011, 100012, 100013),
-        )
-    ]
-    if seeds != [100011, 100012, 100013]:
-        raise ValueError(
-            "M1 final evaluation sampling seeds must be "
-            "100011/100012/100013"
-        )
-    return seeds
-
-
 def _checkpoint_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -869,7 +893,7 @@ def _assert_single_objective_checkpoint_evaluation(
     metadata = evaluation.get("checkpoint_metadata")
     if not isinstance(metadata, dict):
         raise RuntimeError("single-objective checkpoint metadata is missing")
-    saved = metadata.get("single_objective_audit_value")
+    saved = metadata.get("accepted_single_objective_audit_value")
     if saved is None or not math.isclose(
         float(score[1]), float(saved), rel_tol=0.0, abs_tol=1e-8
     ):
@@ -892,6 +916,19 @@ def _single_objective_checkpoint_metadata(
     diagnostics = phase_controller.last_promotion_diagnostics
     audit_diagnostics = phase_controller.last_single_objective_audit_diagnostics
     return {
+        "single_objective_name": phase_controller.single_objective_name,
+        "single_objective_window_statistic": (
+            phase_controller.single_objective_window_statistic
+        ),
+        "accepted_single_objective_value": (
+            phase_controller.accepted_single_objective_value
+        ),
+        "accepted_single_objective_audit_value": (
+            phase_controller.accepted_single_objective_audit_value
+        ),
+        "accepted_single_objective_failed_instances": (
+            phase_controller.accepted_single_objective_failed_instances
+        ),
         "single_objective_target": phase_controller.single_objective_name,
         "single_objective_statistic": phase_controller.single_objective_window_statistic,
         "single_objective_window_size": phase_controller.single_objective_window_size,
@@ -930,7 +967,7 @@ def _single_objective_checkpoint_metadata(
             phase_controller.accepted_single_objective_audit_value
         ),
         "single_objective_audit_diagnostics": dict(audit_diagnostics),
-        "formal_eligible": False,
+        "formal_eligible": phase_controller.is_formally_accepted,
     }
 
 
@@ -1185,8 +1222,8 @@ def _training_effect_fields(metrics: dict) -> dict:
         "production_wait_time": metrics.get("production_wait_time"),
         "worker_wait_ticks": metrics.get("worker_wait_ticks"),
         "worker_wait_time": metrics.get("worker_wait_time"),
-        "wait_min_deadline_slack_ticks": metrics.get(
-            "wait_min_deadline_slack_ticks"
+        "wait_min_estimated_deadline_slack_ticks": metrics.get(
+            "wait_min_estimated_deadline_slack_ticks"
         ),
         **{
             name: metrics.get(name, 0)
@@ -1925,43 +1962,23 @@ def _train_parallel(
                     update_row["candidate_status"] = "phase_transition"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "phase_transition"
-                if validation_event in {
-                    "transition",
-                    "promoted",
-                    "accepted",
-                }:
-                    agent.save(
-                        accepted_checkpoint,
-                        metadata={
-                            **_checkpoint_protocol_metadata(config),
-                            "checkpoint_role": "shadow_best",
-                            "seed": config["seed"],
-                            "parallel_envs": parallel_envs,
-                            "accepted_episode": completed_episodes,
-                            "quality_score": normalized_quality_score,
-                            "single_objective_name": (
-                                phase_controller.single_objective_name
-                            ),
-                            "single_objective_statistic": (
-                                phase_controller.single_objective_window_statistic
-                                if phase_controller.quality_checkpoint_promotion
-                                == SINGLE_OBJECTIVE_PROMOTION_MODE
-                                else None
-                            ),
-                            "single_objective_value": (
-                                phase_controller.accepted_single_objective_value
-                            ),
-                            "validation": validation_row,
-                        },
-                    )
-                    shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                if _promote_accepted_checkpoint(
+                    event=validation_event,
+                    config=config,
+                    phase_controller=phase_controller,
+                    agent=agent,
+                    accepted_checkpoint=accepted_checkpoint,
+                    best_checkpoint=best_checkpoint,
+                    completed_episodes=completed_episodes,
+                    parallel_envs=parallel_envs,
+                    validation_row=validation_row,
+                ):
                     best_score = score
                     best_validation = validation_row
                     is_new_best = True
-                    if validation_event != "transition":
-                        update_row["candidate_status"] = "promoted"
-                        for row in rows[-len(rollout.episodes) :]:
-                            row["candidate_status"] = "promoted"
+                    update_row["candidate_status"] = "accepted"
+                    for row in rows[-len(rollout.episodes) :]:
+                        row["candidate_status"] = "accepted"
                 elif validation_event in {
                     "not_promoted",
                     "rejected",
@@ -2029,7 +2046,6 @@ def _train_parallel(
                 )
                 if validation_event in {
                     "transition",
-                    "promoted",
                     "audit_required",
                     "audit_rejected",
                     "audit_passed_not_accepted",
@@ -2086,11 +2102,14 @@ def _train_parallel(
             )
             for row in batch_rows:
                 print(json.dumps(row, ensure_ascii=False))
-    single_objective_mode = True
-    formal_eligible = bool(
-        accepted_checkpoint.exists()
-        and phase_controller.formal_training_status == "accepted"
-    )
+    formal_eligible = phase_controller.is_formally_accepted
+    accepted_checkpoint_exists = accepted_checkpoint.exists()
+    if formal_eligible != accepted_checkpoint_exists:
+        raise RuntimeError(
+            "formal acceptance state and accepted checkpoint presence diverged"
+        )
+    if formal_eligible and not best_checkpoint.exists():
+        raise RuntimeError("formally accepted training lacks best_checkpoint.pt")
     if formal_eligible and (best_validation is None or best_score is None):
         raise RuntimeError("training completed without validation")
     final_metadata = {
@@ -2150,35 +2169,29 @@ def _train_parallel(
                 phase_controller.formal_training_status
             ),
             "training_phase": phase_controller.as_dict(),
-            "formal_eligible": formal_eligible,
+            "run_formal_eligible": formal_eligible,
         }
-    checkpoint: Path | None
-    last_candidate_checkpoint: Path | None
     agent.save(
         last_checkpoint,
-        metadata={**final_metadata, "checkpoint_role": "last_online"},
+        metadata={
+            **final_metadata,
+            "checkpoint_role": "last_online",
+            "formal_eligible": False,
+        },
     )
-    if single_objective_mode:
-        checkpoint = None
-        last_candidate_checkpoint = None
-    elif formal_eligible:
-        if not accepted_checkpoint.exists():
-            raise RuntimeError(
-                "formal training completed without a shadow-best checkpoint"
-            )
-        checkpoint = run_directory / "checkpoint.pt"
-        last_candidate_checkpoint = None
-        shutil.copyfile(accepted_checkpoint, checkpoint)
-        shutil.copyfile(accepted_checkpoint, best_checkpoint)
-    else:
-        checkpoint = None
-        last_candidate_checkpoint = (
-            run_directory / "last_candidate_checkpoint.pt"
-        )
-        shutil.copyfile(last_checkpoint, last_candidate_checkpoint)
+    checkpoint: Path | None = accepted_checkpoint if formal_eligible else None
+    last_candidate_checkpoint: Path | None = None
     final_checkpoint_evaluation = None
     checkpoint_sha256 = None
-    if single_objective_mode and accepted_checkpoint.exists():
+    if formal_eligible:
+        checkpoint_sha256 = _checkpoint_sha256(accepted_checkpoint)
+        best_sha256 = _checkpoint_sha256(best_checkpoint)
+        if checkpoint_sha256 != best_sha256:
+            raise RuntimeError(
+                "accepted and best checkpoint hashes diverged"
+            )
+        # The online agent may have changed after the accepted episode.  The
+        # formal audit must therefore load the immutable accepted artifact.
         final_checkpoint_evaluation = _reevaluate_checkpoint_with_parallel_runner(
             config,
             checkpoint=accepted_checkpoint,
@@ -2200,7 +2213,11 @@ def _train_parallel(
             invalidated_checkpoint = (
                 run_directory / "invalidated_accepted_checkpoint.pt"
             )
+            invalidated_best_checkpoint = (
+                run_directory / "invalidated_best_checkpoint.pt"
+            )
             accepted_checkpoint.replace(invalidated_checkpoint)
+            best_checkpoint.replace(invalidated_best_checkpoint)
             write_csv(run_directory / "train_log.csv", rows)
             write_csv(run_directory / "update_log.csv", update_rows)
             write_csv(run_directory / "validation_log.csv", validation_rows)
@@ -2218,37 +2235,16 @@ def _train_parallel(
                     "status": "accepted_checkpoint_invalidated",
                     "error": str(error),
                     "invalidated_checkpoint": str(invalidated_checkpoint),
+                    "invalidated_best_checkpoint": str(
+                        invalidated_best_checkpoint
+                    ),
                     "formal_eligible": False,
                 },
             )
             raise RuntimeError(
                 "single-objective accepted checkpoint failed final audit"
             ) from error
-    elif checkpoint is not None:
-        checkpoint_sha256 = _checkpoint_sha256(checkpoint)
-        accepted_sha256 = _checkpoint_sha256(accepted_checkpoint)
-        best_sha256 = _checkpoint_sha256(best_checkpoint)
-        if len({checkpoint_sha256, accepted_sha256, best_sha256}) != 1:
-            raise RuntimeError(
-                "official, accepted, and best checkpoint hashes diverged"
-            )
-        final_checkpoint_evaluation = _reevaluate_checkpoint_with_parallel_runner(
-            config,
-            checkpoint=checkpoint,
-            bootstrap_observation=bootstrap_observation,
-            dataset_name=validation_split,
-            instance_limit=validation_limit,
-            sampling_seeds=_official_evaluation_sampling_seeds(config),
-            greedy_only=False,
-            template=template,
-            episode_count=training_base_instance_count(config, episodes),
-            parallel_worker_count=validation_parallel_envs,
-        )
-    summary_checkpoint = (
-        accepted_checkpoint
-        if single_objective_mode and accepted_checkpoint.exists()
-        else checkpoint or last_checkpoint
-    )
+    summary_checkpoint = checkpoint or last_checkpoint
     summary_provenance = build_provenance(
         config,
         dataset_manifest_path=_validation_manifest_path(config),
@@ -2362,29 +2358,26 @@ def _train_parallel(
             "formal_training_status": (
                 phase_controller.formal_training_status
             ),
+            "formal_eligible": formal_eligible,
             "training_phase": phase_controller.as_dict(),
-            "single_objective_audit": (
-                {
-                    "daily_validation_instance_limit": validation_limit,
-                    "audit_instance_limit": (
-                        phase_controller.single_objective_audit_instance_limit
-                    ),
-                    "audit_completion_target": (
-                        phase_controller.single_objective_audit_completion_target
-                    ),
-                    "audit_max_failed_instances": (
-                        phase_controller.single_objective_audit_max_failed_instances
-                    ),
-                    "audit_count": len(single_objective_audit_rows),
-                    "audit_failure_row_count": len(
-                        single_objective_audit_failure_rows
-                    ),
-                    "accepted_status": phase_controller.formal_training_status,
-                    "project_formal_completion_target": 1.0,
-                }
-                if single_objective_mode
-                else None
-            ),
+            "single_objective_audit": {
+                "daily_validation_instance_limit": validation_limit,
+                "audit_instance_limit": (
+                    phase_controller.single_objective_audit_instance_limit
+                ),
+                "audit_completion_target": (
+                    phase_controller.single_objective_audit_completion_target
+                ),
+                "audit_max_failed_instances": (
+                    phase_controller.single_objective_audit_max_failed_instances
+                ),
+                "audit_count": len(single_objective_audit_rows),
+                "audit_failure_row_count": len(
+                    single_objective_audit_failure_rows
+                ),
+                "accepted_status": phase_controller.formal_training_status,
+                "project_formal_completion_target": 1.0,
+            },
             "validation_stability": stability_controller.as_dict(),
             "validation_runs": len(validation_rows),
             "sampled_validation_runs": (

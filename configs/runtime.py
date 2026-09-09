@@ -11,7 +11,7 @@ _RUNTIME_MANIFEST: dict[str, Any] = {
     "policy_head": 7,
     "candidate_ranker": "bounded_ranker_scale_v7",
     "worker_feasibility": "instant_physical_pair_mask_v1",
-    "wait_mask": "progress_completion_lower_bound_v1",
+    "wait_mask": "progress_certified_wait_v2",
     "observation_schema": 4,
     "training_protocol": "v7_e1_single_objective_protocol_v5",
 }

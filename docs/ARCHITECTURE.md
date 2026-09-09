@@ -35,7 +35,7 @@
 | 策略头 | V7 |
 | 候选排序 | `bounded_ranker_scale_v7` |
 | Pair 可行性 | `instant_physical_pair_mask_v1` |
-| WAIT mask | `progress_completion_lower_bound_v1` |
+| WAIT mask | `progress_certified_wait_v2` |
 | Observation | schema 4 |
 | 训练协议 | `v7_e1_single_objective_protocol_v5` |
 
@@ -121,7 +121,7 @@ observe()
 get_action_mask()
   ├─ production pair: READY、机器 IDLE、已装模块、目标模块可加工
   ├─ worker pair: 待分配任务、工人 IDLE、资质、预测疲劳安全
-  └─ WAIT: 可达进展与剩余完成下界证书
+  └─ WAIT: 仅以可达的确定性状态进展作为 hard-mask 证书；完成估计只作诊断
 step(action)
   ├─ production: operation-machine pair 或 WAIT
   ├─ worker: machine-worker pair 或 WAIT
@@ -208,6 +208,8 @@ train.py main
       → candidate checkpoint
       → independent audit
       → accepted checkpoint
+  → 显式从磁盘加载 accepted checkpoint
+  → 最终 200-instance greedy audit
   → result/io + provenance + dashboard
 ```
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import train as train_module
 from agent.baselines import HeuristicPolicy
 from configs import load_config
 from configs.config import public_config
@@ -18,6 +19,8 @@ from train import (
     TrainingPhaseController,
     ValidationStabilityController,
     _checkpoint_eligible_validation_event,
+    _promote_accepted_checkpoint,
+    _reevaluate_checkpoint_from_disk,
     _single_objective_failure_rows,
     _single_objective_guard_score,
     _validate_single_objective_validation_protocol,
@@ -43,6 +46,11 @@ def _transitioned_controller(objective: str) -> TrainingPhaseController:
         truncated_count=0,
         schedule_violation_count=0,
     ) == "transition"
+    assert controller.is_formally_accepted is False
+    assert (
+        controller.formal_training_status
+        == "single_objective_98_candidate_not_reached"
+    )
     return controller
 
 
@@ -87,7 +95,7 @@ def test_default_is_the_complete_latest_single_objective_protocol():
     assert base["training"]["two_stage"]["quality_checkpoint_promotion"] == SINGLE_OBJECTIVE_PROMOTION_MODE
     assert base["runtime_manifest"]["candidate_ranker"] == "bounded_ranker_scale_v7"
     assert base["runtime_manifest"]["worker_feasibility"] == "instant_physical_pair_mask_v1"
-    assert base["runtime_manifest"]["wait_mask"] == "progress_completion_lower_bound_v1"
+    assert base["runtime_manifest"]["wait_mask"] == "progress_certified_wait_v2"
     assert base["runtime_manifest"]["observation_schema"] == 4
     assert set(base["environment"]) == {
         "max_decisions",
@@ -140,6 +148,8 @@ def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
         window_median=anchor_value,
     ) == "accepted"
     assert controller.accepted_single_objective_value == anchor_value
+    assert controller.is_formally_accepted is True
+    assert controller.formal_training_status == "accepted_98_experiment_candidate"
 
     other_names = [name for name in CONFIGS if name != objective]
     non_target_improvement = dict(anchor_validation)
@@ -199,6 +209,137 @@ def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
     assert controller.accepted_single_objective_value == anchor_value - 0.25
 
 
+def test_only_audited_acceptance_persists_accepted_and_best_checkpoints(
+    tmp_path: Path,
+):
+    config = load_config(CONFIGS["flow"])
+    controller = _transitioned_controller("flow")
+    accepted_checkpoint = tmp_path / "accepted_checkpoint.pt"
+    best_checkpoint = tmp_path / "best_checkpoint.pt"
+
+    class RecordingAgent:
+        def __init__(self) -> None:
+            self.saved_metadata: dict | None = None
+
+        def save(self, path: Path, metadata: dict | None = None) -> None:
+            self.saved_metadata = dict(metadata or {})
+            Path(path).write_bytes(b"accepted-candidate-a")
+
+    agent = RecordingAgent()
+    for event in (
+        "transition",
+        "audit_required",
+        "audit_rejected",
+        "audit_passed_not_accepted",
+    ):
+        assert not _promote_accepted_checkpoint(
+            event=event,
+            config=config,
+            phase_controller=controller,
+            agent=agent,
+            accepted_checkpoint=accepted_checkpoint,
+            best_checkpoint=best_checkpoint,
+            completed_episodes=10,
+            parallel_envs=1,
+            validation_row={"validation_event": event},
+        )
+    assert not accepted_checkpoint.exists()
+    assert not best_checkpoint.exists()
+    assert agent.saved_metadata is None
+
+    score = (-1.0, 80.0, 0.0, 0.0)
+    for episode in range(20, 25):
+        event = controller.observe_validation(
+            1.0,
+            completed_episodes=episode,
+            score=score,
+        )
+    assert event == "audit_required"
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=80.0),
+        completed_episodes=24,
+        window_median=80.0,
+    ) == "accepted"
+
+    assert _promote_accepted_checkpoint(
+        event="accepted",
+        config=config,
+        phase_controller=controller,
+        agent=agent,
+        accepted_checkpoint=accepted_checkpoint,
+        best_checkpoint=best_checkpoint,
+        completed_episodes=24,
+        parallel_envs=1,
+        validation_row={"validation_event": "accepted"},
+    )
+    assert accepted_checkpoint.read_bytes() == best_checkpoint.read_bytes()
+    assert agent.saved_metadata is not None
+    assert agent.saved_metadata["checkpoint_role"] == "accepted"
+    assert agent.saved_metadata["single_objective_name"] == "flow"
+    assert agent.saved_metadata["single_objective_window_statistic"] == "median"
+    assert agent.saved_metadata["accepted_single_objective_value"] == 80.0
+    assert agent.saved_metadata["accepted_single_objective_audit_value"] == 80.0
+    assert agent.saved_metadata["formal_eligible"] is True
+    assert "quality_score" not in agent.saved_metadata
+
+
+def test_final_evaluation_loads_accepted_checkpoint_instead_of_online_agent(
+    config,
+    monkeypatch,
+    tmp_path: Path,
+):
+    accepted_checkpoint = tmp_path / "accepted_checkpoint.pt"
+    accepted_checkpoint.write_text("candidate-a", encoding="utf-8")
+    online_agent = type("OnlineAgent", (), {"identity": "candidate-b"})()
+    loaded_paths: list[Path] = []
+
+    class IsolatedEvaluationAgent:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.identity = "unloaded"
+
+        def load(self, path: Path, *, load_optimizer: bool) -> dict:
+            assert load_optimizer is False
+            loaded_paths.append(Path(path))
+            self.identity = Path(path).read_text(encoding="utf-8")
+            return {"loaded_identity": self.identity}
+
+    def evaluate_loaded_agent(*_args, ppo_agent, **_kwargs):
+        rows = [
+            {
+                "schedule_violation_count": 0,
+                "maximum_worker_fatigue": 0.0,
+                "safe_fatigue_limit": 1.0,
+            }
+        ]
+        return rows, None, None, {
+            "parallel_envs": 1,
+            "evaluated_identity": ppo_agent.identity,
+        }
+
+    monkeypatch.setattr(train_module, "PPOAgent", IsolatedEvaluationAgent)
+    monkeypatch.setattr(train_module, "build_actor_critic", lambda *_args: object())
+    monkeypatch.setattr(train_module, "evaluate_dataset", evaluate_loaded_agent)
+    monkeypatch.setattr(train_module, "build_provenance", lambda *_args, **_kwargs: {})
+
+    evaluation = _reevaluate_checkpoint_from_disk(
+        config,
+        checkpoint=accepted_checkpoint,
+        bootstrap_observation=object(),
+        dataset_name="validation",
+        instance_limit=200,
+        sampling_seeds=[],
+        greedy_only=True,
+    )
+
+    assert online_agent.identity == "candidate-b"
+    assert loaded_paths == [accepted_checkpoint]
+    assert evaluation["checkpoint"] == str(accepted_checkpoint)
+    assert evaluation["checkpoint_metadata"] == {
+        "loaded_identity": "candidate-a"
+    }
+    assert evaluation["greedy"]["evaluated_identity"] == "candidate-a"
+
+
 def test_95_percent_candidates_are_exploratory_only_and_window_warms_up():
     controller = _transitioned_controller("flow")
     events = [
@@ -240,6 +381,27 @@ def test_single_objective_rejects_only_exploration_gate_failures():
             "promotion_decision_reason"
         ] == reason
         assert controller.last_promotion_diagnostics["window_count"] == 0
+
+
+def test_rejected_formal_audit_does_not_set_formal_acceptance():
+    controller = _transitioned_controller("flow")
+    for episode in range(20, 25):
+        event = controller.observe_validation(
+            1.0,
+            completed_episodes=episode,
+            score=(-1.0, 90.0, 0.0, 0.0),
+        )
+    assert event == "audit_required"
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=90.0, physical=False),
+        completed_episodes=24,
+        window_median=90.0,
+    ) == "audit_rejected"
+    assert controller.is_formally_accepted is False
+    assert (
+        controller.formal_training_status
+        == "single_objective_98_candidate_not_reached"
+    )
 
 
 def test_single_objective_rejects_non_one_hot_weights_immediately():
@@ -568,7 +730,7 @@ def test_convergence_entry_writes_five_panel_artifacts(tmp_path: Path):
                 "validation_event": (
                     "transition"
                     if episode == 20
-                    else "promoted"
+                    else "accepted"
                     if episode == 40
                     else "feasibility"
                 ),

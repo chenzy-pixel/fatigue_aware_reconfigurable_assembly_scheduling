@@ -3,7 +3,7 @@
   "experiment_name": "mo_alns_fatigue_aware_baseline",
   "experiment_suite_version": "mo_alns_solver_budget_v1",
   "evaluation": {
-    "result_schema_version": "6.0.0"
+    "result_schema_version": "6.1.0"
   },
   "mo_alns": {
     "max_evaluations_per_preference": 300,

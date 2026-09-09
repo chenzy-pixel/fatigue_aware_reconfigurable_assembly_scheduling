@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import heapq
+
 import numpy as np
 import pytest
 
 from agent.baselines import HeuristicPolicy
 from environment import AssemblySchedulingEnv, DecisionType
+from environment.types import EventType, OperationState
 
 
 def _step_requested_pair(environment, *, reconfiguration: bool) -> dict:
@@ -68,3 +71,57 @@ def test_initial_wait_advances_without_reconfiguration_cost(
     assert reward.cost == pytest.approx(0.0)
     assert info["action_type"] == "WAIT"
     assert info["wait_certificate"]["allowed"] is True
+
+
+def test_wait_allows_process_completion_exactly_at_horizon(
+    config,
+    fixed_instance,
+):
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(fixed_instance, build_observation=False)
+    pair_actions = [
+        int(action)
+        for action in np.flatnonzero(~environment.get_action_mask())
+        if int(action) != environment.wait_action
+    ]
+    action = next(
+        action
+        for action in pair_actions
+        if environment.machines[
+            environment.decode_production_action(action)[1]
+        ].current_module
+        == environment.operations[
+            environment.decode_production_action(action)[0]
+        ].spec.required_module
+    )
+    operation_index, machine_index = environment.decode_production_action(action)
+    environment.step(action, build_observation=False)
+
+    for index, operation in enumerate(environment.operations):
+        if index != operation_index:
+            operation.state = OperationState.DONE
+    operation_id = environment.operations[operation_index].spec.id
+    environment._events = [
+        event
+        for event in environment._events
+        if event[3] == EventType.PROCESS_COMPLETE
+        and event[4].get("operation_id") == operation_id
+    ]
+    heapq.heapify(environment._events)
+    completion_tick = environment.machines[machine_index].busy_until_tick
+    assert completion_tick is not None
+    environment.horizon_tick = completion_tick
+    environment._invalidate_resource_snapshot()
+
+    mask = environment.get_action_mask()
+    certificate = environment._last_action_mask_analysis["wait"]
+    assert np.flatnonzero(~mask).tolist() == [environment.wait_action]
+    assert certificate["allowed"] is True
+    assert certificate["next_tick"] == completion_tick
+    assert certificate["estimated_completion_tick"] == completion_tick
+
+    environment.step(environment.wait_action, build_observation=False)
+
+    assert environment.terminated is True
+    assert environment.truncated is False
+    assert environment.terminal_reason == "completed"

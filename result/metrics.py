@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "6.0.0"
+EVALUATION_SCHEMA_VERSION = "6.1.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
@@ -20,7 +20,7 @@ CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "production_wait_time",
     "worker_wait_ticks",
     "worker_wait_time",
-    "wait_min_deadline_slack_ticks",
+    "wait_min_estimated_deadline_slack_ticks",
 )
 
 
@@ -31,7 +31,9 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         raise TypeError("config.evaluation must be an object")
     configured = evaluation.get("result_schema_version")
     if configured is not None and str(configured) != EVALUATION_SCHEMA_VERSION:
-        raise ValueError("only result schema 6.0.0 is supported")
+        raise ValueError(
+            f"only result schema {EVALUATION_SCHEMA_VERSION} is supported"
+        )
     return EVALUATION_SCHEMA_VERSION
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,

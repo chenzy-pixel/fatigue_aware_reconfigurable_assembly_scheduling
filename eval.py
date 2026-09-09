@@ -524,8 +524,8 @@ def _evaluation_row(
         "production_wait_time": metrics["production_wait_time"],
         "worker_wait_ticks": metrics["worker_wait_ticks"],
         "worker_wait_time": metrics["worker_wait_time"],
-        "wait_min_deadline_slack_ticks": metrics[
-            "wait_min_deadline_slack_ticks"
+        "wait_min_estimated_deadline_slack_ticks": metrics[
+            "wait_min_estimated_deadline_slack_ticks"
         ],
         **{
             name: metrics.get(name, 0)

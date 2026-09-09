@@ -251,7 +251,7 @@
     }
   },
   "evaluation": {
-    "result_schema_version": "6.0.0",
+    "result_schema_version": "6.1.0",
     "quality_metric": {
       "version": "canonical_bounded_quality_v1",
       "flow_scale": 1200.0,

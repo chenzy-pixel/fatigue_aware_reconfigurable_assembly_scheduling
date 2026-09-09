@@ -94,7 +94,7 @@ def test_worker_pair_mask_is_exactly_instant_safe_assignment(
             assert bool(not mask[action]) is expected
 
 
-def test_wait_mask_uses_progress_and_completion_lower_bound(
+def test_wait_mask_uses_progress_even_when_completion_estimate_exceeds_horizon(
     config, fixed_instance, monkeypatch
 ):
     environment = AssemblySchedulingEnv(config)
@@ -106,12 +106,32 @@ def test_wait_mask_uses_progress_and_completion_lower_bound(
     )
     monkeypatch.setattr(
         environment,
-        "_remaining_completion_lower_bound_ticks",
-        lambda: environment.horizon_tick - environment.current_tick,
+        "_remaining_completion_estimate_ticks",
+        lambda: environment.horizon_tick + 1,
     )
     environment._invalidate_resource_snapshot()
     mask = environment.get_action_mask()
     certificate = environment._last_action_mask_analysis["wait"]
+    assert not mask[environment.wait_action]
+    assert certificate["allowed"] is True
+    assert certificate["reason"] == "external_event:ORDER_RELEASE"
+    assert (
+        certificate["estimated_completion_tick"]
+        > environment.horizon_tick
+    )
+
+
+def test_wait_mask_rejects_states_without_deterministic_progress(
+    config, fixed_instance, monkeypatch
+):
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(fixed_instance, build_observation=False)
+    monkeypatch.setattr(environment, "_wait_opportunity", lambda: None)
+    environment._invalidate_resource_snapshot()
+
+    mask = environment.get_action_mask()
+    certificate = environment._last_action_mask_analysis["wait"]
+
     assert mask[environment.wait_action]
     assert certificate["allowed"] is False
-    assert certificate["reason"] == "completion_lower_bound_exceeded"
+    assert certificate["reason"] == "no_state_progress"

@@ -49,7 +49,6 @@ class TrainingPhaseController:
     rejected_quality_updates: int = 0
     not_promoted_quality_updates: int = 0
     accepted_quality_score: tuple[float, float, float, float] | None = None
-    accepted_normalized_quality_score: float | None = None
     accepted_quality_episode: int | None = None
     quality_promotion_constraints: dict[str, float] = field(default_factory=dict)
     last_promotion_diagnostics: dict[str, object] = field(default_factory=dict)
@@ -150,12 +149,10 @@ class TrainingPhaseController:
         *,
         completed_episodes: int,
         score: tuple[float, float, float, float] | None = None,
-        normalized_quality_score: float | None = None,
         truncated_count: int = 0,
         schedule_violation_count: int = 0,
         physical_safety_pass: bool = True,
     ) -> str:
-        del normalized_quality_score
         rate = float(completion_rate)
         truncations = int(truncated_count)
         violations = int(schedule_violation_count)
@@ -353,10 +350,24 @@ class TrainingPhaseController:
         raise RuntimeError("sampled preference guards are not part of protocol v4")
 
     @property
+    def is_formally_accepted(self) -> bool:
+        """Return whether a complete independent audit accepted a candidate."""
+
+        return bool(
+            self.phase_transition_episode is not None
+            and self.accepted_quality_episode is not None
+            and self.accepted_quality_updates > 0
+            and self.accepted_single_objective_failed_instances is not None
+            and self.accepted_single_objective_window_value is not None
+            and self.accepted_single_objective_audit_value is not None
+            and self.accepted_single_objective_value is not None
+        )
+
+    @property
     def formal_training_status(self) -> str:
         if self.phase_transition_episode is None:
             return "feasibility_not_reached"
-        if self.accepted_single_objective_value is None:
+        if not self.is_formally_accepted:
             return "single_objective_98_candidate_not_reached"
         return "accepted_98_experiment_candidate"
 
@@ -375,6 +386,7 @@ class TrainingPhaseController:
             "rejected_quality_updates": self.rejected_quality_updates,
             "not_promoted_quality_updates": self.not_promoted_quality_updates,
             "formal_training_status": self.formal_training_status,
+            "is_formally_accepted": self.is_formally_accepted,
             "single_objective_name": self.single_objective_name,
             "accepted_single_objective_value": self.accepted_single_objective_value,
             "single_objective_window_size": self.single_objective_window_size,

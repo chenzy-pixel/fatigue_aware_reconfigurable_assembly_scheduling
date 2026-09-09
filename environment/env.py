@@ -166,7 +166,7 @@ class AssemblySchedulingEnv:
         self._wait_reason_counts: dict[str, int] = {}
         self._wait_mask_reason_counts: dict[str, int] = {}
         self._wait_masked_states: set[tuple[int, str]] = set()
-        self._wait_min_deadline_slack_ticks: int | None = None
+        self._wait_min_estimated_deadline_slack_ticks: int | None = None
         self._last_wait_certificate: dict[str, Any] | None = None
         self._first_unrecoverable_deadlock_diagnostic: dict[str, Any] | None = None
         self._reconfiguration_reuse_count = 0
@@ -315,7 +315,7 @@ class AssemblySchedulingEnv:
         self._wait_reason_counts = {}
         self._wait_mask_reason_counts = {}
         self._wait_masked_states = set()
-        self._wait_min_deadline_slack_ticks = None
+        self._wait_min_estimated_deadline_slack_ticks = None
         self._last_wait_certificate = None
         self._first_unrecoverable_deadlock_diagnostic = None
         self._reconfiguration_reuse_count = 0
@@ -2288,8 +2288,8 @@ class AssemblySchedulingEnv:
             "wait_mask_reason_counts": dict(
                 sorted(self._wait_mask_reason_counts.items())
             ),
-            "wait_min_deadline_slack_ticks": (
-                self._wait_min_deadline_slack_ticks
+            "wait_min_estimated_deadline_slack_ticks": (
+                self._wait_min_estimated_deadline_slack_ticks
             ),
             "first_unrecoverable_deadlock_diagnostic": (
                 dict(self._first_unrecoverable_deadlock_diagnostic)
@@ -3455,10 +3455,14 @@ class AssemblySchedulingEnv:
         return tick, reason
 
     def _wait_certificate(self) -> dict[str, Any]:
-        """Certify that WAIT makes progress without exceeding the horizon."""
+        """Certify that WAIT reaches a deterministic state transition."""
 
         opportunity = self._wait_opportunity()
-        lower_bound = self._remaining_completion_lower_bound_ticks()
+        estimate = self._remaining_completion_estimate_ticks()
+        estimated_completion_tick = self.current_tick + estimate
+        estimated_deadline_slack_ticks = (
+            self.horizon_tick - estimated_completion_tick
+        )
         if opportunity is None:
             certificate = {
                 "allowed": False,
@@ -3466,33 +3470,35 @@ class AssemblySchedulingEnv:
                 "progress_kind": "",
                 "next_tick": None,
                 "wait_ticks": 0,
-                "remaining_completion_lower_bound_ticks": lower_bound,
-                "projected_completion_tick": self.current_tick + lower_bound,
+                "remaining_completion_estimate_ticks": estimate,
+                "estimated_completion_tick": estimated_completion_tick,
                 "horizon_tick": self.horizon_tick,
-                "deadline_slack_ticks": (
-                    self.horizon_tick - self.current_tick - lower_bound
+                "estimated_deadline_slack_ticks": (
+                    estimated_deadline_slack_ticks
                 ),
             }
         else:
             next_tick, progress_kind = opportunity
             wait_ticks = next_tick - self.current_tick
-            projected_completion_tick = next_tick + lower_bound
-            allowed = projected_completion_tick <= self.horizon_tick
+            phase_handoff = progress_kind == "worker_phase_handoff"
+            allowed = bool(
+                (phase_handoff and next_tick == self.current_tick)
+                or (
+                    not phase_handoff
+                    and self.current_tick < next_tick <= self.horizon_tick
+                )
+            )
             certificate = {
-                "allowed": bool(allowed),
-                "reason": (
-                    progress_kind
-                    if allowed
-                    else "completion_lower_bound_exceeded"
-                ),
+                "allowed": allowed,
+                "reason": progress_kind if allowed else "no_state_progress",
                 "progress_kind": progress_kind,
                 "next_tick": next_tick,
                 "wait_ticks": wait_ticks,
-                "remaining_completion_lower_bound_ticks": lower_bound,
-                "projected_completion_tick": projected_completion_tick,
+                "remaining_completion_estimate_ticks": estimate,
+                "estimated_completion_tick": estimated_completion_tick,
                 "horizon_tick": self.horizon_tick,
-                "deadline_slack_ticks": (
-                    self.horizon_tick - projected_completion_tick
+                "estimated_deadline_slack_ticks": (
+                    estimated_deadline_slack_ticks
                 ),
             }
         self._last_wait_certificate = dict(certificate)
@@ -3512,12 +3518,12 @@ class AssemblySchedulingEnv:
         self._wait_mask_reason_counts[reason] = (
             self._wait_mask_reason_counts.get(reason, 0) + 1
         )
-        slack = int(certificate["deadline_slack_ticks"])
+        slack = int(certificate["estimated_deadline_slack_ticks"])
         if (
-            self._wait_min_deadline_slack_ticks is None
-            or slack < self._wait_min_deadline_slack_ticks
+            self._wait_min_estimated_deadline_slack_ticks is None
+            or slack < self._wait_min_estimated_deadline_slack_ticks
         ):
-            self._wait_min_deadline_slack_ticks = slack
+            self._wait_min_estimated_deadline_slack_ticks = slack
 
     def _remaining_work_lower_bound_ticks(self) -> int:
         """Return an optimistic resource/precedence lower bound in ticks."""
@@ -3569,12 +3575,11 @@ class AssemblySchedulingEnv:
         source_module: str,
         target_module: str,
     ) -> int:
-        """Return an optimistic, qualified-worker-safe module transition bound.
+        """Return an optimistic per-chain module transition estimate.
 
         A transition is not charged when an idle or busy machine already carries
         the target module: that machine could complete its current work in
-        parallel and then service the successor operation.  This keeps the
-        certificate a lower bound rather than turning it into a schedule.
+        parallel and then service the successor operation.
         """
         if source_module == target_module:
             return 0
@@ -3627,8 +3632,12 @@ class AssemblySchedulingEnv:
             candidates.append(disassembly + installation)
         return min(candidates, default=self.horizon_tick + 1)
 
-    def _remaining_completion_lower_bound_ticks(self) -> int:
-        """Optimistic completion bound including each remaining module chain."""
+    def _remaining_completion_estimate_ticks(self) -> int:
+        """Return a soft completion estimate including remaining module chains.
+
+        Cross-order module transitions may be shared or overlap with processing,
+        so this value is diagnostic guidance rather than a certified lower bound.
+        """
         baseline = self._remaining_work_lower_bound_ticks()
         chain_bounds: list[int] = []
         for order in self.instance.orders:
@@ -3883,13 +3892,13 @@ class AssemblySchedulingEnv:
                 machine.spec.id: machine.current_module
                 for machine in self.machines
             },
-            "completion_lower_bound_ticks": (
-                self._remaining_completion_lower_bound_ticks()
+            "completion_estimate_ticks": (
+                self._remaining_completion_estimate_ticks()
             ),
-            "completion_slack_ticks": (
+            "estimated_completion_slack_ticks": (
                 self.horizon_tick
                 - self.current_tick
-                - self._remaining_completion_lower_bound_ticks()
+                - self._remaining_completion_estimate_ticks()
             ),
             "certificate_reason": (
                 self._last_wait_certificate or {}

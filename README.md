@@ -8,7 +8,7 @@ The executable stack is fixed to:
 - pair-plus-WAIT actions in both decision phases;
 - V7 HGNN actor-critic with bounded ranker-scale context residual;
 - instantaneous physical legality for production and worker pairs;
-- progress- and completion-lower-bound-certified WAIT transitions;
+- progress-certified WAIT transitions with soft completion diagnostics;
 - single-objective guarded promotion protocol v5.
 
 Implementation identities are generated in `runtime_manifest`; configuration
