@@ -7,13 +7,6 @@
       "fixed": [0.0, 1.0, 0.0]
     }
   },
-  "reward": {
-    "quality_weights": {
-      "flow": 0.0,
-      "cost": 1.0,
-      "variance": 0.0
-    }
-  },
   "training": {
     "two_stage": {
       "quality_checkpoint_promotion": "single_objective_guarded_v1"

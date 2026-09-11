@@ -42,6 +42,7 @@ from .types import (
     objective_scalarizer_config,
     proxy_return_from_metrics,
     reward_config,
+    terminal_quality_score,
 )
 
 __all__ = [
@@ -84,4 +85,5 @@ __all__ = [
     "proxy_return_from_metrics",
     "reward_config",
     "simplex_lattice",
+    "terminal_quality_score",
 ]

@@ -1,6 +1,5 @@
 {
   "extends": "specialist_base.json",
   "experiment_name": "v8_specialist_variance",
-  "preference": {"quality": {"fixed": [0.0, 0.0, 1.0]}},
-  "reward": {"quality_weights": {"flow": 0.0, "cost": 0.0, "variance": 1.0}}
+  "preference": {"quality": {"fixed": [0.0, 0.0, 1.0]}}
 }

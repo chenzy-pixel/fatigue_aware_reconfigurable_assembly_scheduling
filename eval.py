@@ -31,6 +31,7 @@ from environment import (
     bounded_quality_score,
     proxy_return_from_metrics,
     simplex_lattice,
+    terminal_quality_score,
 )
 from result import (
     aggregate_evaluation_rows,
@@ -376,7 +377,7 @@ def evaluate_representative_diagnostic(
 def _evaluation_row(
     record,
     metrics: dict[str, Any],
-    reward_config: dict[str, Any],
+    config: dict[str, Any],
     quality_metric: dict[str, Any],
 ) -> dict[str, Any]:
     heuristic = record.metadata["heuristic_metrics"]
@@ -457,17 +458,20 @@ def _evaluation_row(
             heuristic_variance,
             quality_metric,
         ),
-        "reward_quality_score": bounded_quality_score(
+        "reward_quality_score": terminal_quality_score(
             metrics["flow_time_objective"],
             metrics["reconfiguration_cost"],
             metrics["worker_load_variance"],
-            reward_config,
+            config,
+            preference=preference,
+            terminal_failure=bool(metrics["truncated"]),
         ),
         "heuristic_reward_quality_score": bounded_quality_score(
             heuristic_flow_time,
             heuristic_cost,
             heuristic_variance,
-            reward_config,
+            config,
+            preference=preference,
         ),
         "quality_metric_version": quality_metric["version"],
         "quality_metric_sha256": metric_hash,
@@ -667,7 +671,7 @@ def evaluate_dataset(
             row = _evaluation_row(
                 record,
                 metrics,
-                config["reward"],
+                config,
                 quality_metric,
             )
             rows.append(row)
@@ -768,7 +772,7 @@ def evaluate_dataset_parallel(
             _evaluation_row(
                 records[rollout.record_index],
                 metrics,
-                config["reward"],
+                config,
                 quality_metric,
             )
         )
@@ -847,7 +851,7 @@ def evaluate_preference_grid_parallel(
         )
         rows.append(
             _evaluation_row(
-                records[rollout.record_index], metrics, config["reward"], quality_metric
+                records[rollout.record_index], metrics, config, quality_metric
             )
         )
     preference_keys = {str(row["preference_key"]) for row in rows}

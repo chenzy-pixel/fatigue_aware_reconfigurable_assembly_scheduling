@@ -254,11 +254,6 @@
     "flow_weight": 1.0,
     "cost_weight": 1.0,
     "variance_weight": 1.0,
-    "quality_weights": {
-      "flow": 1.0,
-      "cost": 0.0,
-      "variance": 0.0
-    },
     "quality_budget": 0.5,
     "truncation_penalty": 0.5,
     "unfinished_order_penalty": 1.0,

@@ -491,14 +491,27 @@ class TrainingDashboard:
         network = self.config["network"]
         reward = self.config["reward"]
         training = self.config["training"]
-        quality_weights = reward.get("quality_weights")
-        localized_weights = (
+        preference = self.config.get("preference", {})
+        quality_preference = (
+            preference.get("quality", {})
+            if isinstance(preference, Mapping)
+            else {}
+        )
+        fixed_preference = (
+            quality_preference.get("fixed")
+            if isinstance(quality_preference, Mapping)
+            else None
+        )
+        localized_preference = (
             {
-                _display_label(key): value
-                for key, value in quality_weights.items()
+                _display_label(name): value
+                for name, value in zip(
+                    ("flow", "cost", "variance"), fixed_preference
+                )
             }
-            if isinstance(quality_weights, Mapping)
-            else quality_weights
+            if isinstance(fixed_preference, (list, tuple))
+            and len(fixed_preference) == 3
+            else fixed_preference
         )
         summary = {
             "运行目录": str(self.run_directory),
@@ -520,7 +533,12 @@ class TrainingDashboard:
             "奖励模式": _localized_state_value(
                 reward.get("mode", "legacy_weighted_sum")
             ),
-            "质量权重": localized_weights,
+            "质量偏好模式": (
+                quality_preference.get("mode")
+                if isinstance(quality_preference, Mapping)
+                else None
+            ),
+            "固定质量偏好": localized_preference,
             "质量预算": reward.get("quality_budget"),
             "并行环境数": training.get("parallel_envs"),
             "验证集划分": training.get("validation_split"),
@@ -540,7 +558,7 @@ class TrainingDashboard:
             + "<li>策略熵 → 熵系数</li>"
             + "<li>价值损失 / 解释方差 → 价值网络和价值损失系数</li>"
             + "<li>梯度裁剪 → 学习率、批量大小、奖励尺度</li>"
-            + "<li>疲劳 / 重构 → 课程分布、质量权重、策略结构</li>"
+            + "<li>疲劳 / 重构 → 课程分布、质量偏好、策略结构</li>"
             + "</ul>"
         )
         self._invoke(

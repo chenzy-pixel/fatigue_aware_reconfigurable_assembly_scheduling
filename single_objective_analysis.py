@@ -68,17 +68,23 @@ def _as_bool(value: Any) -> bool:
 
 
 def _validate_one_hot_config(config: dict[str, Any], objective: str) -> None:
-    weights = config.get("reward", {}).get("quality_weights")
-    if not isinstance(weights, dict) or set(weights) != set(OBJECTIVE_FIELDS):
-        raise ValueError("run config must define flow/cost/variance quality weights")
+    quality = config.get("preference", {}).get("quality", {})
+    fixed = quality.get("fixed") if isinstance(quality, dict) else None
+    if not isinstance(fixed, list) or len(fixed) != len(OBJECTIVE_FIELDS):
+        raise ValueError(
+            "run config must define a three-value preference.quality.fixed"
+        )
     expected = {
         name: 1.0 if name == objective else 0.0
         for name in OBJECTIVE_FIELDS
     }
-    observed = {name: float(weights[name]) for name in OBJECTIVE_FIELDS}
+    observed = {
+        name: float(fixed[index])
+        for index, name in enumerate(OBJECTIVE_FIELDS)
+    }
     if observed != expected:
         raise ValueError(
-            f"{objective} run has incompatible quality weights: {observed}"
+            f"{objective} run has incompatible quality preference: {observed}"
         )
 
 

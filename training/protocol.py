@@ -13,7 +13,17 @@ OBJECTIVES = ("flow", "cost", "variance")
 
 
 def _objective_name(config: dict) -> str:
-    weights = config["reward"].get("quality_weights", {})
+    preference = config.get("preference", {})
+    quality = preference.get("quality", {}) if isinstance(preference, dict) else {}
+    fixed = quality.get("fixed") if isinstance(quality, dict) else None
+    if isinstance(fixed, dict):
+        weights = {name: float(fixed.get(name, 0.0)) for name in OBJECTIVES}
+    elif isinstance(fixed, (list, tuple)) and len(fixed) == len(OBJECTIVES):
+        weights = {
+            name: float(fixed[index]) for index, name in enumerate(OBJECTIVES)
+        }
+    else:
+        weights = {}
     selected = [
         name
         for name in OBJECTIVES
@@ -26,7 +36,8 @@ def _objective_name(config: dict) -> str:
     )
     if len(selected) != 1 or not zeros:
         raise ValueError(
-            "single-objective promotion requires strictly one-hot quality_weights"
+            "single-objective promotion requires strictly one-hot "
+            "preference.quality.fixed"
         )
     return selected[0]
 

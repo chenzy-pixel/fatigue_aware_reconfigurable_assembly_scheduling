@@ -109,14 +109,13 @@ def test_default_is_the_complete_v8_universal_protocol():
 
 
 @pytest.mark.parametrize("objective", tuple(CONFIGS))
-def test_child_config_only_changes_strict_one_hot_weights(objective: str):
+def test_child_config_only_changes_strict_one_hot_preference(objective: str):
     base = load_config("configs/default.json")
     child = load_config(CONFIGS[objective])
     expected_weights = {
         name: 1.0 if name == objective else 0.0 for name in CONFIGS
     }
     expected = public_config(base)
-    expected["reward"]["quality_weights"] = expected_weights
     expected["preference"]["quality"]["mode"] = "fixed"
     expected["preference"]["quality"]["fixed"] = [
         expected_weights["flow"],
@@ -134,10 +133,8 @@ def test_child_config_only_changes_strict_one_hot_weights(objective: str):
         "extends",
         "experiment_name",
         "preference",
-        "reward",
         "training",
     }
-    assert raw["reward"] == {"quality_weights": expected_weights}
     assert raw["preference"] == {
         "quality": {
             "mode": "fixed",
@@ -449,13 +446,9 @@ def test_rejected_formal_audit_does_not_set_formal_acceptance():
     )
 
 
-def test_single_objective_rejects_non_one_hot_weights_immediately():
+def test_single_objective_rejects_non_one_hot_preference_immediately():
     config = load_config(CONFIGS["flow"])
-    config["reward"]["quality_weights"] = {
-        "flow": 0.5,
-        "cost": 0.5,
-        "variance": 0.0,
-    }
+    config["preference"]["quality"]["fixed"] = [0.5, 0.5, 0.0]
     with pytest.raises(ValueError, match="strictly one-hot"):
         TrainingPhaseController.from_config(config)
 
@@ -735,7 +728,7 @@ def test_one_hot_quality_reward_identity(
     assert metrics["wait_action_count"] > 0
     assert metrics["wait_total_ticks"] >= 0
     assert base_reward_sum == pytest.approx(
-        proxy_return_from_metrics(metrics, config["reward"], "quality"),
+        proxy_return_from_metrics(metrics, config, "quality"),
         abs=1e-8,
     )
 

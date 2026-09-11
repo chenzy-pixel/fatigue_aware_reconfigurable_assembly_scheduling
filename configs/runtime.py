@@ -62,6 +62,14 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
         )
     if int(network.get("policy_head_version", 8)) != 8:
         raise ValueError("latest-only runtime accepts only policy_head_version=8")
+    reward = config.get("reward", {})
+    if not isinstance(reward, Mapping):
+        raise TypeError("reward config must be a mapping")
+    if "quality_weights" in reward:
+        raise ValueError(
+            "V8 objective preference must be configured only through "
+            "preference.quality; reward.quality_weights is not accepted"
+        )
     environment = config.get("environment", {})
     if not isinstance(environment, Mapping):
         raise TypeError("environment config must be a mapping")

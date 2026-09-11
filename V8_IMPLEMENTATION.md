@@ -4,7 +4,7 @@ V8 keeps the six node types, twelve relations, and two HGNN message-passing laye
 
 Production, Worker, and WAIT each use Flow, Cost, and Variance experts. Every direct ranker is bias-free and fixed-sign, with `softplus(theta)` weights normalized to a simplex. Direct and context outputs are bounded to `[-1, 1]`; expert outputs are therefore bounded to `[-2, 2]`. The base logit is `lambda dot z`. A phase-level preference-conditioned residual is scaled by the standard deviation of legal base logits and uses a gate initialized at zero logit.
 
-Quality reward is the exact telescoping difference of the normalized augmented Tchebycheff scalarizer. Feasibility shaping remains observable in diagnostics, but quality PPO return contains only the scalarizer difference. `gamma` remains one.
+Quality reward is the exact telescoping difference of the normalized augmented Tchebycheff scalarizer. A completed trajectory uses its measured terminal scalarized objective; any truncated trajectory uses the common terminal failure bound `T_terminal = 1`, so every endpoint receives the same hard-feasibility signal. Feasibility shaping remains observable in diagnostics, but quality PPO return contains only the scalarizer difference. `gamma` remains one.
 
 ## Reproducible workflow
 

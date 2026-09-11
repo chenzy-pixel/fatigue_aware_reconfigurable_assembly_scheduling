@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 import torch
 
-from configs import load_config
+from configs import load_config, validate_latest_only_config
 from configs.normalization import (
     apply_normalization_manifest,
     build_normalization_manifest,
@@ -20,6 +21,32 @@ from result.v8_promotion import (
 )
 from v8_normalization import collect_specialist_audits
 from train import _validate_pareto_validation_protocol
+
+
+@pytest.mark.parametrize(
+    ("path", "preference"),
+    (
+        ("configs/v8/specialist_flow.json", [1.0, 0.0, 0.0]),
+        ("configs/v8/specialist_cost.json", [0.0, 1.0, 0.0]),
+        ("configs/v8/specialist_variance.json", [0.0, 0.0, 1.0]),
+    ),
+)
+def test_v8_specialists_have_one_objective_preference_source(path, preference):
+    config = load_config(path)
+    assert config["preference"]["quality"]["fixed"] == preference
+    assert "quality_weights" not in config["reward"]
+
+
+def test_v8_rejects_legacy_reward_quality_weights():
+    config = deepcopy(load_config("configs/default.json"))
+    config.pop("runtime_manifest")
+    config["reward"]["quality_weights"] = {
+        "flow": 1.0,
+        "cost": 0.0,
+        "variance": 0.0,
+    }
+    with pytest.raises(ValueError, match="reward.quality_weights is not accepted"):
+        validate_latest_only_config(config)
 
 
 def test_normalization_manifest_round_trip_and_hash_guard(tmp_path: Path):

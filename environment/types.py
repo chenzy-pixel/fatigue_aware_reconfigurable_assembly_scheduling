@@ -282,6 +282,28 @@ def bounded_quality_score(
     ) / weight_sum
 
 
+def terminal_quality_score(
+    flow: float,
+    cost: float,
+    variance: float,
+    config: dict,
+    *,
+    preference: PreferenceInput | None = None,
+    terminal_failure: bool = False,
+) -> float:
+    """Return the formal terminal score, using one for any failed episode."""
+
+    if terminal_failure:
+        return 1.0
+    return bounded_quality_score(
+        flow,
+        cost,
+        variance,
+        config,
+        preference=preference,
+    )
+
+
 def proxy_return_from_metrics(
     metrics: dict,
     config: dict,
@@ -342,12 +364,13 @@ def proxy_return_from_metrics(
             config,
             preference=preference,
         )
-        terminal_score = bounded_quality_score(
+        terminal_score = terminal_quality_score(
             float(metrics["flow_time_objective"]),
             float(metrics["reconfiguration_cost"]),
             float(metrics["worker_load_variance"]),
             config,
             preference=preference,
+            terminal_failure=bool(metrics["truncated"]),
         )
         return initial_score - terminal_score
     result = (

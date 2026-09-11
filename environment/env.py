@@ -55,6 +55,7 @@ from environment.types import (
     WorkerState,
     bounded_quality_score,
     objective_scalarizer_config,
+    terminal_quality_score,
 )
 
 
@@ -1937,10 +1938,11 @@ class AssemblySchedulingEnv:
         self._invalidate_resource_snapshot()
         after = self._objective_vector()
         completed_orders_after = len(self._order_completion_tick)
-        quality_after = bounded_quality_score(
+        quality_after = terminal_quality_score(
             *after,
             self.config,
             preference=self.preference,
+            terminal_failure=self.truncated,
         )
         shaping_config = self.config["reward"].get(
             "feasibility_shaping", {}
@@ -2390,6 +2392,31 @@ class AssemblySchedulingEnv:
             current_matching_deficit,
         )
         total_wait_ticks = self._production_wait_ticks + self._worker_wait_ticks
+        terminal_objectives = (
+            self._flow_integral + self._flow_penalty,
+            self._reconfiguration_cost,
+            self._load_variance(),
+        )
+        raw_quality_score = bounded_quality_score(
+            *terminal_objectives,
+            self.config,
+        )
+        raw_preference_quality_score = bounded_quality_score(
+            *terminal_objectives,
+            self.config,
+            preference=self.preference,
+        )
+        quality_score = terminal_quality_score(
+            *terminal_objectives,
+            self.config,
+            terminal_failure=self.truncated,
+        )
+        preference_quality_score = terminal_quality_score(
+            *terminal_objectives,
+            self.config,
+            preference=self.preference,
+            terminal_failure=self.truncated,
+        )
         return {
             "instance_id": self.instance.instance_id,
             "terminated": self.terminated,
@@ -2511,19 +2538,10 @@ class AssemblySchedulingEnv:
                 "cost": float(self._initial_objectives[1]),
                 "variance": float(self._initial_objectives[2]),
             },
-            "quality_score": bounded_quality_score(
-                self._flow_integral + self._flow_penalty,
-                self._reconfiguration_cost,
-                self._load_variance(),
-                self.config,
-            ),
-            "preference_quality_score": bounded_quality_score(
-                self._flow_integral + self._flow_penalty,
-                self._reconfiguration_cost,
-                self._load_variance(),
-                self.config,
-                preference=self.preference,
-            ),
+            "quality_score": quality_score,
+            "preference_quality_score": preference_quality_score,
+            "raw_quality_score": raw_quality_score,
+            "raw_preference_quality_score": raw_preference_quality_score,
             "preference": self.preference.as_dict(),
             "preference_context": self.preference_context.as_dict(),
             "preference_key": self.preference_context.key,

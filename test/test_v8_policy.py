@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 
 import numpy as np
@@ -13,6 +14,7 @@ from agent.ppo.network_v8 import ObjectiveExpert, SimplexMonotoneRanker
 from environment import (
     AssemblySchedulingEnv,
     bounded_quality_score,
+    proxy_return_from_metrics,
     quality_preference_for_episode,
 )
 
@@ -88,18 +90,81 @@ def test_quality_reward_is_unshaped_and_telescopes(config, fixed_instance):
         quality_return += reward.scalarize(config["reward"], "quality")
         shaping_seen += abs(reward.feasibility_shaping)
     metrics = environment.metrics()
+    assert metrics["terminated"] is True
+    assert metrics["truncated"] is False
     initial = metrics["initial_objectives"]
-    expected = bounded_quality_score(
+    initial_score = bounded_quality_score(
         initial["flow"], initial["cost"], initial["variance"], config, preference=(7, 2, 1)
-    ) - bounded_quality_score(
+    )
+    terminal_score = bounded_quality_score(
         metrics["flow_time_objective"],
         metrics["reconfiguration_cost"],
         metrics["worker_load_variance"],
         config,
         preference=(7, 2, 1),
     )
+    expected = initial_score - terminal_score
     assert shaping_seen > 0
     assert quality_return == pytest.approx(expected, abs=1e-8)
+    assert metrics["preference_quality_score"] == pytest.approx(terminal_score)
+    assert metrics["raw_preference_quality_score"] == pytest.approx(terminal_score)
+    assert proxy_return_from_metrics(
+        metrics,
+        config,
+        "quality",
+        preference=(7, 2, 1),
+    ) == pytest.approx(expected, abs=1e-8)
+
+
+@pytest.mark.parametrize(
+    "preference",
+    ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+)
+def test_terminal_failure_uses_unit_quality_bound_and_telescopes(
+    config,
+    fixed_instance,
+    preference,
+):
+    truncated_config = deepcopy(config)
+    truncated_config["environment"]["max_decisions"] = 3
+    environment = AssemblySchedulingEnv(truncated_config)
+    environment.reset(fixed_instance, preference=preference)
+    initial = environment.metrics()["initial_objectives"]
+    initial_score = bounded_quality_score(
+        initial["flow"],
+        initial["cost"],
+        initial["variance"],
+        truncated_config,
+        preference=preference,
+    )
+
+    policy = HeuristicPolicy()
+    quality_return = 0.0
+    terminated = False
+    truncated = False
+    while not (terminated or truncated):
+        _, reward, terminated, truncated, _ = environment.step(
+            policy.select_action(environment)
+        )
+        quality_return += reward.scalarize(
+            truncated_config["reward"], "quality"
+        )
+    metrics = environment.metrics()
+
+    assert terminated is False
+    assert truncated is True
+    assert metrics["preference_quality_score"] == 1.0
+    assert metrics["raw_preference_quality_score"] < 1.0
+    assert quality_return == pytest.approx(
+        initial_score - 1.0,
+        abs=1e-8,
+    )
+    assert proxy_return_from_metrics(
+        metrics,
+        truncated_config,
+        "quality",
+        preference=preference,
+    ) == pytest.approx(initial_score - 1.0, abs=1e-8)
 
 
 def test_quality_preference_quota_is_deterministic(config):
