@@ -1,7 +1,7 @@
 {
-  "experiment_name": "e1_latest",
-  "experiment_suite_version": "v7_e1_single_objective_protocol_v5",
-  "method_version": "M1_candidate_graph_wait_v1",
+  "experiment_name": "v8_universal",
+  "experiment_suite_version": "v8_preference_conditioned_pareto_v1",
+  "method_version": "M1_hgnn_objective_experts_v8",
   "seed": 11,
   "algorithm_seeds": [11, 23, 37, 53, 71],
   "device": "cuda",
@@ -224,6 +224,28 @@
     "max_decisions": 5000,
     "max_zero_time_actions": 1000
   },
+  "preference": {
+    "feasibility": [0.3333333333333333, 0.3333333333333333, 0.3333333333333334],
+    "quality": {
+      "mode": "universal_sobol_v1",
+      "fixed": [0.3333333333333333, 0.3333333333333333, 0.3333333333333334],
+      "block_size": 20,
+      "endpoint_repeats": 2,
+      "sobol_count": 14
+    }
+  },
+  "objective_scalarizer": {
+    "type": "normalized_augmented_tchebycheff_v1",
+    "rho": 0.05,
+    "scale_source": "bootstrap_specialist",
+    "scales": {
+      "flow": 1200.0,
+      "cost": 1000.0,
+      "variance": 50.0
+    },
+    "normalization_manifest": null,
+    "normalization_manifest_sha256": null
+  },
   "reward": {
     "mode": "hierarchical_constrained_v1",
     "flow_scale": 1200.0,
@@ -268,11 +290,9 @@
     "hidden_dim": 128,
     "message_passing_layers": 2,
     "dropout": 0.0,
-    "production_relative_initial_weights": [0.30, 0.30, 0.20, 0.20, 0.20, 0.30],
-    "worker_relative_initial_weights": [0.30, 0.30, 0.20, 0.20, 0.20],
-    "common_context_gate_initial_logit": -4.0,
-    "residual_context_gate_initial_logit": -2.0,
-    "residual_scale_ratio": 2.0
+    "policy_head_version": 8,
+    "residual_gate_initial_logit": 0.0,
+    "residual_std_floor": 0.001
   },
   "ppo": {
     "learning_rate": 0.0001,
@@ -291,7 +311,7 @@
     "smoke_episodes": 2,
     "smoke_rollout_steps": 64,
     "validation_split": "validation",
-    "validation_interval_episodes": 20,
+    "validation_interval_episodes": 100,
     "validation_instance_limit": 50,
     "smoke_validation_instance_limit": 2,
     "parallel_envs": 20,
@@ -304,15 +324,29 @@
       "completion_target": 1.0,
       "consecutive_validations": 3,
       "quality_completion_floor": 0.95,
-      "quality_checkpoint_promotion": "single_objective_guarded_v1",
+      "quality_checkpoint_promotion": "preference_conditioned_pareto_v8",
       "quality_validate_every_update": true,
       "quality_promotion_constraints": null,
+      "pareto_promotion": {
+        "validation_instance_limit": 50,
+        "audit_instance_limit": 200,
+        "audit_instance_offset": 50,
+        "simplex_step": 0.1,
+        "preference_count": 66,
+        "bootstrap_replicates": 10000,
+        "bootstrap_seed": 20260811,
+        "validation_completion_floor": 0.95,
+        "audit_completion_floor": 0.98,
+        "audit_max_failed_instances": 4,
+        "endpoint_prediction_upper_bounds": null
+      },
       "single_objective_promotion": {
         "window_size": 5,
         "window_statistic": "median",
         "candidate_improvement_epsilon": 1e-9,
         "rollback_below_floor_consecutive": 2,
         "audit_instance_limit": 200,
+        "audit_instance_offset": 0,
         "audit_completion_target": 0.98,
         "audit_max_failed_instances": 4,
         "audit_schedule_violation_target": 0,

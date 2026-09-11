@@ -28,6 +28,9 @@ def _metadata_without_counterfactual(metadata):
 def _scalar_capability_features(environment):
     values = []
     cost_scale = float(environment.config["reward"]["cost_scale"])
+    variance_scale = float(
+        environment.config["objective_scalarizer"]["scales"]["variance"]
+    )
     horizon_tick = environment.horizon_tick
     for operation_index, machine_index in environment._static_edge_indices[
         CAPABLE_EDGE
@@ -120,6 +123,10 @@ def _scalar_capability_features(environment):
                 fixed_installation_cost / cost_scale,
                 labor_cost / cost_scale,
                 downtime_cost / cost_scale,
+                environment._estimate_candidate_load_variance_delta(
+                    machine_index, operation.spec.required_module
+                )
+                / variance_scale,
             ]
         )
     return np.asarray(values, dtype=np.float32)

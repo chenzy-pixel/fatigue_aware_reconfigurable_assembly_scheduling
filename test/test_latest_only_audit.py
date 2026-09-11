@@ -13,7 +13,8 @@ from environment import AssemblySchedulingEnv
 from utils import action_trace_sha256
 
 
-BASELINE = Path("test/baselines/latest_only_golden.json")
+ARCHIVE_BASELINE = Path("test/baselines/latest_only_golden.json")
+V8_BASELINE = Path("test/baselines/v8_golden.json")
 
 
 def _observation_sha256(observation) -> str:
@@ -38,7 +39,7 @@ def _observation_sha256(observation) -> str:
 
 
 def test_fixed_instance_golden_observation_mask_and_trajectory():
-    expected = json.loads(BASELINE.read_text(encoding="utf-8"))["fixed_instance"]
+    expected = json.loads(V8_BASELINE.read_text(encoding="utf-8"))["fixed_instance"]
     config = load_config("configs/e1/single_flow.json")
     instance = load_instance_pickle(project_path(config["paths"]["instance_cache"]))
     environment = AssemblySchedulingEnv(config)
@@ -103,7 +104,7 @@ def test_active_tree_contains_no_removed_experiment_control_strings():
 
 
 def test_pre_refactor_expanded_configs_match_archived_fingerprints():
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+    baseline = json.loads(ARCHIVE_BASELINE.read_text(encoding="utf-8"))
     for objective, expected in baseline["pre_refactor_expanded_config_sha256"].items():
         path = Path("test/baselines/pre_refactor_expanded") / f"{objective}.json"
         expanded = json.loads(path.read_text(encoding="utf-8"))
@@ -113,7 +114,7 @@ def test_pre_refactor_expanded_configs_match_archived_fingerprints():
         assert hashlib.sha256(payload).hexdigest() == expected
 
 
-def test_only_latest_e1_and_mo_alns_configs_are_executable():
+def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
     json_files = {
         path.as_posix() for path in Path("configs").rglob("*.json")
     }
@@ -126,4 +127,8 @@ def test_only_latest_e1_and_mo_alns_configs_are_executable():
         "configs/baselines/mo_alns_smoke.json",
         "configs/baselines/mo_alns_manifest.json",
         "configs/baselines/mo_alns_manifest.example.json",
+        "configs/v8/specialist_base.json",
+        "configs/v8/specialist_flow.json",
+        "configs/v8/specialist_cost.json",
+        "configs/v8/specialist_variance.json",
     }

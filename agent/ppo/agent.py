@@ -28,9 +28,15 @@ def summarize_policy_decision_diagnostics(
 ) -> dict[str, float | int]:
     ranked = [row for row in rows if int(row.get("legal_pair_count", 0))]
     production = [
-        row for row in rows if row.get("decision_type") == "production"
+        row
+        for row in rows
+        if str(row.get("decision_type", "")).lower() == "production"
     ]
-    worker = [row for row in rows if row.get("decision_type") == "worker"]
+    worker = [
+        row
+        for row in rows
+        if str(row.get("decision_type", "")).lower() == "worker"
+    ]
     ranker_top_count = sum(
         bool(row.get("ranker_top_selected", False)) for row in ranked
     )
@@ -43,7 +49,7 @@ def summarize_policy_decision_diagnostics(
     worker_terminal_count = sum(
         bool(row.get("terminal_legal", False)) for row in worker
     )
-    return {
+    result: dict[str, float | int] = {
         "ranker_top_decision_count": len(ranked),
         "ranker_top_selected_count": ranker_top_count,
         "ranker_top_selection_rate": (
@@ -64,6 +70,28 @@ def summarize_policy_decision_diagnostics(
             worker_terminal_count / len(worker) if worker else 0.0
         ),
     }
+    component_prefixes = (
+        "direct_",
+        "context_",
+        "expert_",
+        "contribution_",
+        "residual_base_rms_ratio",
+    )
+    for phase, phase_rows in (("production", production), ("worker", worker)):
+        keys = sorted(
+            {
+                key
+                for row in phase_rows
+                for key, value in row.items()
+                if isinstance(value, (int, float))
+                and any(key.startswith(prefix) for prefix in component_prefixes)
+            }
+        )
+        for key in keys:
+            values = [float(row[key]) for row in phase_rows if key in row]
+            if values:
+                result[f"policy_component_{phase}_{key}"] = float(np.mean(values))
+    return result
 
 
 def read_checkpoint_network_spec(path: str | Path) -> dict[str, Any]:

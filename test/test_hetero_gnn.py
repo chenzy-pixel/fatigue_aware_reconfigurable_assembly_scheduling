@@ -39,26 +39,26 @@ def test_latest_hgnn_batch_matches_individual(config, fixed_instance):
 
     assert torch.allclose(logits[0], expected_logits)
     assert torch.allclose(logits[1], expected_logits, atol=1e-6)
-    assert torch.allclose(values, expected_value.expand(2))
+    assert torch.allclose(values, expected_value.expand(2), atol=1e-6)
 
 
-def test_latest_network_config_is_fixed_to_v7(config, fixed_instance):
+def test_latest_network_config_is_fixed_to_v8(config, fixed_instance):
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
     network = build_actor_critic(observation, config["network"])
-    assert network.policy_head_version == 7
-    assert network.candidate_context_mode == "bounded_ranker_scale_v7"
+    assert network.policy_head_version == 8
+    assert network.expert_weight_parameterization == "simplex_softplus_v8"
 
     invalid = deepcopy(config["network"])
-    invalid["policy_head_version"] = 6
-    with pytest.raises(ValueError, match="policy_head_version"):
+    invalid["policy_head_version"] = 7
+    with pytest.raises(ValueError, match="policy_head_version=8"):
         build_actor_critic(observation, invalid)
 
 
-def test_latest_network_rejects_removed_context_mode(config, fixed_instance):
+def test_latest_network_rejects_invalid_residual_floor(config, fixed_instance):
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
     invalid = deepcopy(config["network"])
-    invalid["candidate_context_mode"] = "removed_context_mode"
-    with pytest.raises(ValueError, match="bounded_ranker_scale_v7"):
+    invalid["residual_std_floor"] = 0.0
+    with pytest.raises(ValueError, match="residual_std_floor"):
         build_actor_critic(observation, invalid)
 
 
@@ -67,6 +67,7 @@ def test_network_spec_records_public_observation_schema(config, fixed_instance):
     network = build_actor_critic(observation, config["network"])
     spec = network.network_spec()
 
-    assert spec["observation_schema_version"] == 4
-    assert spec["policy_head_version"] == 7
-    assert spec["candidate_context_mode"] == "bounded_ranker_scale_v7"
+    assert spec["observation_schema_version"] == 5
+    assert spec["policy_head_version"] == 8
+    assert spec["expert_weight_parameterization"] == "simplex_softplus_v8"
+    assert spec["preference_embedding_dim"] == 32

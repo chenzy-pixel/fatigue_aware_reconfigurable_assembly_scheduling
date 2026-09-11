@@ -5,10 +5,15 @@ from .actions import ActionCodec
 from .preference import (
     CANONICAL_PREFERENCE,
     PREFERENCE_NAMES,
+    PreferenceContext,
+    PreferenceContextInput,
     PreferenceInput,
     PreferenceVector,
     default_preference,
+    default_preference_context,
+    feasibility_preference_context,
     normalize_preference,
+    quality_preference_for_episode,
     simplex_lattice,
 )
 from .types import (
@@ -34,7 +39,9 @@ from .types import (
     PolicyObservation,
     RewardVector,
     bounded_quality_score,
+    objective_scalarizer_config,
     proxy_return_from_metrics,
+    reward_config,
 )
 
 __all__ = [
@@ -58,6 +65,8 @@ __all__ = [
     "PolicyObservation",
     "PREFERENCE_NAMES",
     "PRECEDES_EDGE",
+    "PreferenceContext",
+    "PreferenceContextInput",
     "PreferenceInput",
     "PreferenceVector",
     "REQUIRES_MODULE_EDGE",
@@ -67,7 +76,12 @@ __all__ = [
     "WORKER_MODULE_EDGE",
     "bounded_quality_score",
     "default_preference",
+    "default_preference_context",
+    "feasibility_preference_context",
     "normalize_preference",
+    "quality_preference_for_episode",
+    "objective_scalarizer_config",
     "proxy_return_from_metrics",
+    "reward_config",
     "simplex_lattice",
 ]

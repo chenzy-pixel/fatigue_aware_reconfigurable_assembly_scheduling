@@ -1,9 +1,4 @@
-"""Single-objective checkpoint promotion protocol used by every trainer.
-
-The protocol deliberately contains no experiment-family dispatch.  It models the
-only supported workflow: feasibility qualification, rolling-median candidate
-selection, and an independent 200-instance audit.
-"""
+"""V8 feasibility, specialist, and preference-conditioned promotion protocols."""
 
 from __future__ import annotations
 
@@ -13,6 +8,7 @@ from dataclasses import dataclass, field
 
 
 SINGLE_OBJECTIVE_PROMOTION_MODE = "single_objective_guarded_v1"
+PARETO_PROMOTION_MODE = "preference_conditioned_pareto_v8"
 OBJECTIVES = ("flow", "cost", "variance")
 
 
@@ -59,6 +55,7 @@ class TrainingPhaseController:
     single_objective_rollback_below_floor_consecutive: int = 2
     single_objective_candidate_improvement_epsilon: float = 1e-9
     single_objective_audit_instance_limit: int = 200
+    single_objective_audit_instance_offset: int = 0
     single_objective_audit_completion_target: float = 0.98
     single_objective_audit_max_failed_instances: int = 4
     single_objective_audit_schedule_violation_target: int = 0
@@ -74,29 +71,41 @@ class TrainingPhaseController:
     last_single_objective_audit_diagnostics: dict[str, object] = field(
         default_factory=dict
     )
+    last_pareto_promotion: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: dict) -> "TrainingPhaseController":
         if str(config["reward"].get("mode")) != "hierarchical_constrained_v1":
             raise ValueError("only hierarchical_constrained_v1 is supported")
         if not math.isclose(float(config["ppo"]["gamma"]), 1.0):
-            raise ValueError("single-objective training requires ppo.gamma = 1.0")
+            raise ValueError("V8 telescoping quality training requires ppo.gamma = 1.0")
         settings = config["training"]["two_stage"]
         promotion = str(settings.get("quality_checkpoint_promotion", ""))
-        if promotion != SINGLE_OBJECTIVE_PROMOTION_MODE:
+        if promotion not in {
+            SINGLE_OBJECTIVE_PROMOTION_MODE,
+            PARETO_PROMOTION_MODE,
+        }:
             raise ValueError(
-                "only single_objective_guarded_v1 checkpoint promotion is supported"
+                "unsupported checkpoint promotion protocol"
             )
         target = float(settings["completion_target"])
         required = int(settings["consecutive_validations"])
         floor = float(settings["quality_completion_floor"])
         if not 0.0 <= target <= 1.0 or not 0.0 <= floor <= 1.0:
             raise ValueError("completion targets must be in [0, 1]")
-        if required < 1 or not bool(settings["quality_validate_every_update"]):
+        if required < 1:
             raise ValueError(
-                "single-objective training requires positive consecutive_validations "
-                "and validation after every quality update"
+                "consecutive_validations must be positive"
             )
+        if promotion == PARETO_PROMOTION_MODE:
+            return cls(
+                completion_target=target,
+                consecutive_required=required,
+                quality_completion_floor=floor,
+                quality_checkpoint_promotion=promotion,
+            )
+        if not bool(settings["quality_validate_every_update"]):
+            raise ValueError("specialist quality training validates every update")
         raw = settings.get("single_objective_promotion")
         if not isinstance(raw, dict):
             raise ValueError("single_objective_promotion must be an object")
@@ -105,6 +114,7 @@ class TrainingPhaseController:
         epsilon = float(raw.get("candidate_improvement_epsilon", math.nan))
         rollback_count = int(raw.get("rollback_below_floor_consecutive", 0))
         audit_limit = int(raw.get("audit_instance_limit", 0))
+        audit_offset = int(raw.get("audit_instance_offset", 0))
         audit_completion = float(raw.get("audit_completion_target", math.nan))
         audit_max_failed = int(raw.get("audit_max_failed_instances", -1))
         audit_violations = int(raw.get("audit_schedule_violation_target", -1))
@@ -115,6 +125,7 @@ class TrainingPhaseController:
             raise ValueError("single-objective rollback/epsilon settings are invalid")
         if (
             audit_limit != 200
+            or audit_offset < 0
             or not math.isclose(audit_completion, 0.98, abs_tol=1e-12)
             or audit_max_failed != 4
             or audit_violations != 0
@@ -134,6 +145,7 @@ class TrainingPhaseController:
             single_objective_rollback_below_floor_consecutive=rollback_count,
             single_objective_candidate_improvement_epsilon=epsilon,
             single_objective_audit_instance_limit=audit_limit,
+            single_objective_audit_instance_offset=audit_offset,
             single_objective_audit_completion_target=audit_completion,
             single_objective_audit_max_failed_instances=audit_max_failed,
             single_objective_audit_schedule_violation_target=audit_violations,
@@ -141,6 +153,8 @@ class TrainingPhaseController:
         )
 
     def should_validate(self, regular_due: bool) -> bool:
+        if self.quality_checkpoint_promotion == PARETO_PROMOTION_MODE:
+            return bool(regular_due)
         return self.phase == "quality" or regular_due
 
     def observe_validation(
@@ -174,6 +188,12 @@ class TrainingPhaseController:
                 violations, physical_safety_pass, None, False, None,
             )
             return "transition"
+        if self.quality_checkpoint_promotion == PARETO_PROMOTION_MODE:
+            self.last_promotion_diagnostics = {
+                "promotion_mode": PARETO_PROMOTION_MODE,
+                "promotion_event": "pareto_evaluation_required",
+            }
+            return "pareto_evaluation_required"
         return self._observe_single_objective_candidate(
             completion_rate=rate,
             completed_episodes=completed_episodes,
@@ -244,7 +264,7 @@ class TrainingPhaseController:
         previous_anchor: float | None = None,
     ) -> dict[str, object]:
         return {
-            "promotion_mode": SINGLE_OBJECTIVE_PROMOTION_MODE,
+            "promotion_mode": self.quality_checkpoint_promotion,
             "promotion_event": event,
             "promotion_decision_reason": reason,
             "promotion_target_objective": self.single_objective_name,
@@ -346,6 +366,26 @@ class TrainingPhaseController:
         self.single_objective_window_values.clear()
         self.single_objective_window_episodes.clear()
 
+    def observe_pareto_promotion(
+        self,
+        result: dict[str, object],
+        *,
+        completed_episodes: int,
+        audited: bool,
+    ) -> str:
+        if self.quality_checkpoint_promotion != PARETO_PROMOTION_MODE:
+            raise RuntimeError("pareto promotion is not active")
+        self.last_pareto_promotion = dict(result)
+        accepted = bool(result.get("accepted", False))
+        if accepted and audited:
+            self.accepted_quality_episode = int(completed_episodes)
+            self.accepted_quality_updates += 1
+            return "accepted"
+        if accepted:
+            return "audit_required"
+        self.not_promoted_quality_updates += 1
+        return str(result.get("decision", "not_promoted"))
+
     def observe_sampled_guard(self, *_args: object, **_kwargs: object) -> str:
         raise RuntimeError("sampled preference guards are not part of protocol v4")
 
@@ -353,6 +393,12 @@ class TrainingPhaseController:
     def is_formally_accepted(self) -> bool:
         """Return whether a complete independent audit accepted a candidate."""
 
+        if self.quality_checkpoint_promotion == PARETO_PROMOTION_MODE:
+            return bool(
+                self.phase_transition_episode is not None
+                and self.accepted_quality_episode is not None
+                and self.accepted_quality_updates > 0
+            )
         return bool(
             self.phase_transition_episode is not None
             and self.accepted_quality_episode is not None
@@ -368,8 +414,14 @@ class TrainingPhaseController:
         if self.phase_transition_episode is None:
             return "feasibility_not_reached"
         if not self.is_formally_accepted:
+            if self.quality_checkpoint_promotion == PARETO_PROMOTION_MODE:
+                return "pareto_audit_candidate_not_reached"
             return "single_objective_98_candidate_not_reached"
-        return "accepted_98_experiment_candidate"
+        return (
+            "accepted_v8_pareto_candidate"
+            if self.quality_checkpoint_promotion == PARETO_PROMOTION_MODE
+            else "accepted_98_experiment_candidate"
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -394,6 +446,7 @@ class TrainingPhaseController:
             "single_objective_rollback_below_floor_consecutive": self.single_objective_rollback_below_floor_consecutive,
             "single_objective_candidate_improvement_epsilon": self.single_objective_candidate_improvement_epsilon,
             "single_objective_audit_instance_limit": self.single_objective_audit_instance_limit,
+            "single_objective_audit_instance_offset": self.single_objective_audit_instance_offset,
             "single_objective_audit_completion_target": self.single_objective_audit_completion_target,
             "single_objective_audit_max_failed_instances": self.single_objective_audit_max_failed_instances,
             "single_objective_window_values": list(self.single_objective_window_values),
@@ -406,4 +459,5 @@ class TrainingPhaseController:
             "accepted_single_objective_audit_value": self.accepted_single_objective_audit_value,
             "last_promotion_diagnostics": dict(self.last_promotion_diagnostics),
             "last_single_objective_audit_diagnostics": dict(self.last_single_objective_audit_diagnostics),
+            "last_pareto_promotion": dict(self.last_pareto_promotion),
         }

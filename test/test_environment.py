@@ -61,4 +61,4 @@ def test_observe_and_public_metrics_are_available(config, fixed_instance):
     initial = environment.reset(fixed_instance)
     observed = environment.observe()
     assert observed.feature_dimensions == initial.feature_dimensions
-    assert config["runtime_manifest"]["observation_schema"] == 4
+    assert config["runtime_manifest"]["observation_schema"] == 5

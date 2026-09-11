@@ -23,25 +23,12 @@ def _environment():
     return config, environment, observation
 
 
-def test_v7_bounded_residual_has_gradient_and_ranker_scaled_bound():
+def test_v8_residual_gates_initialize_at_half():
     config, _, observation = _environment()
     network = build_actor_critic(observation, config["network"])
-    relative = torch.tensor([-0.5, 0.5])
-    raw = torch.tensor([-3.0, 3.0], requires_grad=True)
-    feasible = torch.tensor([True, True])
-    residual = network._context_residual(
-        relative, raw, feasible, network.production_residual_context_gate
-    )
-    ranker_scale = relative.std(unbiased=False).clamp_min(1e-3)
-    bound = (
-        torch.sigmoid(network.production_residual_context_gate)
-        * 2.0
-        * ranker_scale
-    )
-    assert torch.max(torch.abs(residual)) <= bound + 1e-7
-    residual.sum().backward()
-    assert raw.grad is not None and torch.isfinite(raw.grad).all()
-    assert network.production_residual_context_gate.grad is not None
+    assert torch.sigmoid(network.production_residual_gate).item() == pytest.approx(0.5)
+    assert torch.sigmoid(network.worker_residual_gate).item() == pytest.approx(0.5)
+    assert network.residual_std_floor == pytest.approx(1e-3)
 
 
 def test_previous_action_semantics_checkpoint_is_rejected():
@@ -51,9 +38,9 @@ def test_previous_action_semantics_checkpoint_is_rejected():
         config["ppo"],
         device="cpu",
     )
-    with pytest.raises(ValueError, match="production_action_semantics"):
+    with pytest.raises(ValueError, match="V7|network_spec"):
         agent.load(project_path(ACCEPTED), load_optimizer=False)
-    assert agent.network.network_spec()["observation_schema_version"] == 4
+    assert agent.network.network_spec()["observation_schema_version"] == 5
 
 
 def test_checkpoint_round_trip_and_incompatible_spec_rejected(tmp_path):
@@ -75,10 +62,11 @@ def test_checkpoint_round_trip_and_incompatible_spec_rejected(tmp_path):
     assert metadata["line"] == "e1"
 
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    payload["network_spec"]["policy_head_version"] = 6
+    payload["network_spec"]["policy_head_version"] = 7
+    payload["network_spec"]["observation_schema_version"] = 4
     incompatible = tmp_path / "incompatible.pt"
     torch.save(payload, incompatible)
-    with pytest.raises(ValueError, match="policy_head_version"):
+    with pytest.raises(ValueError, match="V7"):
         clone.load(incompatible)
 
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ast
 import csv
+import inspect
 import json
+import textwrap
 from copy import deepcopy
 from pathlib import Path
 
@@ -15,6 +18,7 @@ from environment import AssemblySchedulingEnv, proxy_return_from_metrics
 from result.io import write_csv, write_json
 from single_objective_analysis import OBJECTIVE_FIELDS, main as analysis_main
 from train import (
+    PARETO_PROMOTION_MODE,
     SINGLE_OBJECTIVE_PROMOTION_MODE,
     TrainingPhaseController,
     ValidationStabilityController,
@@ -89,14 +93,15 @@ def _raw_json(path: str) -> dict:
         return json.load(handle)
 
 
-def test_default_is_the_complete_latest_single_objective_protocol():
+def test_default_is_the_complete_v8_universal_protocol():
     base = load_config("configs/default.json")
-    assert base["experiment_suite_version"] == "v7_e1_single_objective_protocol_v5"
-    assert base["training"]["two_stage"]["quality_checkpoint_promotion"] == SINGLE_OBJECTIVE_PROMOTION_MODE
-    assert base["runtime_manifest"]["candidate_ranker"] == "bounded_ranker_scale_v7"
+    assert base["experiment_suite_version"] == "v8_preference_conditioned_pareto_v1"
+    assert base["training"]["two_stage"]["quality_checkpoint_promotion"] == PARETO_PROMOTION_MODE
+    assert base["runtime_manifest"]["candidate_ranker"] == "simplex_softplus_objective_experts_v8"
     assert base["runtime_manifest"]["worker_feasibility"] == "instant_physical_pair_mask_v1"
     assert base["runtime_manifest"]["wait_mask"] == "progress_certified_wait_v2"
-    assert base["runtime_manifest"]["observation_schema"] == 4
+    assert base["runtime_manifest"]["observation_schema"] == 5
+    assert base["runtime_manifest"]["policy_head"] == 8
     assert set(base["environment"]) == {
         "max_decisions",
         "max_zero_time_actions",
@@ -112,12 +117,36 @@ def test_child_config_only_changes_strict_one_hot_weights(objective: str):
     }
     expected = public_config(base)
     expected["reward"]["quality_weights"] = expected_weights
+    expected["preference"]["quality"]["mode"] = "fixed"
+    expected["preference"]["quality"]["fixed"] = [
+        expected_weights["flow"],
+        expected_weights["cost"],
+        expected_weights["variance"],
+    ]
+    expected["training"]["two_stage"]["quality_checkpoint_promotion"] = (
+        SINGLE_OBJECTIVE_PROMOTION_MODE
+    )
     expected["experiment_name"] = f"e1_single_{objective}"
     assert public_config(child) == expected
 
     raw = _raw_json(CONFIGS[objective])
-    assert set(raw) == {"extends", "experiment_name", "reward"}
+    assert set(raw) == {
+        "extends",
+        "experiment_name",
+        "preference",
+        "reward",
+        "training",
+    }
     assert raw["reward"] == {"quality_weights": expected_weights}
+    assert raw["preference"] == {
+        "quality": {
+            "mode": "fixed",
+            "fixed": expected["preference"]["quality"]["fixed"],
+        }
+    }
+    assert raw["training"]["two_stage"]["quality_checkpoint_promotion"] == (
+        SINGLE_OBJECTIVE_PROMOTION_MODE
+    )
 
 
 @pytest.mark.parametrize("objective", tuple(CONFIGS))
@@ -338,6 +367,22 @@ def test_final_evaluation_loads_accepted_checkpoint_instead_of_online_agent(
         "loaded_identity": "candidate-a"
     }
     assert evaluation["greedy"]["evaluated_identity"] == "candidate-a"
+
+
+def test_final_audit_runner_uses_the_ungrouped_training_episode_budget():
+    source = textwrap.dedent(inspect.getsource(train_module._train_parallel))
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_reevaluate_checkpoint_with_parallel_runner"
+    ]
+    assert len(calls) == 1
+    keywords = {keyword.arg: keyword.value for keyword in calls[0].keywords}
+    assert ast.unparse(keywords["episode_count"]) == "episodes"
+    assert "training_base_instance_count" not in source
 
 
 def test_95_percent_candidates_are_exploratory_only_and_window_warms_up():

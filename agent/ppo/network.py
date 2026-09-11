@@ -1720,3 +1720,24 @@ def build_actor_critic(
         policy_head["worker_common_context_enabled"],
         policy_head["residual_scale_ratio"],
     )
+
+
+# The latest-only public API is V8.  The historical implementation above is
+# intentionally left readable for archived V7 result analysis, but no V7
+# network or checkpoint can be constructed through the runtime entry points.
+from agent.ppo.network_v8 import (  # noqa: E402,F401
+    ActorCriticNetwork,
+    EXPERT_WEIGHT_PARAMETERIZATION,
+    OBSERVATION_SCHEMA_VERSION,
+    POLICY_HEAD_VERSION,
+    PRODUCTION_DIRECT_SCHEMA,
+    SimplexMonotoneRanker,
+    WAIT_DIRECT_SCHEMA,
+    WORKER_DIRECT_SCHEMA,
+    HeteroGraphActorCritic,
+    assert_network_config_matches_spec,
+    build_actor_critic,
+    infer_checkpoint_network_spec,
+    network_requires_graph_observation,
+    normalize_network_config,
+)

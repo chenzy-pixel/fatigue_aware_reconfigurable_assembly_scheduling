@@ -27,8 +27,10 @@ from data import (
 from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
 from environment import (
     AssemblySchedulingEnv,
+    PreferenceContextInput,
     bounded_quality_score,
     proxy_return_from_metrics,
+    simplex_lattice,
 )
 from result import (
     aggregate_evaluation_rows,
@@ -243,6 +245,7 @@ def evaluate_instance(
     prepared_policy: EvaluationPolicy | None = None,
     decode_mode: str = "greedy",
     sampling_seed: int | None = None,
+    preference: PreferenceContextInput | None = None,
 ) -> tuple[AssemblySchedulingEnv, dict[str, Any]]:
     if prepared_policy is None:
         set_seed(validate_algorithm_seed(config, int(config["seed"])))
@@ -269,7 +272,7 @@ def evaluate_instance(
         )
     solve_start = time.perf_counter()
     env = AssemblySchedulingEnv(config)
-    observation = env.reset(instance)
+    observation = env.reset(instance, preference=preference)
     runner.begin_episode(instance.instance_id)
     inference_time = 0.0
     decisions = 0
@@ -387,6 +390,7 @@ def _evaluation_row(
         "worker_workload_variance"
     )
     metric_hash = quality_metric_sha256(quality_metric)
+    preference = metrics.get("preference") or {}
     return {
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
@@ -407,6 +411,12 @@ def _evaluation_row(
         "flow_time_objective": metrics["flow_time_objective"],
         "reconfiguration_cost": metrics["reconfiguration_cost"],
         "worker_load_variance": metrics["worker_load_variance"],
+        "preference": metrics.get("preference"),
+        "preference_key": metrics.get("preference_key"),
+        "preference_quality_score": metrics.get("preference_quality_score"),
+        "preference_flow": preference.get("flow"),
+        "preference_cost": preference.get("cost"),
+        "preference_variance": preference.get("variance"),
         **{
             name: metrics.get(name, 0)
             for name in (
@@ -606,6 +616,7 @@ def evaluate_dataset(
     checkpoint: str | None = None,
     ppo_agent: PPOAgent | None = None,
     instance_limit: int | None = None,
+    instance_offset: int = 0,
     decode_mode: str = "greedy",
     sampling_seed: int | None = None,
 ) -> tuple[
@@ -618,11 +629,12 @@ def evaluate_dataset(
     effective_count = (
         len(dataset) if instance_limit is None else int(instance_limit)
     )
-    if effective_count < 1 or effective_count > len(dataset):
+    offset = int(instance_offset)
+    if offset < 0 or effective_count < 1 or offset + effective_count > len(dataset):
         raise ValueError(
-            f"instance_limit must be in [1, {len(dataset)}]"
+            "instance_offset/instance_limit select outside the dataset"
         )
-    records = [dataset[index] for index in range(effective_count)]
+    records = [dataset[index] for index in range(offset, offset + effective_count)]
     bootstrap_environment = AssemblySchedulingEnv(config)
     bootstrap_observation = bootstrap_environment.reset(
         records[0].instance
@@ -677,6 +689,7 @@ def evaluate_dataset(
         quality_metric=quality_metric,
     )
     aggregate["decode_mode"] = decode_mode
+    aggregate["instance_offset"] = offset
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
         dataset.manifest_path
     )["sha256"]
@@ -691,6 +704,7 @@ def evaluate_dataset_parallel(
     ppo_agent: PPOAgent,
     runner: ParallelEpisodeRunner,
     instance_limit: int | None = None,
+    instance_offset: int = 0,
     decode_mode: str = "greedy",
     sampling_seed: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -699,11 +713,12 @@ def evaluate_dataset_parallel(
     effective_count = (
         len(dataset) if instance_limit is None else int(instance_limit)
     )
-    if effective_count < 1 or effective_count > len(dataset):
+    offset = int(instance_offset)
+    if offset < 0 or effective_count < 1 or offset + effective_count > len(dataset):
         raise ValueError(
-            f"instance_limit must be in [1, {len(dataset)}]"
+            "instance_offset/instance_limit select outside the dataset"
         )
-    records = [dataset[index] for index in range(effective_count)]
+    records = [dataset[index] for index in range(offset, offset + effective_count)]
     was_training = ppo_agent.network.training
     ppo_agent.network.eval()
     parallelism = min(
@@ -765,11 +780,116 @@ def evaluate_dataset_parallel(
         quality_metric=quality_metric,
     )
     aggregate["decode_mode"] = decode_mode
+    aggregate["instance_offset"] = offset
     aggregate["parallel_envs"] = parallelism
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
         dataset.manifest_path
     )["sha256"]
     return rows, aggregate
+
+
+@_preserve_rng_for_sampled
+def evaluate_preference_grid_parallel(
+    config: dict[str, Any],
+    *,
+    dataset_name: str,
+    ppo_agent: PPOAgent,
+    runner: ParallelEpisodeRunner,
+    instance_limit: int,
+    instance_offset: int = 0,
+    preferences: tuple[PreferenceContextInput, ...] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Evaluate each fixed instance at all 66 V8 simplex preferences."""
+
+    dataset = load_dataset_split(config, dataset_name)
+    offset = int(instance_offset)
+    if instance_limit < 1 or offset < 0 or offset + instance_limit > len(dataset):
+        raise ValueError("invalid preference-grid instance offset/limit")
+    grid = tuple(simplex_lattice(10, include=())) if preferences is None else tuple(preferences)
+    if len(grid) != 66:
+        raise ValueError("V8 validation requires exactly 66 simplex preferences")
+    source_records = [
+        dataset[index] for index in range(offset, offset + instance_limit)
+    ]
+    records = [record for record in source_records for _ in grid]
+    repeated_preferences = [preference for _ in source_records for preference in grid]
+    was_training = ppo_agent.network.training
+    ppo_agent.network.eval()
+    try:
+        rollouts = runner.evaluate_records(
+            ppo_agent,
+            records,
+            max_parallelism=min(runner.worker_count, len(records)),
+            deterministic=True,
+            preferences=repeated_preferences,
+        )
+    finally:
+        ppo_agent.network.train(was_training)
+    quality_metric = evaluation_quality_metric(config)
+    rows: list[dict[str, Any]] = []
+    for rollout in rollouts:
+        metrics = dict(rollout.metrics)
+        metrics.update(
+            {
+                "decisions": rollout.decisions,
+                "inference_time_seconds": rollout.inference_time_seconds,
+                "solve_time_seconds": rollout.solve_time_seconds,
+                "inference_time_per_decision_ms": (
+                    1000.0 * rollout.inference_time_seconds / rollout.decisions
+                    if rollout.decisions
+                    else 0.0
+                ),
+                "action_trace_sha256": rollout.action_trace_sha256,
+            }
+        )
+        metrics["feasibility_proxy_return"] = proxy_return_from_metrics(
+            metrics, config, "feasibility"
+        )
+        rows.append(
+            _evaluation_row(
+                records[rollout.record_index], metrics, config["reward"], quality_metric
+            )
+        )
+    preference_keys = {str(row["preference_key"]) for row in rows}
+    completion_by_preference = {
+        key: sum(bool(row["terminated"]) and not bool(row["truncated"]) for row in rows if row["preference_key"] == key)
+        / instance_limit
+        for key in sorted(preference_keys)
+    }
+    summary = aggregate_evaluation_rows(
+        rows,
+        dataset=dataset_name,
+        policy="ppo",
+        manifest=str(dataset.manifest_path),
+        quality_metric=quality_metric,
+    )
+    cell_count = int(summary["instance_count"])
+    summary.update({
+        "dataset": dataset_name,
+        "instance_offset": offset,
+        "instance_count": instance_limit,
+        "preference_count": len(grid),
+        "cell_count": cell_count,
+        "completed_cell_count": int(summary["completed_count"]),
+        "cell_completion_rate": float(summary["completion_rate"]),
+        "completed_count": sum(
+            all(
+                bool(row["terminated"]) and not bool(row["truncated"])
+                for row in rows
+                if row["instance_id"] == record.instance.instance_id
+            )
+            for record in source_records
+        ),
+        "completion_rate_by_preference": completion_by_preference,
+        "minimum_preference_completion_rate": min(completion_by_preference.values()),
+        "completion_rate": min(completion_by_preference.values()),
+        "schedule_violation_count": sum(int(row["schedule_violation_count"]) for row in rows),
+        "dataset_manifest_sha256": dataset_manifest_snapshot(dataset.manifest_path)["sha256"],
+        "normalization_manifest_sha256": config["objective_scalarizer"].get(
+            "normalization_manifest_sha256"
+        ),
+    })
+    return rows, summary
 
 
 def main() -> None:

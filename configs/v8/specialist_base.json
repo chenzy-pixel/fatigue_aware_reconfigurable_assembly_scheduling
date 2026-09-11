@@ -1,0 +1,25 @@
+{
+  "extends": "../default.json",
+  "experiment_suite_version": "v8_endpoint_specialists_v1",
+  "objective_scalarizer": {
+    "scale_source": "bootstrap_specialist",
+    "scales": {
+      "flow": 1200.0,
+      "cost": 1000.0,
+      "variance": 50.0
+    }
+  },
+  "preference": {
+    "quality": {
+      "mode": "fixed"
+    }
+  },
+  "training": {
+    "two_stage": {
+      "quality_checkpoint_promotion": "single_objective_guarded_v1",
+      "single_objective_promotion": {
+        "audit_instance_offset": 50
+      }
+    }
+  }
+}

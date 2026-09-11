@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .runtime import attach_runtime_manifest
+from .normalization import apply_normalization_manifest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +73,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
     config_path = project_path(path).resolve()
     config, chain = _load_config_path(config_path, stack=())
+    apply_normalization_manifest(config, project_root=PROJECT_ROOT)
     attach_runtime_manifest(config)
     config["_config_path"] = str(config_path)
     config["_config_chain"] = tuple(str(item) for item in chain)

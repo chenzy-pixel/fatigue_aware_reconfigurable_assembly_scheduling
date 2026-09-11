@@ -40,6 +40,7 @@ from environment import (
 from eval import (
     evaluate_dataset,
     evaluate_dataset_parallel,
+    evaluate_preference_grid_parallel,
     evaluate_representative_diagnostic,
     load_configured_instance,
 )
@@ -51,6 +52,7 @@ from result import (
     create_run_directory,
     evaluation_selection_key,
     capture_terminal_output,
+    compare_preference_conditioned_checkpoints,
 )
 from result.io import write_config, write_csv, write_json
 from result.visdom_dashboard import (
@@ -59,7 +61,11 @@ from result.visdom_dashboard import (
     resolve_visdom_settings,
 )
 from utils import set_seed
-from training import SINGLE_OBJECTIVE_PROMOTION_MODE, TrainingPhaseController
+from training import (
+    PARETO_PROMOTION_MODE,
+    SINGLE_OBJECTIVE_PROMOTION_MODE,
+    TrainingPhaseController,
+)
 
 SINGLE_OBJECTIVE_METRICS = {
     "flow": "flow_time_objective",
@@ -147,6 +153,7 @@ def _validate_single_objective_validation_protocol(
         "single_objective_promotion"
     ]
     audit_limit = int(settings["audit_instance_limit"])
+    audit_offset = int(settings.get("audit_instance_offset", 0))
     if validation_limit != 50 or audit_limit != 200:
         raise ValueError(
             "single-objective validation must use 50 daily instances and "
@@ -170,12 +177,89 @@ def _validate_single_objective_validation_protocol(
     if (
         not isinstance(files, list)
         or manifest_count != len(files)
-        or manifest_count < audit_limit
+        or manifest_count < audit_offset + audit_limit
     ):
         raise ValueError(
             "single-objective validation requires a manifest with at least "
-            f"{audit_limit} instances; found {manifest_count}"
+            f"{audit_offset + audit_limit} instances/records; found {manifest_count}"
         )
+
+
+def _validate_pareto_validation_protocol(
+    config: dict, *, smoke: bool, validation_limit: int | None
+) -> None:
+    """Require the frozen V8 universal protocol before a formal run starts."""
+
+    two_stage = config["training"]["two_stage"]
+    if str(two_stage.get("quality_checkpoint_promotion", "")) != PARETO_PROMOTION_MODE:
+        return
+    settings = two_stage.get("pareto_promotion")
+    if not isinstance(settings, dict):
+        raise ValueError("V8 universal training requires pareto_promotion settings")
+    required = {
+        "validation_instance_limit": 50,
+        "audit_instance_limit": 200,
+        "audit_instance_offset": 50,
+        "preference_count": 66,
+        "bootstrap_replicates": 10_000,
+    }
+    for name, expected in required.items():
+        if int(settings.get(name, -1)) != expected:
+            raise ValueError(f"V8 universal protocol requires {name}={expected}")
+    if not math.isclose(float(settings.get("simplex_step", math.nan)), 0.1):
+        raise ValueError("V8 universal protocol requires simplex_step=0.1")
+    if not math.isclose(
+        float(settings.get("validation_completion_floor", math.nan)), 0.95
+    ) or not math.isclose(
+        float(settings.get("audit_completion_floor", math.nan)), 0.98
+    ):
+        raise ValueError("V8 universal completion floors must be 0.95/0.98")
+    if int(settings.get("audit_max_failed_instances", -1)) != 4:
+        raise ValueError("V8 universal audit permits at most four failed instances")
+    preference = config.get("preference", {}).get("quality", {})
+    if (
+        preference.get("mode") != "universal_sobol_v1"
+        or int(preference.get("block_size", -1)) != 20
+        or int(preference.get("endpoint_repeats", -1)) != 2
+        or int(preference.get("sobol_count", -1)) != 14
+    ):
+        raise ValueError("V8 universal preference sampling must use 20/2/14 quotas")
+    if smoke:
+        return
+    if validation_limit != 50 or int(config["training"]["validation_interval_episodes"]) != 100:
+        raise ValueError("V8 universal validation requires 50 instances every 100 quality episodes")
+    scalarizer = config.get("objective_scalarizer", {})
+    manifest_sha = str(scalarizer.get("normalization_manifest_sha256") or "")
+    content_sha = str(scalarizer.get("normalization_manifest_content_sha256") or "")
+    if (
+        scalarizer.get("scale_source") != "frozen_manifest"
+        or scalarizer.get("type") != "normalized_augmented_tchebycheff_v1"
+        or not math.isclose(float(scalarizer.get("rho", math.nan)), 0.05)
+        or len(manifest_sha) != 64
+        or len(content_sha) != 64
+        or config.get("network", {}).get("normalization_manifest_sha256")
+        != manifest_sha
+    ):
+        raise ValueError(
+            "formal V8 universal training requires one verified frozen normalization manifest"
+        )
+    bounds = settings.get("endpoint_prediction_upper_bounds")
+    if not isinstance(bounds, dict) or set(bounds) != set(SINGLE_OBJECTIVE_METRICS):
+        raise ValueError("V8 universal training requires all specialist endpoint bounds")
+    if any(not math.isfinite(float(value)) or float(value) <= 0.0 for value in bounds.values()):
+        raise ValueError("V8 specialist endpoint bounds must be finite and positive")
+    manifest_path = _validation_manifest_path(config)
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"V8 validation manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = manifest.get("files", [])
+    if (
+        manifest.get("generator_version") != str(config["generator"]["version"])
+        or not isinstance(files, list)
+        or int(manifest.get("instance_count", len(files))) != len(files)
+        or len(files) < 250
+    ):
+        raise ValueError("V8 validation manifest must contain at least 200 current instances")
 
 
 def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
@@ -199,6 +283,9 @@ def _checkpoint_protocol_metadata(config: dict) -> dict[str, object]:
         ),
         "algorithm_seed": int(config["seed"]),
         "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "normalization_manifest_sha256": config.get(
+            "objective_scalarizer", {}
+        ).get("normalization_manifest_sha256"),
         "provenance": provenance,
     }
 
@@ -742,11 +829,14 @@ def _reevaluate_checkpoint_from_disk(
     bootstrap_observation,
     dataset_name: str,
     instance_limit: int | None,
+    instance_offset: int = 0,
     sampling_seeds: list[int],
     greedy_only: bool = False,
     runner: ParallelEpisodeRunner | None = None,
 ) -> dict[str, object]:
     """Load an isolated agent and produce the only final reported metrics."""
+    if instance_offset and not greedy_only:
+        raise ValueError("offset checkpoint re-evaluation currently requires greedy_only")
     evaluation_agent = PPOAgent(
         build_actor_critic(bootstrap_observation, config["network"]),
         config["ppo"],
@@ -760,6 +850,7 @@ def _reevaluate_checkpoint_from_disk(
             policy_name="ppo",
             ppo_agent=evaluation_agent,
             instance_limit=instance_limit,
+            instance_offset=instance_offset,
             decode_mode="greedy",
         )
     else:
@@ -769,6 +860,7 @@ def _reevaluate_checkpoint_from_disk(
             ppo_agent=evaluation_agent,
             runner=runner,
             instance_limit=instance_limit,
+            instance_offset=instance_offset,
             decode_mode="greedy",
         )
     greedy["physical_safety_pass"] = _rows_are_physically_safe(
@@ -801,6 +893,7 @@ def _reevaluate_checkpoint_from_disk(
         "evaluation_config": {
             "dataset": dataset_name,
             "instance_limit": instance_limit,
+            "instance_offset": int(instance_offset),
             "greedy": True,
             "sampling_seeds": list(sampling_seeds),
             "execution_mode": "parallel" if runner is not None else "serial",
@@ -818,6 +911,7 @@ def _reevaluate_checkpoint_with_parallel_runner(
     bootstrap_observation,
     dataset_name: str,
     instance_limit: int | None,
+    instance_offset: int = 0,
     sampling_seeds: list[int],
     greedy_only: bool,
     template,
@@ -837,6 +931,7 @@ def _reevaluate_checkpoint_with_parallel_runner(
             bootstrap_observation=bootstrap_observation,
             dataset_name=dataset_name,
             instance_limit=instance_limit,
+            instance_offset=instance_offset,
             sampling_seeds=sampling_seeds,
             greedy_only=greedy_only,
             runner=runner,
@@ -951,6 +1046,9 @@ def _single_objective_checkpoint_metadata(
         "single_objective_audit_instance_limit": (
             phase_controller.single_objective_audit_instance_limit
         ),
+        "single_objective_audit_instance_offset": (
+            phase_controller.single_objective_audit_instance_offset
+        ),
         "single_objective_audit_completion_target": (
             phase_controller.single_objective_audit_completion_target
         ),
@@ -1035,6 +1133,7 @@ def _evaluate_single_objective_audit(
             ppo_agent=ppo_agent,
             runner=runner,
             instance_limit=limit,
+            instance_offset=phase_controller.single_objective_audit_instance_offset,
             decode_mode="greedy",
         )
     else:
@@ -1044,6 +1143,7 @@ def _evaluate_single_objective_audit(
             policy_name="ppo",
             ppo_agent=ppo_agent,
             instance_limit=limit,
+            instance_offset=phase_controller.single_objective_audit_instance_offset,
             decode_mode="greedy",
         )
     audit["physical_safety_pass"] = _rows_are_physically_safe(rows, 1e-9)
@@ -1531,6 +1631,9 @@ def _train_parallel(
     _validate_single_objective_validation_protocol(
         config, smoke=smoke, validation_limit=validation_limit
     )
+    _validate_pareto_validation_protocol(
+        config, smoke=smoke, validation_limit=validation_limit
+    )
     step_limit = (
         int(config["training"]["smoke_rollout_steps"])
         if smoke
@@ -1543,6 +1646,8 @@ def _train_parallel(
     rows: list[dict] = []
     update_rows: list[dict] = []
     validation_rows: list[dict] = []
+    pareto_validation_instance_rows: list[dict] = []
+    pareto_audit_instance_rows: list[dict] = []
     single_objective_audit_rows: list[dict] = []
     single_objective_audit_failure_rows: list[dict] = []
     instance_ids: list[str] = []
@@ -1561,6 +1666,8 @@ def _train_parallel(
     last_sampled_validation: dict | None = None
     last_sampled_validation_episode: int | None = None
     best_score: tuple[float, float, float, float] | None = None
+    pareto_incumbent_rows: list[dict] | None = None
+    pareto_incumbent_checkpoint: Path | None = None
     phase_controller = TrainingPhaseController.from_config(config)
     stability_controller = ValidationStabilityController.from_config(config)
     total_transitions = 0
@@ -1572,6 +1679,7 @@ def _train_parallel(
     total_inference_time = 0.0
     total_update_time = 0.0
     update_id = 0
+    quality_episode_count = 0
     with ParallelEpisodeRunner(
         config=config,
         template=template,
@@ -1586,6 +1694,16 @@ def _train_parallel(
                     min(batch_start + parallel_envs, episodes),
                 )
             )
+            quality_episode_indices = (
+                list(
+                    range(
+                        quality_episode_count,
+                        quality_episode_count + len(episode_indices),
+                    )
+                )
+                if reward_phase == "quality"
+                else None
+            )
             rollout = runner.collect_training_batch(
                 agent,
                 episode_indices,
@@ -1593,7 +1711,10 @@ def _train_parallel(
                 gae_lambda=float(config["ppo"]["gae_lambda"]),
                 step_limit=step_limit,
                 reward_phase=reward_phase,
+                quality_episode_indices=quality_episode_indices,
             )
+            if reward_phase == "quality":
+                quality_episode_count += len(episode_indices)
             update_start = time.perf_counter()
             if rollout.transition_count == 0:
                 raise RuntimeError(
@@ -1715,6 +1836,9 @@ def _train_parallel(
                         episode.base_reward_sum - episode.expected_reward
                     ),
                     "reward_phase": episode.reward_phase,
+                    "preference": episode.metadata.get("preference"),
+                    "preference_key": episode.metadata.get("preference_key"),
+                    **episode.policy_diagnostics,
                     **{
                         f"reward_{name}": value
                         for name, value in episode.reward_components.items()
@@ -1750,20 +1874,51 @@ def _train_parallel(
                 rows.append(row)
             completed_episodes = episode_indices[-1] + 1
             regular_validation_due = (
-                completed_episodes % validation_interval == 0
-                or completed_episodes == episodes
-            )
+                (
+                    quality_episode_count > 0
+                    and quality_episode_count % 100 == 0
+                )
+                if (
+                    reward_phase == "quality"
+                    and phase_controller.quality_checkpoint_promotion
+                    == PARETO_PROMOTION_MODE
+                )
+                else completed_episodes % validation_interval == 0
+            ) or completed_episodes == episodes
             should_validate = phase_controller.should_validate(
                 regular_validation_due
             )
             if should_validate:
-                validation_instance_rows, validation = evaluate_dataset_parallel(
-                    config,
-                    dataset_name=validation_split,
-                    ppo_agent=agent,
-                    runner=runner,
-                    instance_limit=validation_limit,
+                pareto_quality_validation = bool(
+                    reward_phase == "quality"
+                    and phase_controller.quality_checkpoint_promotion
+                    == PARETO_PROMOTION_MODE
                 )
+                if pareto_quality_validation:
+                    validation_instance_rows, validation = (
+                        evaluate_preference_grid_parallel(
+                            config,
+                            dataset_name=validation_split,
+                            ppo_agent=agent,
+                            runner=runner,
+                            instance_limit=50,
+                        )
+                    )
+                    pareto_validation_instance_rows.extend(
+                        {
+                            "validation_episode": completed_episodes,
+                            **row,
+                        }
+                        for row in validation_instance_rows
+                    )
+                else:
+                    validation_instance_rows, validation = evaluate_dataset_parallel(
+                        config,
+                        dataset_name=validation_split,
+                        ppo_agent=agent,
+                        runner=runner,
+                        instance_limit=validation_limit,
+                    )
                 validation["physical_safety_pass"] = _rows_are_physically_safe(
                     validation_instance_rows, 1e-9
                 )
@@ -1771,10 +1926,12 @@ def _train_parallel(
                     validation,
                     completed_episodes=completed_episodes,
                 )
-                if phase_controller.single_objective_name is None:
-                    raise RuntimeError("single-objective target is not configured")
-                score = _single_objective_guard_score(
-                    validation, phase_controller.single_objective_name
+                score = (
+                    _single_objective_guard_score(
+                        validation, phase_controller.single_objective_name
+                    )
+                    if phase_controller.single_objective_name is not None
+                    else evaluation_selection_key(validation)
                 )
                 stability = stability_controller.observe_greedy(
                     score,
@@ -1782,9 +1939,12 @@ def _train_parallel(
                     completed_episodes=completed_episodes,
                     feasibility_phase=reward_phase == "feasibility",
                 )
-                if stability_controller.should_run_sampled(
+                if (
+                    not pareto_quality_validation
+                    and stability_controller.should_run_sampled(
                     final_validation=completed_episodes == episodes,
                     completed_episodes=completed_episodes,
+                    )
                 ):
                     sampled_validation = _evaluate_sampled_validation(
                         config,
@@ -1834,7 +1994,153 @@ def _train_parallel(
                 validation_row["feasibility_rollback_applied"] = bool(
                     stability["rollback"]
                 )
-                if daily_validation_event == "audit_required":
+                if pareto_quality_validation:
+                    if pareto_incumbent_rows is None or pareto_incumbent_checkpoint is None:
+                        raise RuntimeError("V8 quality validation has no phase-1 incumbent")
+                    settings = config["training"]["two_stage"]["pareto_promotion"]
+                    endpoint_bounds = settings.get(
+                        "endpoint_prediction_upper_bounds"
+                    )
+                    if not isinstance(endpoint_bounds, dict):
+                        raise RuntimeError(
+                            "V8 universal promotion requires specialist endpoint prediction bounds"
+                        )
+                    scales_mapping = config["objective_scalarizer"]["scales"]
+                    scales = tuple(
+                        float(scales_mapping[name])
+                        for name in ("flow", "cost", "variance")
+                    )
+                    pareto_result = compare_preference_conditioned_checkpoints(
+                        validation_instance_rows,
+                        pareto_incumbent_rows,
+                        scales=scales,
+                        endpoint_prediction_upper_bounds=endpoint_bounds,
+                        bootstrap_seed=int(settings.get("bootstrap_seed", 20260811)),
+                    )
+                    daily_validation_event = phase_controller.observe_pareto_promotion(
+                        pareto_result,
+                        completed_episodes=completed_episodes,
+                        audited=False,
+                    )
+                    validation_event = daily_validation_event
+                    validation_row["validation_event"] = daily_validation_event
+                    validation_row["pareto_validation_result"] = json.dumps(
+                        pareto_result, ensure_ascii=False, sort_keys=True
+                    )
+                    if daily_validation_event == "audit_required":
+                        agent.save(
+                            candidate_checkpoint,
+                            metadata={
+                                **_checkpoint_protocol_metadata(config),
+                                "checkpoint_role": "pareto_audit_pending_candidate",
+                                "pareto_validation_result": pareto_result,
+                            },
+                        )
+                        candidate_network = build_actor_critic(
+                            bootstrap_observation, config["network"]
+                        )
+                        candidate_agent = PPOAgent(
+                            candidate_network, config["ppo"], device=config["device"]
+                        )
+                        candidate_metadata = candidate_agent.load(
+                            candidate_checkpoint, load_optimizer=False
+                        )
+                        candidate_audit_rows, _ = evaluate_preference_grid_parallel(
+                            config,
+                            dataset_name=validation_split,
+                            ppo_agent=candidate_agent,
+                            runner=runner,
+                            instance_limit=200,
+                            instance_offset=int(settings["audit_instance_offset"]),
+                        )
+                        incumbent_network = build_actor_critic(
+                            bootstrap_observation, config["network"]
+                        )
+                        incumbent_agent = PPOAgent(
+                            incumbent_network, config["ppo"], device=config["device"]
+                        )
+                        incumbent_agent.load(
+                            pareto_incumbent_checkpoint, load_optimizer=False
+                        )
+                        incumbent_audit_rows, _ = evaluate_preference_grid_parallel(
+                            config,
+                            dataset_name=validation_split,
+                            ppo_agent=incumbent_agent,
+                            runner=runner,
+                            instance_limit=200,
+                            instance_offset=int(settings["audit_instance_offset"]),
+                        )
+                        pareto_audit_instance_rows.extend(
+                            {
+                                "audit_episode": completed_episodes,
+                                "arm": arm,
+                                **row,
+                            }
+                            for arm, audit_rows in (
+                                ("candidate", candidate_audit_rows),
+                                ("incumbent", incumbent_audit_rows),
+                            )
+                            for row in audit_rows
+                        )
+                        pareto_audit_result = compare_preference_conditioned_checkpoints(
+                            candidate_audit_rows,
+                            incumbent_audit_rows,
+                            scales=scales,
+                            endpoint_prediction_upper_bounds=endpoint_bounds,
+                            audit=True,
+                            bootstrap_seed=int(settings.get("bootstrap_seed", 20260811)),
+                        )
+                        audit_event = phase_controller.observe_pareto_promotion(
+                            pareto_audit_result,
+                            completed_episodes=completed_episodes,
+                            audited=True,
+                        )
+                        validation_event = audit_event
+                        validation_row["validation_event"] = audit_event
+                        validation_row["pareto_audit_result"] = json.dumps(
+                            pareto_audit_result,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        if audit_event == "accepted":
+                            agent.save(
+                                accepted_checkpoint,
+                                metadata={
+                                    **_checkpoint_protocol_metadata(config),
+                                    "checkpoint_role": "accepted",
+                                    "accepted_episode": completed_episodes,
+                                    "pareto_validation_result": pareto_result,
+                                    "pareto_audit_result": pareto_audit_result,
+                                },
+                            )
+                            accepted_payload = torch.load(
+                                accepted_checkpoint,
+                                map_location="cpu",
+                                weights_only=False,
+                            )
+                            accepted_weights_sha = accepted_payload.get(
+                                "metadata", {}
+                            ).get("network_weights_sha256")
+                            if accepted_weights_sha != candidate_metadata.get(
+                                "network_weights_sha256"
+                            ):
+                                raise RuntimeError(
+                                    "audited candidate and accepted checkpoint weights diverged"
+                                )
+                            shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                            pareto_incumbent_rows = [
+                                dict(row) for row in validation_instance_rows
+                            ]
+                            pareto_incumbent_checkpoint = accepted_checkpoint
+                            best_score = score
+                            best_validation = validation_row
+                        if candidate_checkpoint.exists():
+                            candidate_checkpoint.unlink()
+                if (
+                    daily_validation_event == "audit_required"
+                    and phase_controller.quality_checkpoint_promotion
+                    == SINGLE_OBJECTIVE_PROMOTION_MODE
+                ):
                     window_median = phase_controller.last_promotion_diagnostics.get(
                         "window_objective_statistic"
                     )
@@ -1899,6 +2205,7 @@ def _train_parallel(
                     agent.save(
                         safe_checkpoint,
                         metadata={
+                            **_checkpoint_protocol_metadata(config),
                             "checkpoint_role": "latest_safe",
                             "safe_episode": completed_episodes,
                             "validation": validation_row,
@@ -1915,6 +2222,7 @@ def _train_parallel(
                     agent.save(
                         best_feasibility_checkpoint,
                         metadata={
+                            **_checkpoint_protocol_metadata(config),
                             "feature_dimensions": (
                                 bootstrap_observation.feature_dimensions
                             ),
@@ -1941,9 +2249,18 @@ def _train_parallel(
                     update_row["candidate_status"] = "feasibility_best"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "feasibility_best"
-                is_new_best = False
+                is_new_best = bool(
+                    validation_event == "accepted"
+                    and phase_controller.quality_checkpoint_promotion
+                    == PARETO_PROMOTION_MODE
+                )
+                if is_new_best:
+                    update_row["candidate_status"] = "accepted"
+                    for row in rows[-len(rollout.episodes) :]:
+                        row["candidate_status"] = "accepted"
                 if validation_event == "transition":
                     transition_metadata = {
+                        **_checkpoint_protocol_metadata(config),
                         "feature_dimensions": (
                             bootstrap_observation.feature_dimensions
                         ),
@@ -1959,10 +2276,35 @@ def _train_parallel(
                         phase1_checkpoint,
                         metadata=transition_metadata,
                     )
+                    if (
+                        phase_controller.quality_checkpoint_promotion
+                        == PARETO_PROMOTION_MODE
+                    ):
+                        pareto_incumbent_rows, _ = (
+                            evaluate_preference_grid_parallel(
+                                config,
+                                dataset_name=validation_split,
+                                ppo_agent=agent,
+                                runner=runner,
+                                instance_limit=50,
+                            )
+                        )
+                        pareto_incumbent_checkpoint = phase1_checkpoint
+                        pareto_validation_instance_rows.extend(
+                            {
+                                "validation_episode": completed_episodes,
+                                "arm": "phase1_incumbent",
+                                **row,
+                            }
+                            for row in pareto_incumbent_rows
+                        )
                     update_row["candidate_status"] = "phase_transition"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "phase_transition"
-                if _promote_accepted_checkpoint(
+                if (
+                    phase_controller.quality_checkpoint_promotion
+                    == SINGLE_OBJECTIVE_PROMOTION_MODE
+                    and _promote_accepted_checkpoint(
                     event=validation_event,
                     config=config,
                     phase_controller=phase_controller,
@@ -1972,6 +2314,7 @@ def _train_parallel(
                     completed_episodes=completed_episodes,
                     parallel_envs=parallel_envs,
                     validation_row=validation_row,
+                    )
                 ):
                     best_score = score
                     best_validation = validation_row
@@ -2190,20 +2533,54 @@ def _train_parallel(
             raise RuntimeError(
                 "accepted and best checkpoint hashes diverged"
             )
-        # The online agent may have changed after the accepted episode.  The
-        # formal audit must therefore load the immutable accepted artifact.
-        final_checkpoint_evaluation = _reevaluate_checkpoint_with_parallel_runner(
-            config,
-            checkpoint=accepted_checkpoint,
-            bootstrap_observation=bootstrap_observation,
-            dataset_name=validation_split,
-            instance_limit=phase_controller.single_objective_audit_instance_limit,
-            sampling_seeds=[],
-            greedy_only=True,
-            template=template,
-            episode_count=training_base_instance_count(config, episodes),
-            parallel_worker_count=validation_parallel_envs,
-        )
+        if phase_controller.quality_checkpoint_promotion == PARETO_PROMOTION_MODE:
+            verification_agent = PPOAgent(
+                build_actor_critic(bootstrap_observation, config["network"]),
+                config["ppo"],
+                device=config["device"],
+            )
+            verified_metadata = verification_agent.load(
+                accepted_checkpoint, load_optimizer=False
+            )
+            audit_result = verified_metadata.get("pareto_audit_result")
+            if not isinstance(audit_result, dict) or not bool(
+                audit_result.get("accepted", False)
+            ):
+                raise RuntimeError(
+                    "accepted V8 checkpoint does not contain a successful 200x66 audit"
+                )
+            final_checkpoint_evaluation = {
+                "checkpoint": str(accepted_checkpoint),
+                "checkpoint_sha256": checkpoint_sha256,
+                "checkpoint_metadata": verified_metadata,
+                "evaluation_config": {
+                    "dataset": validation_split,
+                    "instance_offset": int(
+                        config["training"]["two_stage"]["pareto_promotion"][
+                            "audit_instance_offset"
+                        ]
+                    ),
+                    "instance_limit": 200,
+                    "preference_count": 66,
+                    "execution_mode": "checkpoint_reloaded_audit",
+                },
+                "pareto_audit_result": audit_result,
+            }
+        else:
+            # Specialists retain the independent single-objective disk audit.
+            final_checkpoint_evaluation = _reevaluate_checkpoint_with_parallel_runner(
+                config,
+                checkpoint=accepted_checkpoint,
+                bootstrap_observation=bootstrap_observation,
+                dataset_name=validation_split,
+                instance_limit=phase_controller.single_objective_audit_instance_limit,
+                instance_offset=phase_controller.single_objective_audit_instance_offset,
+                sampling_seeds=[],
+                greedy_only=True,
+                template=template,
+                episode_count=episodes,
+                parallel_worker_count=validation_parallel_envs,
+            )
         try:
             _assert_single_objective_checkpoint_evaluation(
                 phase_controller,
@@ -2221,6 +2598,14 @@ def _train_parallel(
             write_csv(run_directory / "train_log.csv", rows)
             write_csv(run_directory / "update_log.csv", update_rows)
             write_csv(run_directory / "validation_log.csv", validation_rows)
+            write_csv(
+                run_directory / "pareto_validation_instance_metrics.csv",
+                pareto_validation_instance_rows,
+            )
+            write_csv(
+                run_directory / "pareto_audit_instance_metrics.csv",
+                pareto_audit_instance_rows,
+            )
             write_csv(
                 run_directory / "single_objective_audit_log.csv",
                 single_objective_audit_rows,
@@ -2254,6 +2639,16 @@ def _train_parallel(
     write_csv(run_directory / "train_log.csv", rows)
     write_csv(run_directory / "update_log.csv", update_rows)
     write_csv(run_directory / "validation_log.csv", validation_rows)
+    if pareto_validation_instance_rows:
+        write_csv(
+            run_directory / "pareto_validation_instance_metrics.csv",
+            pareto_validation_instance_rows,
+        )
+    if pareto_audit_instance_rows:
+        write_csv(
+            run_directory / "pareto_audit_instance_metrics.csv",
+            pareto_audit_instance_rows,
+        )
     if single_objective_audit_rows:
         write_csv(
             run_directory / "single_objective_audit_log.csv",
@@ -2377,6 +2772,16 @@ def _train_parallel(
                 ),
                 "accepted_status": phase_controller.formal_training_status,
                 "project_formal_completion_target": 1.0,
+            },
+            "pareto_promotion": {
+                "validation_instance_row_count": len(
+                    pareto_validation_instance_rows
+                ),
+                "audit_instance_row_count": len(pareto_audit_instance_rows),
+                "last_result": phase_controller.last_pareto_promotion,
+                "normalization_manifest_sha256": config[
+                    "objective_scalarizer"
+                ].get("normalization_manifest_sha256"),
             },
             "validation_stability": stability_controller.as_dict(),
             "validation_runs": len(validation_rows),

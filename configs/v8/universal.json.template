@@ -1,0 +1,23 @@
+{
+  "extends": "../default.json",
+  "experiment_name": "v8_universal",
+  "objective_scalarizer": {
+    "scale_source": "frozen_manifest",
+    "normalization_manifest": "result/manifests/v8_normalization.json",
+    "normalization_manifest_sha256": "REPLACE_WITH_FILE_SHA256"
+  },
+  "preference": {
+    "quality": {
+      "mode": "universal_sobol_v1",
+      "block_size": 20,
+      "endpoint_repeats": 2,
+      "sobol_count": 14
+    }
+  },
+  "training": {
+    "validation_interval_episodes": 100,
+    "two_stage": {
+      "quality_checkpoint_promotion": "preference_conditioned_pareto_v8"
+    }
+  }
+}

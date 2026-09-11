@@ -25,8 +25,12 @@ from environment import (
     AssemblySchedulingEnv,
     Observation,
     PolicyObservation,
+    PreferenceContext,
+    PreferenceContextInput,
     RewardVector,
     proxy_return_from_metrics,
+    feasibility_preference_context,
+    quality_preference_for_episode,
 )
 from utils import action_trace_sha256, derive_evaluation_sampling_seed
 
@@ -66,6 +70,7 @@ class _WorkerResetRequest:
     value: int | AssemblyInstance
     drain_physical_forced_actions: bool = False
     max_environment_steps: int | None = None
+    preference: PreferenceContextInput | None = None
 
 
 @dataclass(frozen=True)
@@ -100,12 +105,15 @@ class EpisodeRollout:
     unattributed_forced_reward: float = 0.0
     worker_step_command_count: int = 0
     worker_local_physical_forced_action_count: int = 0
+    policy_diagnostics: dict[str, float | int] = field(default_factory=dict)
 
     @property
     def base_reward_sum(self) -> float:
-        return self.reward_sum - float(
-            self.reward_components.get("feasibility_shaping", 0.0)
-        )
+        if self.reward_phase == "feasibility":
+            return self.reward_sum - float(
+                self.reward_components.get("feasibility_shaping", 0.0)
+            )
+        return self.reward_sum
 
     @property
     def policy_step_count(self) -> int:
@@ -238,11 +246,17 @@ def _aggregate_reward_vectors(
     totals = {
         name: 0.0
         for name in RewardVector.__dataclass_fields__
+        if name != "preference_key"
     }
+    preference_keys = {value.preference_key for value in reward_vectors}
+    if len(preference_keys) != 1:
+        raise RuntimeError("an aggregated transition changed episode preference")
     for reward_vector in reward_vectors:
-        for name, value in reward_vector.as_dict().items():
-            totals[name] += float(value)
-    return RewardVector(**totals)
+        for name in totals:
+            totals[name] += float(getattr(reward_vector, name))
+    return RewardVector(
+        **totals, preference_key=next(iter(preference_keys))
+    )
 
 
 def _worker_roll_forward(
@@ -457,7 +471,9 @@ def _worker_main(
                     episode_index
                 )
                 generation_time = time.perf_counter() - generation_start
-                observation = environment.reset(record.instance)
+                observation = environment.reset(
+                    record.instance, preference=request.preference
+                )
                 metadata = {
                     key: record.metadata.get(key)
                     for key in (
@@ -521,7 +537,9 @@ def _worker_main(
                     raise TypeError(
                         "reset_instance requires an AssemblyInstance"
                     )
-                observation = environment.reset(request.value)
+                observation = environment.reset(
+                    request.value, preference=request.preference
+                )
                 connection.send(
                     _worker_roll_forward(
                         lane_id,
@@ -1004,6 +1022,8 @@ class ParallelEpisodeRunner:
         gae_lambda: float,
         step_limit: int | None = None,
         reward_phase: str | None = None,
+        preferences: Sequence[PreferenceContextInput] | None = None,
+        quality_episode_indices: Sequence[int] | None = None,
     ) -> TrainingRolloutBatch:
         if not episode_indices:
             raise ValueError("episode_indices cannot be empty")
@@ -1046,6 +1066,32 @@ class ParallelEpisodeRunner:
             if reward_phase is None
             else str(reward_phase)
         )
+        if preferences is not None and len(preferences) != len(episode_indices):
+            raise ValueError("preferences must align with episode_indices")
+        if quality_episode_indices is not None and len(quality_episode_indices) != len(episode_indices):
+            raise ValueError("quality_episode_indices must align with episode_indices")
+        if preferences is None:
+            if effective_reward_phase == "feasibility":
+                preferences = [
+                    feasibility_preference_context(self.config)
+                    for _ in episode_indices
+                ]
+            elif effective_reward_phase == "quality":
+                indices = (
+                    list(episode_indices)
+                    if quality_episode_indices is None
+                    else [int(value) for value in quality_episode_indices]
+                )
+                preferences = [
+                    quality_preference_for_episode(
+                        self.config,
+                        algorithm_seed=int(self.config["seed"]),
+                        quality_episode_index=index,
+                    )
+                    for index in indices
+                ]
+            else:
+                preferences = [None for _ in episode_indices]
         sampling_start = time.perf_counter()
         reset_responses = self._exchange(
             {
@@ -1057,6 +1103,7 @@ class ParallelEpisodeRunner:
                             worker_local_physical_forced_actions
                         ),
                         max_environment_steps=step_limit,
+                        preference=preferences[lane_id],
                     ),
                 )
                 for lane_id, episode_index in enumerate(episode_indices)
@@ -1106,12 +1153,31 @@ class ParallelEpisodeRunner:
                     response.local_physical_forced_action_count
                 ),
                 "pending_transition": None,
+                "policy_diagnostic_rows": [],
                 "unattributed_forced_reward": 0.0,
                 "generation_time_seconds": (
                     response.generation_time_seconds
                 ),
                 "environment_step_time_seconds": (
                     response.environment_step_time_seconds
+                ),
+            }
+            context["metadata"] = {
+                **context["metadata"],
+                "preference": response.observation.preference.tolist()
+                if response.observation is not None
+                else (response.metrics or {}).get("preference"),
+                "preference_key": (
+                    response.reward_vector.preference_key
+                    if response.reward_vector is not None
+                    else (response.metrics or {}).get("preference_key")
+                    or (
+                        PreferenceContext.from_input(
+                            response.observation.preference
+                        ).key
+                        if response.observation is not None
+                        else None
+                    )
                 ),
             }
             contexts[lane_id] = context
@@ -1128,8 +1194,10 @@ class ParallelEpisodeRunner:
                 )
                 context["reward_sum"] += scalar_reward
                 context["unattributed_forced_reward"] += scalar_reward
-                for name, value in response.reward_vector.as_dict().items():
-                    context["reward_components"][name] += float(value)
+                for name in context["reward_components"]:
+                    context["reward_components"][name] += float(
+                        getattr(response.reward_vector, name)
+                    )
             elif response.environment_step_count:
                 raise ParallelWorkerError(
                     "reset worker returned steps without rewards"
@@ -1217,6 +1285,9 @@ class ParallelEpisodeRunner:
                     policy_observations,
                     policy_masks,
                 )
+                diagnostic_rows = agent.consume_policy_decision_diagnostics()
+                if diagnostic_rows and len(diagnostic_rows) != len(policy_lanes):
+                    raise RuntimeError("training policy diagnostics do not align with lanes")
                 inference_time += time.perf_counter() - inference_start
                 for local_index, lane in enumerate(policy_lanes):
                     context = contexts[lane]
@@ -1232,6 +1303,14 @@ class ParallelEpisodeRunner:
                         reward=context["unattributed_forced_reward"],
                     )
                     context["unattributed_forced_reward"] = 0.0
+                    if diagnostic_rows:
+                        diagnostic = diagnostic_rows[local_index]
+                        diagnostic["selected_action"] = int(action)
+                        diagnostic["ranker_top_selected"] = bool(
+                            int(action)
+                            == int(diagnostic.get("relative_top_action", -1))
+                        )
+                        context["policy_diagnostic_rows"].append(diagnostic)
             step_responses = self._exchange(
                 {
                     lane: (
@@ -1284,8 +1363,10 @@ class ParallelEpisodeRunner:
                 else:
                     context["unattributed_forced_reward"] += scalar_reward
                 context["reward_sum"] += scalar_reward
-                for name, value in response.reward_vector.as_dict().items():
-                    context["reward_components"][name] += float(value)
+                for name in context["reward_components"]:
+                    context["reward_components"][name] += float(
+                        getattr(response.reward_vector, name)
+                    )
                 context["step_count"] += response.environment_step_count
                 context["forced_action_count"] += (
                     response.local_physical_forced_action_count
@@ -1450,8 +1531,9 @@ class ParallelEpisodeRunner:
             reward_components=dict(context["reward_components"]),
             expected_reward=proxy_return_from_metrics(
                 metrics,
-                self.config["reward"],
+                self.config,
                 context["reward_phase"],
+                preference=metrics.get("preference"),
             ),
             unattributed_forced_reward=context[
                 "unattributed_forced_reward"
@@ -1462,6 +1544,9 @@ class ParallelEpisodeRunner:
             worker_local_physical_forced_action_count=context[
                 "worker_local_physical_forced_action_count"
             ],
+            policy_diagnostics=summarize_policy_decision_diagnostics(
+                context["policy_diagnostic_rows"]
+            ),
         )
         reward_identity_tolerance = 1e-8
         reward_identity_error = (
@@ -1482,6 +1567,7 @@ class ParallelEpisodeRunner:
         max_parallelism: int | None = None,
         deterministic: bool = True,
         sampling_seed: int | None = None,
+        preferences: Sequence[PreferenceContextInput] | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1496,13 +1582,25 @@ class ParallelEpisodeRunner:
             raise ValueError(
                 "sampling_seed is required for sampled fixed evaluation"
             )
+        if preferences is not None and len(preferences) != len(records):
+            raise ValueError("evaluation preferences must align with records")
         results: list[FixedEvaluationRollout] = []
         for start in range(0, len(records), parallelism):
             chunk = records[start : start + parallelism]
             chunk_start = time.perf_counter()
             reset_responses = self._exchange(
                 {
-                    lane_id: ("reset_instance", record.instance)
+                    lane_id: (
+                        "reset_instance",
+                        _WorkerResetRequest(
+                            value=record.instance,
+                            preference=(
+                                None
+                                if preferences is None
+                                else preferences[start + lane_id]
+                            ),
+                        ),
+                    )
                     for lane_id, record in enumerate(chunk)
                 }
             )

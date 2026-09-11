@@ -18,7 +18,12 @@ from agent.ppo.parallel import (
 from configs import load_config
 from data.dataset import OnlineInstanceDataset, load_dataset_split
 from environment import AssemblySchedulingEnv, RewardVector
-from eval import evaluate_dataset, evaluate_dataset_parallel
+from eval import (
+    EvaluationPolicy,
+    evaluate_dataset,
+    evaluate_dataset_parallel,
+    evaluate_instance,
+)
 
 
 def _agent(config, instance):
@@ -484,6 +489,99 @@ def test_parallel_validation_matches_serial_and_preserves_rng(
         assert parallel["truncated_count"] == serial["truncated_count"]
         assert dataset.manifest_path.exists()
     assert all(not process.is_alive() for process in processes)
+
+
+def test_mixed_preference_quality_rollout_uses_episode_contexts(
+    config,
+    fixed_instance,
+):
+    effective_config = deepcopy(config)
+    effective_config["training"]["worker_timeout_seconds"] = 120
+    agent = _agent(effective_config, fixed_instance)
+    with ParallelEpisodeRunner(
+        config=effective_config,
+        template=fixed_instance,
+        episode_count=2,
+        worker_count=2,
+    ) as runner:
+        batch = runner.collect_training_batch(
+            agent,
+            [0, 1],
+            gamma=1.0,
+            gae_lambda=float(effective_config["ppo"]["gae_lambda"]),
+            step_limit=6,
+            reward_phase="quality",
+            quality_episode_indices=[0, 2],
+        )
+    expected = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    assert len(batch.episodes) == 2
+    for episode, preference in zip(batch.episodes, expected, strict=True):
+        assert episode.metadata["preference"] == preference
+        assert episode.metadata["preference_key"]
+        assert episode.reward_sum == pytest.approx(
+            episode.reward_components["quality"], abs=1e-8
+        )
+        assert all(
+            transition.observation.preference.tolist() == preference
+            for transition in episode.buffer.transitions
+        )
+
+
+def test_serial_and_parallel_ppo_preserve_the_same_preference(
+    config,
+    fixed_instance,
+):
+    effective_config = deepcopy(config)
+    effective_config["device"] = "cpu"
+    effective_config["environment"]["max_decisions"] = 50
+    effective_config["training"]["worker_timeout_seconds"] = 120
+    agent = _agent(effective_config, fixed_instance)
+    agent.network.eval()
+    record = load_dataset_split(effective_config, "validation")[0]
+    preference = (7.0, 2.0, 1.0)
+    with ParallelEpisodeRunner(
+        config=effective_config,
+        template=fixed_instance,
+        episode_count=1,
+        worker_count=1,
+    ) as runner:
+        parallel = runner.evaluate_records(
+            agent,
+            [record],
+            max_parallelism=1,
+            deterministic=True,
+            preferences=[preference],
+        )[0]
+    prepared = EvaluationPolicy(
+        effective_config,
+        policy_name="ppo",
+        bootstrap_observation=AssemblySchedulingEnv(effective_config).reset(
+            record.instance, preference=preference
+        ),
+        ppo_agent=agent,
+    )
+    _, serial = evaluate_instance(
+        effective_config,
+        instance=record.instance,
+        policy_name="ppo",
+        prepared_policy=prepared,
+        preference=preference,
+    )
+    assert parallel.action_trace_sha256 == serial["action_trace_sha256"]
+    assert parallel.metrics["preference"] == serial["preference"] == {
+        "flow": 0.7,
+        "cost": 0.2,
+        "variance": pytest.approx(0.1),
+    }
+    assert parallel.metrics["preference_key"] == serial["preference_key"]
+    for field in (
+        "terminated",
+        "truncated",
+        "flow_time_objective",
+        "reconfiguration_cost",
+        "worker_load_variance",
+    ):
+        assert parallel.metrics[field] == pytest.approx(serial[field])
 
 
 def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(

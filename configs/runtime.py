@@ -5,20 +5,19 @@ from typing import Any, Mapping
 
 
 _RUNTIME_MANIFEST: dict[str, Any] = {
-    "core_profile": "e1_latest",
+    "core_profile": "v8_preference_conditioned_multiobjective",
     "production_action": "pair_plus_wait_v1",
     "worker_action": "pair_plus_wait_v1",
-    "policy_head": 7,
-    "candidate_ranker": "bounded_ranker_scale_v7",
+    "policy_head": 8,
+    "candidate_ranker": "simplex_softplus_objective_experts_v8",
     "worker_feasibility": "instant_physical_pair_mask_v1",
     "wait_mask": "progress_certified_wait_v2",
-    "observation_schema": 4,
-    "training_protocol": "v7_e1_single_objective_protocol_v5",
+    "observation_schema": 5,
+    "training_protocol": "v8_preference_conditioned_pareto_v1",
 }
 
 _REMOVED_NETWORK_FIELDS = frozenset(
     {
-        "policy_head_version",
         "encoder_type",
         "production_action_edge_features",
         "worker_action_edge_features",
@@ -61,6 +60,8 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
             "latest-only configuration cannot select network implementations: "
             + ", ".join(removed)
         )
+    if int(network.get("policy_head_version", 8)) != 8:
+        raise ValueError("latest-only runtime accepts only policy_head_version=8")
     environment = config.get("environment", {})
     if not isinstance(environment, Mapping):
         raise TypeError("environment config must be a mapping")

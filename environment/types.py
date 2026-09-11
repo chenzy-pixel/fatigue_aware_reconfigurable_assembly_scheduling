@@ -5,7 +5,12 @@ from enum import Enum
 
 import numpy as np
 
-from .preference import PreferenceInput, normalize_preference
+from .preference import (
+    CANONICAL_PREFERENCE,
+    PREFERENCE_NAMES,
+    PreferenceInput,
+    normalize_preference,
+)
 
 
 EdgeType = tuple[str, str, str]
@@ -112,11 +117,13 @@ class RewardVector:
     truncation: float = 0.0
     unfinished: float = 0.0
     feasibility_shaping: float = 0.0
+    preference_key: str | None = None
 
     def scalarize(self, config: dict, phase: str | None = None) -> float:
         base = self.base_scalarize(config, phase)
         mode = str(config.get("mode", "legacy_weighted_sum"))
-        if mode == "hierarchical_constrained_v1":
+        effective_phase = "feasibility" if phase is None else str(phase)
+        if mode == "hierarchical_constrained_v1" and effective_phase == "feasibility":
             return base + self.feasibility_shaping
         return base
 
@@ -142,10 +149,9 @@ class RewardVector:
             if effective_phase == "feasibility":
                 return base
             if effective_phase == "quality":
-                budget = float(config["quality_budget"])
-                if not 0.0 <= budget < 1.0:
-                    raise ValueError("quality_budget must be in [0, 1)")
-                return base + budget * self.quality
+                # V8 quality optimization is exactly the preference-conditioned
+                # telescoping objective. Feasibility terms remain gates only.
+                return self.quality
             raise ValueError(f"unknown hierarchical reward phase {effective_phase!r}")
         if mode != "legacy_weighted_sum":
             raise ValueError(f"unknown reward mode {mode!r}")
@@ -157,7 +163,7 @@ class RewardVector:
             / config["variance_scale"]
         )
 
-    def as_dict(self) -> dict[str, float]:
+    def as_dict(self) -> dict[str, float | str]:
         result = {
             "flow": self.flow,
             "cost": self.cost,
@@ -169,7 +175,55 @@ class RewardVector:
             "unfinished": self.unfinished,
             "feasibility_shaping": self.feasibility_shaping,
         }
+        if self.preference_key is not None:
+            result["preference_key"] = self.preference_key
         return result
+
+
+def objective_scalarizer_config(config: dict) -> dict:
+    """Return one validated scalarizer definition from a full or local config."""
+
+    raw = config.get("objective_scalarizer", config)
+    if not isinstance(raw, dict):
+        raise TypeError("objective_scalarizer must be an object")
+    scales_value = raw.get("scales")
+    if scales_value is None:
+        scales = {
+            name: float(raw[f"{name}_scale"])
+            for name in PREFERENCE_NAMES
+        }
+    else:
+        if not isinstance(scales_value, dict):
+            raise TypeError("objective_scalarizer.scales must be an object")
+        if set(scales_value) != set(PREFERENCE_NAMES):
+            raise ValueError(
+                "objective_scalarizer.scales must contain flow/cost/variance"
+            )
+        scales = {
+            name: float(scales_value[name]) for name in PREFERENCE_NAMES
+        }
+    if any(not np.isfinite(value) or value <= 0.0 for value in scales.values()):
+        raise ValueError("objective scalarizer scales must be finite and positive")
+    default_kind = (
+        "normalized_augmented_tchebycheff_v1"
+        if str(raw.get("mode", "")) == "hierarchical_constrained_v1"
+        else "legacy_bounded_weighted_sum_v1"
+    )
+    kind = str(raw.get("type", default_kind))
+    rho = float(raw.get("rho", 0.05))
+    if kind == "normalized_augmented_tchebycheff_v1":
+        if not np.isfinite(rho) or rho < 0.0:
+            raise ValueError("objective_scalarizer.rho must be finite and non-negative")
+    return {"type": kind, "scales": scales, "rho": rho}
+
+
+def reward_config(config: dict) -> dict:
+    """Return the reward subsection from a full or reward-local config."""
+
+    raw = config.get("reward", config)
+    if not isinstance(raw, dict):
+        raise TypeError("reward must be an object")
+    return raw
 
 
 def bounded_quality_score(
@@ -180,33 +234,30 @@ def bounded_quality_score(
     *,
     preference: PreferenceInput | None = None,
 ) -> float:
-    """Return the bounded weighted quality proxy in [0, 1)."""
+    """Return the configured normalized scalar objective (smaller is better)."""
     values = {
         "flow": float(flow),
         "cost": float(cost),
         "variance": float(variance),
     }
+    scalarizer = objective_scalarizer_config(config)
     weights = (
         normalize_preference(preference).as_dict()
         if preference is not None
-        else config.get(
-            "quality_weights",
-            {
-                "flow": float(config.get("flow_weight", 1.0)),
-                "cost": float(config.get("cost_weight", 1.0)),
-                "variance": float(config.get("variance_weight", 1.0)),
-            },
-        )
+        else normalize_preference(
+            config.get(
+                "quality_weights",
+                config.get("preference", {})
+                .get("quality", {})
+                .get("fixed", CANONICAL_PREFERENCE),
+            )
+        ).as_dict()
     )
-    scales = {
-        "flow": float(config["flow_scale"]),
-        "cost": float(config["cost_scale"]),
-        "variance": float(config["variance_scale"]),
-    }
+    scales = scalarizer["scales"]
     weight_sum = sum(float(weights[name]) for name in values)
     if weight_sum <= 0.0:
         raise ValueError("quality weights must have a positive sum")
-    score = 0.0
+    normalized: dict[str, float] = {}
     for name, value in values.items():
         weight = float(weights[name])
         scale = scales[name]
@@ -216,8 +267,19 @@ def bounded_quality_score(
             raise ValueError(f"{name} quality weight cannot be negative")
         if scale <= 0.0:
             raise ValueError(f"{name} quality scale must be positive")
-        score += weight * value / (scale + value)
-    return score / weight_sum
+        normalized[name] = value / (scale + value)
+    if scalarizer["type"] == "normalized_augmented_tchebycheff_v1":
+        rho = float(scalarizer["rho"])
+        weighted = [
+            float(weights[name]) * normalized[name]
+            for name in PREFERENCE_NAMES
+        ]
+        return (max(weighted) + rho * sum(weighted)) / (1.0 + rho)
+    if scalarizer["type"] != "legacy_bounded_weighted_sum_v1":
+        raise ValueError(f"unknown objective scalarizer {scalarizer['type']!r}")
+    return sum(
+        float(weights[name]) * normalized[name] for name in PREFERENCE_NAMES
+    ) / weight_sum
 
 
 def proxy_return_from_metrics(
@@ -228,18 +290,19 @@ def proxy_return_from_metrics(
     preference: PreferenceInput | None = None,
 ) -> float:
     """Recompute the trajectory proxy return from terminal metrics."""
-    mode = str(config.get("mode", "legacy_weighted_sum"))
+    reward = reward_config(config)
+    mode = str(reward.get("mode", "legacy_weighted_sum"))
     if mode == "legacy_weighted_sum":
         return -(
-            float(config["flow_weight"])
+            float(reward["flow_weight"])
             * float(metrics["flow_time_objective"])
-            / float(config["flow_scale"])
-            + float(config["cost_weight"])
+            / float(reward["flow_scale"])
+            + float(reward["cost_weight"])
             * float(metrics["reconfiguration_cost"])
-            / float(config["cost_scale"])
-            + float(config["variance_weight"])
+            / float(reward["cost_scale"])
+            + float(reward["variance_weight"])
             * float(metrics["worker_load_variance"])
-            / float(config["variance_scale"])
+            / float(reward["variance_scale"])
         )
     if mode != "hierarchical_constrained_v1":
         raise ValueError(f"unknown reward mode {mode!r}")
@@ -256,15 +319,37 @@ def proxy_return_from_metrics(
         if bool(metrics["truncated"])
         else 0.0
     )
-    truncation_weight = float(config.get("truncation_penalty", 0.0))
+    truncation_weight = float(reward.get("truncation_penalty", 0.0))
     unfinished_weight = float(
-        config.get("unfinished_order_penalty", 0.0)
+        reward.get("unfinished_order_penalty", 0.0)
     )
     if truncation_weight < 0.0 or unfinished_weight < 0.0:
         raise ValueError(
             "hierarchical terminal penalty weights must be non-negative"
         )
     effective_phase = "feasibility" if phase is None else str(phase)
+    if effective_phase == "quality":
+        initial = metrics.get(
+            "initial_objectives",
+            {"flow": 0.0, "cost": 0.0, "variance": 0.0},
+        )
+        if not isinstance(initial, dict):
+            raise TypeError("metrics.initial_objectives must be an object")
+        initial_score = bounded_quality_score(
+            float(initial.get("flow", 0.0)),
+            float(initial.get("cost", 0.0)),
+            float(initial.get("variance", 0.0)),
+            config,
+            preference=preference,
+        )
+        terminal_score = bounded_quality_score(
+            float(metrics["flow_time_objective"]),
+            float(metrics["reconfiguration_cost"]),
+            float(metrics["worker_load_variance"]),
+            config,
+            preference=preference,
+        )
+        return initial_score - terminal_score
     result = (
         completion_progress
         + completion_bonus
@@ -273,19 +358,7 @@ def proxy_return_from_metrics(
     )
     if effective_phase == "feasibility":
         return result
-    if effective_phase != "quality":
-        raise ValueError(f"unknown hierarchical reward phase {effective_phase!r}")
-    quality = bounded_quality_score(
-        float(metrics["flow_time_objective"]),
-        float(metrics["reconfiguration_cost"]),
-        float(metrics["worker_load_variance"]),
-        config,
-        preference=preference,
-    )
-    budget = float(config["quality_budget"])
-    if not 0.0 <= budget < 1.0:
-        raise ValueError("quality_budget must be in [0, 1)")
-    return result - budget * quality
+    raise ValueError(f"unknown hierarchical reward phase {effective_phase!r}")
 
 
 @dataclass(frozen=True)
@@ -334,6 +407,9 @@ class HeterogeneousGraphObservation:
     node_features: dict[str, np.ndarray]
     global_features: np.ndarray
     decision_type: DecisionType
+    preference: np.ndarray = field(
+        default_factory=lambda: np.asarray(CANONICAL_PREFERENCE, dtype=np.float32)
+    )
     node_feature_names: dict[str, tuple[str, ...]] = field(default_factory=dict)
     global_feature_names: tuple[str, ...] = field(default_factory=tuple)
     node_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -353,6 +429,11 @@ class HeterogeneousGraphObservation:
             self,
             "global_features",
             np.asarray(self.global_features, dtype=np.float32),
+        )
+        object.__setattr__(
+            self,
+            "preference",
+            normalize_preference(self.preference).as_array(),
         )
         object.__setattr__(
             self,
@@ -405,6 +486,7 @@ class HeterogeneousGraphObservation:
             },
             global_features=self.global_features.copy(),
             decision_type=self.decision_type,
+            preference=self.preference.copy(),
             node_feature_names={
                 node_type: tuple(names)
                 for node_type, names in self.node_feature_names.items()
@@ -442,6 +524,8 @@ class HeterogeneousGraphObservation:
         node_features = self.node_features
         if self.global_features.ndim != 1:
             raise ValueError("global features must have shape (F,)")
+        if self.preference.shape != (3,) or not np.all(np.isfinite(self.preference)):
+            raise ValueError("preference must have shape (3,) with finite values")
         if self.action_set_features.ndim != 1:
             raise ValueError("action-set features must have shape (F,)")
         if len(self.action_set_feature_names) != self.action_set_features.shape[0]:
@@ -524,7 +608,34 @@ class PolicyObservation:
     workers: np.ndarray
     global_features: np.ndarray
     decision_type: DecisionType
+    preference: np.ndarray = field(
+        default_factory=lambda: np.asarray(CANONICAL_PREFERENCE, dtype=np.float32)
+    )
     global_feature_names: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "operations", np.asarray(self.operations, dtype=np.float32)
+        )
+        object.__setattr__(
+            self, "machines", np.asarray(self.machines, dtype=np.float32)
+        )
+        object.__setattr__(
+            self, "workers", np.asarray(self.workers, dtype=np.float32)
+        )
+        object.__setattr__(
+            self,
+            "global_features",
+            np.asarray(self.global_features, dtype=np.float32),
+        )
+        object.__setattr__(
+            self,
+            "preference",
+            normalize_preference(self.preference).as_array(),
+        )
+        object.__setattr__(
+            self, "global_feature_names", tuple(self.global_feature_names)
+        )
 
     @classmethod
     def from_observation(
@@ -539,6 +650,7 @@ class PolicyObservation:
             workers=observation.workers.copy(),
             global_features=observation.global_features.copy(),
             decision_type=observation.decision_type,
+            preference=observation.preference.copy(),
             global_feature_names=tuple(observation.global_feature_names),
         )
 
@@ -549,6 +661,7 @@ class PolicyObservation:
             workers=self.workers.copy(),
             global_features=self.global_features.copy(),
             decision_type=self.decision_type,
+            preference=self.preference.copy(),
             global_feature_names=tuple(self.global_feature_names),
         )
 

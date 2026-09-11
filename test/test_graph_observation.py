@@ -164,6 +164,7 @@ def test_graph_observation_static_contract(config, fixed_instance):
         "fixed_installation_cost_norm",
         "estimated_labor_cost_norm",
         "estimated_downtime_cost_norm",
+        "estimated_worker_load_variance_delta_norm",
     )
     assert np.all(capability.edge_features[:, [0, 2, 3, 4]] >= 0.0)
     assert np.all(capability.edge_features[:, [0, 2, 3, 4]] <= 2.0)
@@ -171,6 +172,7 @@ def test_graph_observation_static_contract(config, fixed_instance):
     assert np.all(capability.edge_features[:, [5, 6, 7]] <= 1.0)
     assert np.all(capability.edge_features[:, 8] >= -1.0)
     assert np.all(capability.edge_features[:, 8] <= 1.0)
+    assert np.all(np.isfinite(capability.edge_features[:, 14]))
 
     repeated = environment.observe()
     assert np.array_equal(

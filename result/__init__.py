@@ -25,6 +25,11 @@ from .provenance import (
     source_state_snapshot,
 )
 from .terminal_log import capture_terminal_output
+from .v8_promotion import (
+    BootstrapInterval,
+    compare_preference_conditioned_checkpoints,
+    paired_instance_block_bootstrap,
+)
 from .visdom_dashboard import (
     TrainingDashboard,
     create_training_dashboard,
@@ -55,4 +60,7 @@ __all__ = [
     "provenance_with_network_weights",
     "source_state_snapshot",
     "capture_terminal_output",
+    "BootstrapInterval",
+    "compare_preference_conditioned_checkpoints",
+    "paired_instance_block_bootstrap",
 ]

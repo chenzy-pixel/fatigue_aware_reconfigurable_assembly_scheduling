@@ -21,9 +21,12 @@ from environment.state import (
     WorkerRuntime,
 )
 from environment.preference import (
+    PreferenceContext,
+    PreferenceContextInput,
     PreferenceInput,
     PreferenceVector,
     default_preference,
+    default_preference_context,
     normalize_preference,
 )
 from environment.types import (
@@ -51,6 +54,7 @@ from environment.types import (
     RewardVector,
     WorkerState,
     bounded_quality_score,
+    objective_scalarizer_config,
 )
 
 
@@ -107,7 +111,9 @@ class AssemblySchedulingEnv:
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
-        self.preference: PreferenceVector = default_preference(config)
+        self.preference_context = default_preference_context(config)
+        # Compatibility alias retained for archived analysis code.
+        self.preference: PreferenceVector = self.preference_context.preference
         self.instance: AssemblyInstance | None = None
         self.current_tick = 0
         self.horizon_tick = 0
@@ -188,6 +194,7 @@ class AssemblySchedulingEnv:
         self._observation_cache_version = -1
         self._observation_cache: Observation | None = None
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
+        self._initial_objectives = (0.0, 0.0, 0.0)
         self._order_released: dict[str, bool] = {}
         self._order_completion_tick: dict[str, int] = {}
         self.schedule_log: list[dict[str, Any]] = []
@@ -243,14 +250,15 @@ class AssemblySchedulingEnv:
         self,
         instance: AssemblyInstance,
         *,
-        preference: PreferenceInput | None = None,
+        preference: PreferenceContextInput | None = None,
         build_observation: bool = True,
     ) -> Observation | None:
-        self.preference = (
-            default_preference(self.config)
+        self.preference_context = (
+            default_preference_context(self.config)
             if preference is None
-            else normalize_preference(preference)
+            else PreferenceContext.from_input(preference)
         )
+        self.preference = self.preference_context.preference
         self.instance = instance
         self.current_tick = 0
         self.horizon_tick = quantize_to_ticks(instance.horizon, instance.resolution)
@@ -338,6 +346,7 @@ class AssemblySchedulingEnv:
             )
         self._process_events_at_current_tick()
         self._resolve_terminal_or_deadlock()
+        self._initial_objectives = self._objective_vector()
         # ``build_observation=False`` is used by callers that intentionally
         # defer graph/resource feature construction until the first explicit
         # ``observe()`` call.  Deadlock resolution must still inspect the
@@ -358,9 +367,9 @@ class AssemblySchedulingEnv:
         total_operations = max(1, len(self.operations))
         total_machines = max(1, len(self.machines))
         total_orders = max(1, len(self.instance.orders))
-        reward_config = self.config["reward"]
-        cost_scale = float(reward_config["cost_scale"])
-        variance_scale = float(reward_config["variance_scale"])
+        scalarizer = objective_scalarizer_config(self.config)
+        cost_scale = float(scalarizer["scales"]["cost"])
+        variance_scale = float(scalarizer["scales"]["variance"])
         safe_fatigue = float(self.instance.fatigue.maximum_safe_fatigue)
         module_values = (self.instance.no_module_state, *self.instance.modules)
         operation_states = tuple(OperationState)
@@ -734,6 +743,7 @@ class AssemblySchedulingEnv:
             },
             global_features=global_features,
             decision_type=self.decision_type,
+            preference=self.preference_context.as_array(),
             node_feature_names={
                 "operation": operation_feature_names,
                 "machine": machine_feature_names,
@@ -989,6 +999,7 @@ class AssemblySchedulingEnv:
             "fixed_installation_cost_norm",
             "estimated_labor_cost_norm",
             "estimated_downtime_cost_norm",
+            "estimated_worker_load_variance_delta_norm",
         )
         if edge_count == 0:
             return EdgeStore(
@@ -1013,6 +1024,7 @@ class AssemblySchedulingEnv:
         fixed_installation = np.zeros(group_count, dtype=np.float64)
         labor_cost = np.zeros(group_count, dtype=np.float64)
         downtime_cost = np.zeros(group_count, dtype=np.float64)
+        load_variance_delta = np.zeros(group_count, dtype=np.float64)
 
         for group_id_value in self._capability_unique_group_ids:
             group_id = int(group_id_value)
@@ -1073,6 +1085,11 @@ class AssemblySchedulingEnv:
                     machine, target_module
                 )
             )
+            load_variance_delta[group_id] = (
+                self._estimate_candidate_load_variance_delta(
+                    machine_index, target_module
+                )
+            )
 
         group_ids = self._capability_group_ids
         operation_indices = self._capability_operation_indices
@@ -1101,7 +1118,9 @@ class AssemblySchedulingEnv:
         horizon_slack = self.horizon_tick - predicted_finish
         worker_count = max(1, len(self.workers))
         horizon_tick = max(1, self.horizon_tick)
-        cost_scale = float(self.config["reward"]["cost_scale"])
+        cost_scale = float(
+            objective_scalarizer_config(self.config)["scales"]["cost"]
+        )
         features = np.empty((edge_count, len(feature_names)), dtype=np.float32)
         features[:, 0] = np.clip(
             self._capability_processing_ticks / horizon_tick, 0.0, 2.0
@@ -1123,6 +1142,10 @@ class AssemblySchedulingEnv:
         features[:, 11] = fixed_installation[group_ids] / cost_scale
         features[:, 12] = labor_cost[group_ids] / cost_scale
         features[:, 13] = downtime_cost[group_ids] / cost_scale
+        variance_scale = float(
+            objective_scalarizer_config(self.config)["scales"]["variance"]
+        )
+        features[:, 14] = load_variance_delta[group_ids] / variance_scale
         return EdgeStore(
             edge_index=edge_index.copy(),
             edge_features=features,
@@ -1132,7 +1155,9 @@ class AssemblySchedulingEnv:
 
     def _build_graph_relations(self) -> dict[EdgeType, EdgeStore]:
         self._require_instance()
-        cost_scale = float(self.config["reward"]["cost_scale"])
+        cost_scale = float(
+            objective_scalarizer_config(self.config)["scales"]["cost"]
+        )
         precedence = self._static_relations[PRECEDES_EDGE].copy()
         capability = self._build_capability_relation()
 
@@ -1246,7 +1271,9 @@ class AssemblySchedulingEnv:
 
         service_pairs: list[tuple[int, int]] = []
         service_features: list[list[float]] = []
-        variance_scale = float(self.config["reward"]["variance_scale"])
+        variance_scale = float(
+            objective_scalarizer_config(self.config)["scales"]["variance"]
+        )
         safe_fatigue = float(self.instance.fatigue.maximum_safe_fatigue)
         current_load_variance = self._committed_load_variance()
         remaining_workload_by_module = {
@@ -1363,7 +1390,117 @@ class AssemblySchedulingEnv:
         relations: dict[EdgeType, EdgeStore],
     ) -> tuple[np.ndarray, tuple[str, ...]]:
         del relations
-        return np.empty((0,), dtype=np.float32), ()
+        certificate = self._wait_certificate()
+        wait_ticks = int(certificate.get("wait_ticks", 0))
+        wait_minutes = ticks_to_minutes(wait_ticks, self.resolution)
+        scalarizer = objective_scalarizer_config(self.config)
+        active_orders = [
+            order
+            for order in self.instance.orders
+            if self._order_released[order.id]
+            and order.id not in self._order_completion_tick
+        ]
+        active_ids = {order.id for order in active_orders}
+        active_workload = sum(
+            operation.spec.base_processing_time
+            for operation in self.operations
+            if operation.spec.order_id in active_ids
+            and operation.state != OperationState.DONE
+        )
+        next_tick = certificate.get("next_tick")
+        next_events = (
+            [event for event in self._events if event[0] == int(next_tick)]
+            if next_tick is not None
+            else []
+        )
+        new_ready = sum(event[3] == EventType.PROCESS_COMPLETE for event in next_events)
+        released_machines = sum(
+            event[3]
+            in {EventType.PROCESS_COMPLETE, EventType.DIS_COMPLETE, EventType.INS_COMPLETE}
+            for event in next_events
+        )
+        recovering = sum(
+            worker.state == WorkerState.IDLE and worker.fatigue > EPSILON
+            for worker in self.workers
+        )
+        recovery_gain = (
+            self.instance.fatigue.idle_recovery_rate_per_minute
+            * wait_minutes
+            * recovering
+            / max(1, len(self.workers))
+        )
+        future_release_ticks = [
+            event[0]
+            for event in self._events
+            if event[3] == EventType.ORDER_RELEASE and event[0] > self.current_tick
+        ]
+        future_release_delta = (
+            (min(future_release_ticks) - self.current_tick) / max(1, self.horizon_tick)
+            if future_release_ticks
+            else 1.0
+        )
+        reusable = sum(
+            operation.state == OperationState.READY
+            and any(
+                machine.state == MachineState.IDLE
+                and machine.current_module == operation.spec.required_module
+                for machine in self.machines
+            )
+            for operation in self.operations
+        )
+        downtime_states = {
+            MachineState.WAIT_DIS,
+            MachineState.DIS,
+            MachineState.WAIT_INS,
+            MachineState.INS,
+        }
+        flow_delta = len(active_orders) * wait_minutes
+        cost_delta = wait_minutes * (
+            sum(
+                machine.spec.downtime_cost_per_minute
+                for machine in self.machines
+                if machine.state in downtime_states
+            )
+            + sum(
+                worker.spec.labor_cost_per_minute
+                for worker in self.workers
+                if worker.state in {WorkerState.DIS, WorkerState.INS}
+            )
+        )
+        names = (
+            "estimated_flow_objective_delta_if_wait",
+            "estimated_cost_objective_delta_if_wait",
+            "estimated_load_variance_delta_if_wait",
+            "wait_duration_norm",
+            "next_event_delta_norm",
+            "active_order_ratio",
+            "active_order_workload_norm",
+            "new_ready_operation_ratio",
+            "released_machine_ratio",
+            "recovering_worker_ratio",
+            "worker_recovery_gain",
+            "future_wave_release_delta_norm",
+            "configuration_reuse_gain",
+        )
+        values = np.asarray(
+            [
+                flow_delta / scalarizer["scales"]["flow"],
+                cost_delta / scalarizer["scales"]["cost"],
+                0.0,
+                wait_ticks / max(1, self.horizon_tick),
+                wait_ticks / max(1, self.horizon_tick),
+                len(active_orders) / max(1, len(self.instance.orders)),
+                active_workload / max(EPSILON, self.instance.horizon),
+                new_ready / max(1, len(self.operations)),
+                released_machines / max(1, len(self.machines)),
+                recovering / max(1, len(self.workers)),
+                recovery_gain,
+                future_release_delta,
+                reusable / max(1, len(self.operations)),
+            ],
+            dtype=np.float32,
+        )
+        return values, names
 
     def _build_locked_edges(self) -> EdgeStore:
         self._require_instance()
@@ -1747,7 +1884,7 @@ class AssemblySchedulingEnv:
         potential_before = self.feasibility_potential()
         quality_before = bounded_quality_score(
             *before,
-            self.config["reward"],
+            self.config,
             preference=self.preference,
         )
         phase = self.decision_type
@@ -1802,7 +1939,7 @@ class AssemblySchedulingEnv:
         completed_orders_after = len(self._order_completion_tick)
         quality_after = bounded_quality_score(
             *after,
-            self.config["reward"],
+            self.config,
             preference=self.preference,
         )
         shaping_config = self.config["reward"].get(
@@ -1838,6 +1975,7 @@ class AssemblySchedulingEnv:
                 else 0.0
             ),
             feasibility_shaping=feasibility_shaping,
+            preference_key=self.preference_context.key,
         )
         if phase == DecisionType.WORKER and not is_wait_action:
             self._worker_assignment_count += 1
@@ -1865,6 +2003,7 @@ class AssemblySchedulingEnv:
             ),
             "wait_certificate": wait_certificate or None,
             "terminal_reason": self.terminal_reason,
+            "preference_key": self.preference_context.key,
         }
         observation = self.observe() if build_observation else None
         return observation, reward, self.terminated, self.truncated, info
@@ -1977,6 +2116,61 @@ class AssemblySchedulingEnv:
             labor_cost,
             downtime_minutes * machine.spec.downtime_cost_per_minute,
         )
+
+    def _estimate_candidate_load_variance_delta(
+        self,
+        machine_index: int,
+        target_module: str,
+    ) -> float:
+        """Minimum safe committed-load variance increment for a reconfiguration."""
+
+        machine = self.machines[machine_index]
+        if machine.current_module == target_module:
+            return 0.0
+        current = self._committed_load_variance()
+        disassembly = [
+            (worker_index, projection)
+            for worker_index in range(len(self.workers))
+            if (
+                projection := self._earliest_safe_stage_projection(
+                    machine_index,
+                    worker_index,
+                    machine.current_module,
+                    installation=False,
+                    earliest_tick=self.current_tick,
+                )
+            )
+            is not None
+        ]
+        candidates: list[float] = []
+        for disassembly_worker, (start, duration_ticks) in disassembly:
+            disassembly_end = start + duration_ticks
+            installation = [
+                (worker_index, projection)
+                for worker_index in range(len(self.workers))
+                if (
+                    projection := self._earliest_safe_stage_projection(
+                        machine_index,
+                        worker_index,
+                        target_module,
+                        installation=True,
+                        earliest_tick=disassembly_end,
+                    )
+                )
+                is not None
+            ]
+            for installation_worker, (_, installation_ticks) in installation:
+                loads = self._committed_worker_loads.copy()
+                loads[disassembly_worker] += ticks_to_minutes(
+                    duration_ticks, self.resolution
+                )
+                loads[installation_worker] += ticks_to_minutes(
+                    installation_ticks, self.resolution
+                )
+                candidates.append(float(np.var(loads)) - current)
+        # An unavailable reconstruction is already masked by the shared
+        # feasibility projection. A neutral feature is safest for diagnostics.
+        return min(candidates, default=0.0)
 
     def _machine_committed_release(
         self, machine_index: int
@@ -2312,20 +2506,27 @@ class AssemblySchedulingEnv:
                 "cost": float(self._cumulative_reward[1]),
                 "variance": float(self._cumulative_reward[2]),
             },
+            "initial_objectives": {
+                "flow": float(self._initial_objectives[0]),
+                "cost": float(self._initial_objectives[1]),
+                "variance": float(self._initial_objectives[2]),
+            },
             "quality_score": bounded_quality_score(
                 self._flow_integral + self._flow_penalty,
                 self._reconfiguration_cost,
                 self._load_variance(),
-                self.config["reward"],
+                self.config,
             ),
             "preference_quality_score": bounded_quality_score(
                 self._flow_integral + self._flow_penalty,
                 self._reconfiguration_cost,
                 self._load_variance(),
-                self.config["reward"],
+                self.config,
                 preference=self.preference,
             ),
             "preference": self.preference.as_dict(),
+            "preference_context": self.preference_context.as_dict(),
+            "preference_key": self.preference_context.key,
         }
 
     def validate_schedule(self) -> list[str]:
