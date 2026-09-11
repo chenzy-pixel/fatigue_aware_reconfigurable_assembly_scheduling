@@ -9,12 +9,13 @@ from data.dataset import load_dataset_split, split_seed_range
 def test_published_development_split_contract(config, split):
     dataset = load_dataset_split(config, split)
     start, _ = split_seed_range(config, split)
-    assert len(dataset) == 20
+    expected_count = 500 if split == "validation" else 20
+    assert len(dataset) == expected_count
     records = list(dataset)
     assert [record.metadata["seed"] for record in records] == list(
-        range(start, start + 20)
+        range(start, start + expected_count)
     )
-    assert len({record.instance.instance_id for record in records}) == 20
+    assert len({record.instance.instance_id for record in records}) == expected_count
     assert dataset.manifest["schema_version"] == "1.2.0"
     assert dataset.manifest["generator_version"] == "1.3.0"
     assert dataset.manifest["template_instance"] == "fixed_15x4_v1"
