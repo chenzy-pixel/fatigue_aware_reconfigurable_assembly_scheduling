@@ -5,7 +5,6 @@ import hashlib
 import json
 import math
 import os
-import shlex
 import shutil
 import sys
 import time
@@ -47,12 +46,14 @@ from eval import (
 from result import (
     EVALUATION_SCHEMA_VERSION,
     CURRENT_RUNTIME_DIAGNOSTIC_FIELDS,
+    TrainingConsoleReporter,
     aggregate_evaluation_rows,
     build_provenance,
     create_run_directory,
     evaluation_selection_key,
     capture_terminal_output,
     compare_preference_conditioned_checkpoints,
+    report_training_failure,
 )
 from result.io import write_config, write_csv, write_json
 from result.visdom_dashboard import (
@@ -812,6 +813,25 @@ def _single_objective_guard_score(
         0.0,
         0.0,
     )
+
+
+def _console_validation_status(
+    *,
+    reward_phase: str,
+    event: str,
+    feasibility_improved: bool = False,
+) -> str:
+    if reward_phase == "feasibility":
+        if event == "transition":
+            return "phase_transition"
+        return "feasibility_best" if feasibility_improved else "feasibility"
+    return {
+        "audit_required": "candidate",
+        "accepted": "ACCEPTED",
+        "rejected": "REJECTED",
+        "audit_rejected": "REJECTED",
+        "audit_passed_not_accepted": "PASSED_NOT_BETTER",
+    }.get(event, event)
 
 
 def _checkpoint_sha256(path: str | Path) -> str:
@@ -1590,6 +1610,7 @@ def _train_parallel(
     validation_parallel_envs: int,
     initial_checkpoint: str | Path | None = None,
 ) -> Path:
+    training_started_at = time.perf_counter()
     template = load_instance_yaml(
         project_path(config["paths"]["fixed_instance"])
     )
@@ -1670,6 +1691,15 @@ def _train_parallel(
     pareto_incumbent_checkpoint: Path | None = None
     phase_controller = TrainingPhaseController.from_config(config)
     stability_controller = ValidationStabilityController.from_config(config)
+    console = TrainingConsoleReporter(
+        config=config,
+        total_episodes=episodes,
+        parallel_envs=parallel_envs,
+        validation_instance_limit=validation_limit,
+        objective_name=phase_controller.single_objective_name,
+        started_at=training_started_at,
+    )
+    console.start_run()
     total_transitions = 0
     total_environment_steps = 0
     total_forced_actions = 0
@@ -1872,6 +1902,26 @@ def _train_parallel(
                     **losses,
                 }
                 rows.append(row)
+            batch_rows = rows[-len(rollout.episodes) :]
+            console.training_update(
+                update_row,
+                batch_rows,
+                primary_value=(
+                    _mean_finite(
+                        [
+                            {
+                                "preference_quality_score": episode.metrics.get(
+                                    "preference_quality_score"
+                                )
+                            }
+                            for episode in rollout.episodes
+                        ],
+                        "preference_quality_score",
+                    )
+                    if phase_controller.single_objective_name is None
+                    else None
+                ),
+            )
             completed_episodes = episode_indices[-1] + 1
             regular_validation_due = (
                 (
@@ -1994,6 +2044,16 @@ def _train_parallel(
                 validation_row["feasibility_rollback_applied"] = bool(
                     stability["rollback"]
                 )
+                if not pareto_quality_validation:
+                    console.validation(
+                        validation_row,
+                        status=_console_validation_status(
+                            reward_phase=reward_phase,
+                            event=daily_validation_event,
+                            feasibility_improved=bool(stability["improved"]),
+                        ),
+                        phase_state=phase_controller.as_dict(),
+                    )
                 if pareto_quality_validation:
                     if pareto_incumbent_rows is None or pareto_incumbent_checkpoint is None:
                         raise RuntimeError("V8 quality validation has no phase-1 incumbent")
@@ -2026,6 +2086,15 @@ def _train_parallel(
                     validation_row["validation_event"] = daily_validation_event
                     validation_row["pareto_validation_result"] = json.dumps(
                         pareto_result, ensure_ascii=False, sort_keys=True
+                    )
+                    console.validation(
+                        validation_row,
+                        status=_console_validation_status(
+                            reward_phase=reward_phase,
+                            event=daily_validation_event,
+                        ),
+                        phase_state=phase_controller.as_dict(),
+                        pareto_result=pareto_result,
                     )
                     if daily_validation_event == "audit_required":
                         agent.save(
@@ -2102,6 +2171,14 @@ def _train_parallel(
                             ensure_ascii=False,
                             sort_keys=True,
                         )
+                        console.pareto_audit(
+                            pareto_audit_result,
+                            episode=completed_episodes,
+                            status=_console_validation_status(
+                                reward_phase=reward_phase,
+                                event=audit_event,
+                            ),
+                        )
                         if audit_event == "accepted":
                             agent.save(
                                 accepted_checkpoint,
@@ -2128,6 +2205,11 @@ def _train_parallel(
                                     "audited candidate and accepted checkpoint weights diverged"
                                 )
                             shutil.copyfile(accepted_checkpoint, best_checkpoint)
+                            console.accepted(
+                                episode=completed_episodes,
+                                checkpoint=accepted_checkpoint,
+                                phase_state=phase_controller.as_dict(),
+                            )
                             pareto_incumbent_rows = [
                                 dict(row) for row in validation_instance_rows
                             ]
@@ -2176,6 +2258,14 @@ def _train_parallel(
                         config,
                         episode=completed_episodes,
                         phase_controller=phase_controller,
+                    )
+                    console.single_objective_audit(
+                        audit_log_row,
+                        status=_console_validation_status(
+                            reward_phase=reward_phase,
+                            event=audit_event,
+                        ),
+                        phase_state=phase_controller.as_dict(),
                     )
                     single_objective_audit_rows.append(audit_log_row)
                     single_objective_audit_failure_rows.extend(
@@ -2276,6 +2366,7 @@ def _train_parallel(
                         phase1_checkpoint,
                         metadata=transition_metadata,
                     )
+                    console.transition(phase1_checkpoint)
                     if (
                         phase_controller.quality_checkpoint_promotion
                         == PARETO_PROMOTION_MODE
@@ -2322,6 +2413,11 @@ def _train_parallel(
                     update_row["candidate_status"] = "accepted"
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "accepted"
+                    console.accepted(
+                        episode=completed_episodes,
+                        checkpoint=accepted_checkpoint,
+                        phase_state=phase_controller.as_dict(),
+                    )
                 elif validation_event in {
                     "not_promoted",
                     "rejected",
@@ -2431,20 +2527,11 @@ def _train_parallel(
                         )
                         if bool(visdom_settings["fail_fast"]):
                             raise
-                print(
-                    json.dumps(
-                        {"validation": validation_row},
-                        ensure_ascii=False,
-                    )
-                )
-            batch_rows = rows[-len(rollout.episodes) :]
             dashboard.log_update(
                 update_row,
                 batch_rows,
                 phase_controller.as_dict(),
             )
-            for row in batch_rows:
-                print(json.dumps(row, ensure_ascii=False))
     formal_eligible = phase_controller.is_formally_accepted
     accepted_checkpoint_exists = accepted_checkpoint.exists()
     if formal_eligible != accepted_checkpoint_exists:
@@ -2812,6 +2899,12 @@ def _train_parallel(
         f"{phase_controller.formal_training_status}"
     )
     dashboard.close()
+    console.done(
+        phase_state=phase_controller.as_dict(),
+        run_directory=run_directory,
+        accepted_checkpoint=(accepted_checkpoint if formal_eligible else None),
+        last_checkpoint=last_checkpoint,
+    )
     return run_directory
 
 
@@ -2872,11 +2965,6 @@ def main() -> int:
     exit_code = 0
     try:
         with capture_terminal_output(staging_log):
-            print(f"[terminal-log] started_at={datetime.now(timezone.utc).isoformat()}")
-            print(
-                "[terminal-log] command="
-                + shlex.join([Path(sys.executable).name, *sys.argv])
-            )
             try:
                 run_directory = train(
                     config,
@@ -2888,18 +2976,27 @@ def main() -> int:
                     visdom_enabled=args.visdom_enabled,
                     initial_checkpoint=args.initial_checkpoint,
                 )
-                print(f"training artifacts: {run_directory}")
             except KeyboardInterrupt:
                 exit_code = 130
+                report_training_failure(
+                    KeyboardInterrupt(),
+                    run_directory=(run_directory or expected_run),
+                    exit_code=exit_code,
+                )
                 traceback.print_exc()
             except Exception as error:
                 exit_code = 1
-                traceback.print_exc()
                 failure_directory = (
                     expected_run
                     if expected_run is not None and expected_run.is_dir()
                     else run_directory
                 )
+                report_training_failure(
+                    error,
+                    run_directory=failure_directory,
+                    exit_code=exit_code,
+                )
+                traceback.print_exc()
                 if failure_directory is not None:
                     write_json(
                         failure_directory / "failure.json",
@@ -2915,9 +3012,6 @@ def main() -> int:
                         failure_directory / "failure_partial.csv",
                         [{"exception_type": type(error).__name__, "message": str(error)}],
                     )
-            finally:
-                print(f"[terminal-log] finished_at={datetime.now(timezone.utc).isoformat()}")
-                print(f"[terminal-log] exit_code={exit_code}")
     finally:
         if staging_log.exists():
             destination_directory = run_directory or expected_run

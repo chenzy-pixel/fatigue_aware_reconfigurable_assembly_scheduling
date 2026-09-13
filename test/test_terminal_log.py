@@ -49,7 +49,8 @@ def test_original_train_command_automatically_saves_terminal_log(
     def fake_train(config, **kwargs):
         run_directory = result_root / kwargs["run_name"]
         run_directory.mkdir(parents=True)
-        print("training-progress")
+        print("[RUN] single_flow")
+        print("[DONE] single_flow")
         print("training-warning", file=sys.stderr)
         return run_directory
 
@@ -79,11 +80,11 @@ def test_original_train_command_automatically_saves_terminal_log(
 
     log_path = result_root / run_name / "terminal.log"
     log = log_path.read_text(encoding="utf-8")
-    assert "command=" in log
-    assert "training-progress" in log
+    assert "[RUN] single_flow" in log
+    assert "[DONE] single_flow" in log
     assert "training-warning" in log
-    assert f"training artifacts: {result_root / run_name}" in log
-    assert "exit_code=0" in log
+    assert "[terminal-log]" not in log
+    assert '"episode"' not in log
     assert not list(result_root.glob("*.tmp"))
 
 
@@ -118,9 +119,10 @@ def test_training_exception_traceback_is_saved_inside_created_run(
         encoding="utf-8"
     )
     assert "before-failure" in log
+    assert "[FAILED] RuntimeError" in log
+    assert "exit_code=1" in log
     assert "Traceback (most recent call last)" in log
     assert "RuntimeError: diagnostic failure" in log
-    assert "exit_code=1" in log
     failure = json.loads(
         (result_root / run_name / "failure.json").read_text(encoding="utf-8")
     )
