@@ -116,6 +116,11 @@ def test_child_config_only_changes_strict_one_hot_preference(objective: str):
         name: 1.0 if name == objective else 0.0 for name in CONFIGS
     }
     expected = public_config(base)
+    expected["preference"]["feasibility"] = [
+        expected_weights["flow"],
+        expected_weights["cost"],
+        expected_weights["variance"],
+    ]
     expected["preference"]["quality"]["mode"] = "fixed"
     expected["preference"]["quality"]["fixed"] = [
         expected_weights["flow"],
@@ -136,6 +141,7 @@ def test_child_config_only_changes_strict_one_hot_preference(objective: str):
         "training",
     }
     assert raw["preference"] == {
+        "feasibility": expected["preference"]["feasibility"],
         "quality": {
             "mode": "fixed",
             "fixed": expected["preference"]["quality"]["fixed"],

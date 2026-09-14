@@ -2,6 +2,7 @@
   "extends": "../default.json",
   "experiment_name": "e1_single_cost",
   "preference": {
+    "feasibility": [0.0, 1.0, 0.0],
     "quality": {
       "mode": "fixed",
       "fixed": [0.0, 1.0, 0.0]

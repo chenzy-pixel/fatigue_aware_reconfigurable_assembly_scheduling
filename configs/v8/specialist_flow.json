@@ -1,5 +1,8 @@
 {
   "extends": "specialist_base.json",
   "experiment_name": "v8_specialist_flow",
-  "preference": {"quality": {"fixed": [1.0, 0.0, 0.0]}}
+  "preference": {
+    "feasibility": [1.0, 0.0, 0.0],
+    "quality": {"fixed": [1.0, 0.0, 0.0]}
+  }
 }

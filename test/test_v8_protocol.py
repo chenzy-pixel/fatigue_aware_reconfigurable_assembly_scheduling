@@ -14,7 +14,11 @@ from configs.normalization import (
     load_normalization_manifest,
     write_immutable_manifest,
 )
-from environment import simplex_lattice
+from environment import (
+    feasibility_preference_context,
+    quality_preference_for_episode,
+    simplex_lattice,
+)
 from result.v8_promotion import (
     compare_preference_conditioned_checkpoints,
     paired_instance_block_bootstrap,
@@ -29,12 +33,50 @@ from train import _validate_pareto_validation_protocol
         ("configs/v8/specialist_flow.json", [1.0, 0.0, 0.0]),
         ("configs/v8/specialist_cost.json", [0.0, 1.0, 0.0]),
         ("configs/v8/specialist_variance.json", [0.0, 0.0, 1.0]),
+        ("configs/e1/single_flow.json", [1.0, 0.0, 0.0]),
+        ("configs/e1/single_cost.json", [0.0, 1.0, 0.0]),
+        ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
     ),
 )
-def test_v8_specialists_have_one_objective_preference_source(path, preference):
+def test_single_objective_configs_align_feasibility_and_quality_preferences(
+    path,
+    preference,
+):
     config = load_config(path)
+    assert config["preference"]["feasibility"] == preference
     assert config["preference"]["quality"]["fixed"] == preference
     assert "quality_weights" not in config["reward"]
+    feasibility = feasibility_preference_context(config)
+    quality = quality_preference_for_episode(
+        config,
+        algorithm_seed=11,
+        quality_episode_index=0,
+    )
+    assert feasibility.as_tuple() == tuple(preference)
+    assert quality.as_tuple() == tuple(preference)
+    assert feasibility.key == quality.key
+
+
+def test_v8_universal_keeps_balanced_feasibility_preference():
+    config = load_config("configs/default.json")
+    feasibility = feasibility_preference_context(config)
+    assert feasibility.as_tuple() == pytest.approx((1.0 / 3.0,) * 3)
+    quality_points = [
+        quality_preference_for_episode(
+            config,
+            algorithm_seed=11,
+            quality_episode_index=index,
+        ).as_tuple()
+        for index in range(20)
+    ]
+    assert quality_points[:6] == [
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+    ]
 
 
 def test_v8_rejects_legacy_reward_quality_weights():

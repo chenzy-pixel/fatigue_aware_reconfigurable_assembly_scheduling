@@ -6,6 +6,8 @@ Production, Worker, and WAIT each use Flow, Cost, and Variance experts. Every di
 
 Quality reward is the exact telescoping difference of the normalized augmented Tchebycheff scalarizer. A completed trajectory uses its measured terminal scalarized objective; any truncated trajectory uses the common terminal failure bound `T_terminal = 1`, so every endpoint receives the same hard-feasibility signal. Feasibility shaping remains observable in diagnostics, but quality PPO return contains only the scalarizer difference. `gamma` remains one.
 
+Each Flow, Cost, or Variance endpoint specialist uses its fixed one-hot preference during both feasibility and quality training, so phase-transition validation is evaluated under the same preference condition seen by the policy. The universal policy retains the balanced feasibility preference and switches to its deterministic endpoint/Sobol schedule only in the quality phase.
+
 ## Reproducible workflow
 
 1. Run `run_v8_specialists.ps1` to train Flow, Cost, and Variance specialists at seeds `11/23/37/53/71`.
