@@ -25,6 +25,7 @@ from train import (
     _checkpoint_eligible_validation_event,
     _promote_accepted_checkpoint,
     _reevaluate_checkpoint_from_disk,
+    _restore_regression_checkpoint,
     _single_objective_failure_rows,
     _single_objective_guard_score,
     _validate_single_objective_validation_protocol,
@@ -596,29 +597,89 @@ def test_formal_track_rejects_failed_hard_gates(
         assert controller.accepted_single_objective_value == 90.0
 
 
-def test_single_objective_rollback_is_strict_below_95_and_requires_two():
+def test_single_objective_rollback_tracks_historical_best_during_feasibility():
     config = load_config(CONFIGS["flow"])
     controller = ValidationStabilityController.from_config(config)
     controller.observe_greedy(
-        (-1.0, 100.0, 0.0, 0.0), 1.0,
-        completed_episodes=10, feasibility_phase=False,
+        (-0.94, 100.0, 0.0, 0.0), 47 / 50,
+        completed_episodes=20, feasibility_phase=True,
     )
-    exact_floor = controller.observe_greedy(
-        (-0.95, 101.0, 0.0, 0.0), 0.95,
-        completed_episodes=20, feasibility_phase=False,
+    first_drop = controller.observe_greedy(
+        (-0.88, 101.0, 0.0, 0.0), 44 / 50,
+        completed_episodes=40, feasibility_phase=True,
     )
-    assert not exact_floor["degraded"]
-    first_below = controller.observe_greedy(
-        (-0.949, 102.0, 0.0, 0.0), 0.949,
-        completed_episodes=30, feasibility_phase=False,
+    assert first_drop["degraded"] and not first_drop["rollback"]
+    assert first_drop["rollback_reference_completion_rate"] == pytest.approx(
+        47 / 50
     )
-    assert first_below["degraded"] and not first_below["rollback"]
-    second_below = controller.observe_greedy(
-        (-0.948, 103.0, 0.0, 0.0), 0.948,
-        completed_episodes=40, feasibility_phase=False,
+    second_drop = controller.observe_greedy(
+        (-0.88, 102.0, 0.0, 0.0), 44 / 50,
+        completed_episodes=60, feasibility_phase=True,
     )
-    assert second_below["rollback"]
+    assert second_drop["rollback"]
+    assert second_drop["rollback_learning_rate_decay_applied"]
+    assert second_drop["learning_rate_after_validation"] == pytest.approx(
+        0.00005
+    )
+    assert controller.best_completion_rate == pytest.approx(47 / 50)
+    assert controller.rollback_completion_drop == pytest.approx(3 / 50)
     assert controller.rollback_consecutive_required == 2
+
+
+@pytest.mark.parametrize(
+    ("feasibility_phase", "expected_name"),
+    ((True, "best_feasibility_checkpoint.pt"), (False, "safe_checkpoint.pt")),
+)
+def test_regression_rollback_restores_optimizer_and_discards_rollout(
+    tmp_path: Path,
+    feasibility_phase: bool,
+    expected_name: str,
+):
+    best_feasibility = tmp_path / "best_feasibility_checkpoint.pt"
+    safe = tmp_path / "safe_checkpoint.pt"
+    best_feasibility.touch()
+    safe.touch()
+
+    class RecordingAgent:
+        def __init__(self):
+            self.loaded = None
+            self.load_optimizer = None
+            self.learning_rate = None
+
+        def load(self, path, *, load_optimizer=False):
+            self.loaded = Path(path)
+            self.load_optimizer = load_optimizer
+
+        def set_learning_rate(self, value):
+            self.learning_rate = float(value)
+
+    class RecordingBuffer:
+        def __init__(self):
+            self.values = [1, 2, 3]
+
+        def __len__(self):
+            return len(self.values)
+
+        def clear(self):
+            self.values.clear()
+
+    agent = RecordingAgent()
+    buffer = RecordingBuffer()
+    restored, discarded = _restore_regression_checkpoint(
+        agent,
+        buffer,
+        feasibility_phase=feasibility_phase,
+        best_feasibility_checkpoint=best_feasibility,
+        safe_checkpoint=safe,
+        learning_rate=0.00005,
+    )
+
+    assert restored.name == expected_name
+    assert agent.loaded == restored
+    assert agent.load_optimizer is True
+    assert agent.learning_rate == pytest.approx(0.00005)
+    assert discarded == 3
+    assert len(buffer) == 0
 
 
 def test_failure_detail_rows_record_the_required_tail_diagnostics():

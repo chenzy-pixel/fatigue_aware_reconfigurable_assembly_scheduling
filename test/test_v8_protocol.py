@@ -57,6 +57,15 @@ def test_single_objective_configs_align_feasibility_and_quality_preferences(
     assert feasibility.key == quality.key
 
 
+def test_v8_specialists_use_debug_validation_cadence_and_zero_gate():
+    config = load_config("configs/v8/specialist_flow.json")
+    assert config["training"]["validation_interval_episodes"] == 20
+    assert config["network"]["residual_gate_initial_logit"] == 0.0
+    assert config["training"]["two_stage"]["single_objective_promotion"][
+        "rollback_completion_drop"
+    ] == pytest.approx(3 / 50)
+
+
 def test_v8_universal_keeps_balanced_feasibility_preference():
     config = load_config("configs/default.json")
     feasibility = feasibility_preference_context(config)

@@ -356,13 +356,13 @@ class ValidationStabilityController:
         ).strip().lower()
         rollback_floor = None
         if promotion_mode == SINGLE_OBJECTIVE_PROMOTION_MODE:
-            rollback_floor = float(
-                config["training"]["two_stage"].get(
-                    "quality_completion_floor", 0.95
-                )
-            )
             single_settings = config["training"]["two_stage"].get(
                 "single_objective_promotion", {}
+            )
+            rollback_drop = float(
+                single_settings.get(
+                    "rollback_completion_drop", rollback_drop
+                )
             )
             rollback_consecutive = int(
                 single_settings.get(
@@ -435,20 +435,19 @@ class ValidationStabilityController:
             self.consecutive_degraded_validations = 0
         else:
             self.validations_without_improvement += 1
-        if self.rollback_completion_floor is not None:
-            degraded = bool(
-                not feasibility_phase
-                and rate < self.rollback_completion_floor
-            )
-        else:
-            degraded = bool(
-                not improved
-                and rate
-                <= 1.0 - self.rollback_completion_drop + 1e-12
-            )
+        best_rate = self.best_completion_rate
+        completion_drop_from_best = (
+            0.0 if best_rate is None else max(0.0, best_rate - rate)
+        )
+        degraded = bool(
+            not improved
+            and best_rate is not None
+            and rate
+            <= best_rate - self.rollback_completion_drop + 1e-12
+        )
         if degraded:
             self.consecutive_degraded_validations += 1
-        elif self.rollback_completion_floor is not None or not improved:
+        elif not improved:
             self.consecutive_degraded_validations = 0
         rollback_ready = bool(
             degraded
@@ -467,9 +466,17 @@ class ValidationStabilityController:
             self.validations_without_improvement = 0
         previous_learning_rate = self.current_learning_rate
         decay_applied = False
-        if (
+        if rollback:
+            next_learning_rate = max(
+                self.minimum_learning_rate,
+                self.current_learning_rate * self.decay_factor,
+            )
+            if next_learning_rate < self.current_learning_rate - 1e-15:
+                self.current_learning_rate = next_learning_rate
+                self.learning_rate_decays += 1
+                decay_applied = True
+        elif (
             not improved
-            and not rollback
             and self.validations_without_improvement
             >= self.plateau_patience
         ):
@@ -486,6 +493,9 @@ class ValidationStabilityController:
             "improved": improved,
             "rollback": rollback,
             "degraded": degraded,
+            "feasibility_phase": bool(feasibility_phase),
+            "completion_drop_from_best": completion_drop_from_best,
+            "rollback_reference_completion_rate": best_rate,
             "consecutive_degraded_validations": (
                 self.consecutive_degraded_validations
             ),
@@ -506,6 +516,9 @@ class ValidationStabilityController:
             "learning_rate_before_validation": previous_learning_rate,
             "learning_rate_after_validation": self.current_learning_rate,
             "learning_rate_decay_applied": decay_applied,
+            "rollback_learning_rate_decay_applied": bool(
+                rollback and decay_applied
+            ),
         }
 
     def reset_plateau(self) -> None:
@@ -535,6 +548,7 @@ class ValidationStabilityController:
         return {
             "rollback_completion_drop": self.rollback_completion_drop,
             "rollback_completion_floor": self.rollback_completion_floor,
+            "rollback_reference": "historical_best_completion_rate",
             "rollback_consecutive_validations": (
                 self.rollback_consecutive_required
             ),
@@ -570,6 +584,35 @@ class ValidationStabilityController:
             "sampled_repeats": self.sampled_repeats,
             "sampled_episode_milestones": self.sampled_episode_milestones,
         }
+
+
+def _restore_regression_checkpoint(
+    agent: PPOAgent,
+    rollout_buffer: RolloutBuffer,
+    *,
+    feasibility_phase: bool,
+    best_feasibility_checkpoint: Path,
+    safe_checkpoint: Path,
+    learning_rate: float,
+) -> tuple[Path, int]:
+    """Restore the protected state and invalidate stale rollout data."""
+
+    checkpoint = (
+        best_feasibility_checkpoint if feasibility_phase else safe_checkpoint
+    )
+    checkpoint_role = (
+        "best feasibility" if feasibility_phase else "safe"
+    )
+    if not checkpoint.exists():
+        raise RuntimeError(
+            "regression rollback requested before a "
+            f"{checkpoint_role} checkpoint was established"
+        )
+    discarded_transitions = len(rollout_buffer)
+    agent.load(checkpoint, load_optimizer=True)
+    agent.set_learning_rate(learning_rate)
+    rollout_buffer.clear()
+    return checkpoint, discarded_transitions
 
 
 def _validation_log_row(
@@ -1684,6 +1727,7 @@ def _train_parallel(
     best_validation: dict | None = None
     best_feasibility_validation: dict | None = None
     best_feasibility_instance_rows: list[dict] = []
+    best_feasibility_score: tuple[float, float, float, float] | None = None
     last_sampled_validation: dict | None = None
     last_sampled_validation_episode: int | None = None
     best_score: tuple[float, float, float, float] | None = None
@@ -1982,6 +2026,13 @@ def _train_parallel(
                     )
                     if phase_controller.single_objective_name is not None
                     else evaluation_selection_key(validation)
+                )
+                feasibility_checkpoint_improved = bool(
+                    reward_phase == "feasibility"
+                    and (
+                        best_feasibility_score is None
+                        or score < best_feasibility_score
+                    )
                 )
                 stability = stability_controller.observe_greedy(
                     score,
@@ -2301,10 +2352,8 @@ def _train_parallel(
                             "validation": validation_row,
                         },
                     )
-                if (
-                    bool(stability["improved"])
-                    and reward_phase == "feasibility"
-                ):
+                if feasibility_checkpoint_improved:
+                    best_feasibility_score = score
                     best_feasibility_validation = validation_row
                     best_feasibility_instance_rows = [
                         dict(value) for value in validation_instance_rows
@@ -2428,14 +2477,27 @@ def _train_parallel(
                     for row in rows[-len(rollout.episodes) :]:
                         row["candidate_status"] = "not_promoted"
                 if bool(stability["rollback"]):
-                    if not safe_checkpoint.exists():
-                        raise RuntimeError(
-                            "catastrophic rollback requested before a safe "
-                            "checkpoint was established"
+                    rollback_checkpoint, discarded_transitions = (
+                        _restore_regression_checkpoint(
+                            agent,
+                            rollout.buffer,
+                            feasibility_phase=(
+                                reward_phase == "feasibility"
+                            ),
+                            best_feasibility_checkpoint=(
+                                best_feasibility_checkpoint
+                            ),
+                            safe_checkpoint=safe_checkpoint,
+                            learning_rate=(
+                                stability_controller.current_learning_rate
+                            ),
                         )
-                    agent.load(
-                        safe_checkpoint,
-                        load_optimizer=True,
+                    )
+                    update_row["rollback_checkpoint"] = str(
+                        rollback_checkpoint
+                    )
+                    update_row["rollback_discarded_transitions"] = (
+                        discarded_transitions
                     )
                     update_row["candidate_status"] = (
                         "catastrophic_rolled_back"
@@ -2444,9 +2506,10 @@ def _train_parallel(
                         row["candidate_status"] = (
                             "catastrophic_rolled_back"
                         )
-                agent.set_learning_rate(
-                    stability_controller.current_learning_rate
-                )
+                else:
+                    agent.set_learning_rate(
+                        stability_controller.current_learning_rate
+                    )
                 if validation_event == "transition":
                     stability_controller.reset_plateau()
                 if not phase_controller.enabled and (

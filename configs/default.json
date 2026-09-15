@@ -286,7 +286,7 @@
     "message_passing_layers": 2,
     "dropout": 0.0,
     "policy_head_version": 8,
-    "residual_gate_initial_logit": -2.0,
+    "residual_gate_initial_logit": 0.0,
     "residual_std_floor": 0.001
   },
   "ppo": {
@@ -339,6 +339,7 @@
         "window_size": 5,
         "window_statistic": "median",
         "candidate_improvement_epsilon": 1e-9,
+        "rollback_completion_drop": 0.06,
         "rollback_below_floor_consecutive": 2,
         "audit_instance_limit": 200,
         "audit_instance_offset": 0,
