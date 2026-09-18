@@ -198,7 +198,9 @@ def test_default_is_the_complete_v8_universal_protocol():
 
 
 @pytest.mark.parametrize("objective", tuple(CONFIGS))
-def test_child_config_only_changes_strict_one_hot_preference(objective: str):
+def test_child_config_uses_one_hot_preference_and_per_update_validation(
+    objective: str,
+):
     base = load_config("configs/default.json")
     child = load_config(CONFIGS[objective])
     expected_weights = {
@@ -219,6 +221,7 @@ def test_child_config_only_changes_strict_one_hot_preference(objective: str):
     expected["training"]["two_stage"]["quality_checkpoint_promotion"] = (
         SINGLE_OBJECTIVE_PROMOTION_MODE
     )
+    expected["training"]["validation_interval_episodes"] = 20
     expected["experiment_name"] = f"e1_single_{objective}"
     assert public_config(child) == expected
 
@@ -239,6 +242,7 @@ def test_child_config_only_changes_strict_one_hot_preference(objective: str):
     assert raw["training"]["two_stage"]["quality_checkpoint_promotion"] == (
         SINGLE_OBJECTIVE_PROMOTION_MODE
     )
+    assert raw["training"]["validation_interval_episodes"] == 20
 
 
 @pytest.mark.parametrize("objective", tuple(CONFIGS))

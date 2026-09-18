@@ -9,6 +9,7 @@
     }
   },
   "training": {
+    "validation_interval_episodes": 20,
     "two_stage": {
       "quality_checkpoint_promotion": "single_objective_guarded_v1"
     }
