@@ -380,6 +380,9 @@ class FixedEvaluationRollout:
     inference_time_seconds: float
     solve_time_seconds: float
     action_trace_sha256: str
+    sampling_seed: int | None = None
+    derived_sampling_seed: int | None = None
+    sampling_evaluation_key: str | None = None
 
 
 class ParallelWorkerError(RuntimeError):
@@ -1614,19 +1617,34 @@ class ParallelEpisodeRunner:
             policy_diagnostics: dict[int, list[dict[str, Any]]] = {
                 lane: [] for lane in active
             }
-            generators = (
+            evaluation_keys = {
+                lane: (
+                    None
+                    if preferences is None
+                    else PreferenceContext.from_input(
+                        preferences[start + lane]
+                    ).key
+                )
+                for lane in active
+            }
+            derived_sampling_seeds = (
                 {
-                    lane: torch.Generator(device=agent.device).manual_seed(
-                        derive_evaluation_sampling_seed(
-                            int(sampling_seed),
-                            chunk[lane].instance.instance_id,
-                        )
+                    lane: derive_evaluation_sampling_seed(
+                        int(sampling_seed),
+                        chunk[lane].instance.instance_id,
+                        evaluation_keys[lane],
                     )
                     for lane in active
                 }
                 if not deterministic
                 else {}
             )
+            generators = {
+                lane: torch.Generator(device=agent.device).manual_seed(
+                    derived_sampling_seeds[lane]
+                )
+                for lane in derived_sampling_seeds
+            }
             while active:
                 lanes = sorted(active)
                 observations = [
@@ -1725,6 +1743,15 @@ class ParallelEpisodeRunner:
                                 action_trace_sha256=action_trace_sha256(
                                     action_traces[lane]
                                 ),
+                                sampling_seed=(
+                                    None if deterministic else int(sampling_seed)
+                                ),
+                                derived_sampling_seed=(
+                                    None
+                                    if deterministic
+                                    else derived_sampling_seeds[lane]
+                                ),
+                                sampling_evaluation_key=evaluation_keys[lane],
                             )
                         )
                         active.remove(lane)

@@ -559,6 +559,7 @@ def test_serial_and_parallel_ppo_preserve_the_same_preference(
             record.instance, preference=preference
         ),
         ppo_agent=agent,
+        decode_mode="greedy",
     )
     _, serial = evaluate_instance(
         effective_config,

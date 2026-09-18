@@ -356,7 +356,9 @@ class TrainingConsoleReporter:
             (
                 "min_complete "
                 f"{_percent(safety.get('minimum_completion_rate') if isinstance(safety, Mapping) else None)} "
-                f"| failed {int(safety.get('failed_instance_count', 0)) if isinstance(safety, Mapping) else 0}"
+                "| any-pref-failed instances "
+                f"{int(safety.get('failed_instance_count', 0)) if isinstance(safety, Mapping) else 0} "
+                "(diagnostic)"
             ),
             (
                 f"violations {int(safety.get('schedule_violation_count', 0)) if isinstance(safety, Mapping) else 0} "

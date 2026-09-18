@@ -117,6 +117,7 @@ DISPLAY_LABELS: dict[str, str] = {
     "best_worker_load_variance": "最佳平均负荷方差",
     "flow_gap": "流经时间差距",
     "sampled_flow_gap": "采样流经时间差距",
+    "greedy_flow_gap": "贪心流经时间差距",
     "makespan_gap": "完工期差距",
     "reconfiguration_cost_gap": "重构成本差距",
     "worker_load_variance_gap": "负荷方差差距",
@@ -911,22 +912,22 @@ class TrainingDashboard:
             x=completed_episodes,
             series={
                 "greedy_completion_rate": validation_row.get(
-                    "completion_rate"
+                    "greedy_completion_rate"
                 ),
                 "sampled_completion_rate": validation_row.get(
-                    "sampled_completion_rate"
+                    "completion_rate"
                 ),
                 "greedy_truncated_count": validation_row.get(
-                    "truncated_count"
+                    "greedy_truncated_count"
                 ),
                 "sampled_truncated_count": validation_row.get(
-                    "sampled_truncated_count"
+                    "truncated_count"
                 ),
                 "greedy_mean_unfinished_orders": validation_row.get(
-                    "mean_unfinished_orders"
+                    "greedy_mean_unfinished_orders"
                 ),
                 "sampled_mean_unfinished_orders": validation_row.get(
-                    "sampled_mean_unfinished_orders"
+                    "mean_unfinished_orders"
                 ),
                 "schedule_violation_count": validation_row.get(
                     "schedule_violation_count"
@@ -994,7 +995,10 @@ class TrainingDashboard:
                     "mean_relative_heuristic_gap_percent"
                 ),
                 "sampled_flow_gap": validation_row.get(
-                    "sampled_mean_relative_heuristic_gap_percent"
+                    "mean_relative_heuristic_gap_percent"
+                ),
+                "greedy_flow_gap": validation_row.get(
+                    "greedy_mean_relative_heuristic_gap_percent"
                 ),
                 "makespan_gap": validation_row.get(
                     "mean_makespan_heuristic_gap_percent"
@@ -1014,10 +1018,10 @@ class TrainingDashboard:
             x=completed_episodes,
             series={
                 "greedy": validation_row.get(
-                    "mean_feasibility_proxy_return"
+                    "greedy_mean_feasibility_proxy_return"
                 ),
                 "sampled": validation_row.get(
-                    "sampled_mean_feasibility_proxy_return"
+                    "mean_feasibility_proxy_return"
                 ),
             },
         )

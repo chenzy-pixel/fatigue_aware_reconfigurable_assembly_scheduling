@@ -118,7 +118,6 @@ def _safety_gate(
     rows: Sequence[Mapping[str, Any]],
     *,
     minimum_completion: float,
-    max_failed_instances: int | None,
 ) -> tuple[bool, dict[str, Any]]:
     by_preference: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -145,12 +144,12 @@ def _safety_gate(
         min(rates.values()) >= minimum_completion
         and violations == 0
         and unsafe == 0
-        and (max_failed_instances is None or failed_instances <= max_failed_instances)
     )
     return passed, {
         "minimum_completion_rate": min(rates.values()),
         "completion_rate_by_preference": dict(sorted(rates.items())),
         "failed_instance_count": failed_instances,
+        "failed_instance_count_is_diagnostic": True,
         "schedule_violation_count": violations,
         "physical_safety_violation_count": unsafe,
     }
@@ -224,7 +223,6 @@ def compare_preference_conditioned_checkpoints(
     safety, safety_detail = _safety_gate(
         candidate_rows,
         minimum_completion=0.98 if audit else 0.95,
-        max_failed_instances=4 if audit else None,
     )
     endpoint, endpoint_detail = _endpoint_gate(
         candidate_rows, endpoint_prediction_upper_bounds

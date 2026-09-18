@@ -27,6 +27,7 @@ from data import (
 from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
 from environment import (
     AssemblySchedulingEnv,
+    PreferenceContext,
     PreferenceContextInput,
     bounded_quality_score,
     proxy_return_from_metrics,
@@ -44,18 +45,44 @@ from result import (
 )
 from result.io import write_config, write_csv, write_json
 from utils import (
+    SAMPLED_EVALUATION_RNG_VERSION,
     action_trace_sha256,
     capture_global_rng_state,
     derive_evaluation_sampling_seed,
+    configured_formal_evaluation_sampling_seeds,
     restore_global_rng_state,
     set_seed,
 )
 
 
+def _resolve_decode_mode(policy_name: str, decode_mode: str | None) -> str:
+    if decode_mode is None:
+        return "sampled" if policy_name == "ppo" else "greedy"
+    return str(decode_mode)
+
+
+def _resolve_sampling_seed(
+    config: dict[str, Any],
+    *,
+    decode_mode: str,
+    sampling_seed: int | None,
+) -> int | None:
+    if decode_mode != "sampled" or sampling_seed is not None:
+        return sampling_seed
+    return configured_formal_evaluation_sampling_seeds(
+        config, "final_test"
+    )[0]
+
+
 def _preserve_rng_for_sampled(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
-        if kwargs.get("decode_mode", "greedy") != "sampled":
+        decode_mode = kwargs.get("decode_mode")
+        policy_name = kwargs.get("policy_name")
+        formal_sampled_default = bool(
+            decode_mode is None and policy_name == "ppo"
+        )
+        if decode_mode != "sampled" and not formal_sampled_default:
             return function(*args, **kwargs)
         state = capture_global_rng_state()
         try:
@@ -88,13 +115,19 @@ class EvaluationPolicy:
         bootstrap_observation: Any,
         checkpoint: str | None = None,
         ppo_agent: PPOAgent | None = None,
-        decode_mode: str = "greedy",
+        decode_mode: str | None = None,
         sampling_seed: int | None = None,
     ):
         self.policy_name = policy_name
         self.device = torch.device(config["device"])
         self.ppo_agent: PPOAgent | None = None
         self.policy: HeuristicPolicy | RandomPolicy | None = None
+        decode_mode = _resolve_decode_mode(policy_name, decode_mode)
+        sampling_seed = _resolve_sampling_seed(
+            config,
+            decode_mode=decode_mode,
+            sampling_seed=sampling_seed,
+        )
         if decode_mode not in {"greedy", "sampled"}:
             raise ValueError("decode_mode must be 'greedy' or 'sampled'")
         if policy_name != "ppo" and decode_mode != "greedy":
@@ -102,6 +135,8 @@ class EvaluationPolicy:
         self.decode_mode = decode_mode
         self.generator: torch.Generator | None = None
         self.sampling_seed = sampling_seed
+        self.derived_sampling_seed: int | None = None
+        self.sampling_evaluation_key: str | None = None
         self._episode_actions: list[int] = []
         self._episode_policy_diagnostics: list[dict[str, Any]] = []
         if policy_name == "heuristic":
@@ -176,17 +211,24 @@ class EvaluationPolicy:
         self._episode_actions.append(int(action))
         return action
 
-    def begin_episode(self, instance_id: str) -> None:
+    def begin_episode(
+        self,
+        instance_id: str,
+        evaluation_key: str | None = None,
+    ) -> None:
         self._episode_policy_diagnostics.clear()
         self._episode_actions.clear()
         if self.decode_mode == "sampled":
             if self.sampling_seed is None:
                 raise RuntimeError("sampled evaluation has no sampling seed")
+            self.sampling_evaluation_key = evaluation_key
+            self.derived_sampling_seed = derive_evaluation_sampling_seed(
+                self.sampling_seed,
+                instance_id,
+                evaluation_key,
+            )
             self.generator = torch.Generator(device=self.device).manual_seed(
-                derive_evaluation_sampling_seed(
-                    self.sampling_seed,
-                    instance_id,
-                )
+                self.derived_sampling_seed
             )
 
     def episode_policy_metrics(self) -> dict[str, float | int]:
@@ -221,9 +263,15 @@ def evaluate(
     *,
     policy_name: str,
     checkpoint: str | None = None,
-    decode_mode: str = "greedy",
+    decode_mode: str | None = None,
     sampling_seed: int | None = None,
 ) -> tuple[AssemblySchedulingEnv, dict[str, Any]]:
+    decode_mode = _resolve_decode_mode(policy_name, decode_mode)
+    sampling_seed = _resolve_sampling_seed(
+        config,
+        decode_mode=decode_mode,
+        sampling_seed=sampling_seed,
+    )
     set_seed(validate_algorithm_seed(config, int(config["seed"])))
     instance = load_configured_instance(config)
     return evaluate_instance(
@@ -244,10 +292,20 @@ def evaluate_instance(
     policy_name: str,
     checkpoint: str | None = None,
     prepared_policy: EvaluationPolicy | None = None,
-    decode_mode: str = "greedy",
+    decode_mode: str | None = None,
     sampling_seed: int | None = None,
     preference: PreferenceContextInput | None = None,
 ) -> tuple[AssemblySchedulingEnv, dict[str, Any]]:
+    if decode_mode is None and prepared_policy is not None:
+        decode_mode = prepared_policy.decode_mode
+        if sampling_seed is None:
+            sampling_seed = prepared_policy.sampling_seed
+    decode_mode = _resolve_decode_mode(policy_name, decode_mode)
+    sampling_seed = _resolve_sampling_seed(
+        config,
+        decode_mode=decode_mode,
+        sampling_seed=sampling_seed,
+    )
     if prepared_policy is None:
         set_seed(validate_algorithm_seed(config, int(config["seed"])))
     runner = prepared_policy
@@ -274,7 +332,12 @@ def evaluate_instance(
     solve_start = time.perf_counter()
     env = AssemblySchedulingEnv(config)
     observation = env.reset(instance, preference=preference)
-    runner.begin_episode(instance.instance_id)
+    evaluation_key = (
+        None
+        if preference is None
+        else PreferenceContext.from_input(preference).key
+    )
+    runner.begin_episode(instance.instance_id, evaluation_key)
     inference_time = 0.0
     decisions = 0
     while not (env.terminated or env.truncated):
@@ -289,6 +352,21 @@ def evaluate_instance(
     metrics = env.metrics()
     metrics["policy"] = policy_name
     metrics["decode_mode"] = decode_mode
+    metrics["result_role"] = (
+        "formal_sampled"
+        if policy_name == "ppo" and decode_mode == "sampled"
+        else "greedy_diagnostic"
+        if policy_name == "ppo"
+        else "baseline"
+    )
+    metrics["sampling_seed"] = runner.sampling_seed
+    metrics["derived_sampling_seed"] = runner.derived_sampling_seed
+    metrics["sampling_evaluation_key"] = runner.sampling_evaluation_key
+    metrics["sampling_rng_version"] = (
+        SAMPLED_EVALUATION_RNG_VERSION
+        if decode_mode == "sampled"
+        else None
+    )
     metrics["feasibility_proxy_return"] = proxy_return_from_metrics(
         metrics,
         config["reward"],
@@ -327,6 +405,7 @@ def evaluate_representative_diagnostic(
         policy_name="ppo",
         bootstrap_observation=observation,
         ppo_agent=ppo_agent,
+        decode_mode="greedy",
     )
     was_training = runner.enter_evaluation_mode()
     worker_ids = [worker.spec.id for worker in environment.workers]
@@ -475,7 +554,16 @@ def _evaluation_row(
         ),
         "quality_metric_version": quality_metric["version"],
         "quality_metric_sha256": metric_hash,
+        "decode_mode": metrics.get("decode_mode"),
+        "result_role": metrics.get("result_role"),
         "action_trace_sha256": metrics.get("action_trace_sha256"),
+        "sampling_seed": metrics.get("sampling_seed"),
+        "sampling_repeat": metrics.get("sampling_repeat"),
+        "derived_sampling_seed": metrics.get("derived_sampling_seed"),
+        "sampling_evaluation_key": metrics.get(
+            "sampling_evaluation_key"
+        ),
+        "sampling_rng_version": metrics.get("sampling_rng_version"),
         "inference_time_seconds": metrics[
             "inference_time_seconds"
         ],
@@ -621,7 +709,7 @@ def evaluate_dataset(
     ppo_agent: PPOAgent | None = None,
     instance_limit: int | None = None,
     instance_offset: int = 0,
-    decode_mode: str = "greedy",
+    decode_mode: str | None = None,
     sampling_seed: int | None = None,
 ) -> tuple[
     list[dict[str, Any]],
@@ -629,6 +717,12 @@ def evaluate_dataset(
     list[dict[str, Any]],
     dict[str, Any],
 ]:
+    decode_mode = _resolve_decode_mode(policy_name, decode_mode)
+    sampling_seed = _resolve_sampling_seed(
+        config,
+        decode_mode=decode_mode,
+        sampling_seed=sampling_seed,
+    )
     dataset = load_dataset_split(config, dataset_name)
     effective_count = (
         len(dataset) if instance_limit is None else int(instance_limit)
@@ -667,6 +761,7 @@ def evaluate_dataset(
                 policy_name=policy_name,
                 prepared_policy=runner,
                 decode_mode=decode_mode,
+                sampling_seed=sampling_seed,
             )
             row = _evaluation_row(
                 record,
@@ -693,6 +788,19 @@ def evaluate_dataset(
         quality_metric=quality_metric,
     )
     aggregate["decode_mode"] = decode_mode
+    aggregate["result_role"] = (
+        "formal_sampled"
+        if policy_name == "ppo" and decode_mode == "sampled"
+        else "greedy_diagnostic"
+        if policy_name == "ppo"
+        else "baseline"
+    )
+    aggregate["sampling_seed"] = sampling_seed
+    aggregate["sampling_rng_version"] = (
+        SAMPLED_EVALUATION_RNG_VERSION
+        if decode_mode == "sampled"
+        else None
+    )
     aggregate["instance_offset"] = offset
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
         dataset.manifest_path
@@ -709,7 +817,7 @@ def evaluate_dataset_parallel(
     runner: ParallelEpisodeRunner,
     instance_limit: int | None = None,
     instance_offset: int = 0,
-    decode_mode: str = "greedy",
+    decode_mode: str = "sampled",
     sampling_seed: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate fixed records in parallel for periodic training validation."""
@@ -729,6 +837,11 @@ def evaluate_dataset_parallel(
         int(config["training"]["validation_parallel_envs"]),
         runner.worker_count,
         effective_count,
+    )
+    sampling_seed = _resolve_sampling_seed(
+        config,
+        decode_mode=decode_mode,
+        sampling_seed=sampling_seed,
     )
     if decode_mode not in {"greedy", "sampled"}:
         raise ValueError("decode_mode must be 'greedy' or 'sampled'")
@@ -768,6 +881,22 @@ def evaluate_dataset_parallel(
             "feasibility",
         )
         metrics["action_trace_sha256"] = rollout.action_trace_sha256
+        metrics["decode_mode"] = decode_mode
+        metrics["result_role"] = (
+            "formal_sampled"
+            if decode_mode == "sampled"
+            else "greedy_diagnostic"
+        )
+        metrics["sampling_seed"] = rollout.sampling_seed
+        metrics["derived_sampling_seed"] = rollout.derived_sampling_seed
+        metrics["sampling_evaluation_key"] = (
+            rollout.sampling_evaluation_key
+        )
+        metrics["sampling_rng_version"] = (
+            SAMPLED_EVALUATION_RNG_VERSION
+            if decode_mode == "sampled"
+            else None
+        )
         rows.append(
             _evaluation_row(
                 records[rollout.record_index],
@@ -784,6 +913,17 @@ def evaluate_dataset_parallel(
         quality_metric=quality_metric,
     )
     aggregate["decode_mode"] = decode_mode
+    aggregate["result_role"] = (
+        "formal_sampled"
+        if decode_mode == "sampled"
+        else "greedy_diagnostic"
+    )
+    aggregate["sampling_seed"] = sampling_seed
+    aggregate["sampling_rng_version"] = (
+        SAMPLED_EVALUATION_RNG_VERSION
+        if decode_mode == "sampled"
+        else None
+    )
     aggregate["instance_offset"] = offset
     aggregate["parallel_envs"] = parallelism
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
@@ -802,6 +942,8 @@ def evaluate_preference_grid_parallel(
     instance_limit: int,
     instance_offset: int = 0,
     preferences: tuple[PreferenceContextInput, ...] | None = None,
+    decode_mode: str = "sampled",
+    sampling_seed: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate each fixed instance at all 66 V8 simplex preferences."""
 
@@ -812,6 +954,10 @@ def evaluate_preference_grid_parallel(
     grid = tuple(simplex_lattice(10, include=())) if preferences is None else tuple(preferences)
     if len(grid) != 66:
         raise ValueError("V8 validation requires exactly 66 simplex preferences")
+    if decode_mode not in {"greedy", "sampled"}:
+        raise ValueError("decode_mode must be 'greedy' or 'sampled'")
+    if decode_mode == "sampled" and sampling_seed is None:
+        raise ValueError("sampled V8 evaluation requires a sampling_seed")
     source_records = [
         dataset[index] for index in range(offset, offset + instance_limit)
     ]
@@ -824,7 +970,8 @@ def evaluate_preference_grid_parallel(
             ppo_agent,
             records,
             max_parallelism=min(runner.worker_count, len(records)),
-            deterministic=True,
+            deterministic=decode_mode == "greedy",
+            sampling_seed=sampling_seed,
             preferences=repeated_preferences,
         )
     finally:
@@ -844,6 +991,23 @@ def evaluate_preference_grid_parallel(
                     else 0.0
                 ),
                 "action_trace_sha256": rollout.action_trace_sha256,
+                "decode_mode": decode_mode,
+                "result_role": (
+                    "formal_sampled"
+                    if decode_mode == "sampled"
+                    else "greedy_diagnostic"
+                ),
+                "sampling_seed": rollout.sampling_seed,
+                "sampling_repeat": 0,
+                "derived_sampling_seed": rollout.derived_sampling_seed,
+                "sampling_evaluation_key": (
+                    rollout.sampling_evaluation_key
+                ),
+                "sampling_rng_version": (
+                    SAMPLED_EVALUATION_RNG_VERSION
+                    if decode_mode == "sampled"
+                    else None
+                ),
             }
         )
         metrics["feasibility_proxy_return"] = proxy_return_from_metrics(
@@ -892,6 +1056,18 @@ def evaluate_preference_grid_parallel(
         "normalization_manifest_sha256": config["objective_scalarizer"].get(
             "normalization_manifest_sha256"
         ),
+        "decode_mode": decode_mode,
+        "result_role": (
+            "formal_sampled"
+            if decode_mode == "sampled"
+            else "greedy_diagnostic"
+        ),
+        "sampling_seed": sampling_seed,
+        "sampling_rng_version": (
+            SAMPLED_EVALUATION_RNG_VERSION
+            if decode_mode == "sampled"
+            else None
+        ),
     })
     return rows, summary
 
@@ -906,7 +1082,7 @@ def main() -> None:
     parser.add_argument(
         "--decode-mode",
         choices=("greedy", "sampled"),
-        default="greedy",
+        default=None,
     )
     parser.add_argument("--sampling-seed", type=int)
     parser.add_argument("--algorithm-seed", type=int)
@@ -925,19 +1101,75 @@ def main() -> None:
         if args.algorithm_seed is None
         else args.algorithm_seed,
     )
-    rows, schedules, reconfigurations, metrics = evaluate_dataset(
-        config,
-        dataset_name=args.dataset,
-        policy_name=args.policy,
-        checkpoint=args.checkpoint,
-        decode_mode=args.decode_mode,
-        sampling_seed=(
-            args.sampling_seed
+    decode_mode = _resolve_decode_mode(args.policy, args.decode_mode)
+    sampling_seeds: list[int | None]
+    if decode_mode == "sampled":
+        sampling_seeds = (
+            [int(args.sampling_seed)]
             if args.sampling_seed is not None
-            else int(config["seed"]) + 100000
-            if args.decode_mode == "sampled"
-            else None
-        ),
+            else list(
+                configured_formal_evaluation_sampling_seeds(
+                    config, "final_test"
+                )
+            )
+        )
+    else:
+        sampling_seeds = [None]
+    rows: list[dict[str, Any]] = []
+    schedules: list[dict[str, Any]] = []
+    reconfigurations: list[dict[str, Any]] = []
+    per_repeat_metrics: list[dict[str, Any]] = []
+    for repeat_index, sampling_seed in enumerate(sampling_seeds):
+        repeat_rows, repeat_schedules, repeat_reconfigurations, repeat_metrics = (
+            evaluate_dataset(
+                config,
+                dataset_name=args.dataset,
+                policy_name=args.policy,
+                checkpoint=args.checkpoint,
+                decode_mode=decode_mode,
+                sampling_seed=sampling_seed,
+            )
+        )
+        for collection in (
+            repeat_rows,
+            repeat_schedules,
+            repeat_reconfigurations,
+        ):
+            for row in collection:
+                row["sampling_repeat"] = repeat_index
+                row["sampling_seed"] = sampling_seed
+        rows.extend(repeat_rows)
+        schedules.extend(repeat_schedules)
+        reconfigurations.extend(repeat_reconfigurations)
+        per_repeat_metrics.append(repeat_metrics)
+    if len(per_repeat_metrics) == 1:
+        metrics = per_repeat_metrics[0]
+    else:
+        reference = per_repeat_metrics[0]
+        metrics = aggregate_evaluation_rows(
+            rows,
+            dataset=args.dataset,
+            policy=args.policy,
+            manifest=str(reference["manifest"]),
+            quality_metric=evaluation_quality_metric(config),
+        )
+        metrics.update(
+            {
+                "decode_mode": decode_mode,
+                "sampling_seeds": [int(seed) for seed in sampling_seeds if seed is not None],
+                "sampling_rng_version": SAMPLED_EVALUATION_RNG_VERSION,
+                "repeat_count": len(sampling_seeds),
+                "unique_instance_count": (
+                    int(metrics["instance_count"]) // len(sampling_seeds)
+                ),
+                "per_repeat_metrics": per_repeat_metrics,
+                "dataset_manifest_sha256": reference[
+                    "dataset_manifest_sha256"
+                ],
+            }
+        )
+    metrics["result_role"] = (
+        "formal_sampled" if decode_mode == "sampled" else "greedy_diagnostic"
     )
     checkpoint_path = (
         project_path(args.checkpoint) if args.checkpoint is not None else None
@@ -959,7 +1191,7 @@ def main() -> None:
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label=(
-            f"eval_{args.policy}_{args.decode_mode}_{args.dataset}"
+            f"eval_{args.policy}_{decode_mode}_{args.dataset}"
         ),
         run_name=args.run_name,
     )

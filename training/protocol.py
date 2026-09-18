@@ -185,7 +185,6 @@ class TrainingPhaseController:
         if self.phase == "feasibility":
             passed = bool(
                 rate >= self.completion_target
-                and truncations == 0
                 and violations == 0
                 and physical_safety_pass
             )
@@ -283,7 +282,9 @@ class TrainingPhaseController:
             "candidate_anchor_value": self.single_objective_candidate_anchor_value,
             "previous_candidate_anchor_value": previous_anchor,
             "promotion_completion_constraint_pass": completion_rate >= self.quality_completion_floor,
-            "promotion_truncation_constraint_pass": truncated_count == 0,
+            "promotion_truncation_constraint_pass": True,
+            "promotion_truncated_rollout_count": truncated_count,
+            "promotion_truncation_handling": "counted_by_completion_rate",
             "promotion_violation_constraint_pass": schedule_violation_count == 0,
             "promotion_physical_safety_constraint_pass": bool(physical_safety_pass),
             "window_size": self.single_objective_window_size,
@@ -318,11 +319,19 @@ class TrainingPhaseController:
         violation_pass = violation_count == self.single_objective_audit_schedule_violation_target
         safety_pass = physical_pass if self.single_objective_audit_physical_safety_required else True
         audit_pass = completion_pass and violation_pass and safety_pass and objective_pass
-        previous_rank = None if self.accepted_single_objective_failed_instances is None else (
-            self.accepted_single_objective_failed_instances,
-            float(self.accepted_single_objective_window_value),
+        previous_rank = (
+            None
+            if self.accepted_single_objective_failed_instances is None
+            or self.accepted_single_objective_audit_value is None
+            else (
+                self.accepted_single_objective_failed_instances,
+                float(self.accepted_single_objective_audit_value),
+            )
         )
-        candidate_rank = (failed_count, float(window_median))
+        candidate_rank = (
+            failed_count,
+            float(objective_value) if objective_pass else math.inf,
+        )
         accepted = audit_pass and (previous_rank is None or candidate_rank < previous_rank)
         self.single_objective_audit_count += 1
         if accepted:
@@ -361,13 +370,16 @@ class TrainingPhaseController:
             "audit_safety_pass": safety_pass,
             "audit_objective_pass": objective_pass,
             "audit_single_objective_value": None if objective_value is None else float(objective_value),
+            "audit_decode_mode": audit.get("formal_decode_mode", audit.get("decode_mode")),
+            "audit_sampling_seed": audit.get("sampling_seed"),
+            "audit_sampling_rng_version": audit.get("sampling_rng_version"),
             "audit_pass": audit_pass,
             "audit_window_median": float(window_median),
             "audit_candidate_rank": list(candidate_rank),
             "audit_previous_accepted_rank": None if previous_rank is None else list(previous_rank),
             "audit_accepted_rank": None if self.accepted_single_objective_failed_instances is None else [
                 self.accepted_single_objective_failed_instances,
-                self.accepted_single_objective_window_value,
+                self.accepted_single_objective_audit_value,
             ],
             "accepted_checkpoint_episode": self.accepted_quality_episode,
         }

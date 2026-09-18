@@ -67,6 +67,14 @@ Checkpoint loading is strict and requires the pair-plus-WAIT/schema-4 network sp
 .\.venv\Scripts\python.exe eval.py --config configs\e1\single_flow.json --dataset validation --policy ppo --checkpoint result\runs\v7_2000_e1_seed11\accepted_checkpoint.pt
 ```
 
+PPO evaluation defaults to the formal stochastic policy (`sampled`,
+temperature 1.0). Validation, checkpoint promotion, independent audit, and
+final test use disjoint deterministic seed namespaces derived from the
+algorithm seed: `+100000`, `+200000`, and `+300000`, respectively. Specialist
+promotion objectives are computed only from completed, non-truncated sampled
+rollouts; failures and truncations are enforced by the completion/safety gate.
+Use `--decode-mode greedy` only for diagnostic or ablation runs.
+
 ## MO-ALNS and offline Pareto analysis
 
 ```powershell

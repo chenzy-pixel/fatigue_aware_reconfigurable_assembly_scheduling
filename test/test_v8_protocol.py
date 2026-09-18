@@ -20,11 +20,15 @@ from environment import (
     simplex_lattice,
 )
 from result.v8_promotion import (
+    _safety_gate,
     compare_preference_conditioned_checkpoints,
     paired_instance_block_bootstrap,
 )
 from v8_normalization import collect_specialist_audits
-from train import _validate_pareto_validation_protocol
+from train import (
+    _assert_pareto_checkpoint_replay,
+    _validate_pareto_validation_protocol,
+)
 
 
 @pytest.mark.parametrize(
@@ -191,6 +195,76 @@ def test_primary_bootstrap_operates_on_paired_instance_blocks():
     assert interval.upper < 0
     with pytest.raises(ValueError, match="10,000"):
         paired_instance_block_bootstrap(candidate, incumbent, replicates=999)
+
+
+def test_universal_sampled_audit_gates_each_preference_not_any_failure_instance():
+    grid = simplex_lattice(10, include=())
+    rows = []
+    for instance_index in range(200):
+        for preference_index, preference in enumerate(grid):
+            failed = bool(
+                instance_index < 13
+                and preference_index == instance_index % len(grid)
+            )
+            rows.append(
+                {
+                    "instance_id": f"instance_{instance_index:03d}",
+                    "preference_key": f"preference_{preference_index:02d}",
+                    "preference": preference.as_dict(),
+                    "terminated": not failed,
+                    "truncated": failed,
+                    "schedule_violation_count": 0,
+                    "maximum_worker_fatigue": 0.4,
+                    "safe_fatigue_limit": 0.8,
+                }
+            )
+    passed, detail = _safety_gate(rows, minimum_completion=0.98)
+    assert passed is True
+    assert detail["failed_instance_count"] == 13
+    assert detail["failed_instance_count_is_diagnostic"] is True
+    assert detail["minimum_completion_rate"] == pytest.approx(199 / 200)
+
+    for row in rows:
+        if (
+            row["preference_key"] == "preference_00"
+            and row["instance_id"] in {
+                "instance_013",
+                "instance_014",
+                "instance_015",
+                "instance_016",
+                "instance_017",
+            }
+        ):
+            row["terminated"] = False
+            row["truncated"] = True
+    passed, detail = _safety_gate(rows, minimum_completion=0.98)
+    assert passed is False
+    assert detail["completion_rate_by_preference"]["preference_00"] < 0.98
+
+
+def test_universal_checkpoint_replay_requires_identical_seeded_action_traces():
+    expected = [
+        {
+            "instance_id": "instance_001",
+            "preference_key": "preference_00",
+            "sampling_seed": 200011,
+            "derived_sampling_seed": 123,
+            "sampling_evaluation_key": "preference_00",
+            "sampling_rng_version": "evaluation_unit_sha256_v2",
+            "action_trace_sha256": "a" * 64,
+            "terminated": True,
+            "truncated": False,
+            "schedule_violation_count": 0,
+            "flow_time_objective": 100.0,
+            "reconfiguration_cost": 20.0,
+            "worker_load_variance": 3.0,
+        }
+    ]
+    assert len(_assert_pareto_checkpoint_replay(expected, deepcopy(expected))) == 64
+    changed = deepcopy(expected)
+    changed[0]["action_trace_sha256"] = "b" * 64
+    with pytest.raises(RuntimeError, match="action_trace_sha256"):
+        _assert_pareto_checkpoint_replay(expected, changed)
 
 
 def test_formal_universal_run_requires_frozen_manifest_and_disjoint_audit():

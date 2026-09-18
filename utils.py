@@ -9,23 +9,73 @@ from typing import Any
 import numpy as np
 
 
-SAMPLED_EVALUATION_RNG_VERSION = "per_instance_sha256_v1"
+SAMPLED_EVALUATION_RNG_VERSION = "evaluation_unit_sha256_v2"
 
 
 def derive_evaluation_sampling_seed(
     sampling_seed: int,
     instance_id: str,
+    evaluation_key: str | None = None,
 ) -> int:
-    """Derive an independent Torch seed without touching global RNG state."""
+    """Derive an independent Torch seed for one fixed evaluation unit.
+
+    ``evaluation_key`` is omitted for specialist evaluation and set to the
+    preference key for Universal V8.  This gives every instance-preference
+    pair its own reproducible stream while preserving common random numbers
+    when candidate and incumbent checkpoints are compared.
+    """
     stable_id = str(instance_id)
     if not stable_id:
         raise ValueError("instance_id must not be empty")
+    stable_key = "" if evaluation_key is None else str(evaluation_key)
     payload = (
         f"{SAMPLED_EVALUATION_RNG_VERSION}\0{int(sampling_seed)}\0"
-        f"{stable_id}"
+        f"{stable_id}\0{stable_key}"
     ).encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") & (
         (1 << 63) - 1
+    )
+
+
+def formal_evaluation_sampling_seeds(
+    algorithm_seed: int,
+    *,
+    seed_offset: int,
+    repeats: int,
+) -> list[int]:
+    """Return one reproducible, positive seed namespace for formal evaluation."""
+
+    base = int(algorithm_seed)
+    offset = int(seed_offset)
+    count = int(repeats)
+    if offset < 1 or count < 1:
+        raise ValueError("formal evaluation seed offset/repeats must be positive")
+    return [base + offset + repeat for repeat in range(count)]
+
+
+def configured_formal_evaluation_sampling_seeds(
+    config: dict[str, Any],
+    namespace: str,
+) -> list[int]:
+    """Resolve the disjoint validation/audit/final-test seed namespace."""
+
+    fields = {
+        "validation": ("validation_seed_offset", "validation_repeats"),
+        "audit": ("audit_seed_offset", "audit_repeats"),
+        "final_test": ("final_test_seed_offset", "final_test_repeats"),
+    }
+    if namespace not in fields:
+        raise ValueError(f"unknown formal evaluation namespace {namespace!r}")
+    settings = config["training"]["formal_evaluation"]
+    if str(settings.get("decode_mode")) != "sampled":
+        raise ValueError("formal PPO evaluation must use sampled decoding")
+    if float(settings.get("temperature", 1.0)) != 1.0:
+        raise ValueError("formal PPO evaluation requires temperature 1.0")
+    offset_field, repeats_field = fields[namespace]
+    return formal_evaluation_sampling_seeds(
+        int(config["seed"]),
+        seed_offset=int(settings[offset_field]),
+        repeats=int(settings[repeats_field]),
     )
 
 

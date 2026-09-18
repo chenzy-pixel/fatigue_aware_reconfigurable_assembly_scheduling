@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "6.1.0"
+EVALUATION_SCHEMA_VERSION = "6.2.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
@@ -187,10 +187,11 @@ def summarize_values(
             raise ValueError("cannot summarize a non-finite value")
         observations.append(number)
     if not observations:
-        return {"count": 0, "mean": None, "std": None}
+        return {"count": 0, "mean": None, "median": None, "std": None}
     return {
         "count": len(observations),
         "mean": float(statistics.fmean(observations)),
+        "median": float(statistics.median(observations)),
         "std": (
             float(statistics.stdev(observations))
             if len(observations) > 1
@@ -255,11 +256,23 @@ def aggregate_evaluation_rows(
         if bool(row["terminated"]) and not bool(row["truncated"])
     ]
     completed_metrics = {
+        "quality_score": summarize_values(
+            row.get("quality_score") for row in completed
+        ),
         "makespan": summarize_values(
             row["makespan"] for row in completed
         ),
         "total_flow_time": summarize_values(
             row["total_flow_time"] for row in completed
+        ),
+        "flow_time_objective": summarize_values(
+            row["flow_time_objective"] for row in completed
+        ),
+        "reconfiguration_cost": summarize_values(
+            row["reconfiguration_cost"] for row in completed
+        ),
+        "worker_load_variance": summarize_values(
+            row["worker_load_variance"] for row in completed
         ),
     }
     all_instance_metrics = {
@@ -465,7 +478,7 @@ def evaluation_selection_key(
     The four-field shape is retained for log/checkpoint compatibility.  Only
     completion and the mean per-instance Q12 score participate in selection.
     """
-    metrics = aggregate["all_instance_metrics"]
+    metrics = aggregate["completed_metrics"]
 
     def mean(name: str) -> float:
         value = metrics.get(name, {}).get("mean")

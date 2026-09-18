@@ -71,11 +71,13 @@ def test_gap_and_sample_statistics_contract():
     assert summary == {
         "count": 2,
         "mean": 2.0,
+        "median": 2.0,
         "std": pytest.approx(math.sqrt(2.0)),
     }
     assert summarize_values([2.0]) == {
         "count": 1,
         "mean": 2.0,
+        "median": 2.0,
         "std": 0.0,
     }
 
@@ -103,7 +105,7 @@ def test_aggregate_uses_completed_and_all_instance_populations():
         policy="ppo",
         manifest="manifest.json",
     )
-    assert aggregate["evaluation_schema_version"] == "6.1.0"
+    assert aggregate["evaluation_schema_version"] == "6.2.0"
     assert aggregate["quality_metric_version"] == (
         "canonical_bounded_quality_v1"
     )
@@ -113,9 +115,16 @@ def test_aggregate_uses_completed_and_all_instance_populations():
     assert aggregate["completed_metrics"]["makespan"] == {
         "count": 1,
         "mean": 100.0,
+        "median": 100.0,
         "std": 0.0,
     }
     assert aggregate["completed_metrics"]["total_flow_time"]["count"] == 1
+    assert aggregate["completed_metrics"]["flow_time_objective"] == {
+        "count": 1,
+        "mean": 500.0,
+        "median": 500.0,
+        "std": 0.0,
+    }
     objective = aggregate["all_instance_metrics"]["flow_time_objective"]
     assert objective["count"] == 2
     assert objective["mean"] == pytest.approx(750.0)
@@ -123,7 +132,12 @@ def test_aggregate_uses_completed_and_all_instance_populations():
     fatigue = aggregate["all_instance_metrics"][
         "maximum_worker_fatigue"
     ]
-    assert fatigue == {"count": 2, "mean": 0.75, "std": 0.0}
+    assert fatigue == {
+        "count": 2,
+        "mean": 0.75,
+        "median": 0.75,
+        "std": 0.0,
+    }
 
 
 def test_fixed_validation_evaluation_is_read_only_and_reports_zero_gap(
@@ -185,7 +199,7 @@ def test_fixed_validation_evaluation_is_read_only_and_reports_zero_gap(
     saved_metrics = json.loads(
         (tmp_path / "metrics.json").read_text(encoding="utf-8")
     )
-    assert saved_metrics["evaluation_schema_version"] == "6.1.0"
+    assert saved_metrics["evaluation_schema_version"] == "6.2.0"
     with (tmp_path / "instance_metrics.csv").open(
         "r",
         encoding="utf-8-sig",
@@ -290,14 +304,21 @@ def test_ppo_checkpoint_loads_once_and_validation_preserves_rng(
         "select_action",
         fast_select,
     )
-    evaluation_module.evaluate_dataset(
-        effective_config,
-        dataset_name="validation",
-        policy_name="ppo",
-        checkpoint=str(checkpoint),
-        instance_limit=2,
+    default_ppo_rows, _, _, default_ppo_metrics = (
+        evaluation_module.evaluate_dataset(
+            effective_config,
+            dataset_name="validation",
+            policy_name="ppo",
+            checkpoint=str(checkpoint),
+            instance_limit=2,
+        )
     )
     assert load_count == 1
+    assert default_ppo_metrics["decode_mode"] == "sampled"
+    assert default_ppo_metrics["result_role"] == "formal_sampled"
+    assert default_ppo_metrics["sampling_seed"] == 300011
+    assert default_ppo_rows[0]["decode_mode"] == "sampled"
+    assert default_ppo_rows[0]["result_role"] == "formal_sampled"
 
     python_state = random.getstate()
     numpy_state = np.random.get_state()

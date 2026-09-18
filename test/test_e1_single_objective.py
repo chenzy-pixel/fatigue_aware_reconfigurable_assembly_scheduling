@@ -23,6 +23,8 @@ from train import (
     TrainingPhaseController,
     ValidationStabilityController,
     _checkpoint_eligible_validation_event,
+    _attach_greedy_diagnostic,
+    _evaluate_sampled_validation,
     _promote_accepted_checkpoint,
     _reevaluate_checkpoint_from_disk,
     _restore_regression_checkpoint,
@@ -67,6 +69,11 @@ def _validation(flow: float, cost: float, variance: float) -> dict[str, object]:
         "mean_flow_time_objective": flow,
         "mean_reconfiguration_cost": cost,
         "mean_worker_load_variance": variance,
+        "completed_metrics": {
+            "flow_time_objective": {"mean": flow},
+            "reconfiguration_cost": {"mean": cost},
+            "worker_load_variance": {"mean": variance},
+        },
         "all_instance_metrics": {
             "flow_time_objective": {"mean": flow},
             "reconfiguration_cost": {"mean": cost},
@@ -92,6 +99,87 @@ def _audit(*, objective_value: float, failed: int = 0, violation: int = 0,
 def _raw_json(path: str) -> dict:
     with Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def test_single_objective_score_excludes_failed_rollout_objectives():
+    validation = _validation(500.0, 100.0, 8.0)
+    validation["completion_rate"] = 0.98
+    validation["all_instance_metrics"] = {
+        "flow_time_objective": {"mean": 5.0},
+        "reconfiguration_cost": {"mean": 1.0},
+        "worker_load_variance": {"mean": 0.1},
+    }
+    assert _single_objective_guard_score(validation, "flow")[1] == 500.0
+    assert _single_objective_guard_score(validation, "cost")[1] == 100.0
+    assert _single_objective_guard_score(validation, "variance")[1] == 8.0
+
+    controller = _transitioned_controller("cost")
+    event = controller.observe_validation(
+        0.94,
+        completed_episodes=20,
+        score=_single_objective_guard_score(validation, "cost"),
+        truncated_count=9,
+        schedule_violation_count=0,
+        physical_safety_pass=True,
+    )
+    assert event == "rejected"
+    assert controller.single_objective_window_values == []
+
+
+def test_specialist_validation_runs_exactly_three_repeats_of_50(
+    monkeypatch,
+):
+    config = load_config(CONFIGS["flow"])
+    calls: list[tuple[int, str, int]] = []
+
+    def fake_evaluate_dataset(
+        _config,
+        *,
+        instance_limit,
+        decode_mode,
+        sampling_seed,
+        **_kwargs,
+    ):
+        calls.append((instance_limit, decode_mode, sampling_seed))
+        rows = [
+            {
+                "instance_id": f"instance-{index}",
+                "maximum_worker_fatigue": 0.5,
+                "safe_fatigue_limit": 0.9,
+            }
+            for index in range(instance_limit)
+        ]
+        return rows, [], [], {
+            "completion_rate": 1.0,
+            "manifest": "manifest.json",
+            "parallel_envs": 1,
+        }
+
+    def fake_aggregate(rows, **_kwargs):
+        return {"instance_count": len(rows)}
+
+    monkeypatch.setattr(train_module, "evaluate_dataset", fake_evaluate_dataset)
+    monkeypatch.setattr(
+        train_module, "aggregate_evaluation_rows", fake_aggregate
+    )
+    rows, aggregate = _evaluate_sampled_validation(
+        config,
+        dataset_name="validation",
+        ppo_agent=object(),
+        instance_limit=50,
+        sampling_seeds=[100011, 100012, 100013],
+    )
+    assert calls == [
+        (50, "sampled", 100011),
+        (50, "sampled", 100012),
+        (50, "sampled", 100013),
+    ]
+    assert len(rows) == 150
+    assert [row["sampling_repeat"] for row in rows].count(0) == 50
+    assert [row["sampling_repeat"] for row in rows].count(1) == 50
+    assert [row["sampling_repeat"] for row in rows].count(2) == 50
+    assert aggregate["repeat_count"] == 3
+    assert aggregate["unique_instance_count"] == 50
 
 
 def test_default_is_the_complete_v8_universal_protocol():
@@ -188,7 +276,7 @@ def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
     non_target_improvement = dict(anchor_validation)
     for name in other_names:
         non_target_improvement[OBJECTIVE_FIELDS[name]] *= 0.1
-    non_target_improvement["all_instance_metrics"] = {
+    non_target_improvement["completed_metrics"] = {
         "flow_time_objective": {
             "mean": non_target_improvement["mean_flow_time_objective"]
         },
@@ -213,7 +301,7 @@ def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
 
     target_improvement = dict(anchor_validation)
     target_improvement[OBJECTIVE_FIELDS[objective]] = anchor_value - 0.25
-    target_improvement["all_instance_metrics"] = {
+    target_improvement["completed_metrics"] = {
         "flow_time_objective": {
             "mean": target_improvement["mean_flow_time_objective"]
         },
@@ -344,14 +432,20 @@ def test_final_evaluation_loads_accepted_checkpoint_instead_of_online_agent(
                 "safe_fatigue_limit": 1.0,
             }
         ]
-        return rows, None, None, {
+        return rows, {
             "parallel_envs": 1,
             "evaluated_identity": ppo_agent.identity,
+            "instance_count": 200,
+            "completed_count": 200,
+            "completion_rate": 1.0,
+            "schedule_violation_count": 0,
         }
 
     monkeypatch.setattr(train_module, "PPOAgent", IsolatedEvaluationAgent)
     monkeypatch.setattr(train_module, "build_actor_critic", lambda *_args: object())
-    monkeypatch.setattr(train_module, "evaluate_dataset", evaluate_loaded_agent)
+    monkeypatch.setattr(
+        train_module, "_evaluate_sampled_validation", evaluate_loaded_agent
+    )
     monkeypatch.setattr(train_module, "build_provenance", lambda *_args, **_kwargs: {})
 
     evaluation = _reevaluate_checkpoint_from_disk(
@@ -360,8 +454,8 @@ def test_final_evaluation_loads_accepted_checkpoint_instead_of_online_agent(
         bootstrap_observation=object(),
         dataset_name="validation",
         instance_limit=200,
-        sampling_seeds=[],
-        greedy_only=True,
+        sampling_seeds=[200011],
+        include_greedy_diagnostic=False,
     )
 
     assert online_agent.identity == "candidate-b"
@@ -370,7 +464,7 @@ def test_final_evaluation_loads_accepted_checkpoint_instead_of_online_agent(
     assert evaluation["checkpoint_metadata"] == {
         "loaded_identity": "candidate-a"
     }
-    assert evaluation["greedy"]["evaluated_identity"] == "candidate-a"
+    assert evaluation["formal_sampled"]["evaluated_identity"] == "candidate-a"
 
 
 def test_final_audit_runner_uses_the_ungrouped_training_episode_budget():
@@ -460,17 +554,17 @@ def test_single_objective_rejects_non_one_hot_preference_immediately():
         TrainingPhaseController.from_config(config)
 
 
-def test_phase_one_keeps_the_original_three_consecutive_100_percent_gate():
+def test_phase_one_requires_three_consecutive_98_percent_sampled_validations():
     controller = TrainingPhaseController.from_config(
         load_config(CONFIGS["flow"])
     )
     score = (-1.0, 100.0, 0.0, 0.0)
-    assert controller.observe_validation(1.0, completed_episodes=10, score=score) == "feasibility"
-    assert controller.observe_validation(0.99, completed_episodes=20, score=score) == "feasibility"
+    assert controller.observe_validation(147 / 150, completed_episodes=10, score=score) == "feasibility"
+    assert controller.observe_validation(146 / 150, completed_episodes=20, score=score) == "feasibility"
     assert controller.consecutive_successes == 0
-    assert controller.observe_validation(1.0, completed_episodes=30, score=score) == "feasibility"
-    assert controller.observe_validation(1.0, completed_episodes=40, score=score) == "feasibility"
-    assert controller.observe_validation(1.0, completed_episodes=50, score=score) == "transition"
+    assert controller.observe_validation(147 / 150, completed_episodes=30, score=score, truncated_count=3) == "feasibility"
+    assert controller.observe_validation(147 / 150, completed_episodes=40, score=score, truncated_count=3) == "feasibility"
+    assert controller.observe_validation(147 / 150, completed_episodes=50, score=score, truncated_count=3) == "transition"
 
 
 def test_serial_and_parallel_promotion_paths_share_the_same_decisions():
@@ -532,7 +626,7 @@ def test_individual_improvement_does_not_promote_until_window_median_improves():
     assert controller.single_objective_candidate_anchor_value == 50.0
 
 
-def test_formal_promotion_requires_current_100_percent_candidate():
+def test_formal_promotion_requires_a_current_gate_eligible_window():
     controller = _transitioned_controller("flow")
     for index in range(5):
         controller.observe_validation(
@@ -543,9 +637,9 @@ def test_formal_promotion_requires_current_100_percent_candidate():
     assert controller.accepted_single_objective_value is None
     for index in range(3):
         event = controller.observe_validation(
-            1.0,
+            0.95,
             completed_episodes=30 + index,
-            score=(-1.0, 80.0, 0.0, 0.0),
+            score=(-0.95, 80.0, 0.0, 0.0),
         )
     assert event == "audit_required"
     assert controller.observe_single_objective_audit(
@@ -556,6 +650,91 @@ def test_formal_promotion_requires_current_100_percent_candidate():
     assert controller.accepted_single_objective_value == 80.0
     assert _checkpoint_eligible_validation_event(
         "accepted", SINGLE_OBJECTIVE_PROMOTION_MODE
+    )
+
+
+def test_single_objective_acceptance_ranks_passed_audits_by_failed_then_objective():
+    controller = _transitioned_controller("flow")
+    for index in range(5):
+        controller.observe_validation(
+            1.0,
+            completed_episodes=20 + index,
+            score=(-1.0, 100.0, 0.0, 0.0),
+        )
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=100.0),
+        completed_episodes=24,
+        window_median=100.0,
+    ) == "accepted"
+
+    controller.single_objective_candidate_anchor_value = 90.0
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=110.0),
+        completed_episodes=30,
+        window_median=90.0,
+    ) == "audit_passed_not_accepted"
+    assert controller.accepted_single_objective_audit_value == 100.0
+
+    assert controller.observe_single_objective_audit(
+        _audit(objective_value=95.0),
+        completed_episodes=31,
+        window_median=90.0,
+    ) == "accepted"
+    assert controller.accepted_single_objective_audit_value == 95.0
+
+
+def test_single_objective_audit_allows_four_failures_but_rejects_five():
+    accepted = _transitioned_controller("flow")
+    assert accepted.observe_single_objective_audit(
+        _audit(objective_value=100.0, failed=4),
+        completed_episodes=30,
+        window_median=100.0,
+    ) == "accepted"
+    assert accepted.accepted_single_objective_failed_instances == 4
+
+    rejected = _transitioned_controller("flow")
+    assert rejected.observe_single_objective_audit(
+        _audit(objective_value=1.0, failed=5),
+        completed_episodes=30,
+        window_median=1.0,
+    ) == "audit_rejected"
+    assert rejected.accepted_single_objective_value is None
+
+
+def test_greedy_diagnostic_only_adds_prefixed_log_fields(monkeypatch):
+    phase = _transitioned_controller("flow")
+    stability = ValidationStabilityController.from_config(
+        load_config(CONFIGS["flow"])
+    )
+    phase_before = phase.as_dict()
+    stability_before = stability.as_dict()
+    monkeypatch.setattr(
+        train_module,
+        "_validation_log_row",
+        lambda *_args, **_kwargs: {
+            "episode": 40,
+            "dataset": "validation",
+            "completion_rate": 0.75,
+            "mean_unfinished_orders": 2.0,
+            "mean_feasibility_proxy_return": 1.0,
+            "mean_relative_heuristic_gap_percent": 3.0,
+        },
+    )
+    formal_row = {
+        "completion_rate": 0.98,
+        "mean_unfinished_orders": 0.1,
+        "mean_feasibility_proxy_return": 5.0,
+        "mean_relative_heuristic_gap_percent": 1.0,
+    }
+    _attach_greedy_diagnostic(
+        formal_row, {}, completed_episodes=40
+    )
+    assert phase.as_dict() == phase_before
+    assert stability.as_dict() == stability_before
+    assert formal_row["completion_rate"] == 0.98
+    assert formal_row["greedy_completion_rate"] == 0.75
+    assert formal_row["greedy_minus_formal_completion_rate"] == pytest.approx(
+        -0.23
     )
 
 
@@ -600,11 +779,11 @@ def test_formal_track_rejects_failed_hard_gates(
 def test_single_objective_rollback_tracks_historical_best_during_feasibility():
     config = load_config(CONFIGS["flow"])
     controller = ValidationStabilityController.from_config(config)
-    controller.observe_greedy(
+    controller.observe_formal(
         (-0.94, 100.0, 0.0, 0.0), 47 / 50,
         completed_episodes=20, feasibility_phase=True,
     )
-    first_drop = controller.observe_greedy(
+    first_drop = controller.observe_formal(
         (-0.88, 101.0, 0.0, 0.0), 44 / 50,
         completed_episodes=40, feasibility_phase=True,
     )
@@ -612,7 +791,7 @@ def test_single_objective_rollback_tracks_historical_best_during_feasibility():
     assert first_drop["rollback_reference_completion_rate"] == pytest.approx(
         47 / 50
     )
-    second_drop = controller.observe_greedy(
+    second_drop = controller.observe_formal(
         (-0.88, 102.0, 0.0, 0.0), 44 / 50,
         completed_episodes=60, feasibility_phase=True,
     )
@@ -720,7 +899,9 @@ def test_failure_detail_rows_record_the_required_tail_diagnostics():
     ]
 
 
-def test_formal_run_requires_at_least_the_200_audit_instances(tmp_path: Path):
+def test_formal_run_requires_disjoint_validation_and_200_audit_instances(
+    tmp_path: Path,
+):
     config = load_config(CONFIGS["flow"])
     config["paths"]["manifests_root"] = str(tmp_path / "manifests")
     with pytest.raises(FileNotFoundError, match="validation manifest"):
@@ -737,7 +918,7 @@ def test_formal_run_requires_at_least_the_200_audit_instances(tmp_path: Path):
             "files": [],
         },
     )
-    with pytest.raises(ValueError, match="at least 200 instances"):
+    with pytest.raises(ValueError, match="at least 250 instances"):
         _validate_single_objective_validation_protocol(
             config, smoke=False, validation_limit=50
         )
@@ -757,8 +938,8 @@ def test_formal_run_requires_at_least_the_200_audit_instances(tmp_path: Path):
         manifest_path,
         {
             "generator_version": config["generator"]["version"],
-            "instance_count": 200,
-            "files": [None] * 200,
+            "instance_count": 250,
+            "files": [None] * 250,
         },
     )
     _validate_single_objective_validation_protocol(

@@ -44,7 +44,7 @@
 | 文件 | 主要组件或逻辑 | 被谁调用 / 输出 |
 |---|---|---|
 | `train.py` | `TrainingEngine`；训练装配；周期验证；候选 checkpoint 落盘与重新加载；独立 audit；resume；训练日志 | CLI `train.py --config ...`；写入 `result/runs/<run>` |
-| `eval.py` | `EvaluationPolicy`；单实例、固定数据集、串行/并行评测；greedy/sample 策略；诊断 trace | 训练验证和独立评测共用；输出评测 CSV/JSON |
+| `eval.py` | `EvaluationPolicy`；单实例、固定数据集、串行/并行评测；正式 sampled 与 greedy 诊断策略；诊断 trace | 训练验证和独立评测共用；输出评测 CSV/JSON |
 | `mo_alns.py` | 在固定数据集和 preference grid 上运行 MO-ALNS；重放候选并校验目标值 | 输出 MO-ALNS candidate rows |
 | `mo_alns_benchmark.py` | 按 manifest 批量执行 MO-ALNS 基线 | 读取 `configs/baselines/*manifest*.json` |
 | `mo_alns_analysis.py` | 汇总 E1 与 MO-ALNS 的候选质量、配对统计和 preference/objective 关系 | 生成离线分析表与报告 |
@@ -158,6 +158,14 @@ PolicyObservation
 
 PPO 更新只包含 clipped policy loss、value loss、entropy、GAE、梯度裁剪和学习率控制。
 
+正式 PPO 策略保持为 `Categorical(logits)` 的随机策略，temperature 固定为
+1.0。validation、promotion、audit、checkpoint 磁盘重载复核和 final test
+均使用 sampled decoding；greedy 只进入诊断或消融字段，不改变阶段、回滚、
+学习率或 checkpoint 晋升。三个正式 RNG namespace 分别为
+`algorithm_seed + 100000 + repeat`、`algorithm_seed + 200000 + repeat` 和
+`algorithm_seed + 300000 + repeat`。具体 rollout seed 再由 root seed、instance
+ID，以及 Universal 路径中的 preference key 稳定派生。
+
 ### 7.2 基线算法
 
 | 文件 | 主要组件或逻辑 |
@@ -176,6 +184,22 @@ PPO 更新只包含 clipped policy loss、value loss、entropy、GAE、梯度裁
 
 职责边界：`TrainingEngine` 决定何时收集、更新、验证、保存与重载；`TrainingPhaseController` 只根据验证/audit 证据推进协议状态，不执行环境 rollout 或网络更新。
 
+Specialist validation 对 50 个实例各执行 3 次 sampled rollout。completion 与
+safety hard gate 通过后，Flow、Cost、Variance 的 promotion statistic 只从
+`terminated=True && truncated=False` 的轨迹计算；失败或截断轨迹只通过
+completion gate 施加惩罚，不进入 raw objective mean、五次窗口、anchor 或
+checkpoint 排名。Feasibility 阶段要求连续三次达到 98% completion 且零违规。
+Specialist audit 对独立 200 个实例各采样一次，保持 98% completion、最多 4 个
+失败实例和零安全违规。
+
+Universal validation 对 50×66 个 instance-preference pair 各采样一次，audit
+对 200×66 个 pair 各采样一次。正式 gate 使用逐 preference completion
+（validation 95%，audit 98%）与零安全违规；`failed_instance_count` 仅保留为
+诊断字段。candidate 与 incumbent 对同一 pair 使用相同派生 seed，维持配对
+bootstrap 的 common-random-number 语义。accepted checkpoint 从磁盘重载后，
+用同一 audit root seed 重放全部 200×66 个 pair，并逐 pair 核对派生 seed、
+action-trace hash、完成状态、安全状态和三目标值。
+
 ## 9. 结果层 `result/`
 
 | 文件 | 主要组件或逻辑 |
@@ -186,7 +210,7 @@ PPO 更新只包含 clipped policy loss、value loss、entropy、GAE、梯度裁
 | `result/terminal_log.py` | tee stdout/stderr 到 run 日志，同时保留终端显示 |
 | `result/visdom_dashboard.py` | 在线训练/验证面板、事件日志、诊断快照和 schedule Gantt SVG |
 | `result/visdom_replay.py` | 从持久化日志重放 Visdom 曲线 |
-| `result/runs/` | 训练 checkpoint、配置、CSV、audit 和评测产物；属于实验资产，不是源代码 |
+| `result/runs/` | 训练 checkpoint、配置、聚合 validation CSV、逐轨迹 formal sampled validation/audit CSV 和评测产物；属于实验资产，不是源代码 |
 | `result/analysis/` | 离线统计、Pareto/HV 与绘图产物 |
 
 ## 10. 训练与评测调用链
@@ -209,7 +233,7 @@ train.py main
       → independent audit
       → accepted checkpoint
   → 显式从磁盘加载 accepted checkpoint
-  → 最终 200-instance greedy audit
+  → 使用独立 audit seed 重放正式 sampled audit
   → result/io + provenance + dashboard
 ```
 
@@ -222,6 +246,7 @@ eval.py main
       ├─ PPOAgent + accepted checkpoint
       ├─ HeuristicPolicy
       └─ RandomPolicy
+  → PPO formal sampled repeats / optional greedy diagnostic
   → ParallelEpisodeRunner.evaluate_records
   → aggregate_evaluation_rows
   → metrics.json + instance_metrics.csv + provenance

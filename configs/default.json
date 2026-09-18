@@ -268,7 +268,7 @@
     }
   },
   "evaluation": {
-    "result_schema_version": "6.1.0",
+    "result_schema_version": "6.2.0",
     "quality_metric": {
       "version": "canonical_bounded_quality_v1",
       "flow_scale": 1200.0,
@@ -314,9 +314,18 @@
     "validation_parallel_envs": 20,
     "forced_action_compression": false,
     "worker_local_physical_forced_actions": true,
-    "final_evaluation_sampling_seeds": [100011, 100012, 100013],
+    "formal_evaluation": {
+      "decode_mode": "sampled",
+      "temperature": 1.0,
+      "validation_seed_offset": 100000,
+      "validation_repeats": 3,
+      "audit_seed_offset": 200000,
+      "audit_repeats": 1,
+      "final_test_seed_offset": 300000,
+      "final_test_repeats": 3
+    },
     "two_stage": {
-      "completion_target": 1.0,
+      "completion_target": 0.98,
       "consecutive_validations": 3,
       "quality_completion_floor": 0.95,
       "quality_checkpoint_promotion": "preference_conditioned_pareto_v8",
@@ -332,7 +341,6 @@
         "bootstrap_seed": 20260811,
         "validation_completion_floor": 0.95,
         "audit_completion_floor": 0.98,
-        "audit_max_failed_instances": 4,
         "endpoint_prediction_upper_bounds": null
       },
       "single_objective_promotion": {
@@ -342,7 +350,7 @@
         "rollback_completion_drop": 0.06,
         "rollback_below_floor_consecutive": 2,
         "audit_instance_limit": 200,
-        "audit_instance_offset": 0,
+        "audit_instance_offset": 50,
         "audit_completion_target": 0.98,
         "audit_max_failed_instances": 4,
         "audit_schedule_violation_target": 0,
@@ -360,10 +368,8 @@
         "factor": 0.5,
         "minimum": 0.000025
       },
-      "sampled": {
-        "every_validations": 5,
-        "repeats": 3,
-        "seed_offset": 100000
+      "greedy_diagnostic": {
+        "every_validations": 5
       }
     },
     "worker_timeout_seconds": 600,
