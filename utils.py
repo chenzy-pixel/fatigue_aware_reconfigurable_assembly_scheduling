@@ -57,11 +57,10 @@ def configured_formal_evaluation_sampling_seeds(
     config: dict[str, Any],
     namespace: str,
 ) -> list[int]:
-    """Resolve the disjoint validation/audit/final-test seed namespace."""
+    """Resolve a fixed validation or independent final-test seed namespace."""
 
     fields = {
         "validation": ("validation_seed_offset", "validation_repeats"),
-        "audit": ("audit_seed_offset", "audit_repeats"),
         "final_test": ("final_test_seed_offset", "final_test_repeats"),
     }
     if namespace not in fields:

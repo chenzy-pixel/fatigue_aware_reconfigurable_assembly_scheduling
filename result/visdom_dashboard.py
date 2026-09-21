@@ -57,11 +57,11 @@ DISPLAY_LABELS: dict[str, str] = {
     "flow": "流经时间",
     "cost": "重构成本",
     "variance": "工人负荷方差",
-    "completion_progress": "完成进度奖励",
-    "completion_bonus": "完成奖励",
-    "quality": "质量奖励",
-    "truncation": "截断惩罚",
-    "unfinished": "未完成惩罚",
+    "operation_progress": "工序进度增量",
+    "quality": "质量差分",
+    "preference_quality_score": "偏好质量代价",
+    "preference_balanced_quality_score": "偏好等权质量代价",
+    "single_stage_proxy_return": "单阶段轨迹回报",
     "flow_time_objective": "流经时间目标",
     "reconfiguration_cost": "重构成本",
     "worker_load_variance": "工人负荷方差",
@@ -143,28 +143,25 @@ PRESSURE_PROFILE_LABELS: dict[str, str] = {
 }
 
 PHASE_STATE_LABELS: dict[str, str] = {
-    "enabled": "两阶段训练已启用",
-    "phase": "当前阶段",
-    "completion_target": "完成率目标",
-    "consecutive_validations_required": "要求连续验证次数",
-    "consecutive_validation_successes": "连续验证成功次数",
-    "quality_completion_floor": "质量阶段完成率下限",
-    "phase_transition_episode": "阶段切换回合",
-    "accepted_quality_updates": "已接受质量更新数",
-    "rejected_quality_updates": "已拒绝/回滚质量更新数",
-    "formal_training_status": "正式训练状态",
+    "protocol": "选优协议",
+    "has_best": "已有安全最佳模型",
+    "best_completion_rate": "最佳采样完成率",
+    "best_preference_balanced_quality_score": "最佳偏好等权质量代价",
+    "best_episode": "最佳模型回合",
+    "eligible_validations": "安全合格验证次数",
+    "unsafe_validations": "不安全验证次数",
+    "improvement_count": "真正改善次数",
+    "tie_count": "完全平局次数",
+    "last_decision": "最近一次选优决策",
 }
 
 STATE_VALUE_LABELS: dict[str, str] = {
-    "feasibility": "可行性阶段",
-    "quality": "质量优化阶段",
-    "legacy": "传统加权模式",
-    "feasibility_not_reached": "尚未达到可行性阈值",
-    "quality_constrained": "质量约束训练",
-    "legacy_weighted_sum": "传统加权求和",
-    "transition": "切换至质量阶段",
-    "accepted": "候选模型已接受",
-    "rejected": "候选模型已拒绝/回滚",
+    "single_stage_lexicographic_v1": "单阶段字典序选优",
+    "best_initialized": "首个安全模型",
+    "best_improved": "最佳模型已改善",
+    "tied": "完全平局，保留原模型",
+    "not_improved": "未改善",
+    "ineligible": "安全检查不合格",
 }
 
 
@@ -519,7 +516,7 @@ class TrainingDashboard:
             "Visdom 环境": self.environment,
             "随机种子": self.config["seed"],
             "计算设备": self.config["device"],
-            "编码器类型": network.get("encoder_type", "typed_mlp"),
+            "策略头版本": network.get("policy_head_version"),
             "隐藏层维度": network["hidden_dim"],
             "消息传递层数": network.get("message_passing_layers"),
             "学习率": ppo["learning_rate"],
@@ -540,7 +537,9 @@ class TrainingDashboard:
                 else None
             ),
             "固定质量偏好": localized_preference,
-            "质量预算": reward.get("quality_budget"),
+            "可行性塑形启用": reward.get("feasibility_shaping", {}).get(
+                "enabled", False
+            ),
             "并行环境数": training.get("parallel_envs"),
             "验证集划分": training.get("validation_split"),
             "验证间隔（回合）": training.get(
@@ -658,7 +657,9 @@ class TrainingDashboard:
                 "reward_mean": reward_mean,
                 "reward_std": _std(episode_rows, "reward"),
                 "reward_rolling_mean": rolling_reward,
-                "quality_score": _mean(episode_rows, "quality_score"),
+                "preference_quality_score": _mean(
+                    episode_rows, "preference_quality_score"
+                ),
             },
         )
         self._line(
@@ -686,11 +687,8 @@ class TrainingDashboard:
                     "flow",
                     "cost",
                     "variance",
-                    "completion_progress",
-                    "completion_bonus",
+                    "operation_progress",
                     "quality",
-                    "truncation",
-                    "unfinished",
                     "feasibility_shaping",
                 )
             },
@@ -1014,14 +1012,14 @@ class TrainingDashboard:
         )
         self._line(
             win="66_validation_proxy_return",
-            title="66 验证集可行性代理回报",
+            title="66 验证集单阶段轨迹回报",
             x=completed_episodes,
             series={
                 "greedy": validation_row.get(
-                    "greedy_mean_feasibility_proxy_return"
+                    "greedy_mean_single_stage_proxy_return"
                 ),
                 "sampled": validation_row.get(
-                    "mean_feasibility_proxy_return"
+                    "mean_single_stage_proxy_return"
                 ),
             },
         )

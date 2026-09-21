@@ -79,15 +79,15 @@ def test_preference_is_outside_hgnn_but_conditions_actor_and_critic(config, fixe
     assert not torch.allclose(flow_value, cost_value)
 
 
-def test_quality_reward_is_unshaped_and_telescopes(config, fixed_instance):
+def test_single_stage_reward_is_unshaped_and_telescopes(config, fixed_instance):
     environment = AssemblySchedulingEnv(config)
     environment.reset(fixed_instance, preference=(7, 2, 1))
     policy = HeuristicPolicy()
-    quality_return = 0.0
+    reward_return = 0.0
     shaping_seen = 0.0
     while not (environment.terminated or environment.truncated):
         _, reward, _, _, _ = environment.step(policy.select_action(environment))
-        quality_return += reward.scalarize(config["reward"], "quality")
+        reward_return += reward.scalarize(config["reward"])
         shaping_seen += abs(reward.feasibility_shaping)
     metrics = environment.metrics()
     assert metrics["terminated"] is True
@@ -103,15 +103,19 @@ def test_quality_reward_is_unshaped_and_telescopes(config, fixed_instance):
         config,
         preference=(7, 2, 1),
     )
-    expected = initial_score - terminal_score
-    assert shaping_seen > 0
-    assert quality_return == pytest.approx(expected, abs=1e-8)
+    expected = (
+        metrics["operation_progress"]
+        - metrics["initial_progress"]
+        - terminal_score
+        + initial_score
+    )
+    assert shaping_seen == 0.0
+    assert reward_return == pytest.approx(expected, abs=1e-8)
     assert metrics["preference_quality_score"] == pytest.approx(terminal_score)
     assert metrics["raw_preference_quality_score"] == pytest.approx(terminal_score)
     assert proxy_return_from_metrics(
         metrics,
         config,
-        "quality",
         preference=(7, 2, 1),
     ) == pytest.approx(expected, abs=1e-8)
 
@@ -139,32 +143,35 @@ def test_terminal_failure_uses_unit_quality_bound_and_telescopes(
     )
 
     policy = HeuristicPolicy()
-    quality_return = 0.0
+    reward_return = 0.0
     terminated = False
     truncated = False
     while not (terminated or truncated):
         _, reward, terminated, truncated, _ = environment.step(
             policy.select_action(environment)
         )
-        quality_return += reward.scalarize(
-            truncated_config["reward"], "quality"
-        )
+        reward_return += reward.scalarize(truncated_config["reward"])
     metrics = environment.metrics()
 
     assert terminated is False
     assert truncated is True
     assert metrics["preference_quality_score"] == 1.0
     assert metrics["raw_preference_quality_score"] < 1.0
-    assert quality_return == pytest.approx(
-        initial_score - 1.0,
+    expected = (
+        metrics["operation_progress"]
+        - metrics["initial_progress"]
+        + initial_score
+        - 1.0
+    )
+    assert reward_return == pytest.approx(
+        expected,
         abs=1e-8,
     )
     assert proxy_return_from_metrics(
         metrics,
         truncated_config,
-        "quality",
         preference=preference,
-    ) == pytest.approx(initial_score - 1.0, abs=1e-8)
+    ) == pytest.approx(expected, abs=1e-8)
 
 
 def test_quality_preference_quota_is_deterministic(config):

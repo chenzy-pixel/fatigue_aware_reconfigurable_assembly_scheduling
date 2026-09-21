@@ -1,1058 +1,187 @@
 from __future__ import annotations
 
-import ast
-import csv
-import inspect
-import json
-import textwrap
+import math
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
 
-import train as train_module
-from agent.baselines import HeuristicPolicy
 from configs import load_config
 from configs.config import public_config
-from environment import AssemblySchedulingEnv, proxy_return_from_metrics
-from result.io import write_csv, write_json
-from single_objective_analysis import OBJECTIVE_FIELDS, main as analysis_main
 from train import (
-    PARETO_PROMOTION_MODE,
-    SINGLE_OBJECTIVE_PROMOTION_MODE,
-    TrainingPhaseController,
-    ValidationStabilityController,
-    _checkpoint_eligible_validation_event,
-    _attach_greedy_diagnostic,
-    _evaluate_sampled_validation,
-    _promote_accepted_checkpoint,
-    _reevaluate_checkpoint_from_disk,
-    _restore_regression_checkpoint,
-    _single_objective_failure_rows,
-    _single_objective_guard_score,
-    _validate_single_objective_validation_protocol,
+    LearningRatePlateauController,
+    _checkpoint_metadata,
+    _failure_progress_summary,
 )
+from training import LexicographicCheckpointSelector
 
 
 CONFIGS = {
-    "flow": "configs/e1/single_flow.json",
-    "cost": "configs/e1/single_cost.json",
-    "variance": "configs/e1/single_variance.json",
+    "flow": ("configs/e1/single_flow.json", [1.0, 0.0, 0.0]),
+    "cost": ("configs/e1/single_cost.json", [0.0, 1.0, 0.0]),
+    "variance": ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
 }
 
 
-def _transitioned_controller(objective: str) -> TrainingPhaseController:
-    config = load_config(CONFIGS[objective])
-    config["training"]["two_stage"]["consecutive_validations"] = 1
-    controller = TrainingPhaseController.from_config(config)
-    score = (-1.0, 100.0, 0.0, 0.0)
-    assert controller.observe_validation(
-        1.0,
-        completed_episodes=10,
-        score=score,
-        truncated_count=0,
-        schedule_violation_count=0,
-    ) == "transition"
-    assert controller.is_formally_accepted is False
-    assert (
-        controller.formal_training_status
-        == "single_objective_98_candidate_not_reached"
+def _validation(
+    completion: float,
+    quality: float,
+    *,
+    violations: int = 0,
+) -> dict[str, float | int]:
+    return {
+        "completion_rate": completion,
+        "preference_balanced_quality_score": quality,
+        "schedule_violation_count": violations,
+    }
+
+
+def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
+    config = load_config("configs/default.json")
+    public = public_config(config)
+    assert config["reward"]["mode"] == "single_stage_progress_quality_v1"
+    assert config["ppo"]["gamma"] == 1.0
+    assert config["reward"]["feasibility_shaping"]["enabled"] is False
+    assert "two_stage" not in config["training"]
+    assert "audit_seed_offset" not in config["training"]["formal_evaluation"]
+    assert not {
+        "completion_bonus",
+        "truncation_penalty",
+        "unfinished_order_penalty",
+    }.intersection(config["reward"])
+    assert public["runtime_manifest"]["training_protocol"] == (
+        "single_stage_lexicographic_v1"
     )
-    return controller
 
 
-def _validation(flow: float, cost: float, variance: float) -> dict[str, object]:
-    return {
-        "completion_rate": 1.0,
-        "truncated_count": 0,
-        "schedule_violation_count": 0,
-        "mean_flow_time_objective": flow,
-        "mean_reconfiguration_cost": cost,
-        "mean_worker_load_variance": variance,
-        "completed_metrics": {
-            "flow_time_objective": {"mean": flow},
-            "reconfiguration_cost": {"mean": cost},
-            "worker_load_variance": {"mean": variance},
-        },
-        "all_instance_metrics": {
-            "flow_time_objective": {"mean": flow},
-            "reconfiguration_cost": {"mean": cost},
-            "worker_load_variance": {"mean": variance},
-        },
+@pytest.mark.parametrize("objective", tuple(CONFIGS))
+def test_e1_children_keep_one_hot_preference_and_user_validation_cadence(
+    objective: str,
+):
+    path, preference = CONFIGS[objective]
+    child = load_config(path)
+    base = load_config("configs/default.json")
+    assert child["preference"]["quality"] == {
+        "mode": "fixed",
+        "fixed": preference,
+        "block_size": 20,
+        "endpoint_repeats": 2,
+        "sobol_count": 14,
     }
+    assert child["training"]["validation_interval_episodes"] == 40
+    assert child["network"] == base["network"]
+    assert child["ppo"] == base["ppo"]
 
 
-def _audit(*, objective_value: float, failed: int = 0, violation: int = 0,
-           physical: bool = True) -> dict[str, object]:
-    completed = 200 - failed
-    return {
-        "instance_count": 200,
-        "completed_count": completed,
-        "completion_rate": completed / 200.0,
-        "truncated_count": failed,
-        "schedule_violation_count": violation,
-        "physical_safety_pass": physical,
-        "single_objective_value": objective_value,
-    }
-
-
-def _raw_json(path: str) -> dict:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def test_single_objective_score_excludes_failed_rollout_objectives():
-    validation = _validation(500.0, 100.0, 8.0)
-    validation["completion_rate"] = 0.98
-    validation["all_instance_metrics"] = {
-        "flow_time_objective": {"mean": 5.0},
-        "reconfiguration_cost": {"mean": 1.0},
-        "worker_load_variance": {"mean": 0.1},
-    }
-    assert _single_objective_guard_score(validation, "flow")[1] == 500.0
-    assert _single_objective_guard_score(validation, "cost")[1] == 100.0
-    assert _single_objective_guard_score(validation, "variance")[1] == 8.0
-
-    controller = _transitioned_controller("cost")
-    event = controller.observe_validation(
-        0.94,
-        completed_episodes=20,
-        score=_single_objective_guard_score(validation, "cost"),
-        truncated_count=9,
-        schedule_violation_count=0,
+def test_first_safe_checkpoint_initializes_even_with_zero_completion_and_inf_quality():
+    selector = LexicographicCheckpointSelector()
+    event = selector.observe(
+        _validation(0.0, math.inf),
+        completed_episodes=40,
         physical_safety_pass=True,
     )
-    assert event == "rejected"
-    assert controller.single_objective_window_values == []
+    assert event == "best_initialized"
+    assert selector.has_best is True
+    assert selector.best_episode == 40
+    assert selector.best_score == (0.0, math.inf)
 
 
-def test_specialist_validation_runs_exactly_three_repeats_of_50(
-    monkeypatch,
-):
-    config = load_config(CONFIGS["flow"])
-    calls: list[tuple[int, str, int]] = []
-
-    def fake_evaluate_dataset(
-        _config,
-        *,
-        instance_limit,
-        decode_mode,
-        sampling_seed,
-        **_kwargs,
-    ):
-        calls.append((instance_limit, decode_mode, sampling_seed))
-        rows = [
-            {
-                "instance_id": f"instance-{index}",
-                "maximum_worker_fatigue": 0.5,
-                "safe_fatigue_limit": 0.9,
-            }
-            for index in range(instance_limit)
-        ]
-        return rows, [], [], {
-            "completion_rate": 1.0,
-            "manifest": "manifest.json",
-            "parallel_envs": 1,
-        }
-
-    def fake_aggregate(rows, **_kwargs):
-        return {"instance_count": len(rows)}
-
-    monkeypatch.setattr(train_module, "evaluate_dataset", fake_evaluate_dataset)
-    monkeypatch.setattr(
-        train_module, "aggregate_evaluation_rows", fake_aggregate
-    )
-    rows, aggregate = _evaluate_sampled_validation(
-        config,
-        dataset_name="validation",
-        ppo_agent=object(),
-        instance_limit=50,
-        sampling_seeds=[100011, 100012, 100013],
-    )
-    assert calls == [
-        (50, "sampled", 100011),
-        (50, "sampled", 100012),
-        (50, "sampled", 100013),
-    ]
-    assert len(rows) == 150
-    assert [row["sampling_repeat"] for row in rows].count(0) == 50
-    assert [row["sampling_repeat"] for row in rows].count(1) == 50
-    assert [row["sampling_repeat"] for row in rows].count(2) == 50
-    assert aggregate["repeat_count"] == 3
-    assert aggregate["unique_instance_count"] == 50
-
-
-def test_default_is_the_complete_v8_universal_protocol():
-    base = load_config("configs/default.json")
-    assert base["experiment_suite_version"] == "v8_preference_conditioned_pareto_v1"
-    assert base["training"]["two_stage"]["quality_checkpoint_promotion"] == PARETO_PROMOTION_MODE
-    assert base["runtime_manifest"]["candidate_ranker"] == "simplex_softplus_objective_experts_v8"
-    assert base["runtime_manifest"]["worker_feasibility"] == "instant_physical_pair_mask_v1"
-    assert base["runtime_manifest"]["wait_mask"] == "progress_certified_wait_v2"
-    assert base["runtime_manifest"]["observation_schema"] == 5
-    assert base["runtime_manifest"]["policy_head"] == 8
-    assert set(base["environment"]) == {
-        "max_decisions",
-        "max_zero_time_actions",
-    }
-
-
-@pytest.mark.parametrize("objective", tuple(CONFIGS))
-def test_child_config_uses_one_hot_preference_and_per_update_validation(
-    objective: str,
-):
-    base = load_config("configs/default.json")
-    child = load_config(CONFIGS[objective])
-    expected_weights = {
-        name: 1.0 if name == objective else 0.0 for name in CONFIGS
-    }
-    expected = public_config(base)
-    expected["preference"]["feasibility"] = [
-        expected_weights["flow"],
-        expected_weights["cost"],
-        expected_weights["variance"],
-    ]
-    expected["preference"]["quality"]["mode"] = "fixed"
-    expected["preference"]["quality"]["fixed"] = [
-        expected_weights["flow"],
-        expected_weights["cost"],
-        expected_weights["variance"],
-    ]
-    expected["training"]["two_stage"]["quality_checkpoint_promotion"] = (
-        SINGLE_OBJECTIVE_PROMOTION_MODE
-    )
-    expected["training"]["validation_interval_episodes"] = 20
-    expected["experiment_name"] = f"e1_single_{objective}"
-    assert public_config(child) == expected
-
-    raw = _raw_json(CONFIGS[objective])
-    assert set(raw) == {
-        "extends",
-        "experiment_name",
-        "preference",
-        "training",
-    }
-    assert raw["preference"] == {
-        "feasibility": expected["preference"]["feasibility"],
-        "quality": {
-            "mode": "fixed",
-            "fixed": expected["preference"]["quality"]["fixed"],
-        }
-    }
-    assert raw["training"]["two_stage"]["quality_checkpoint_promotion"] == (
-        SINGLE_OBJECTIVE_PROMOTION_MODE
-    )
-    assert raw["training"]["validation_interval_episodes"] == 20
-
-
-@pytest.mark.parametrize("objective", tuple(CONFIGS))
-def test_each_promotion_mode_uses_only_its_raw_objective(objective: str):
-    controller = _transitioned_controller(objective)
-    assert controller.accepted_single_objective_value is None
-    assert controller.accepted_quality_episode is None
-    assert not _checkpoint_eligible_validation_event(
-        "transition", SINGLE_OBJECTIVE_PROMOTION_MODE
-    )
-
-    anchor_validation = _validation(100.0, 20.0, 3.0)
-    anchor_score = _single_objective_guard_score(anchor_validation, objective)
-    events = [
-        controller.observe_validation(
-            1.0, completed_episodes=20 + index, score=anchor_score
-        )
-        for index in range(5)
-    ]
-    assert events[:4] == ["window_warmup"] * 4
-    assert events[-1] == "audit_required"
-    anchor_value = anchor_validation[OBJECTIVE_FIELDS[objective]]
-    assert controller.accepted_single_objective_value is None
-    assert controller.single_objective_candidate_anchor_value == anchor_value
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=anchor_value),
-        completed_episodes=24,
-        window_median=anchor_value,
-    ) == "accepted"
-    assert controller.accepted_single_objective_value == anchor_value
-    assert controller.is_formally_accepted is True
-    assert controller.formal_training_status == "accepted_98_experiment_candidate"
-
-    other_names = [name for name in CONFIGS if name != objective]
-    non_target_improvement = dict(anchor_validation)
-    for name in other_names:
-        non_target_improvement[OBJECTIVE_FIELDS[name]] *= 0.1
-    non_target_improvement["completed_metrics"] = {
-        "flow_time_objective": {
-            "mean": non_target_improvement["mean_flow_time_objective"]
-        },
-        "reconfiguration_cost": {
-            "mean": non_target_improvement["mean_reconfiguration_cost"]
-        },
-        "worker_load_variance": {
-            "mean": non_target_improvement["mean_worker_load_variance"]
-        },
-    }
-    unchanged_target_score = _single_objective_guard_score(
-        non_target_improvement, objective
-    )
-    unchanged_events = [
-        controller.observe_validation(
-            1.0, completed_episodes=30 + index, score=unchanged_target_score
-        )
-        for index in range(5)
-    ]
-    assert "audit_required" not in unchanged_events
-    assert controller.accepted_single_objective_value == anchor_value
-
-    target_improvement = dict(anchor_validation)
-    target_improvement[OBJECTIVE_FIELDS[objective]] = anchor_value - 0.25
-    target_improvement["completed_metrics"] = {
-        "flow_time_objective": {
-            "mean": target_improvement["mean_flow_time_objective"]
-        },
-        "reconfiguration_cost": {
-            "mean": target_improvement["mean_reconfiguration_cost"]
-        },
-        "worker_load_variance": {
-            "mean": target_improvement["mean_worker_load_variance"]
-        },
-    }
-    improved_score = _single_objective_guard_score(
-        target_improvement, objective
-    )
-    improved_events = [
-        controller.observe_validation(
-            1.0, completed_episodes=40 + index, score=improved_score
-        )
-        for index in range(5)
-    ]
-    assert "audit_required" in improved_events
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=anchor_value - 0.25),
-        completed_episodes=44,
-        window_median=anchor_value - 0.25,
-    ) == "accepted"
-    assert controller.accepted_single_objective_value == anchor_value - 0.25
-
-
-def test_only_audited_acceptance_persists_accepted_and_best_checkpoints(
-    tmp_path: Path,
-):
-    config = load_config(CONFIGS["flow"])
-    controller = _transitioned_controller("flow")
-    accepted_checkpoint = tmp_path / "accepted_checkpoint.pt"
-    best_checkpoint = tmp_path / "best_checkpoint.pt"
-
-    class RecordingAgent:
-        def __init__(self) -> None:
-            self.saved_metadata: dict | None = None
-
-        def save(self, path: Path, metadata: dict | None = None) -> None:
-            self.saved_metadata = dict(metadata or {})
-            Path(path).write_bytes(b"accepted-candidate-a")
-
-    agent = RecordingAgent()
-    for event in (
-        "transition",
-        "audit_required",
-        "audit_rejected",
-        "audit_passed_not_accepted",
-    ):
-        assert not _promote_accepted_checkpoint(
-            event=event,
-            config=config,
-            phase_controller=controller,
-            agent=agent,
-            accepted_checkpoint=accepted_checkpoint,
-            best_checkpoint=best_checkpoint,
-            completed_episodes=10,
-            parallel_envs=1,
-            validation_row={"validation_event": event},
-        )
-    assert not accepted_checkpoint.exists()
-    assert not best_checkpoint.exists()
-    assert agent.saved_metadata is None
-
-    score = (-1.0, 80.0, 0.0, 0.0)
-    for episode in range(20, 25):
-        event = controller.observe_validation(
-            1.0,
-            completed_episodes=episode,
-            score=score,
-        )
-    assert event == "audit_required"
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=80.0),
-        completed_episodes=24,
-        window_median=80.0,
-    ) == "accepted"
-
-    assert _promote_accepted_checkpoint(
-        event="accepted",
-        config=config,
-        phase_controller=controller,
-        agent=agent,
-        accepted_checkpoint=accepted_checkpoint,
-        best_checkpoint=best_checkpoint,
-        completed_episodes=24,
-        parallel_envs=1,
-        validation_row={"validation_event": "accepted"},
-    )
-    assert accepted_checkpoint.read_bytes() == best_checkpoint.read_bytes()
-    assert agent.saved_metadata is not None
-    assert agent.saved_metadata["checkpoint_role"] == "accepted"
-    assert agent.saved_metadata["single_objective_name"] == "flow"
-    assert agent.saved_metadata["single_objective_window_statistic"] == "median"
-    assert agent.saved_metadata["accepted_single_objective_value"] == 80.0
-    assert agent.saved_metadata["accepted_single_objective_audit_value"] == 80.0
-    assert agent.saved_metadata["formal_eligible"] is True
-    assert "quality_score" not in agent.saved_metadata
-
-
-def test_final_evaluation_loads_accepted_checkpoint_instead_of_online_agent(
-    config,
-    monkeypatch,
-    tmp_path: Path,
-):
-    accepted_checkpoint = tmp_path / "accepted_checkpoint.pt"
-    accepted_checkpoint.write_text("candidate-a", encoding="utf-8")
-    online_agent = type("OnlineAgent", (), {"identity": "candidate-b"})()
-    loaded_paths: list[Path] = []
-
-    class IsolatedEvaluationAgent:
-        def __init__(self, *_args, **_kwargs) -> None:
-            self.identity = "unloaded"
-
-        def load(self, path: Path, *, load_optimizer: bool) -> dict:
-            assert load_optimizer is False
-            loaded_paths.append(Path(path))
-            self.identity = Path(path).read_text(encoding="utf-8")
-            return {"loaded_identity": self.identity}
-
-    def evaluate_loaded_agent(*_args, ppo_agent, **_kwargs):
-        rows = [
-            {
-                "schedule_violation_count": 0,
-                "maximum_worker_fatigue": 0.0,
-                "safe_fatigue_limit": 1.0,
-            }
-        ]
-        return rows, {
-            "parallel_envs": 1,
-            "evaluated_identity": ppo_agent.identity,
-            "instance_count": 200,
-            "completed_count": 200,
-            "completion_rate": 1.0,
-            "schedule_violation_count": 0,
-        }
-
-    monkeypatch.setattr(train_module, "PPOAgent", IsolatedEvaluationAgent)
-    monkeypatch.setattr(train_module, "build_actor_critic", lambda *_args: object())
-    monkeypatch.setattr(
-        train_module, "_evaluate_sampled_validation", evaluate_loaded_agent
-    )
-    monkeypatch.setattr(train_module, "build_provenance", lambda *_args, **_kwargs: {})
-
-    evaluation = _reevaluate_checkpoint_from_disk(
-        config,
-        checkpoint=accepted_checkpoint,
-        bootstrap_observation=object(),
-        dataset_name="validation",
-        instance_limit=200,
-        sampling_seeds=[200011],
-        include_greedy_diagnostic=False,
-    )
-
-    assert online_agent.identity == "candidate-b"
-    assert loaded_paths == [accepted_checkpoint]
-    assert evaluation["checkpoint"] == str(accepted_checkpoint)
-    assert evaluation["checkpoint_metadata"] == {
-        "loaded_identity": "candidate-a"
-    }
-    assert evaluation["formal_sampled"]["evaluated_identity"] == "candidate-a"
-
-
-def test_final_audit_runner_uses_the_ungrouped_training_episode_budget():
-    source = textwrap.dedent(inspect.getsource(train_module._train_parallel))
-    tree = ast.parse(source)
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_reevaluate_checkpoint_with_parallel_runner"
-    ]
-    assert len(calls) == 1
-    keywords = {keyword.arg: keyword.value for keyword in calls[0].keywords}
-    assert ast.unparse(keywords["episode_count"]) == "episodes"
-    assert "training_base_instance_count" not in source
-
-
-def test_95_percent_candidates_are_exploratory_only_and_window_warms_up():
-    controller = _transitioned_controller("flow")
-    events = [
-        controller.observe_validation(
-            0.95,
-            completed_episodes=20 + index,
-            score=(-0.95, 99.0, 0.0, 0.0),
-            truncated_count=1,
-            schedule_violation_count=0,
-        )
-        for index in range(5)
-    ]
-    assert events[:4] == ["window_warmup"] * 4
-    assert events[-1] == "audit_required"
-    assert controller.accepted_single_objective_value is None
-    assert controller.single_objective_candidate_anchor_value == 99.0
-    assert controller.last_promotion_diagnostics["window_count"] == 5
-    assert not _checkpoint_eligible_validation_event(
-        "audit_required", SINGLE_OBJECTIVE_PROMOTION_MODE
-    )
-
-
-def test_single_objective_rejects_only_exploration_gate_failures():
-    controller = _transitioned_controller("flow")
-    for completion, violations, physical, reason in (
-        (0.949, 0, True, "completion_below_floor"),
-        (0.95, 1, True, "schedule_violation_nonzero"),
-        (0.95, 0, False, "physical_safety_failed"),
-    ):
-        event = controller.observe_validation(
-            completion,
-            completed_episodes=20,
-            score=(-completion, 99.0, 0.0, 0.0),
-            schedule_violation_count=violations,
-            physical_safety_pass=physical,
-        )
-        assert event == "rejected"
-        assert controller.last_promotion_diagnostics[
-            "promotion_decision_reason"
-        ] == reason
-        assert controller.last_promotion_diagnostics["window_count"] == 0
-
-
-def test_rejected_formal_audit_does_not_set_formal_acceptance():
-    controller = _transitioned_controller("flow")
-    for episode in range(20, 25):
-        event = controller.observe_validation(
-            1.0,
-            completed_episodes=episode,
-            score=(-1.0, 90.0, 0.0, 0.0),
-        )
-    assert event == "audit_required"
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=90.0, physical=False),
-        completed_episodes=24,
-        window_median=90.0,
-    ) == "audit_rejected"
-    assert controller.is_formally_accepted is False
-    assert (
-        controller.formal_training_status
-        == "single_objective_98_candidate_not_reached"
-    )
-
-
-def test_single_objective_rejects_non_one_hot_preference_immediately():
-    config = load_config(CONFIGS["flow"])
-    config["preference"]["quality"]["fixed"] = [0.5, 0.5, 0.0]
-    with pytest.raises(ValueError, match="strictly one-hot"):
-        TrainingPhaseController.from_config(config)
-
-
-def test_phase_one_requires_three_consecutive_98_percent_sampled_validations():
-    controller = TrainingPhaseController.from_config(
-        load_config(CONFIGS["flow"])
-    )
-    score = (-1.0, 100.0, 0.0, 0.0)
-    assert controller.observe_validation(147 / 150, completed_episodes=10, score=score) == "feasibility"
-    assert controller.observe_validation(146 / 150, completed_episodes=20, score=score) == "feasibility"
-    assert controller.consecutive_successes == 0
-    assert controller.observe_validation(147 / 150, completed_episodes=30, score=score, truncated_count=3) == "feasibility"
-    assert controller.observe_validation(147 / 150, completed_episodes=40, score=score, truncated_count=3) == "feasibility"
-    assert controller.observe_validation(147 / 150, completed_episodes=50, score=score, truncated_count=3) == "transition"
-
-
-def test_serial_and_parallel_promotion_paths_share_the_same_decisions():
-    serial = _transitioned_controller("variance")
-    parallel = _transitioned_controller("variance")
-    validations = [
-        _validation(100.0, 20.0, 3.0),
-        _validation(100.0, 20.0, 3.0),
-        _validation(100.0, 20.0, 3.0),
-        _validation(100.0, 20.0, 3.0),
-        _validation(1000.0, 200.0, 2.5),
-    ]
-    serial_events = []
-    parallel_events = []
-    for index, validation in enumerate(validations, start=2):
-        score = _single_objective_guard_score(validation, "variance")
-        arguments = {
-            "completed_episodes": index * 10,
-            "score": score,
-            "truncated_count": 0,
-            "schedule_violation_count": 0,
-        }
-        serial_events.append(serial.observe_validation(1.0, **arguments))
-        parallel_events.append(parallel.observe_validation(1.0, **arguments))
-    assert serial_events == parallel_events
-    assert serial_events[:4] == ["window_warmup"] * 4
-    assert serial_events[-1] == "audit_required"
-    assert serial.observe_single_objective_audit(
-        _audit(objective_value=2.5),
-        completed_episodes=50,
-        window_median=2.5,
-    ) == "accepted"
-    assert parallel.observe_single_objective_audit(
-        _audit(objective_value=2.5),
-        completed_episodes=50,
-        window_median=2.5,
-    ) == "accepted"
-    assert serial.as_dict() == parallel.as_dict()
-
-
-def test_individual_improvement_does_not_promote_until_window_median_improves():
-    controller = _transitioned_controller("flow")
-    baseline = (-1.0, 100.0, 0.0, 0.0)
-    for index in range(5):
-        controller.observe_validation(
-            0.95, completed_episodes=20 + index, score=baseline
-        )
-    assert controller.single_objective_candidate_anchor_value == 100.0
-    assert controller.observe_validation(
-        0.95, completed_episodes=30, score=(-0.95, 50.0, 0.0, 0.0)
-    ) == "not_promoted"
-    assert controller.single_objective_candidate_anchor_value == 100.0
-    assert controller.observe_validation(
-        0.95, completed_episodes=31, score=(-0.95, 50.0, 0.0, 0.0)
-    ) == "not_promoted"
-    assert controller.observe_validation(
-        0.95, completed_episodes=32, score=(-0.95, 50.0, 0.0, 0.0)
-    ) == "audit_required"
-    assert controller.single_objective_candidate_anchor_value == 50.0
-
-
-def test_formal_promotion_requires_a_current_gate_eligible_window():
-    controller = _transitioned_controller("flow")
-    for index in range(5):
-        controller.observe_validation(
-            0.95,
-            completed_episodes=20 + index,
-            score=(-0.95, 100.0, 0.0, 0.0),
-        )
-    assert controller.accepted_single_objective_value is None
-    for index in range(3):
-        event = controller.observe_validation(
-            0.95,
-            completed_episodes=30 + index,
-            score=(-0.95, 80.0, 0.0, 0.0),
-        )
-    assert event == "audit_required"
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=80.0),
-        completed_episodes=32,
-        window_median=80.0,
-    ) == "accepted"
-    assert controller.accepted_single_objective_value == 80.0
-    assert _checkpoint_eligible_validation_event(
-        "accepted", SINGLE_OBJECTIVE_PROMOTION_MODE
-    )
-
-
-def test_single_objective_acceptance_ranks_passed_audits_by_failed_then_objective():
-    controller = _transitioned_controller("flow")
-    for index in range(5):
-        controller.observe_validation(
-            1.0,
-            completed_episodes=20 + index,
-            score=(-1.0, 100.0, 0.0, 0.0),
-        )
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=100.0),
-        completed_episodes=24,
-        window_median=100.0,
-    ) == "accepted"
-
-    controller.single_objective_candidate_anchor_value = 90.0
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=110.0),
-        completed_episodes=30,
-        window_median=90.0,
-    ) == "audit_passed_not_accepted"
-    assert controller.accepted_single_objective_audit_value == 100.0
-
-    assert controller.observe_single_objective_audit(
-        _audit(objective_value=95.0),
-        completed_episodes=31,
-        window_median=90.0,
-    ) == "accepted"
-    assert controller.accepted_single_objective_audit_value == 95.0
-
-
-def test_single_objective_audit_allows_four_failures_but_rejects_five():
-    accepted = _transitioned_controller("flow")
-    assert accepted.observe_single_objective_audit(
-        _audit(objective_value=100.0, failed=4),
-        completed_episodes=30,
-        window_median=100.0,
-    ) == "accepted"
-    assert accepted.accepted_single_objective_failed_instances == 4
-
-    rejected = _transitioned_controller("flow")
-    assert rejected.observe_single_objective_audit(
-        _audit(objective_value=1.0, failed=5),
-        completed_episodes=30,
-        window_median=1.0,
-    ) == "audit_rejected"
-    assert rejected.accepted_single_objective_value is None
-
-
-def test_greedy_diagnostic_only_adds_prefixed_log_fields(monkeypatch):
-    phase = _transitioned_controller("flow")
-    stability = ValidationStabilityController.from_config(
-        load_config(CONFIGS["flow"])
-    )
-    phase_before = phase.as_dict()
-    stability_before = stability.as_dict()
-    monkeypatch.setattr(
-        train_module,
-        "_validation_log_row",
-        lambda *_args, **_kwargs: {
-            "episode": 40,
-            "dataset": "validation",
-            "completion_rate": 0.75,
-            "mean_unfinished_orders": 2.0,
-            "mean_feasibility_proxy_return": 1.0,
-            "mean_relative_heuristic_gap_percent": 3.0,
-        },
-    )
-    formal_row = {
-        "completion_rate": 0.98,
-        "mean_unfinished_orders": 0.1,
-        "mean_feasibility_proxy_return": 5.0,
-        "mean_relative_heuristic_gap_percent": 1.0,
-    }
-    _attach_greedy_diagnostic(
-        formal_row, {}, completed_episodes=40
-    )
-    assert phase.as_dict() == phase_before
-    assert stability.as_dict() == stability_before
-    assert formal_row["completion_rate"] == 0.98
-    assert formal_row["greedy_completion_rate"] == 0.75
-    assert formal_row["greedy_minus_formal_completion_rate"] == pytest.approx(
-        -0.23
-    )
+def test_checkpoint_selector_is_completion_first_quality_second_and_ties_keep_best():
+    selector = LexicographicCheckpointSelector()
+    assert selector.observe(
+        _validation(0.5, 0.4), completed_episodes=40, physical_safety_pass=True
+    ) == "best_initialized"
+    assert selector.observe(
+        _validation(0.5, 0.3), completed_episodes=80, physical_safety_pass=True
+    ) == "best_improved"
+    assert selector.observe(
+        _validation(0.5 + 5e-13, 0.3 + 5e-13),
+        completed_episodes=120,
+        physical_safety_pass=True,
+    ) == "tied"
+    assert selector.best_episode == 80
+    assert selector.observe(
+        _validation(0.6, 0.9), completed_episodes=160, physical_safety_pass=True
+    ) == "best_improved"
+    assert selector.best_score == pytest.approx((0.6, 0.9))
 
 
 @pytest.mark.parametrize(
-    ("truncated_count", "violations", "physical_safety_pass"),
-    [(1, 0, True), (0, 1, True), (0, 0, False)],
+    ("physical_safe", "violations"),
+    ((False, 0), (True, 1)),
 )
-def test_formal_track_rejects_failed_hard_gates(
-    truncated_count: int, violations: int, physical_safety_pass: bool
-):
-    controller = _transitioned_controller("flow")
-    for index in range(4):
-        assert controller.observe_validation(
-            0.95,
-            completed_episodes=20 + index,
-            score=(-0.95, 100.0, 0.0, 0.0),
-        ) == "window_warmup"
-    event = controller.observe_validation(
-        1.0,
-        completed_episodes=25,
-        score=(-1.0, 90.0, 0.0, 0.0),
-        truncated_count=truncated_count,
-        schedule_violation_count=violations,
-        physical_safety_pass=physical_safety_pass,
+def test_unsafe_candidate_never_initializes_best(physical_safe: bool, violations: int):
+    selector = LexicographicCheckpointSelector()
+    event = selector.observe(
+        _validation(1.0, 0.0, violations=violations),
+        completed_episodes=40,
+        physical_safety_pass=physical_safe,
     )
-    if violations or not physical_safety_pass:
-        assert event == "rejected"
-    else:
-        assert event == "audit_required"
-        audit_failed = controller.observe_single_objective_audit(
-            _audit(objective_value=90.0, failed=1 if truncated_count else 0),
-            completed_episodes=25,
-            window_median=90.0,
-        )
-        assert audit_failed == "accepted"
-    if violations or not physical_safety_pass:
-        assert controller.accepted_single_objective_value is None
-    else:
-        assert controller.accepted_single_objective_value == 90.0
+    assert event == "ineligible"
+    assert selector.has_best is False
+    assert selector.as_dict()["best_episode"] is None
 
 
-def test_single_objective_rollback_tracks_historical_best_during_feasibility():
-    config = load_config(CONFIGS["flow"])
-    controller = ValidationStabilityController.from_config(config)
-    controller.observe_formal(
-        (-0.94, 100.0, 0.0, 0.0), 47 / 50,
-        completed_episodes=20, feasibility_phase=True,
+def test_plateau_decay_does_not_restore_any_checkpoint():
+    config = load_config("configs/e1/single_flow.json")
+    controller = LearningRatePlateauController.from_config(config)
+    controller.patience = 2
+    original = controller.learning_rate
+    assert controller.observe(False) is False
+    assert controller.observe(False) is True
+    assert controller.learning_rate == pytest.approx(original * controller.factor)
+    assert set(controller.as_dict()) == {
+        "learning_rate",
+        "minimum_learning_rate",
+        "plateau_factor",
+        "plateau_patience_validations",
+        "stale_validations",
+        "learning_rate_decay_count",
+    }
+
+
+def test_checkpoint_metadata_freezes_selection_inputs_and_seed_rule():
+    config = load_config("configs/e1/single_flow.json")
+    metadata = _checkpoint_metadata(
+        config,
+        role="best",
+        episode=40,
+        validation_split="validation",
+        validation_instance_limit=2,
+        validation=_validation(0.0, math.inf),
     )
-    first_drop = controller.observe_formal(
-        (-0.88, 101.0, 0.0, 0.0), 44 / 50,
-        completed_episodes=40, feasibility_phase=True,
-    )
-    assert first_drop["degraded"] and not first_drop["rollback"]
-    assert first_drop["rollback_reference_completion_rate"] == pytest.approx(
-        47 / 50
-    )
-    second_drop = controller.observe_formal(
-        (-0.88, 102.0, 0.0, 0.0), 44 / 50,
-        completed_episodes=60, feasibility_phase=True,
-    )
-    assert second_drop["rollback"]
-    assert second_drop["rollback_learning_rate_decay_applied"]
-    assert second_drop["learning_rate_after_validation"] == pytest.approx(
-        0.00005
-    )
-    assert controller.best_completion_rate == pytest.approx(47 / 50)
-    assert controller.rollback_completion_drop == pytest.approx(3 / 50)
-    assert controller.rollback_consecutive_required == 2
-
-
-@pytest.mark.parametrize(
-    ("feasibility_phase", "expected_name"),
-    ((True, "best_feasibility_checkpoint.pt"), (False, "safe_checkpoint.pt")),
-)
-def test_regression_rollback_restores_optimizer_and_discards_rollout(
-    tmp_path: Path,
-    feasibility_phase: bool,
-    expected_name: str,
-):
-    best_feasibility = tmp_path / "best_feasibility_checkpoint.pt"
-    safe = tmp_path / "safe_checkpoint.pt"
-    best_feasibility.touch()
-    safe.touch()
-
-    class RecordingAgent:
-        def __init__(self):
-            self.loaded = None
-            self.load_optimizer = None
-            self.learning_rate = None
-
-        def load(self, path, *, load_optimizer=False):
-            self.loaded = Path(path)
-            self.load_optimizer = load_optimizer
-
-        def set_learning_rate(self, value):
-            self.learning_rate = float(value)
-
-    class RecordingBuffer:
-        def __init__(self):
-            self.values = [1, 2, 3]
-
-        def __len__(self):
-            return len(self.values)
-
-        def clear(self):
-            self.values.clear()
-
-    agent = RecordingAgent()
-    buffer = RecordingBuffer()
-    restored, discarded = _restore_regression_checkpoint(
-        agent,
-        buffer,
-        feasibility_phase=feasibility_phase,
-        best_feasibility_checkpoint=best_feasibility,
-        safe_checkpoint=safe,
-        learning_rate=0.00005,
-    )
-
-    assert restored.name == expected_name
-    assert agent.loaded == restored
-    assert agent.load_optimizer is True
-    assert agent.learning_rate == pytest.approx(0.00005)
-    assert discarded == 3
-    assert len(buffer) == 0
-
-
-def test_failure_detail_rows_record_the_required_tail_diagnostics():
-    failures = _single_objective_failure_rows(
-        [
-            {
-                "instance_id": "ok",
-                "terminated": True,
-                "truncated": False,
-                "schedule_violation_count": 0,
-                "unfinished_orders": 0,
-                "maximum_worker_fatigue": 1.0,
-                "safe_fatigue_limit": 1.0,
-            },
-            {
-                "instance_id": "tail",
-                "terminated": False,
-                "truncated": True,
-                "schedule_violation_count": 1,
-                "unfinished_orders": 2,
-                "maximum_worker_fatigue": 1.2,
-                "safe_fatigue_limit": 1.0,
-            },
-        ],
-        episode=42,
-    )
-    assert failures == [
-        {
-            "episode": 42,
-            "instance_id": "tail",
-            "truncated": True,
-            "schedule_violation_count": 1,
-            "unfinished_orders": 2,
-            "maximum_worker_fatigue": 1.2,
-            "safe_fatigue_limit": 1.0,
-            "failure_reason": "incomplete;truncated;schedule_violation;physical_safety",
-        }
+    assert metadata["selection_decode_mode"] == "sampled"
+    assert metadata["selection_temperature"] == 1.0
+    assert metadata["validation_repeat_count"] == 3
+    assert metadata["validation_sampling_seeds"] == [100011, 100012, 100013]
+    assert metadata["final_test_sampling_seeds"] == [300011, 300012, 300013]
+    assert metadata["validation_instance_order"] == [
+        "instance_2000000.json",
+        "instance_2000001.json",
     ]
+    assert metadata["preference_count"] == 1
+    assert len(metadata["validation_dataset_manifest"]["sha256"]) == 64
+    assert "sha256" in metadata["derived_sampling_seed_rule"]
 
 
-def test_formal_run_requires_disjoint_validation_and_200_audit_instances(
-    tmp_path: Path,
-):
-    config = load_config(CONFIGS["flow"])
-    config["paths"]["manifests_root"] = str(tmp_path / "manifests")
-    with pytest.raises(FileNotFoundError, match="validation manifest"):
-        _validate_single_objective_validation_protocol(
-            config, smoke=False, validation_limit=50
-        )
-    manifest_path = tmp_path / "manifests" / "validation" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    write_json(
-        manifest_path,
-        {
-            "generator_version": config["generator"]["version"],
-            "instance_count": 20,
-            "files": [],
-        },
-    )
-    with pytest.raises(ValueError, match="at least 250 instances"):
-        _validate_single_objective_validation_protocol(
-            config, smoke=False, validation_limit=50
-        )
-    write_json(
-        manifest_path,
-        {
-            "generator_version": "0.0.0",
-            "instance_count": 200,
-            "files": [None] * 200,
-        },
-    )
-    with pytest.raises(ValueError, match="stale generator fingerprint"):
-        _validate_single_objective_validation_protocol(
-            config, smoke=False, validation_limit=50
-        )
-    write_json(
-        manifest_path,
-        {
-            "generator_version": config["generator"]["version"],
-            "instance_count": 250,
-            "files": [None] * 250,
-        },
-    )
-    _validate_single_objective_validation_protocol(
-        config, smoke=False, validation_limit=50
-    )
-    write_json(
-        manifest_path,
-        {
-            "generator_version": config["generator"]["version"],
-            "instance_count": 500,
-            "files": [None] * 500,
-        },
-    )
-    _validate_single_objective_validation_protocol(
-        config, smoke=False, validation_limit=50
-    )
-
-
-@pytest.mark.parametrize("objective", tuple(CONFIGS))
-def test_one_hot_quality_reward_identity(
-    objective: str,
-    fixed_instance,
-):
-    config = load_config(CONFIGS[objective])
-    environment = AssemblySchedulingEnv(config)
-    environment.reset(fixed_instance)
-    policy = HeuristicPolicy()
-    base_reward_sum = 0.0
-    while not (environment.terminated or environment.truncated):
-        action = policy.select_action(environment)
-        _, reward, _, _, _ = environment.step(action)
-        base_reward_sum += reward.base_scalarize(config["reward"], "quality")
-    metrics = environment.metrics()
-    assert metrics["wait_action_count"] > 0
-    assert metrics["wait_total_ticks"] >= 0
-    assert base_reward_sum == pytest.approx(
-        proxy_return_from_metrics(metrics, config, "quality"),
-        abs=1e-8,
-    )
-
-
-def test_convergence_entry_writes_five_panel_artifacts(tmp_path: Path):
-    run_directory = tmp_path / "flow_run"
-    output_directory = tmp_path / "analysis"
-    run_directory.mkdir()
-    config = load_config(CONFIGS["flow"])
-    write_json(run_directory / "config.json", public_config(config))
-    write_json(
-        run_directory / "summary.json",
-        {
-            "training_phase": {
-                "phase_transition_episode": 20,
-                "accepted_quality_episode": 40,
-            }
-        },
-    )
-    rows = []
-    for episode, flow in ((10, 120.0), (20, 110.0), (30, 100.0), (40, 99.0)):
-        rows.append(
-            {
-                "episode": episode,
-                "completion_rate": 1.0,
-                "truncated_count": 0,
-                "schedule_violation_count": 0,
-                "mean_flow_time_objective": flow,
-                "mean_reconfiguration_cost": 20.0 + episode,
-                "mean_worker_load_variance": 3.0,
-                "candidate_phase": (
-                    "feasibility" if episode <= 20 else "quality"
-                ),
-                "phase_after_validation": (
-                    "quality" if episode >= 20 else "feasibility"
-                ),
-                "validation_event": (
-                    "transition"
-                    if episode == 20
-                    else "accepted"
-                    if episode == 40
-                    else "feasibility"
-                ),
-            }
-        )
-    write_csv(run_directory / "validation_log.csv", rows)
-
-    assert analysis_main(
-        [
-            "--flow-run",
-            str(run_directory),
-            "--output-dir",
-            str(output_directory),
-        ]
-    ) == 0
-    for name in (
-        "flow_convergence_data.csv",
-        "flow_convergence.pdf",
-        "flow_convergence.png",
-        "convergence_diagnostics.json",
-        "convergence_report.md",
-    ):
-        path = output_directory / name
-        assert path.is_file()
-        assert path.stat().st_size > 0
-    with (output_directory / "flow_convergence_data.csv").open(
-        "r", encoding="utf-8-sig", newline=""
-    ) as handle:
-        plotted = list(csv.DictReader(handle))
-    assert [int(row["completed_episodes"]) for row in plotted] == [
-        10,
-        20,
-        30,
-        40,
+def test_failure_progress_summary_preserves_partial_completion_distribution():
+    rows = [
+        {"task_failed": True, "operation_progress": 0.1},
+        {"task_failed": True, "operation_progress": 0.75},
+        {"task_failed": True, "operation_progress": 0.98},
+        {"task_failed": False, "operation_progress": 1.0},
     ]
+    summary = _failure_progress_summary(rows)
+    assert summary["count"] == 3
+    assert summary["median"] == pytest.approx(0.75)
+    assert summary["maximum"] == pytest.approx(0.98)
+    assert sum(summary["bins"].values()) == 3
+
+
+def test_latest_only_validation_rejects_stage_configuration():
+    config = deepcopy(load_config("configs/e1/single_flow.json"))
+    config.pop("runtime_manifest")
+    config["training"]["two_stage"] = {}
+    from configs import validate_latest_only_config
+
+    with pytest.raises(ValueError, match="training.two_stage"):
+        validate_latest_only_config(config)

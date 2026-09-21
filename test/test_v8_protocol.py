@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
-import torch
 
 from configs import load_config, validate_latest_only_config
 from configs.normalization import (
@@ -14,21 +14,8 @@ from configs.normalization import (
     load_normalization_manifest,
     write_immutable_manifest,
 )
-from environment import (
-    feasibility_preference_context,
-    quality_preference_for_episode,
-    simplex_lattice,
-)
-from result.v8_promotion import (
-    _safety_gate,
-    compare_preference_conditioned_checkpoints,
-    paired_instance_block_bootstrap,
-)
-from v8_normalization import collect_specialist_audits
-from train import (
-    _assert_pareto_checkpoint_replay,
-    _validate_pareto_validation_protocol,
-)
+from environment import PreferenceContext, quality_preference_for_episode, simplex_lattice
+from train import _aggregate_formal_rows, _checkpoint_metadata
 
 
 @pytest.mark.parametrize(
@@ -42,47 +29,29 @@ from train import (
         ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
     ),
 )
-def test_single_objective_configs_align_feasibility_and_quality_preferences(
-    path,
-    preference,
+def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
+    path: str,
+    preference: list[float],
 ):
     config = load_config(path)
-    assert config["preference"]["feasibility"] == preference
+    assert "feasibility" not in config["preference"]
     assert config["preference"]["quality"]["fixed"] == preference
-    assert "quality_weights" not in config["reward"]
-    feasibility = feasibility_preference_context(config)
-    quality = quality_preference_for_episode(
-        config,
-        algorithm_seed=11,
-        quality_episode_index=0,
-    )
-    assert feasibility.as_tuple() == tuple(preference)
-    assert quality.as_tuple() == tuple(preference)
-    assert feasibility.key == quality.key
+    assert quality_preference_for_episode(
+        config, algorithm_seed=11, quality_episode_index=0
+    ).as_tuple() == tuple(preference)
+    assert "two_stage" not in config["training"]
 
 
-def test_v8_specialists_use_debug_validation_cadence_and_zero_gate():
-    config = load_config("configs/v8/specialist_flow.json")
-    assert config["training"]["validation_interval_episodes"] == 20
-    assert config["network"]["residual_gate_initial_logit"] == 0.0
-    assert config["training"]["two_stage"]["single_objective_promotion"][
-        "rollback_completion_drop"
-    ] == pytest.approx(3 / 50)
-
-
-def test_v8_universal_keeps_balanced_feasibility_preference():
+def test_universal_keeps_fixed_66_point_grid_and_training_sequence():
     config = load_config("configs/default.json")
-    feasibility = feasibility_preference_context(config)
-    assert feasibility.as_tuple() == pytest.approx((1.0 / 3.0,) * 3)
-    quality_points = [
+    assert len(simplex_lattice(10, include=())) == 66
+    points = [
         quality_preference_for_episode(
-            config,
-            algorithm_seed=11,
-            quality_episode_index=index,
+            config, algorithm_seed=11, quality_episode_index=index
         ).as_tuple()
         for index in range(20)
     ]
-    assert quality_points[:6] == [
+    assert points[:6] == [
         (1.0, 0.0, 0.0),
         (1.0, 0.0, 0.0),
         (0.0, 1.0, 0.0),
@@ -92,7 +61,7 @@ def test_v8_universal_keeps_balanced_feasibility_preference():
     ]
 
 
-def test_v8_rejects_legacy_reward_quality_weights():
+def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     config = deepcopy(load_config("configs/default.json"))
     config.pop("runtime_manifest")
     config["reward"]["quality_weights"] = {
@@ -100,14 +69,18 @@ def test_v8_rejects_legacy_reward_quality_weights():
         "cost": 0.0,
         "variance": 0.0,
     }
-    with pytest.raises(ValueError, match="reward.quality_weights is not accepted"):
+    with pytest.raises(ValueError, match="reward.quality_weights"):
+        validate_latest_only_config(config)
+    config["reward"].pop("quality_weights")
+    config["ppo"]["gamma"] = 0.99
+    with pytest.raises(ValueError, match="gamma"):
         validate_latest_only_config(config)
 
 
-def test_normalization_manifest_round_trip_and_hash_guard(tmp_path: Path):
-    audit = tmp_path / "audit_manifest.json"
-    audit.write_text("{}\n", encoding="utf-8")
-    audit_sha = file_sha256(audit)
+def test_normalization_manifest_round_trip_stays_outside_training_protocol(tmp_path: Path):
+    validation = tmp_path / "validation_manifest.json"
+    validation.write_text("{}\n", encoding="utf-8")
+    validation_sha = file_sha256(validation)
     rows = []
     for objective_index, objective in enumerate(("flow", "cost", "variance")):
         for seed_index, seed in enumerate((11, 23, 37, 53, 71)):
@@ -119,16 +92,17 @@ def test_normalization_manifest_round_trip_and_hash_guard(tmp_path: Path):
                     "seed": seed,
                     "checkpoint": checkpoint,
                     "raw_objective_mean": 10.0 * (objective_index + 1) + seed_index,
-                    "audit_dataset_sha256": audit_sha,
-                    "audit_instance_offset": 50,
-                    "audit_instance_count": 200,
+                    "validation_dataset_sha256": validation_sha,
+                    "validation_instance_offset": 0,
+                    "validation_instance_count": 50,
                 }
             )
-    manifest = build_normalization_manifest(rows, audit_dataset_path=audit)
+    manifest = build_normalization_manifest(
+        rows, validation_dataset_path=validation
+    )
     destination = tmp_path / "normalization.json"
     digest = write_immutable_manifest(destination, manifest)
     loaded = load_normalization_manifest(destination, expected_sha256=digest)
-    assert loaded["scales"] == {"flow": 12.0, "cost": 22.0, "variance": 32.0}
     config = {
         "objective_scalarizer": {
             "scale_source": "frozen_manifest",
@@ -136,182 +110,104 @@ def test_normalization_manifest_round_trip_and_hash_guard(tmp_path: Path):
             "normalization_manifest_sha256": digest,
         },
         "network": {},
-        "training": {"two_stage": {"pareto_promotion": {}}},
+        "training": {},
     }
     apply_normalization_manifest(config, project_root=tmp_path)
     assert config["objective_scalarizer"]["scales"] == loaded["scales"]
-    assert config["network"]["normalization_manifest_sha256"] == digest
     assert set(
-        config["training"]["two_stage"]["pareto_promotion"][
-            "endpoint_prediction_upper_bounds"
-        ]
+        config["objective_scalarizer"]["endpoint_prediction_upper_bounds"]
     ) == {"flow", "cost", "variance"}
-    with pytest.raises(FileExistsError):
-        write_immutable_manifest(destination, manifest)
-    with pytest.raises(ValueError, match="SHA256 mismatch"):
-        load_normalization_manifest(destination, expected_sha256="0" * 64)
+    assert "two_stage" not in config["training"]
 
 
-def test_collect_specialist_audits_requires_all_v8_checkpoint_provenance(tmp_path: Path):
-    audit = tmp_path / "audit_manifest.json"
-    audit.write_text("{}\n", encoding="utf-8")
-    audit_sha = file_sha256(audit)
-    for objective_index, objective in enumerate(("flow", "cost", "variance")):
-        for seed_index, seed in enumerate((11, 23, 37, 53, 71)):
-            run = tmp_path / f"v8_specialist_{objective}_seed{seed}"
-            run.mkdir()
-            torch.save(
-                {
-                    "network_spec": {
-                        "policy_head_version": 8,
-                        "observation_schema_version": 5,
-                        "expert_weight_parameterization": "simplex_softplus_v8",
-                    },
-                    "metadata": {
-                        "single_objective_name": objective,
-                        "algorithm_seed": seed,
-                        "checkpoint_role": "accepted",
-                        "accepted_single_objective_audit_value": (
-                            10.0 * (objective_index + 1) + seed_index
-                        ),
-                        "dataset_manifest_sha256": audit_sha,
-                        "single_objective_audit_instance_offset": 50,
-                        "single_objective_audit_instance_limit": 200,
-                    },
-                },
-                run / "accepted_checkpoint.pt",
-            )
-    rows = collect_specialist_audits(tmp_path)
-    assert len(rows) == 15
-    manifest = build_normalization_manifest(rows, audit_dataset_path=audit)
-    assert manifest["scales"] == {"flow": 12.0, "cost": 22.0, "variance": 32.0}
+def _row(
+    preference_key: str,
+    quality: float,
+    *,
+    succeeded: bool = True,
+    index: int = 0,
+) -> dict:
+    return {
+        "instance_id": f"instance_{index}",
+        "preference_key": preference_key,
+        "preference_quality_score": quality if succeeded else 1.0,
+        "quality_score": quality,
+        "terminated": succeeded,
+        "truncated": not succeeded,
+        "makespan": 1.0,
+        "total_flow_time": 1.0 if succeeded else None,
+        "flow_time_objective": 1.0,
+        "reconfiguration_cost": 1.0,
+        "worker_load_variance": 1.0,
+        "inference_time_seconds": 0.0,
+        "solve_time_seconds": 0.0,
+        "inference_time_per_decision_ms": 0.0,
+        "relative_heuristic_gap_percent": 0.0,
+        "makespan_heuristic_gap_percent": 0.0,
+        "reconfiguration_cost_heuristic_gap_percent": 0.0,
+        "worker_load_variance_heuristic_gap_percent": 0.0,
+        "schedule_violation_count": 0,
+        "decisions": 1,
+        "operation_progress": 1.0 if succeeded else 0.5,
+        "initial_progress": 0.0,
+        "single_stage_proxy_return": 1.0 - quality if succeeded else -0.5,
+    }
 
 
-def test_primary_bootstrap_operates_on_paired_instance_blocks():
-    candidate = [float(index % 4) for index in range(50)]
-    incumbent = [value + 0.5 for value in candidate]
-    interval = paired_instance_block_bootstrap(candidate, incumbent)
-    assert interval.replicates == 10_000
-    assert interval.upper < 0
-    with pytest.raises(ValueError, match="10,000"):
-        paired_instance_block_bootstrap(candidate, incumbent, replicates=999)
-
-
-def test_universal_sampled_audit_gates_each_preference_not_any_failure_instance():
-    grid = simplex_lattice(10, include=())
-    rows = []
-    for instance_index in range(200):
-        for preference_index, preference in enumerate(grid):
-            failed = bool(
-                instance_index < 13
-                and preference_index == instance_index % len(grid)
-            )
-            rows.append(
-                {
-                    "instance_id": f"instance_{instance_index:03d}",
-                    "preference_key": f"preference_{preference_index:02d}",
-                    "preference": preference.as_dict(),
-                    "terminated": not failed,
-                    "truncated": failed,
-                    "schedule_violation_count": 0,
-                    "maximum_worker_fatigue": 0.4,
-                    "safe_fatigue_limit": 0.8,
-                }
-            )
-    passed, detail = _safety_gate(rows, minimum_completion=0.98)
-    assert passed is True
-    assert detail["failed_instance_count"] == 13
-    assert detail["failed_instance_count_is_diagnostic"] is True
-    assert detail["minimum_completion_rate"] == pytest.approx(199 / 200)
-
-    for row in rows:
-        if (
-            row["preference_key"] == "preference_00"
-            and row["instance_id"] in {
-                "instance_013",
-                "instance_014",
-                "instance_015",
-                "instance_016",
-                "instance_017",
-            }
-        ):
-            row["terminated"] = False
-            row["truncated"] = True
-    passed, detail = _safety_gate(rows, minimum_completion=0.98)
-    assert passed is False
-    assert detail["completion_rate_by_preference"]["preference_00"] < 0.98
-
-
-def test_universal_checkpoint_replay_requires_identical_seeded_action_traces():
-    expected = [
-        {
-            "instance_id": "instance_001",
-            "preference_key": "preference_00",
-            "sampling_seed": 200011,
-            "derived_sampling_seed": 123,
-            "sampling_evaluation_key": "preference_00",
-            "sampling_rng_version": "evaluation_unit_sha256_v2",
-            "action_trace_sha256": "a" * 64,
-            "terminated": True,
-            "truncated": False,
-            "schedule_violation_count": 0,
-            "flow_time_objective": 100.0,
-            "reconfiguration_cost": 20.0,
-            "worker_load_variance": 3.0,
-        }
-    ]
-    assert len(_assert_pareto_checkpoint_replay(expected, deepcopy(expected))) == 64
-    changed = deepcopy(expected)
-    changed[0]["action_trace_sha256"] = "b" * 64
-    with pytest.raises(RuntimeError, match="action_trace_sha256"):
-        _assert_pareto_checkpoint_replay(expected, changed)
-
-
-def test_formal_universal_run_requires_frozen_manifest_and_disjoint_audit():
+def test_universal_quality_averages_within_preference_then_equally_across_grid():
     config = load_config("configs/default.json")
-    settings = config["training"]["two_stage"]["pareto_promotion"]
-    assert settings["validation_instance_limit"] == 50
-    assert settings["audit_instance_offset"] == 50
-    assert settings["audit_instance_limit"] == 200
-    _validate_pareto_validation_protocol(config, smoke=True, validation_limit=2)
-    with pytest.raises(ValueError, match="frozen normalization manifest"):
-        _validate_pareto_validation_protocol(config, smoke=False, validation_limit=50)
-
-
-def test_tiny_nonsignificant_hv_change_keeps_incumbent():
-    candidate = []
-    incumbent = []
-    grid = simplex_lattice(10, include=())
-    for instance_index in range(50):
-        candidate_flow = 99.999 if instance_index % 2 == 0 else 100.001
-        for preference_index, preference in enumerate(grid):
-            common = {
-                "instance_id": f"instance_{instance_index:03d}",
-                "preference": preference.as_dict(),
-                "preference_key": f"lambda_{preference_index:02d}",
-                "terminated": True,
-                "truncated": False,
-                "schedule_violation_count": 0,
-                "maximum_worker_fatigue": 0.4,
-                "safe_fatigue_limit": 0.8,
-                "reconfiguration_cost": 100.0,
-                "worker_load_variance": 100.0,
-                "preference_quality_score": 0.5,
-            }
-            incumbent.append({**common, "flow_time_objective": 100.0})
-            candidate.append({**common, "flow_time_objective": candidate_flow})
-    result = compare_preference_conditioned_checkpoints(
-        candidate,
-        incumbent,
-        scales=(1000.0, 1000.0, 1000.0),
-        endpoint_prediction_upper_bounds={
-            "flow": 1000.0,
-            "cost": 1000.0,
-            "variance": 1000.0,
-        },
+    keys = [PreferenceContext.from_input(point).key for point in simplex_lattice(10, include=())]
+    rows = [_row(key, 0.5, index=index) for index, key in enumerate(keys)]
+    rows.extend([_row(keys[0], 0.2, index=100), _row(keys[0], 0.4, index=101)])
+    aggregate = _aggregate_formal_rows(
+        config,
+        rows=rows,
+        dataset_name="validation",
+        manifest="manifest.json",
+        unique_instance_count=1,
+        repeat_count=1,
+        universal=True,
     )
-    assert result["primary_delta"]["lower"] == pytest.approx(0.0)
-    assert result["primary_delta"]["upper"] == pytest.approx(0.0)
-    assert result["hypervolume_delta"]["lower"] <= 0.0
-    assert result["accepted"] is False
-    assert result["decision"] == "keep_incumbent_hv_not_significant"
+    assert aggregate["preference_quality_by_key"][keys[0]] == pytest.approx(
+        (0.5 + 0.2 + 0.4) / 3
+    )
+    expected = ((0.5 + 0.2 + 0.4) / 3 + 65 * 0.5) / 66
+    assert aggregate["preference_balanced_quality_score"] == pytest.approx(expected)
+
+
+def test_universal_any_preference_without_success_has_infinite_quality():
+    config = load_config("configs/default.json")
+    keys = [PreferenceContext.from_input(point).key for point in simplex_lattice(10, include=())]
+    rows = [
+        _row(key, 0.5, succeeded=index != 7, index=index)
+        for index, key in enumerate(keys)
+    ]
+    aggregate = _aggregate_formal_rows(
+        config,
+        rows=rows,
+        dataset_name="validation",
+        manifest="manifest.json",
+        unique_instance_count=1,
+        repeat_count=1,
+        universal=True,
+    )
+    assert math.isinf(aggregate["preference_quality_by_key"][keys[7]])
+    assert math.isinf(aggregate["preference_balanced_quality_score"])
+    assert aggregate["completion_rate"] == 0.0
+
+
+def test_universal_checkpoint_metadata_records_all_fixed_preferences():
+    config = load_config("configs/default.json")
+    metadata = _checkpoint_metadata(
+        config,
+        role="best",
+        episode=100,
+        validation_split="validation",
+        validation_instance_limit=2,
+    )
+    assert metadata["preference_count"] == 66
+    assert len(metadata["fixed_preference_set"]) == 66
+    assert all(
+        sum(preference.values()) == pytest.approx(1.0)
+        for preference in metadata["fixed_preference_set"]
+    )

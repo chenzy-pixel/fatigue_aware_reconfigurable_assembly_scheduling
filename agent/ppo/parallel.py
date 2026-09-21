@@ -29,7 +29,6 @@ from environment import (
     PreferenceContextInput,
     RewardVector,
     proxy_return_from_metrics,
-    feasibility_preference_context,
     quality_preference_for_episode,
 )
 from utils import action_trace_sha256, derive_evaluation_sampling_seed
@@ -99,7 +98,6 @@ class EpisodeRollout:
     metrics: dict[str, Any]
     generation_time_seconds: float
     environment_step_time_seconds: float
-    reward_phase: str = "legacy"
     reward_components: dict[str, float] = field(default_factory=dict)
     expected_reward: float = 0.0
     unattributed_forced_reward: float = 0.0
@@ -109,11 +107,9 @@ class EpisodeRollout:
 
     @property
     def base_reward_sum(self) -> float:
-        if self.reward_phase == "feasibility":
-            return self.reward_sum - float(
-                self.reward_components.get("feasibility_shaping", 0.0)
-            )
-        return self.reward_sum
+        return float(self.reward_components.get("operation_progress", 0.0)) + float(
+            self.reward_components.get("quality", 0.0)
+        )
 
     @property
     def policy_step_count(self) -> int:
@@ -1024,9 +1020,7 @@ class ParallelEpisodeRunner:
         gamma: float,
         gae_lambda: float,
         step_limit: int | None = None,
-        reward_phase: str | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
-        quality_episode_indices: Sequence[int] | None = None,
     ) -> TrainingRolloutBatch:
         if not episode_indices:
             raise ValueError("episode_indices cannot be empty")
@@ -1055,46 +1049,17 @@ class ParallelEpisodeRunner:
             raise ValueError(
                 "forced action compression requires ppo.gamma = 1.0"
             )
-        effective_reward_phase = (
-            "feasibility"
-            if reward_phase is None
-            and str(
-                self.config["reward"].get(
-                    "mode",
-                    "legacy_weighted_sum",
-                )
-            )
-            == "hierarchical_constrained_v1"
-            else "legacy"
-            if reward_phase is None
-            else str(reward_phase)
-        )
         if preferences is not None and len(preferences) != len(episode_indices):
             raise ValueError("preferences must align with episode_indices")
-        if quality_episode_indices is not None and len(quality_episode_indices) != len(episode_indices):
-            raise ValueError("quality_episode_indices must align with episode_indices")
         if preferences is None:
-            if effective_reward_phase == "feasibility":
-                preferences = [
-                    feasibility_preference_context(self.config)
-                    for _ in episode_indices
-                ]
-            elif effective_reward_phase == "quality":
-                indices = (
-                    list(episode_indices)
-                    if quality_episode_indices is None
-                    else [int(value) for value in quality_episode_indices]
+            preferences = [
+                quality_preference_for_episode(
+                    self.config,
+                    algorithm_seed=int(self.config["seed"]),
+                    quality_episode_index=int(index),
                 )
-                preferences = [
-                    quality_preference_for_episode(
-                        self.config,
-                        algorithm_seed=int(self.config["seed"]),
-                        quality_episode_index=index,
-                    )
-                    for index in indices
-                ]
-            else:
-                preferences = [None for _ in episode_indices]
+                for index in episode_indices
+            ]
         sampling_start = time.perf_counter()
         reset_responses = self._exchange(
             {
@@ -1134,16 +1099,12 @@ class ParallelEpisodeRunner:
                     preserve_graph=agent.requires_graph_observation
                 ),
                 "reward_sum": 0.0,
-                "reward_phase": effective_reward_phase,
                 "reward_components": {
                     "flow": 0.0,
                     "cost": 0.0,
                     "variance": 0.0,
-                    "completion_progress": 0.0,
-                    "completion_bonus": 0.0,
+                    "operation_progress": 0.0,
                     "quality": 0.0,
-                    "truncation": 0.0,
-                    "unfinished": 0.0,
                     "feasibility_shaping": 0.0,
                 },
                 "step_count": response.environment_step_count,
@@ -1193,7 +1154,6 @@ class ParallelEpisodeRunner:
             if response.reward_vector is not None:
                 scalar_reward = response.reward_vector.scalarize(
                     self.config["reward"],
-                    effective_reward_phase,
                 )
                 context["reward_sum"] += scalar_reward
                 context["unattributed_forced_reward"] += scalar_reward
@@ -1205,8 +1165,8 @@ class ParallelEpisodeRunner:
                 raise ParallelWorkerError(
                     "reset worker returned steps without rewards"
                 )
-            done = response.terminated or response.truncated
-            if done:
+            task_done = bool(response.terminated or response.truncated)
+            if task_done:
                 if response.metrics is None:
                     raise ParallelWorkerError(
                         "terminal reset worker returned no metrics"
@@ -1354,9 +1314,8 @@ class ParallelEpisodeRunner:
                     )
                 scalar_reward = response.reward_vector.scalarize(
                     self.config["reward"],
-                    effective_reward_phase,
                 )
-                done = response.terminated or response.truncated
+                task_done = bool(response.terminated or response.truncated)
                 if lane in sampled_transitions:
                     pending = sampled_transitions[lane]
                     pending.reward += scalar_reward
@@ -1381,7 +1340,7 @@ class ParallelEpisodeRunner:
                 context["environment_step_time_seconds"] += (
                     response.environment_step_time_seconds
                 )
-                if done:
+                if task_done:
                     _commit_pending_transition(context, done=True)
                     if response.metrics is None:
                         raise ParallelWorkerError(
@@ -1530,12 +1489,10 @@ class ParallelEpisodeRunner:
             environment_step_time_seconds=context[
                 "environment_step_time_seconds"
             ],
-            reward_phase=context["reward_phase"],
             reward_components=dict(context["reward_components"]),
             expected_reward=proxy_return_from_metrics(
                 metrics,
                 self.config,
-                context["reward_phase"],
                 preference=metrics.get("preference"),
             ),
             unattributed_forced_reward=context[

@@ -1,13 +1,11 @@
-"""Current E1 training components."""
+"""Single-stage training protocol exports."""
 
 from .protocol import (
-    PARETO_PROMOTION_MODE,
-    SINGLE_OBJECTIVE_PROMOTION_MODE,
-    TrainingPhaseController,
+    SELECTION_TOLERANCE,
+    LexicographicCheckpointSelector,
 )
 
 __all__ = [
-    "PARETO_PROMOTION_MODE",
-    "SINGLE_OBJECTIVE_PROMOTION_MODE",
-    "TrainingPhaseController",
+    "SELECTION_TOLERANCE",
+    "LexicographicCheckpointSelector",
 ]

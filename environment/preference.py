@@ -253,19 +253,3 @@ def quality_preference_for_episode(
         source="scrambled_sobol_exponential_simplex",
         sample_index=sobol_index,
     )
-
-
-def feasibility_preference_context(
-    config: Mapping[str, object],
-) -> PreferenceContext:
-    preference = config.get("preference", {})
-    if not isinstance(preference, Mapping):
-        raise TypeError("config.preference must be an object")
-    return PreferenceContext(
-        normalize_preference(
-            preference.get(
-                "feasibility", (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
-            )
-        ),
-        source="feasibility_balanced",
-    )

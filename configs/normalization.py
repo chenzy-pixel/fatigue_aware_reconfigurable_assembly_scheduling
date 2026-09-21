@@ -32,7 +32,7 @@ def canonical_json_sha256(value: Mapping[str, Any]) -> str:
 def build_normalization_manifest(
     specialist_rows: Sequence[Mapping[str, Any]],
     *,
-    audit_dataset_path: str | Path,
+    validation_dataset_path: str | Path,
 ) -> dict[str, Any]:
     """Build the immutable 15-specialist V8 normalization manifest payload."""
 
@@ -41,10 +41,10 @@ def build_normalization_manifest(
     observed = {(str(row.get("objective")), int(row.get("seed", -1))) for row in rows}
     if len(rows) != 15 or observed != expected:
         raise ValueError("normalization requires exactly 3 objectives x 5 seeds")
-    audit_path = Path(audit_dataset_path).resolve()
-    if not audit_path.is_file():
-        raise FileNotFoundError(audit_path)
-    audit_sha256 = file_sha256(audit_path)
+    validation_path = Path(validation_dataset_path).resolve()
+    if not validation_path.is_file():
+        raise FileNotFoundError(validation_path)
+    validation_sha256 = file_sha256(validation_path)
     normalized_rows: list[dict[str, Any]] = []
     for row in rows:
         checkpoint = Path(str(row["checkpoint"])).resolve()
@@ -53,15 +53,20 @@ def build_normalization_manifest(
         raw_mean = float(row["raw_objective_mean"])
         if not math.isfinite(raw_mean) or raw_mean <= 0.0:
             raise ValueError("specialist raw objective means must be finite and positive")
-        recorded_audit_sha = row.get("audit_dataset_sha256")
-        if recorded_audit_sha is None or str(recorded_audit_sha).lower() != audit_sha256:
-            raise ValueError("all specialist audits must use the supplied audit dataset")
+        recorded_validation_sha = row.get("validation_dataset_sha256")
         if (
-            int(row.get("audit_instance_offset", -1)) != 50
-            or int(row.get("audit_instance_count", -1)) != 200
+            recorded_validation_sha is None
+            or str(recorded_validation_sha).lower() != validation_sha256
         ):
             raise ValueError(
-                "specialist normalization audits require the shared offset=50,count=200 slice"
+                "all specialists must use the supplied validation dataset"
+            )
+        if (
+            int(row.get("validation_instance_offset", -1)) != 0
+            or int(row.get("validation_instance_count", -1)) != 50
+        ):
+            raise ValueError(
+                "specialist normalization requires the shared offset=0,count=50 slice"
             )
         normalized_rows.append(
             {
@@ -98,16 +103,16 @@ def build_normalization_manifest(
     payload: dict[str, Any] = {
         "schema_version": NORMALIZATION_MANIFEST_SCHEMA,
         "formula": {
-            "scale": "median(endpoint_specialist_audit_raw_objective_mean_across_5_seeds)",
+            "scale": "median(endpoint_specialist_validation_raw_objective_mean_across_5_seeds)",
             "bounded_objective": "q_i=J_i/(s_i+J_i)",
             "scalarizer": "T=(max_i(lambda_i*q_i)+0.05*sum_i(lambda_i*q_i))/1.05",
         },
         "specialist_seeds": list(SPECIALIST_SEEDS),
-        "audit_dataset": str(audit_path),
-        "audit_dataset_sha256": audit_sha256,
-        "audit_dataset_selection": {
-            "instance_offset": 50,
-            "instance_count": 200,
+        "validation_dataset": str(validation_path),
+        "validation_dataset_sha256": validation_sha256,
+        "validation_dataset_selection": {
+            "instance_offset": 0,
+            "instance_count": 50,
         },
         "specialists": sorted(
             normalized_rows, key=lambda row: (OBJECTIVES.index(row["objective"]), row["seed"])
@@ -206,8 +211,6 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     if not isinstance(network, dict):
         raise TypeError("network config must be an object")
     network["normalization_manifest_sha256"] = str(expected).lower()
-    two_stage = config.setdefault("training", {}).setdefault("two_stage", {})
-    pareto = two_stage.setdefault("pareto_promotion", {})
-    pareto["endpoint_prediction_upper_bounds"] = dict(
+    scalarizer["endpoint_prediction_upper_bounds"] = dict(
         manifest["endpoint_prediction_upper_bounds"]
     )

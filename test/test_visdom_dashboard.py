@@ -64,16 +64,16 @@ def _enabled_config(config):
 
 def _phase_state():
     return {
-        "phase": "feasibility",
-        "consecutive_validation_successes": 0,
-        "formal_training_status": "feasibility_not_reached",
+        "protocol": "single_stage_lexicographic_v1",
+        "has_best": False,
+        "best_episode": None,
     }
 
 
 def _episode_row(reward=1.0):
     return {
         "reward": reward,
-        "quality_score": 0.2,
+        "preference_quality_score": 0.2,
         "completed_order_ratio": 0.5,
         "completed_operation_ratio": 0.4,
         "terminated": False,
@@ -81,8 +81,7 @@ def _episode_row(reward=1.0):
         "reward_flow": -1.0,
         "reward_cost": -2.0,
         "reward_variance": -3.0,
-        "reward_completion_progress": 0.5,
-        "reward_completion_bonus": 0.0,
+        "reward_operation_progress": 0.5,
         "reward_quality": -0.1,
         "flow_time_objective": 100.0,
         "reconfiguration_cost": 10.0,
@@ -348,7 +347,7 @@ def test_dashboard_uses_chinese_text_and_known_event_labels(config, tmp_path):
         total_episodes=2,
         visdom_class=FakeVisdom,
     )
-    dashboard.log_event("episode 1: validation event=accepted")
+    dashboard.log_event("episode 1: validation event=best_improved")
     dashboard.log_validation(
         {"episode": 1, "mean_maximum_worker_fatigue": 0.7},
         best_validation=None,
@@ -367,7 +366,7 @@ def test_dashboard_uses_chinese_text_and_known_event_labels(config, tmp_path):
         for call in client.calls
         if call[0] == "text" and call[2].get("win") == "02_training_events"
     ][-1]
-    assert "候选模型已接受" in event_call[1][0]
+    assert "最佳模型已改善" in event_call[1][0]
     validation_fatigue_call = next(
         call
         for call in client.calls

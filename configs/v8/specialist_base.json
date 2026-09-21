@@ -1,6 +1,6 @@
 {
   "extends": "../default.json",
-  "experiment_suite_version": "v8_endpoint_specialists_v1",
+  "experiment_suite_version": "single_stage_progress_quality_v1",
   "objective_scalarizer": {
     "scale_source": "bootstrap_specialist",
     "scales": {
@@ -15,12 +15,6 @@
     }
   },
   "training": {
-    "validation_interval_episodes": 20,
-    "two_stage": {
-      "quality_checkpoint_promotion": "single_objective_guarded_v1",
-      "single_objective_promotion": {
-        "audit_instance_offset": 50
-      }
-    }
+    "validation_interval_episodes": 20
   }
 }

@@ -120,8 +120,16 @@ def test_wait_allows_process_completion_exactly_at_horizon(
     assert certificate["next_tick"] == completion_tick
     assert certificate["estimated_completion_tick"] == completion_tick
 
-    environment.step(environment.wait_action, build_observation=False)
+    _, reward, terminated, truncated, _ = environment.step(
+        environment.wait_action, build_observation=False
+    )
 
-    assert environment.terminated is True
-    assert environment.truncated is False
+    assert terminated is environment.terminated is True
+    assert truncated is environment.truncated is False
     assert environment.terminal_reason == "completed"
+    metrics = environment.metrics()
+    assert metrics["task_succeeded"] is True
+    assert metrics["task_failed"] is False
+    assert metrics["operation_progress"] == 1.0
+    assert metrics["preference_quality_score"] < 1.0
+    assert reward.operation_progress > 0.0

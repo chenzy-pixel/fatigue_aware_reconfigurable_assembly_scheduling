@@ -196,6 +196,9 @@ class AssemblySchedulingEnv:
         self._observation_cache: Observation | None = None
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
         self._initial_objectives = (0.0, 0.0, 0.0)
+        self._initial_progress = 0.0
+        self._initial_preference_quality_score = 0.0
+        self._progress_order_operation_indices: tuple[tuple[int, ...], ...] = ()
         self._order_released: dict[str, bool] = {}
         self._order_completion_tick: dict[str, int] = {}
         self.schedule_log: list[dict[str, Any]] = []
@@ -209,6 +212,18 @@ class AssemblySchedulingEnv:
     @property
     def current_time(self) -> float:
         return ticks_to_minutes(self.current_tick, self.resolution)
+
+    @property
+    def task_succeeded(self) -> bool:
+        return bool(self.terminated and not self.truncated)
+
+    @property
+    def task_failed(self) -> bool:
+        return bool(self.truncated)
+
+    @property
+    def task_done(self) -> bool:
+        return bool(self.task_succeeded or self.task_failed)
 
     @property
     def _action_codec(self) -> ActionCodec:
@@ -335,6 +350,10 @@ class AssemblySchedulingEnv:
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
         self._order_released = {order.id: False for order in instance.orders}
         self._order_completion_tick = {}
+        self._progress_order_operation_indices = tuple(
+            tuple(instance.operation_index[operation.id] for operation in order.operations)
+            for order in instance.orders
+        )
         self.schedule_log = []
         self.reconfiguration_log = []
         for order in instance.orders:
@@ -348,6 +367,23 @@ class AssemblySchedulingEnv:
         self._process_events_at_current_tick()
         self._resolve_terminal_or_deadlock()
         self._initial_objectives = self._objective_vector()
+        self._initial_progress = self.operation_progress()
+        self._initial_preference_quality_score = bounded_quality_score(
+            *self._initial_objectives,
+            self.config,
+            preference=self.preference,
+        )
+        if not math.isclose(
+            self._initial_progress, 0.0, rel_tol=0.0, abs_tol=1e-12
+        ) or not math.isclose(
+            self._initial_preference_quality_score,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise RuntimeError(
+                "a standard from-scratch reset must satisfy P_0 = Q_0 = 0"
+            )
         # ``build_observation=False`` is used by callers that intentionally
         # defer graph/resource feature construction until the first explicit
         # ``observe()`` call.  Deadlock resolution must still inspect the
@@ -1881,8 +1917,17 @@ class AssemblySchedulingEnv:
         )
         before_tick = self.current_tick
         before = self._objective_vector()
-        completed_orders_before = len(self._order_completion_tick)
-        potential_before = self.feasibility_potential()
+        progress_before = self.operation_progress()
+        shaping_config = self.config["reward"].get(
+            "feasibility_shaping", {}
+        )
+        if not isinstance(shaping_config, dict):
+            raise TypeError("reward.feasibility_shaping must be an object")
+        shaping_enabled = bool(shaping_config.get("enabled", False))
+        shaping_coefficient = float(shaping_config.get("coefficient", 0.0))
+        if shaping_coefficient < 0.0:
+            raise ValueError("feasibility shaping coefficient must be non-negative")
+        potential_before = self.feasibility_potential() if shaping_enabled else 0.0
         quality_before = bounded_quality_score(
             *before,
             self.config,
@@ -1937,21 +1982,14 @@ class AssemblySchedulingEnv:
         self._resolve_terminal_or_deadlock()
         self._invalidate_resource_snapshot()
         after = self._objective_vector()
-        completed_orders_after = len(self._order_completion_tick)
+        progress_after = self.operation_progress()
         quality_after = terminal_quality_score(
             *after,
             self.config,
             preference=self.preference,
-            terminal_failure=self.truncated,
+            terminal_failure=self.task_failed,
         )
-        shaping_config = self.config["reward"].get(
-            "feasibility_shaping", {}
-        )
-        shaping_enabled = bool(shaping_config.get("enabled", False))
-        shaping_coefficient = float(shaping_config.get("coefficient", 0.0))
-        if shaping_coefficient < 0.0:
-            raise ValueError("feasibility shaping coefficient must be non-negative")
-        potential_after = self.feasibility_potential()
+        potential_after = self.feasibility_potential() if shaping_enabled else 0.0
         feasibility_shaping = (
             shaping_coefficient * (potential_after - potential_before)
             if shaping_enabled
@@ -1961,21 +1999,8 @@ class AssemblySchedulingEnv:
             flow=-(after[0] - before[0]),
             cost=-(after[1] - before[1]),
             variance=-(after[2] - before[2]),
-            completion_progress=(
-                (completed_orders_after - completed_orders_before)
-                / len(self.instance.orders)
-            ),
-            completion_bonus=float(self.terminated and not self.truncated),
+            operation_progress=progress_after - progress_before,
             quality=-(quality_after - quality_before),
-            truncation=-float(self.truncated),
-            unfinished=(
-                -(
-                    len(self.instance.orders) - completed_orders_after
-                )
-                / len(self.instance.orders)
-                if self.truncated
-                else 0.0
-            ),
             feasibility_shaping=feasibility_shaping,
             preference_key=self.preference_context.key,
         )
@@ -2409,24 +2434,30 @@ class AssemblySchedulingEnv:
         quality_score = terminal_quality_score(
             *terminal_objectives,
             self.config,
-            terminal_failure=self.truncated,
+            terminal_failure=self.task_failed,
         )
         preference_quality_score = terminal_quality_score(
             *terminal_objectives,
             self.config,
             preference=self.preference,
-            terminal_failure=self.truncated,
+            terminal_failure=self.task_failed,
         )
+        operation_progress = self.operation_progress()
         return {
             "instance_id": self.instance.instance_id,
             "terminated": self.terminated,
             "truncated": self.truncated,
+            "task_succeeded": self.task_succeeded,
+            "task_failed": self.task_failed,
+            "task_done": self.task_done,
             "terminal_reason": self.terminal_reason,
             "time": self.current_time,
             "completed_orders": completed_orders,
             "total_orders": len(self.instance.orders),
             "completed_operations": completed_operations,
             "total_operations": len(self.operations),
+            "initial_progress": self._initial_progress,
+            "operation_progress": operation_progress,
             "unfinished_orders": len(self.instance.orders) - completed_orders,
             "total_flow_time": self._flow_integral if self.terminated else None,
             "censored_flow_time": self._flow_integral,
@@ -2538,6 +2569,9 @@ class AssemblySchedulingEnv:
                 "cost": float(self._initial_objectives[1]),
                 "variance": float(self._initial_objectives[2]),
             },
+            "initial_preference_quality_score": (
+                self._initial_preference_quality_score
+            ),
             "quality_score": quality_score,
             "preference_quality_score": preference_quality_score,
             "raw_quality_score": raw_quality_score,
@@ -3423,6 +3457,24 @@ class AssemblySchedulingEnv:
             safe_installation_workers=safe_installation_workers,
             matching_deficit_after_commit=matching_deficit,
         )
+
+    def operation_progress(self) -> float:
+        """Return order-balanced completion over the reset-time order set."""
+
+        self._require_instance()
+        order_count = len(self._progress_order_operation_indices)
+        if order_count <= 0:
+            raise RuntimeError("operation progress requires at least one order")
+        progress = 0.0
+        for operation_indices in self._progress_order_operation_indices:
+            if not operation_indices:
+                raise RuntimeError("operation progress requires non-empty orders")
+            completed = sum(
+                self.operations[index].state == OperationState.DONE
+                for index in operation_indices
+            )
+            progress += completed / len(operation_indices)
+        return progress / order_count
 
     def feasibility_potential(self) -> float:
         if self.terminated or self.truncated:

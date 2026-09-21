@@ -1,19 +1,74 @@
-# V8 preference-conditioned multi-objective policy
+# V8 preference-conditioned policy
 
-V8 keeps the six node types, twelve relations, and two HGNN message-passing layers. The episode preference is a separate three-value observation field and is encoded by `3 -> 32 -> ReLU -> 32`; it is not appended to graph global features.
+V8 uses six node types, twelve relations, and two HGNN message-passing layers.
+The episode preference is a separate three-value observation field encoded by
+`3 → 32 → ReLU → 32`.
 
-Production, Worker, and WAIT each use Flow, Cost, and Variance experts. Every direct ranker is bias-free and fixed-sign, with `softplus(theta)` weights normalized to a simplex. Direct and context outputs are bounded to `[-1, 1]`; expert outputs are therefore bounded to `[-2, 2]`. The base logit is `lambda dot z`. A phase-level preference-conditioned residual is scaled by the standard deviation of legal base logits and uses a gate initialized at zero logit.
+Production, Worker, and WAIT actions each have Flow, Cost, and Variance experts.
+Direct ranker weights use fixed-sign normalized `softplus(theta)` parameters.
+The base logit is the preference-weighted expert output; a bounded
+preference-conditioned residual is scaled by the standard deviation of legal
+base logits. The actor and critic receive the same episode preference.
 
-Quality reward is the exact telescoping difference of the normalized augmented Tchebycheff scalarizer. A completed trajectory uses its measured terminal scalarized objective; any truncated trajectory uses the common terminal failure bound `T_terminal = 1`, so every endpoint receives the same hard-feasibility signal. Feasibility shaping remains observable in diagnostics, but quality PPO return contains only the scalarizer difference. `gamma` remains one.
+## Single-stage return
 
-Each Flow, Cost, or Variance endpoint specialist uses its fixed one-hot preference during both feasibility and quality training, so phase-transition validation is evaluated under the same preference condition seen by the policy. The universal policy retains the balanced feasibility preference and switches to its deterministic endpoint/Sobol schedule only in the quality phase.
+Training uses
 
-## Reproducible workflow
+\[
+r_t=(P_{t+1}-P_t)-(Q_{t+1}-Q_t),
+\]
 
-1. Run `run_v8_specialists.ps1` to train Flow, Cost, and Variance specialists at seeds `11/23/37/53/71`.
-2. Every specialist accepted checkpoint is produced only after its independent 200-instance audit and records the endpoint raw-objective mean plus audit-manifest hash.
-3. Run `v8_normalization.py --specialist-runs-root result/runs --audit-dataset-manifest <manifest.json> --output <normalization.json>`. The command verifies all 15 V8 checkpoint identities, seeds, endpoint names, and the shared `offset=50,count=200` audit selection and manifest hash. `--specialist-audits <rows.json>` remains available for explicitly assembled records that contain the same audit provenance fields. The destination is created exclusively and cannot overwrite an existing manifest.
-4. Copy `configs/v8/universal.json.template` to a run config and replace the manifest path and file SHA256. Loading verifies the hash, freezes all three scales, records the content hash, and imports the specialist endpoint prediction bounds.
-5. Run `run_v8_universal.ps1 -Config <frozen-universal-config.json>` to train seeds `11/23/37/53/71`. Formal runs fail before training unless the manifest, 50/200 instance protocol, 66-point grid, and endpoint bounds are verified. Quality preferences follow deterministic 20-episode blocks: two copies of every endpoint plus 14 seeded scrambled-Sobol exponential-simplex points.
+where `P` is order-balanced completed-operation progress and `Q` is the bounded
+augmented Tchebycheff score under the trajectory's preference. Every order is
+present in the progress denominator from reset. Successful tasks use measured
+terminal quality; failed tasks use the common terminal bound `1`.
 
-Validation uses manifest rows `0:50` times all 66 step-0.1 simplex preferences. Promotion first applies completion and safety gates, then endpoint prediction bounds, an instance-block paired bootstrap of mean scalarized score, and—only when its confidence interval contains zero—an instance-block paired bootstrap of per-instance hypervolume. Both bootstraps use 10,000 deterministic resamples. A validation winner is first saved and reloaded, then audited on the non-overlapping manifest rows `50:250` times 66 preferences before an accepted checkpoint is written.
+With `gamma=1`, the collector verifies
+
+\[
+\sum_t r_t=P_T-P_0-Q_T+Q_0.
+\]
+
+Flow, Cost, and Variance remain in `RewardVector` and result rows as raw
+diagnostics. The configured scalar reward is `operation_progress + quality`.
+
+## Preference schedules
+
+Flow, Cost, and Variance specialists use fixed one-hot preferences from the
+first episode. The Universal policy uses deterministic 20-episode blocks:
+two copies of every endpoint followed by 14 seeded scrambled-Sobol simplex
+points. Formal Universal validation evaluates the fixed 66-point step-0.1
+simplex grid.
+
+## Formal selection
+
+Validation evaluates each fixed manifest instance with three sampled repeats at
+temperature `1.0`. Greedy evaluation is emitted alongside it as a diagnostic.
+The rank is:
+
+1. maximum sampled completion; Universal uses the minimum completion across the
+   66 preferences;
+2. minimum preference-balanced quality at equal completion.
+
+Preference-balanced quality first averages successful trajectories inside each
+preference, then equally averages the fixed preferences. Missing success in one
+preference yields `+inf`.
+
+The first safe validation creates `best_checkpoint.pt`. Later writes require a
+strict lexicographic improvement. `last_checkpoint.pt` records the final online
+state independently. Final evaluation reloads the best file and uses independent
+sampled roots plus a greedy diagnostic pass.
+
+## Reproducibility record
+
+Checkpoint metadata includes:
+
+- runtime and result schema versions;
+- effective configuration and algorithm seed;
+- validation manifest hash and ordered members;
+- repeat count and full fixed preference set;
+- sampled root seeds, temperature, RNG version, and derived-seed rule;
+- the sampled validation row that selected the checkpoint.
+
+Final provenance adds source state, environment information, effective-config
+hash, checkpoint hash, and network-weight hash.

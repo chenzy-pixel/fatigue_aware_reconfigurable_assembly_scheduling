@@ -13,7 +13,8 @@ _RUNTIME_MANIFEST: dict[str, Any] = {
     "worker_feasibility": "instant_physical_pair_mask_v1",
     "wait_mask": "progress_certified_wait_v2",
     "observation_schema": 5,
-    "training_protocol": "v8_preference_conditioned_pareto_v1",
+    "reward": "single_stage_progress_quality_v1",
+    "training_protocol": "single_stage_lexicographic_v1",
 }
 
 _REMOVED_NETWORK_FIELDS = frozenset(
@@ -70,6 +71,25 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
             "V8 objective preference must be configured only through "
             "preference.quality; reward.quality_weights is not accepted"
         )
+    if str(reward.get("mode", "")) != "single_stage_progress_quality_v1":
+        raise ValueError(
+            "latest-only runtime requires single_stage_progress_quality_v1"
+        )
+    shaping = reward.get("feasibility_shaping", {})
+    if not isinstance(shaping, Mapping):
+        raise TypeError("reward.feasibility_shaping must be a mapping")
+    if bool(shaping.get("enabled", False)):
+        raise ValueError("single-stage v1 requires feasibility shaping disabled")
+    ppo = config.get("ppo", {})
+    if not isinstance(ppo, Mapping):
+        raise TypeError("ppo config must be a mapping")
+    if float(ppo.get("gamma", 1.0)) != 1.0:
+        raise ValueError("single-stage telescoping reward requires ppo.gamma = 1.0")
+    training = config.get("training", {})
+    if not isinstance(training, Mapping):
+        raise TypeError("training config must be a mapping")
+    if "two_stage" in training:
+        raise ValueError("single-stage runtime rejects training.two_stage")
     environment = config.get("environment", {})
     if not isinstance(environment, Mapping):
         raise TypeError("environment config must be a mapping")

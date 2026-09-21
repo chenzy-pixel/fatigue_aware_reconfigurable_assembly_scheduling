@@ -1,41 +1,82 @@
 # Fatigue-aware reconfigurable assembly scheduling
 
-This repository contains the accepted E1 research implementation for
-fatigue-aware reconfigurable assembly scheduling.
+This repository trains a preference-conditioned HGNN policy with PPO for
+fatigue-aware reconfigurable assembly scheduling. Production and worker
+decisions use pair-plus-WAIT actions, exact action masks, deterministic event
+simulation, and schema-5 heterogeneous graph observations.
 
-The executable stack is fixed to:
+## Reward contract
 
-- pair-plus-WAIT actions in both decision phases;
-- V7 HGNN actor-critic with bounded ranker-scale context residual;
-- instantaneous physical legality for production and worker pairs;
-- progress-certified WAIT transitions with soft completion diagnostics;
-- single-objective guarded promotion protocol v5.
+Every PPO entry point uses one reward throughout training:
 
-Implementation identities are generated in `runtime_manifest`; configuration
-files cannot select alternative implementations.
+\[
+r_t=(P_{t+1}-P_t)-(Q_{t+1}-Q_t).
+\]
+
+For an instance with all orders fixed at reset,
+
+\[
+P_t=\frac{1}{N}\sum_{i=1}^{N}\frac{c_i(t)}{n_i},
+\]
+
+where only `DONE` operations contribute to `c_i(t)`. Unreleased orders remain
+in the denominator, and order release does not change progress. `Q_t` is the
+existing bounded preference quality score. A successful task uses its measured
+terminal quality; a failed task uses `Q_T=1`.
+
+With `gamma=1`, every trajectory is checked against the general identity
+
+\[
+G=P_T-P_0-Q_T+Q_0.
+\]
+
+Standard from-scratch resets assert `P_0=Q_0=0`. The feasibility potential and
+its resource calculations remain available for experiments and diagnostics;
+the published configurations set its reward coefficient path to disabled.
+
+## Termination and PPO bootstrap
+
+| Outcome | Terminal quality | Transition `done` | Critic bootstrap |
+|---|---:|---:|---:|
+| All operations complete | measured quality | yes | no |
+| Deadlock, task horizon, environment decision limit | `1` | yes | no |
+| Rollout collection cutoff | current quality | no | yes |
+
+At a horizon boundary, the simulator first processes every event at the target
+tick and checks completion. A final operation completing exactly at the horizon
+is therefore a successful task.
+
+## Checkpoint selection
+
+Formal validation uses sampled decoding at temperature `1.0`; greedy decoding
+is recorded as a diagnostic. Checkpoints are ranked lexicographically:
+
+1. higher sampled completion rate;
+2. lower preference-balanced quality when completion ties within `1e-12`.
+
+For the Universal policy, completion is the minimum over the fixed 66-point
+preference grid. Quality is averaged within each preference over successful
+trajectories, then averaged equally across preferences. A preference without a
+successful trajectory gives aggregate quality `+inf`.
+
+The first physically safe, violation-free validation initializes
+`best_checkpoint.pt`. Exact ties retain the existing file. Every run writes
+`last_checkpoint.pt`; if no validation is safe, `best_checkpoint` is reported
+as `null`. Validation manifests, instance order, repeats, preference set,
+sampling seeds, seed derivation version, and temperature are stored in
+checkpoint metadata and provenance.
 
 ## Layout
 
-For a file-by-file component map, public contracts, and the training/evaluation
-call graph, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- `agent/ppo/`: V8 HGNN actor-critic, rollout buffer, PPO update, and parallel collector.
+- `configs/`: the Universal configuration plus Flow, Cost, and Variance one-hot overrides.
+- `data/`: instance models, deterministic online generation, fixed datasets, and manifests.
+- `environment/`: action codec, runtime state, masks, event simulation, reward, and metrics.
+- `training/`: completion-first checkpoint selector.
+- `result/`: result schema, provenance, logs, checkpoints, and dashboards.
+- `docs/ARCHITECTURE.md`: component boundaries and end-to-end call paths.
 
-- `agent/networks/`: V7 policy/value building blocks.
-- `agent/ppo/`: rollout buffer, PPO update, and shared parallel collector.
-- `configs/default.json`: complete current E1 configuration.
-- `configs/e1/`: flow, cost, and variance objective overrides.
-- `configs/baselines/`: current MO-ALNS comparison settings.
-- `data/`: instance models, generators, fixed datasets, and manifests.
-- `environment/`: facade, runtime state, action codec, dynamics, graph
-  observation, reward, and diagnostics.
-- `training/`: single-objective promotion protocol.
-- `result/`: persistence, provenance, metrics, and dashboards.
-
-Historical experiment sources are available at Git tag
-`archive/pre-latest-only-20260908`. Existing run artifacts under `result/`
-remain untouched. A compact findings summary is in
-`docs/HISTORICAL_EXPERIMENT_FINDINGS.md`.
-
-## Environment
+## Setup
 
 ```powershell
 python -m venv .venv
@@ -44,55 +85,41 @@ python -m venv .venv
 
 ## Train
 
-The same `TrainingEngine` is used for all worker counts. A serial run is
-`--parallel-envs 1`.
+All worker counts use the same `TrainingEngine`; `--parallel-envs 1` selects a
+serial collector.
 
 ```powershell
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --smoke --parallel-envs 1 --run-name flow_smoke
-.\.venv\Scripts\python.exe train.py --config configs\e1\single_cost.json --smoke --run-name cost_smoke
-.\.venv\Scripts\python.exe train.py --config configs\e1\single_variance.json --smoke --run-name variance_smoke
+.\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --algorithm-seed 11 --parallel-envs 20 --run-name flow_seed11
 ```
 
-Resume a checkpoint produced by the current architecture with:
+An explicit compatible checkpoint can initialize network weights:
 
 ```powershell
-.\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --initial-checkpoint result\runs\v7_2000_e1_seed11\accepted_checkpoint.pt --run-name flow_resume
+.\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --initial-checkpoint result\runs\source\best_checkpoint.pt --run-name flow_initialized
 ```
 
-Checkpoint loading is strict and requires the pair-plus-WAIT/schema-4 network spec.
+E1 Flow, Cost, and Variance validate every 40 episodes. The default formal run
+contains 2,000 training episodes.
 
 ## Evaluate
 
 ```powershell
-.\.venv\Scripts\python.exe eval.py --config configs\e1\single_flow.json --dataset validation --policy ppo --checkpoint result\runs\v7_2000_e1_seed11\accepted_checkpoint.pt
+.\.venv\Scripts\python.exe eval.py --config configs\e1\single_flow.json --dataset test --policy ppo --checkpoint result\runs\flow_seed11\best_checkpoint.pt
 ```
 
-PPO evaluation defaults to the formal stochastic policy (`sampled`,
-temperature 1.0). Validation, checkpoint promotion, independent audit, and
-final test use disjoint deterministic seed namespaces derived from the
-algorithm seed: `+100000`, `+200000`, and `+300000`, respectively. Specialist
-promotion objectives are computed only from completed, non-truncated sampled
-rollouts; failures and truncations are enforced by the completion/safety gate.
-Use `--decode-mode greedy` only for diagnostic or ablation runs.
+Sampled validation seeds use `algorithm_seed + 100000 + repeat`; independent
+final-test seeds use `algorithm_seed + 300000 + repeat`. Each instance and
+preference receives its own SHA256-derived Torch generator seed.
 
-## MO-ALNS and offline Pareto analysis
-
-```powershell
-.\.venv\Scripts\python.exe mo_alns.py --config configs\baselines\mo_alns_smoke.json --dataset validation --instance-limit 1 --parallel-envs 1
-.\.venv\Scripts\python.exe mo_alns_benchmark.py --manifest configs\baselines\mo_alns_manifest.json --output-dir result\analysis\mo_alns
-.\.venv\Scripts\python.exe pareto_analysis.py --help
-.\.venv\Scripts\python.exe mo_alns_analysis.py --help
-```
-
-Pareto and hypervolume computations are offline evaluation tools; they do not
-control PPO checkpoint promotion.
-
-## Tests
+## Tests and analysis
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe single_objective_analysis.py result\runs\flow_seed11 --plots
 ```
 
-The latest-only audit checks configuration identity, environment golden
-outputs, pair and WAIT contracts, strict checkpoint loading, PPO updates,
-serial/parallel reproducibility, and the MO-ALNS/offline Pareto path.
+The test suite covers reward telescoping, fixed progress denominators,
+termination/bootstrap semantics, horizon-boundary completion, deterministic
+serial/parallel rollout, checkpoint ranking, preference-balanced aggregation,
+manifest integrity, and checkpoint compatibility.

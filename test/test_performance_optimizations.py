@@ -27,7 +27,9 @@ def _metadata_without_counterfactual(metadata):
 
 def _scalar_capability_features(environment):
     values = []
-    cost_scale = float(environment.config["reward"]["cost_scale"])
+    cost_scale = float(
+        environment.config["objective_scalarizer"]["scales"]["cost"]
+    )
     variance_scale = float(
         environment.config["objective_scalarizer"]["scales"]["variance"]
     )

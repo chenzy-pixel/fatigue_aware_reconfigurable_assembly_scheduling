@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from agent.ppo import PPOAgent, build_actor_critic
+from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.parallel import (
     ParallelEpisodeRunner,
     ParallelWorkerError,
@@ -207,10 +208,16 @@ def test_worker_local_roll_forward_aggregates_terminal_suffix():
 def test_parallel_training_seeds_and_cleanup(
     config,
     fixed_instance,
+    monkeypatch,
 ):
     effective_config = deepcopy(config)
     effective_config["training"]["worker_timeout_seconds"] = 120
     agent = _agent(effective_config, fixed_instance)
+    monkeypatch.setattr(
+        agent,
+        "value_batch",
+        lambda observations, masks: [7.0] * len(observations),
+    )
     processes = []
     with ParallelEpisodeRunner(
         config=effective_config,
@@ -234,8 +241,10 @@ def test_parallel_training_seeds_and_cleanup(
         assert rollout.transition_count == 2
         assert all(len(value.buffer) == 1 for value in rollout.episodes)
         assert all(
-            value.reward_phase == "feasibility"
-            for value in rollout.episodes
+            episode.buffer.transitions[0].done is False
+            and episode.buffer.transitions[0].return_value
+            == pytest.approx(episode.buffer.transitions[0].reward + 7.0)
+            for episode in rollout.episodes
         )
         assert all(
             value.base_reward_sum == pytest.approx(value.expected_reward)
@@ -247,17 +256,45 @@ def test_parallel_training_seeds_and_cleanup(
                 "flow",
                 "cost",
                 "variance",
-                "completion_progress",
-                "completion_bonus",
+                "operation_progress",
                 "quality",
-                "truncation",
-                "unfinished",
                 "feasibility_shaping",
             }
             for value in rollout.episodes
         )
     assert processes
     assert all(not process.is_alive() for process in processes)
+
+
+def test_environment_failure_marks_done_and_disables_critic_bootstrap(
+    config,
+    fixed_instance,
+):
+    effective_config = deepcopy(config)
+    effective_config["environment"]["max_decisions"] = 1
+    agent = _agent(effective_config, fixed_instance)
+    environment = AssemblySchedulingEnv(effective_config)
+    observation = environment.reset(fixed_instance)
+    mask = environment.get_action_mask()
+    action, log_probability, value = agent.act(observation, mask)
+    _, reward, terminated, truncated, _ = environment.step(action)
+    assert terminated is False
+    assert truncated is True
+    buffer = RolloutBuffer()
+    buffer.add(
+        observation,
+        mask,
+        action,
+        log_probability,
+        value,
+        reward.scalarize(effective_config["reward"]),
+        done=terminated or truncated,
+    )
+    buffer.compute_gae(last_value=123.0, gamma=1.0, gae_lambda=0.95)
+    transition = buffer.transitions[0]
+    assert environment.metrics()["task_failed"] is True
+    assert transition.done is True
+    assert transition.return_value == pytest.approx(transition.reward)
 
 
 def test_parallel_compression_skips_singleton_policy_masks(
@@ -510,8 +547,7 @@ def test_mixed_preference_quality_rollout_uses_episode_contexts(
             gamma=1.0,
             gae_lambda=float(effective_config["ppo"]["gae_lambda"]),
             step_limit=6,
-            reward_phase="quality",
-            quality_episode_indices=[0, 2],
+            preferences=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
         )
     expected = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
     assert len(batch.episodes) == 2
@@ -519,7 +555,9 @@ def test_mixed_preference_quality_rollout_uses_episode_contexts(
         assert episode.metadata["preference"] == preference
         assert episode.metadata["preference_key"]
         assert episode.reward_sum == pytest.approx(
-            episode.reward_components["quality"], abs=1e-8
+            episode.reward_components["operation_progress"]
+            + episode.reward_components["quality"],
+            abs=1e-8,
         )
         assert all(
             transition.observation.preference.tolist() == preference

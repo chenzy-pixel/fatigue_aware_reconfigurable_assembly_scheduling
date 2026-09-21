@@ -38,6 +38,25 @@ def _observation_sha256(observation) -> str:
     return digest.hexdigest()
 
 
+def test_committed_validation_instances_match_manifest_bytes():
+    manifest_path = Path("data/manifests/validation/manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    instances_root = Path("data/instances/validation")
+    failures = []
+    for entry in manifest["files"]:
+        instance_path = instances_root / entry["path"]
+        if not instance_path.is_file():
+            failures.append(f"missing:{entry['path']}")
+            continue
+        actual = hashlib.sha256(instance_path.read_bytes()).hexdigest()
+        if actual != entry["sha256"]:
+            failures.append(
+                f"sha256:{entry['path']}:{actual}!={entry['sha256']}"
+            )
+    assert len(manifest["files"]) == manifest["instance_count"] == 500
+    assert failures == []
+
+
 def test_fixed_instance_golden_observation_mask_and_trajectory():
     expected = json.loads(V8_BASELINE.read_text(encoding="utf-8"))["fixed_instance"]
     config = load_config("configs/e1/single_flow.json")
@@ -62,11 +81,8 @@ def test_fixed_instance_golden_observation_mask_and_trajectory():
                 reward.flow,
                 reward.cost,
                 reward.variance,
-                reward.completion_progress,
-                reward.completion_bonus,
+                reward.operation_progress,
                 reward.quality,
-                reward.truncation,
-                reward.unfinished,
                 reward.feasibility_shaping,
             ]
         )

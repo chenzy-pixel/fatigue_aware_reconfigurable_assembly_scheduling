@@ -26,11 +26,6 @@ from .provenance import (
 )
 from .terminal_log import capture_terminal_output
 from .console_reporter import TrainingConsoleReporter, report_training_failure
-from .v8_promotion import (
-    BootstrapInterval,
-    compare_preference_conditioned_checkpoints,
-    paired_instance_block_bootstrap,
-)
 from .visdom_dashboard import (
     TrainingDashboard,
     create_training_dashboard,
@@ -63,7 +58,4 @@ __all__ = [
     "capture_terminal_output",
     "TrainingConsoleReporter",
     "report_training_failure",
-    "BootstrapInterval",
-    "compare_preference_conditioned_checkpoints",
-    "paired_instance_block_bootstrap",
 ]

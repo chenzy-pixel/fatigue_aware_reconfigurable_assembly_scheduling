@@ -4,7 +4,7 @@
     "initial_observation_sha256": "53265738ffd524f2158326b1d465f0d3aed8c19b05326af724d41d70d2c677d1",
     "initial_mask_sha256": "69551f5bdc109858744d1e2777801dfdc4cabfd64a2574547c5a76e1b9bfad75",
     "heuristic_action_trace_sha256": "9be87e63d93a3740976526c280811061c9ba9f4c8adff4f02e5172ebe3adda19",
-    "heuristic_reward_trace_sha256": "2288c59f95118db5b683e96457fd4e7097f8682b123571e98cd42f0bc3b1bda3",
+    "heuristic_reward_trace_sha256": "776124c017404d9fa16316424090c40bb101c23c3763dbf8a2f0c2e31c5c0487",
     "heuristic_action_count": 211,
     "terminal_reason": "completed",
     "metrics": {

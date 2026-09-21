@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "6.2.0"
+EVALUATION_SCHEMA_VERSION = "7.0.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
@@ -259,6 +259,9 @@ def aggregate_evaluation_rows(
         "quality_score": summarize_values(
             row.get("quality_score") for row in completed
         ),
+        "preference_quality_score": summarize_values(
+            row.get("preference_quality_score") for row in completed
+        ),
         "makespan": summarize_values(
             row["makespan"] for row in completed
         ),
@@ -278,6 +281,9 @@ def aggregate_evaluation_rows(
     all_instance_metrics = {
         "quality_score": summarize_values(
             row.get("quality_score") for row in rows
+        ),
+        "preference_quality_score": summarize_values(
+            row.get("preference_quality_score") for row in rows
         ),
         "heuristic_quality_score": summarize_values(
             row.get("heuristic_quality_score") for row in rows
@@ -374,8 +380,17 @@ def aggregate_evaluation_rows(
         "unfinished_orders": summarize_values(
             row.get("unfinished_orders") for row in rows
         ),
-        "feasibility_proxy_return": summarize_values(
-            row.get("feasibility_proxy_return") for row in rows
+        "initial_progress": summarize_values(
+            row.get("initial_progress") for row in rows
+        ),
+        "initial_preference_quality_score": summarize_values(
+            row.get("initial_preference_quality_score") for row in rows
+        ),
+        "operation_progress": summarize_values(
+            row.get("operation_progress") for row in rows
+        ),
+        "single_stage_proxy_return": summarize_values(
+            row.get("single_stage_proxy_return") for row in rows
         ),
         **{
             name: summarize_values(row.get(name) for row in rows)
@@ -439,6 +454,32 @@ def aggregate_evaluation_rows(
             tail_fraction=0.05,
         ),
     }
+    preference_keys = sorted(
+        {
+            str(row["preference_key"])
+            for row in rows
+            if row.get("preference_key") is not None
+        }
+    )
+    preference_quality_means: dict[str, float] = {}
+    for key in preference_keys:
+        values = [
+            float(row["preference_quality_score"])
+            for row in completed
+            if str(row.get("preference_key")) == key
+            and row.get("preference_quality_score") is not None
+            and math.isfinite(float(row["preference_quality_score"]))
+        ]
+        preference_quality_means[key] = (
+            sum(values) / len(values) if values else math.inf
+        )
+    preference_balanced_quality = (
+        sum(preference_quality_means.values()) / len(preference_quality_means)
+        if preference_quality_means
+        and all(math.isfinite(value) for value in preference_quality_means.values())
+        else math.inf
+    )
+
     return {
         "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
         "quality_metric_version": normalized_metric["version"],
@@ -465,6 +506,8 @@ def aggregate_evaluation_rows(
         ),
         "completed_metrics": completed_metrics,
         "all_instance_metrics": all_instance_metrics,
+        "preference_quality_by_key": preference_quality_means,
+        "preference_balanced_quality_score": preference_balanced_quality,
         "gap_metrics": gap_metrics,
         "tail_metrics": tail_metrics,
     }
@@ -473,28 +516,11 @@ def aggregate_evaluation_rows(
 def evaluation_selection_key(
     aggregate: dict[str, Any],
 ) -> tuple[float, float, float, float]:
-    """Return the M1 completion-constrained aligned-quality key.
+    """Return completion first, then preference-balanced quality."""
 
-    The four-field shape is retained for log/checkpoint compatibility.  Only
-    completion and the mean per-instance Q12 score participate in selection.
-    """
-    metrics = aggregate["completed_metrics"]
-
-    def mean(name: str) -> float:
-        value = metrics.get(name, {}).get("mean")
-        return math.inf if value is None else float(value)
-
-    quality = mean("quality_score")
-    if not math.isfinite(quality):
-        flow = mean("flow_time_objective")
-        cost = mean("reconfiguration_cost")
-        variance = mean("worker_load_variance")
-        if all(math.isfinite(value) for value in (flow, cost, variance)):
-            quality = (
-                0.5 * flow / (1200.0 + flow)
-                + 0.3 * cost / (1000.0 + cost)
-                + 0.2 * variance / (50.0 + variance)
-            )
+    quality = float(
+        aggregate.get("preference_balanced_quality_score", math.inf)
+    )
 
     return (
         -float(aggregate["completion_rate"]),

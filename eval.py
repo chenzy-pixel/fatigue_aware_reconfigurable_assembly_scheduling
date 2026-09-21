@@ -367,10 +367,10 @@ def evaluate_instance(
         if decode_mode == "sampled"
         else None
     )
-    metrics["feasibility_proxy_return"] = proxy_return_from_metrics(
+    metrics["single_stage_proxy_return"] = proxy_return_from_metrics(
         metrics,
-        config["reward"],
-        "feasibility",
+        config,
+        preference=metrics.get("preference"),
     )
     metrics["decisions"] = decisions
     metrics["inference_time_seconds"] = inference_time
@@ -479,13 +479,20 @@ def _evaluation_row(
         "ood_factor": record.metadata.get("ood_factor"),
         "terminated": metrics["terminated"],
         "truncated": metrics["truncated"],
+        "task_succeeded": metrics.get("task_succeeded"),
+        "task_failed": metrics.get("task_failed"),
         "termination_reason": metrics["terminal_reason"],
         "decisions": metrics["decisions"],
         "makespan": metrics["time"],
         "completed_orders": metrics["completed_orders"],
         "unfinished_orders": metrics["unfinished_orders"],
-        "feasibility_proxy_return": metrics[
-            "feasibility_proxy_return"
+        "initial_progress": metrics.get("initial_progress"),
+        "operation_progress": metrics.get("operation_progress"),
+        "initial_preference_quality_score": metrics.get(
+            "initial_preference_quality_score"
+        ),
+        "single_stage_proxy_return": metrics[
+            "single_stage_proxy_return"
         ],
         "total_flow_time": metrics["total_flow_time"],
         "flow_time_objective": metrics["flow_time_objective"],
@@ -875,10 +882,10 @@ def evaluate_dataset_parallel(
             if rollout.decisions
             else 0.0
         )
-        metrics["feasibility_proxy_return"] = proxy_return_from_metrics(
+        metrics["single_stage_proxy_return"] = proxy_return_from_metrics(
             metrics,
-            config["reward"],
-            "feasibility",
+            config,
+            preference=metrics.get("preference"),
         )
         metrics["action_trace_sha256"] = rollout.action_trace_sha256
         metrics["decode_mode"] = decode_mode
@@ -1010,8 +1017,10 @@ def evaluate_preference_grid_parallel(
                 ),
             }
         )
-        metrics["feasibility_proxy_return"] = proxy_return_from_metrics(
-            metrics, config, "feasibility"
+        metrics["single_stage_proxy_return"] = proxy_return_from_metrics(
+            metrics,
+            config,
+            preference=metrics.get("preference"),
         )
         rows.append(
             _evaluation_row(

@@ -111,68 +111,37 @@ class RewardVector:
     flow: float
     cost: float
     variance: float
-    completion_progress: float = 0.0
-    completion_bonus: float = 0.0
+    operation_progress: float = 0.0
     quality: float = 0.0
-    truncation: float = 0.0
-    unfinished: float = 0.0
     feasibility_shaping: float = 0.0
     preference_key: str | None = None
 
-    def scalarize(self, config: dict, phase: str | None = None) -> float:
-        base = self.base_scalarize(config, phase)
-        mode = str(config.get("mode", "legacy_weighted_sum"))
-        effective_phase = "feasibility" if phase is None else str(phase)
-        if mode == "hierarchical_constrained_v1" and effective_phase == "feasibility":
+    def scalarize(self, config: dict) -> float:
+        """Return the configured single-stage training reward."""
+
+        base = self.base_scalarize(config)
+        shaping = config.get("feasibility_shaping", {})
+        if not isinstance(shaping, dict):
+            raise TypeError("reward.feasibility_shaping must be an object")
+        if bool(shaping.get("enabled", False)):
             return base + self.feasibility_shaping
         return base
 
-    def base_scalarize(self, config: dict, phase: str | None = None) -> float:
-        """Return the formal objective reward without training-only shaping."""
-        mode = str(config.get("mode", "legacy_weighted_sum"))
-        if mode == "hierarchical_constrained_v1":
-            effective_phase = "feasibility" if phase is None else str(phase)
-            truncation_weight = float(config.get("truncation_penalty", 0.0))
-            unfinished_weight = float(
-                config.get("unfinished_order_penalty", 0.0)
-            )
-            if truncation_weight < 0.0 or unfinished_weight < 0.0:
-                raise ValueError(
-                    "hierarchical terminal penalty weights must be non-negative"
-                )
-            base = (
-                self.completion_progress
-                + self.completion_bonus
-                + truncation_weight * self.truncation
-                + unfinished_weight * self.unfinished
-            )
-            if effective_phase == "feasibility":
-                return base
-            if effective_phase == "quality":
-                # V8 quality optimization is exactly the preference-conditioned
-                # telescoping objective. Feasibility terms remain gates only.
-                return self.quality
-            raise ValueError(f"unknown hierarchical reward phase {effective_phase!r}")
-        if mode != "legacy_weighted_sum":
+    def base_scalarize(self, config: dict) -> float:
+        """Return progress increment plus preference-conditioned quality delta."""
+
+        mode = str(config.get("mode", "single_stage_progress_quality_v1"))
+        if mode != "single_stage_progress_quality_v1":
             raise ValueError(f"unknown reward mode {mode!r}")
-        return (
-            config["flow_weight"] * self.flow / config["flow_scale"]
-            + config["cost_weight"] * self.cost / config["cost_scale"]
-            + config["variance_weight"]
-            * self.variance
-            / config["variance_scale"]
-        )
+        return self.operation_progress + self.quality
 
     def as_dict(self) -> dict[str, float | str]:
         result = {
             "flow": self.flow,
             "cost": self.cost,
             "variance": self.variance,
-            "completion_progress": self.completion_progress,
-            "completion_bonus": self.completion_bonus,
+            "operation_progress": self.operation_progress,
             "quality": self.quality,
-            "truncation": self.truncation,
-            "unfinished": self.unfinished,
             "feasibility_shaping": self.feasibility_shaping,
         }
         if self.preference_key is not None:
@@ -206,7 +175,7 @@ def objective_scalarizer_config(config: dict) -> dict:
         raise ValueError("objective scalarizer scales must be finite and positive")
     default_kind = (
         "normalized_augmented_tchebycheff_v1"
-        if str(raw.get("mode", "")) == "hierarchical_constrained_v1"
+        if str(raw.get("mode", "")) == "single_stage_progress_quality_v1"
         else "legacy_bounded_weighted_sum_v1"
     )
     kind = str(raw.get("type", default_kind))
@@ -307,50 +276,19 @@ def terminal_quality_score(
 def proxy_return_from_metrics(
     metrics: dict,
     config: dict,
-    phase: str | None = None,
     *,
     preference: PreferenceInput | None = None,
 ) -> float:
-    """Recompute the trajectory proxy return from terminal metrics."""
+    """Recompute ``P_T - P_0 - Q_T + Q_0`` from trajectory metrics."""
+
     reward = reward_config(config)
-    mode = str(reward.get("mode", "legacy_weighted_sum"))
-    if mode == "legacy_weighted_sum":
-        return -(
-            float(reward["flow_weight"])
-            * float(metrics["flow_time_objective"])
-            / float(reward["flow_scale"])
-            + float(reward["cost_weight"])
-            * float(metrics["reconfiguration_cost"])
-            / float(reward["cost_scale"])
-            + float(reward["variance_weight"])
-            * float(metrics["worker_load_variance"])
-            / float(reward["variance_scale"])
-        )
-    if mode != "hierarchical_constrained_v1":
+    mode = str(reward.get("mode", "single_stage_progress_quality_v1"))
+    if mode != "single_stage_progress_quality_v1":
         raise ValueError(f"unknown reward mode {mode!r}")
-    total_orders = int(metrics["total_orders"])
-    if total_orders <= 0:
-        raise ValueError("total_orders must be positive")
-    completion_progress = float(metrics["completed_orders"]) / total_orders
-    completion_bonus = float(
-        bool(metrics["terminated"]) and not bool(metrics["truncated"])
-    )
-    truncated = float(bool(metrics["truncated"]))
-    unfinished_fraction = (
-        float(metrics["unfinished_orders"]) / total_orders
-        if bool(metrics["truncated"])
-        else 0.0
-    )
-    truncation_weight = float(reward.get("truncation_penalty", 0.0))
-    unfinished_weight = float(
-        reward.get("unfinished_order_penalty", 0.0)
-    )
-    if truncation_weight < 0.0 or unfinished_weight < 0.0:
-        raise ValueError(
-            "hierarchical terminal penalty weights must be non-negative"
-        )
-    effective_phase = "feasibility" if phase is None else str(phase)
-    if effective_phase == "quality":
+    initial_progress = float(metrics.get("initial_progress", 0.0))
+    terminal_progress = float(metrics["operation_progress"])
+    initial_score_value = metrics.get("initial_preference_quality_score")
+    if initial_score_value is None:
         initial = metrics.get(
             "initial_objectives",
             {"flow": 0.0, "cost": 0.0, "variance": 0.0},
@@ -364,24 +302,27 @@ def proxy_return_from_metrics(
             config,
             preference=preference,
         )
-        terminal_score = terminal_quality_score(
+    else:
+        initial_score = float(initial_score_value)
+    terminal_score_value = metrics.get("preference_quality_score")
+    terminal_score = (
+        terminal_quality_score(
             float(metrics["flow_time_objective"]),
             float(metrics["reconfiguration_cost"]),
             float(metrics["worker_load_variance"]),
             config,
             preference=preference,
-            terminal_failure=bool(metrics["truncated"]),
+            terminal_failure=bool(metrics.get("task_failed", metrics["truncated"])),
         )
-        return initial_score - terminal_score
-    result = (
-        completion_progress
-        + completion_bonus
-        - truncation_weight * truncated
-        - unfinished_weight * unfinished_fraction
+        if terminal_score_value is None
+        else float(terminal_score_value)
     )
-    if effective_phase == "feasibility":
-        return result
-    raise ValueError(f"unknown hierarchical reward phase {effective_phase!r}")
+    return (
+        terminal_progress
+        - initial_progress
+        - terminal_score
+        + initial_score
+    )
 
 
 @dataclass(frozen=True)

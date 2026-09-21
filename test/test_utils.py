@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+import pytest
 import torch
 
 from configs import load_config
@@ -37,21 +38,19 @@ def test_formal_sampling_namespaces_are_disjoint_and_algorithm_seed_relative():
         config, "validation"
     ) == [100011, 100012, 100013]
     assert configured_formal_evaluation_sampling_seeds(
-        config, "audit"
-    ) == [200011]
-    assert configured_formal_evaluation_sampling_seeds(
         config, "final_test"
     ) == [300011, 300012, 300013]
 
     config["seed"] = 47
     namespaces = [
         set(configured_formal_evaluation_sampling_seeds(config, name))
-        for name in ("validation", "audit", "final_test")
+        for name in ("validation", "final_test")
     ]
     assert namespaces[0] == {100047, 100048, 100049}
     assert not (namespaces[0] & namespaces[1])
-    assert not (namespaces[0] & namespaces[2])
-    assert not (namespaces[1] & namespaces[2])
+    assert not (namespaces[0] & namespaces[1])
+    with pytest.raises(ValueError, match="unknown formal evaluation namespace"):
+        configured_formal_evaluation_sampling_seeds(config, "audit")
 
 
 def test_universal_sampling_seed_is_preference_specific_and_pair_reproducible():

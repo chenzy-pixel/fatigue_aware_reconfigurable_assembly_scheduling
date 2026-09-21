@@ -2,7 +2,6 @@
   "extends": "specialist_base.json",
   "experiment_name": "v8_specialist_cost",
   "preference": {
-    "feasibility": [0.0, 1.0, 0.0],
     "quality": {"fixed": [0.0, 1.0, 0.0]}
   }
 }

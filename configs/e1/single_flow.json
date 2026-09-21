@@ -2,16 +2,12 @@
   "extends": "../default.json",
   "experiment_name": "e1_single_flow",
   "preference": {
-    "feasibility": [1.0, 0.0, 0.0],
     "quality": {
       "mode": "fixed",
       "fixed": [1.0, 0.0, 0.0]
     }
   },
   "training": {
-    "validation_interval_episodes": 20,
-    "two_stage": {
-      "quality_checkpoint_promotion": "single_objective_guarded_v1"
-    }
+    "validation_interval_episodes": 40
   }
 }

@@ -1,6 +1,6 @@
 {
   "experiment_name": "v8_universal",
-  "experiment_suite_version": "v8_preference_conditioned_pareto_v1",
+  "experiment_suite_version": "single_stage_progress_quality_v1",
   "method_version": "M1_hgnn_objective_experts_v8",
   "seed": 11,
   "algorithm_seeds": [11, 23, 37, 53, 71],
@@ -225,7 +225,6 @@
     "max_zero_time_actions": 1000
   },
   "preference": {
-    "feasibility": [0.3333333333333333, 0.3333333333333333, 0.3333333333333334],
     "quality": {
       "mode": "universal_sobol_v1",
       "fixed": [0.3333333333333333, 0.3333333333333333, 0.3333333333333334],
@@ -247,18 +246,9 @@
     "normalization_manifest_sha256": null
   },
   "reward": {
-    "mode": "hierarchical_constrained_v1",
-    "flow_scale": 1200.0,
-    "cost_scale": 1000.0,
-    "variance_scale": 50.0,
-    "flow_weight": 1.0,
-    "cost_weight": 1.0,
-    "variance_weight": 1.0,
-    "quality_budget": 0.5,
-    "truncation_penalty": 0.5,
-    "unfinished_order_penalty": 1.0,
+    "mode": "single_stage_progress_quality_v1",
     "feasibility_shaping": {
-      "enabled": true,
+      "enabled": false,
       "coefficient": 0.25,
       "weights": {
         "operation_progress": 0.50,
@@ -268,7 +258,7 @@
     }
   },
   "evaluation": {
-    "result_schema_version": "6.2.0",
+    "result_schema_version": "7.0.0",
     "quality_metric": {
       "version": "canonical_bounded_quality_v1",
       "flow_scale": 1200.0,
@@ -319,57 +309,17 @@
       "temperature": 1.0,
       "validation_seed_offset": 100000,
       "validation_repeats": 3,
-      "audit_seed_offset": 200000,
-      "audit_repeats": 1,
       "final_test_seed_offset": 300000,
       "final_test_repeats": 3
     },
-    "two_stage": {
-      "completion_target": 0.98,
-      "consecutive_validations": 3,
-      "quality_completion_floor": 0.95,
-      "quality_checkpoint_promotion": "preference_conditioned_pareto_v8",
-      "quality_validate_every_update": true,
-      "quality_promotion_constraints": null,
-      "pareto_promotion": {
-        "validation_instance_limit": 50,
-        "audit_instance_limit": 200,
-        "audit_instance_offset": 50,
-        "simplex_step": 0.1,
-        "preference_count": 66,
-        "bootstrap_replicates": 10000,
-        "bootstrap_seed": 20260811,
-        "validation_completion_floor": 0.95,
-        "audit_completion_floor": 0.98,
-        "endpoint_prediction_upper_bounds": null
-      },
-      "single_objective_promotion": {
-        "window_size": 5,
-        "window_statistic": "median",
-        "candidate_improvement_epsilon": 1e-9,
-        "rollback_completion_drop": 0.06,
-        "rollback_below_floor_consecutive": 2,
-        "audit_instance_limit": 200,
-        "audit_instance_offset": 50,
-        "audit_completion_target": 0.98,
-        "audit_max_failed_instances": 4,
-        "audit_schedule_violation_target": 0,
-        "audit_physical_safety_required": true
-      }
-    },
     "validation_control": {
-      "feasibility_rollback": {
-        "completion_drop": 0.10,
-        "consecutive_validations": 2,
-        "cooldown_validations": 3
-      },
       "learning_rate_plateau": {
         "patience_validations": 15,
         "factor": 0.5,
         "minimum": 0.000025
       },
       "greedy_diagnostic": {
-        "every_validations": 5
+        "every_validations": 1
       }
     },
     "worker_timeout_seconds": 600,
