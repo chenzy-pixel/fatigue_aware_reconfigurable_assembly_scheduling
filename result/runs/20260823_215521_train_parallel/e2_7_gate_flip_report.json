@@ -1,0 +1,13 @@
+{
+  "completed_episodes": 2000,
+  "dual_legal_state_count": 51495,
+  "extreme_flip_rate": 0.6074764540246625,
+  "flow_cost_flip_count": 31356,
+  "flow_cost_flip_rate": 0.6089134867462861,
+  "flow_variance_flip_count": 31282,
+  "flow_variance_flip_rate": 0.6074764540246625,
+  "monotonicity_violation_count": 0,
+  "pass": true,
+  "update_id": 200,
+  "version": "centered_gate_flip_report_v1"
+}

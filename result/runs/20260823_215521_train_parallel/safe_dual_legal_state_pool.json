@@ -1,0 +1,17 @@
+{
+  "fixed_sampling_count_per_auxiliary_update": 64,
+  "minimum_required_state_count": 64,
+  "provenance": {
+    "e1_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e1_seed11\\accepted_checkpoint.pt",
+    "e1_checkpoint_sha256": "084184afa53cebfb04d691f5f70a9abb630a1aa0d7f4ecfdb28caeca87299533",
+    "e1_validation_state_count": 128,
+    "e2_3_diagnostic_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_3_safe_production_seed11\\last_checkpoint.pt",
+    "e2_3_diagnostic_checkpoint_sha256": "5dd284397e339a565d46ee827b335aa2ca84f81e07728adf3fde8961e5ed6276",
+    "e2_3_failure_cell_count": 10,
+    "e2_3_failure_cell_state_count": 128,
+    "e2_3_weights_loaded": false
+  },
+  "state_count": 256,
+  "state_pool_sha256": "b30ec41fbf810fe69b26872ae715539b47ebdc5d4b69eb436be27430e678b261",
+  "version": "fixed_e1_validation_e2_3_failure_pool_v1"
+}

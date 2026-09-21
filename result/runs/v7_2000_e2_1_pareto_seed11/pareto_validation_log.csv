@@ -1,0 +1,2 @@
+﻿scope,update_id,completed_episodes,preference_count,instance_count,candidate_count,all_safe,completion_rate,schedule_violation_count,minimum_fatigue_margin,mean_hypervolume,mean_unique_objective_count,mean_nondominated_count,canonical_quality,quality_update_id,promotion_event
+full_grid_22,200,2000,22,20,440,False,0.9636363636363636,0,-4.440892098500626e-16,0.3232323271147166,12.35,6.4,0.3864484316603491,0,audit_only

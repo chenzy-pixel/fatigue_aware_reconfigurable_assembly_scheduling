@@ -1,0 +1,14 @@
+{
+  "candidate_count": 399068,
+  "masked_count": 2128,
+  "maximum_remaining_work_lower_bound_ticks": 1149,
+  "maximum_risk": 1.4031007751937985,
+  "maximum_wait_ticks": 580,
+  "minimum_deadline_slack_ticks": -104,
+  "reason_counts": {
+    "deadline_budget_exceeded": 38,
+    "no_state_progress": 2090
+  },
+  "trajectory_count": 2000,
+  "version": "deadline_progress_shield_report_v1"
+}

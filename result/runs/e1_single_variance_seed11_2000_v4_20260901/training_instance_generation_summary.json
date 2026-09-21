@@ -1,0 +1,135 @@
+{
+  "cache_fingerprint": "c5f2fab8dbfc6b40f76bc3e1e887646dcc27834e7d5e9defb954b62cd0ff0ada",
+  "cache_hit_count": 2000,
+  "cache_hit_rate": 1.0,
+  "generation_rejection_reasons": {
+    "configuration_gap": 345,
+    "easy_reconfiguration": 97,
+    "easy_worker_competition": 3,
+    "fatigue_mask": 36,
+    "heuristic_truncated": 210,
+    "machine_load": 10,
+    "order_module_diversity": 4,
+    "reconfiguration_ratio": 17,
+    "worker_competition": 116,
+    "worker_wait": 116
+  },
+  "generation_time_seconds": {
+    "max": 0.009580999991158023,
+    "p50": 0.0018012999935308471,
+    "p95": 0.008287130005192012,
+    "p99": 0.008816139015834779
+  },
+  "generator_environment_precheck_config_hash": "08bc1010f3936cc751f8efa74092457047b92d3d46404a9426452fc7787e3357",
+  "generator_version": "1.3.0",
+  "instance_count": 2000,
+  "slow_seeds": [
+    {
+      "generation_time_seconds": 0.009580999991158023,
+      "seed": 1000008,
+      "train_index": 8
+    },
+    {
+      "generation_time_seconds": 0.009073499997612089,
+      "seed": 1000009,
+      "train_index": 9
+    },
+    {
+      "generation_time_seconds": 0.00883779997820966,
+      "seed": 1000011,
+      "train_index": 11
+    },
+    {
+      "generation_time_seconds": 0.009297400014474988,
+      "seed": 1000012,
+      "train_index": 12
+    },
+    {
+      "generation_time_seconds": 0.009357299975818023,
+      "seed": 1000015,
+      "train_index": 15
+    },
+    {
+      "generation_time_seconds": 0.009010299982037395,
+      "seed": 1000017,
+      "train_index": 17
+    },
+    {
+      "generation_time_seconds": 0.009558499994454905,
+      "seed": 1000125,
+      "train_index": 125
+    },
+    {
+      "generation_time_seconds": 0.009179000015137717,
+      "seed": 1000131,
+      "train_index": 131
+    },
+    {
+      "generation_time_seconds": 0.008887000003596768,
+      "seed": 1000133,
+      "train_index": 133
+    },
+    {
+      "generation_time_seconds": 0.008845899981679395,
+      "seed": 1000270,
+      "train_index": 270
+    },
+    {
+      "generation_time_seconds": 0.008964999986346811,
+      "seed": 1000291,
+      "train_index": 291
+    },
+    {
+      "generation_time_seconds": 0.008829900005366653,
+      "seed": 1000321,
+      "train_index": 321
+    },
+    {
+      "generation_time_seconds": 0.008992500021122396,
+      "seed": 1000323,
+      "train_index": 323
+    },
+    {
+      "generation_time_seconds": 0.00886739999987185,
+      "seed": 1000371,
+      "train_index": 371
+    },
+    {
+      "generation_time_seconds": 0.008863800001563504,
+      "seed": 1000384,
+      "train_index": 384
+    },
+    {
+      "generation_time_seconds": 0.008976800017990172,
+      "seed": 1000428,
+      "train_index": 428
+    },
+    {
+      "generation_time_seconds": 0.009026999992784113,
+      "seed": 1000447,
+      "train_index": 447
+    },
+    {
+      "generation_time_seconds": 0.008946899994043633,
+      "seed": 1000456,
+      "train_index": 456
+    },
+    {
+      "generation_time_seconds": 0.008859800000209361,
+      "seed": 1000597,
+      "train_index": 597
+    },
+    {
+      "generation_time_seconds": 0.009111199993640184,
+      "seed": 1000607,
+      "train_index": 607
+    }
+  ],
+  "template_sha256": "da0b427b63958b6ae3569bc15688b26c41470aadb8490f9a961921e433475a65",
+  "temporal_budget_termination_reasons": {
+    "episode_option_budget_exhausted": 420
+  },
+  "temporal_unknown_count": 420,
+  "total_training_episode_count": 2000,
+  "version": "training_instance_cache_manifest_v1"
+}

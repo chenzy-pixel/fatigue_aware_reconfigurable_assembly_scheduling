@@ -1,0 +1,3064 @@
+{
+  "ablation_gate": null,
+  "accepted_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\accepted_checkpoint.pt",
+  "best_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\best_checkpoint.pt",
+  "best_feasibility_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\best_feasibility_checkpoint.pt",
+  "best_feasibility_episode": 10,
+  "best_feasibility_validation": {
+    "best_completion_rate": 1.0,
+    "best_episode": 10,
+    "candidate_phase": "feasibility",
+    "completed_count": 20,
+    "completion_rate": 1.0,
+    "consecutive_completion_successes": 1,
+    "consecutive_degraded_validations": 0,
+    "dataset": "validation",
+    "degraded": false,
+    "episode": 10,
+    "feasibility_rollback_applied": false,
+    "improved": true,
+    "instance_count": 20,
+    "learning_rate_after_validation": 0.0001,
+    "learning_rate_before_validation": 0.0001,
+    "learning_rate_decay_applied": false,
+    "mean_candidate_recovery_advance_count": 0.4,
+    "mean_completed_reconfigurations": 16.65,
+    "mean_fatigue_masked_action_ratio": 0.07820985368372449,
+    "mean_feasibility_proxy_return": 2.0,
+    "mean_flow_time_objective": 1087.48,
+    "mean_heuristic_quality_score": 0.3721786036468983,
+    "mean_machine_waiting_for_worker_time": 2.365,
+    "mean_makespan": 188.025,
+    "mean_makespan_heuristic_gap_percent": 2.621888875830245,
+    "mean_matching_preserving_worker_action_count": 79.5,
+    "mean_maximum_worker_fatigue": 0.39930728844499985,
+    "mean_mean_peak_worker_fatigue": 0.35249432444999995,
+    "mean_minimum_worker_alternatives": 1.2,
+    "mean_quality_score": 0.3716448948515035,
+    "mean_reconfiguration_cost": 795.3561070741052,
+    "mean_reconfiguration_cost_heuristic_gap_percent": -5.4268685381614405,
+    "mean_relative_heuristic_gap_percent": -1.462807007842359,
+    "mean_resource_admission_masked_action_count": 42.3,
+    "mean_resource_admission_masked_action_ratio": 0.09854320406226943,
+    "mean_safe_fatigue_limit": 0.75,
+    "mean_total_flow_time": 1087.48,
+    "mean_unfinished_orders": 0.0,
+    "mean_worker_competition_event_count": 7.5,
+    "mean_worker_load_variance": 4.8255694444444455,
+    "mean_worker_load_variance_heuristic_gap_percent": 190.58845117980232,
+    "mean_worker_matching_deficit_event_count": 7.5,
+    "mean_worker_switch_ratio": 0.9777255639097744,
+    "parallel_envs": 10,
+    "phase_after_validation": "feasibility",
+    "rollback": false,
+    "rollback_cooldown_blocked_count": 0,
+    "rollback_cooldown_remaining": 0,
+    "rollback_cooldown_validation_count": 0,
+    "schedule_violation_count": 0,
+    "std_candidate_recovery_advance_count": 0.8207826816681233,
+    "std_completed_reconfigurations": 6.953037957763877,
+    "std_fatigue_masked_action_ratio": 0.1700605009280589,
+    "std_feasibility_proxy_return": 0.0,
+    "std_flow_time_objective": 375.3330837928808,
+    "std_heuristic_quality_score": 0.08586455952008606,
+    "std_machine_waiting_for_worker_time": 5.68101871887521,
+    "std_makespan": 25.7051064965699,
+    "std_makespan_heuristic_gap_percent": 4.420546990892652,
+    "std_matching_preserving_worker_action_count": 28.087270014049164,
+    "std_maximum_worker_fatigue": 0.2528484201766614,
+    "std_mean_peak_worker_fatigue": 0.24850125020112254,
+    "std_minimum_worker_alternatives": 1.0052493799000692,
+    "std_quality_score": 0.08412710559257276,
+    "std_reconfiguration_cost": 419.0574136945387,
+    "std_reconfiguration_cost_heuristic_gap_percent": 10.865906666171862,
+    "std_relative_heuristic_gap_percent": 2.2435880465038394,
+    "std_resource_admission_masked_action_count": 146.73646265902764,
+    "std_resource_admission_masked_action_ratio": 0.2322090342034881,
+    "std_safe_fatigue_limit": 0.0,
+    "std_total_flow_time": 375.3330837928808,
+    "std_unfinished_orders": 0.0,
+    "std_worker_competition_event_count": 21.154817791450572,
+    "std_worker_load_variance": 2.185658733065453,
+    "std_worker_load_variance_heuristic_gap_percent": 365.73672052265465,
+    "std_worker_matching_deficit_event_count": 21.154817791450572,
+    "std_worker_switch_ratio": 0.02969241855423285,
+    "total_inference_time_seconds": 19.484459599771075,
+    "total_solve_time_seconds": 198.6427173995762,
+    "truncated_count": 0,
+    "validation_event": "feasibility",
+    "validations_without_improvement": 0
+  },
+  "best_validation": {
+    "best_completion_rate": 1.0,
+    "best_episode": 1020,
+    "candidate_phase": "quality",
+    "completed_count": 20,
+    "completion_rate": 1.0,
+    "consecutive_completion_successes": 3,
+    "consecutive_degraded_validations": 0,
+    "dataset": "validation",
+    "degraded": false,
+    "episode": 1420,
+    "feasibility_rollback_applied": false,
+    "improved": false,
+    "instance_count": 20,
+    "learning_rate_after_validation": 2.5e-05,
+    "learning_rate_before_validation": 2.5e-05,
+    "learning_rate_decay_applied": false,
+    "mean_candidate_recovery_advance_count": 0.65,
+    "mean_completed_reconfigurations": 15.6,
+    "mean_fatigue_masked_action_ratio": 0.06973669759342224,
+    "mean_feasibility_proxy_return": 2.0,
+    "mean_flow_time_objective": 1129.6400000000003,
+    "mean_heuristic_quality_score": 0.3721786036468983,
+    "mean_machine_waiting_for_worker_time": 2.4899999999999998,
+    "mean_makespan": 195.96,
+    "mean_makespan_heuristic_gap_percent": 7.356342084078683,
+    "mean_matching_preserving_worker_action_count": 74.4,
+    "mean_maximum_worker_fatigue": 0.3799934534649999,
+    "mean_mean_peak_worker_fatigue": 0.3351087440424999,
+    "mean_minimum_worker_alternatives": 1.3,
+    "mean_quality_score": 0.36114339580538435,
+    "mean_reconfiguration_cost": 741.7796390374891,
+    "mean_reconfiguration_cost_heuristic_gap_percent": -13.475100153263384,
+    "mean_relative_heuristic_gap_percent": 1.661515844893841,
+    "mean_resource_admission_masked_action_count": 71.0,
+    "mean_resource_admission_masked_action_ratio": 0.11868793565937115,
+    "mean_safe_fatigue_limit": 0.75,
+    "mean_total_flow_time": 1129.6400000000003,
+    "mean_unfinished_orders": 0.0,
+    "mean_worker_competition_event_count": 8.25,
+    "mean_worker_load_variance": 2.2681250000000004,
+    "mean_worker_load_variance_heuristic_gap_percent": 49.6289379288081,
+    "mean_worker_matching_deficit_event_count": 8.25,
+    "mean_worker_switch_ratio": 0.9809674383587428,
+    "parallel_envs": 10,
+    "phase_after_validation": "quality",
+    "promotion_anchor_episode": 940,
+    "promotion_anchor_normalized_quality_score": 0.3686627657431458,
+    "promotion_anchor_sampled_completion_rate": 0.95,
+    "promotion_anchor_sampled_fatigue_cvar90": 0.7499089686999966,
+    "promotion_candidate_normalized_quality_score": 0.36114339580538435,
+    "promotion_candidate_sampled_completion_rate": 0.95,
+    "promotion_candidate_sampled_fatigue_cvar90": 0.749866927316666,
+    "promotion_completion_constraint_pass": true,
+    "promotion_decision_reason": "accepted",
+    "promotion_event": "accepted",
+    "promotion_mode": "balanced_guarded_v7",
+    "promotion_normalized_quality_constraint_pass": true,
+    "promotion_sampled_completion_constraint_pass": true,
+    "promotion_sampled_fatigue_cvar_constraint_pass": true,
+    "promotion_sampled_fatigue_safe_line_pass": true,
+    "promotion_sampled_guard_executed": true,
+    "promotion_variance_constraint_pass": true,
+    "rollback": false,
+    "rollback_cooldown_blocked_count": 5,
+    "rollback_cooldown_remaining": 0,
+    "rollback_cooldown_validation_count": 30,
+    "sampled_completed_count": 59,
+    "sampled_completion_rate": 0.9833333333333333,
+    "sampled_instance_count": 60,
+    "sampled_mean_candidate_recovery_advance_count": 0.75,
+    "sampled_mean_completed_reconfigurations": 16.75,
+    "sampled_mean_fatigue_masked_action_ratio": 0.06484038388038083,
+    "sampled_mean_feasibility_proxy_return": 1.949074074074074,
+    "sampled_mean_flow_time_objective": 1225.8433333333353,
+    "sampled_mean_heuristic_quality_score": 0.3721786036468983,
+    "sampled_mean_machine_waiting_for_worker_time": 17.771666666666665,
+    "sampled_mean_makespan": 191.35762711864407,
+    "sampled_mean_makespan_heuristic_gap_percent": 4.883481982154634,
+    "sampled_mean_matching_preserving_worker_action_count": 80.15,
+    "sampled_mean_maximum_worker_fatigue": 0.42296102396833324,
+    "sampled_mean_mean_peak_worker_fatigue": 0.3488284281191666,
+    "sampled_mean_minimum_worker_alternatives": 1.1166666666666667,
+    "sampled_mean_quality_score": 0.39650686085569975,
+    "sampled_mean_reconfiguration_cost": 849.5018832489015,
+    "sampled_mean_reconfiguration_cost_heuristic_gap_percent": 5.033243259305686,
+    "sampled_mean_relative_heuristic_gap_percent": 10.316749355533384,
+    "sampled_mean_resource_admission_masked_action_count": 716.4833333333333,
+    "sampled_mean_resource_admission_masked_action_ratio": 0.10388888488078112,
+    "sampled_mean_safe_fatigue_limit": 0.75,
+    "sampled_mean_total_flow_time": 1143.7016949152544,
+    "sampled_mean_unfinished_orders": 0.23333333333333334,
+    "sampled_mean_worker_competition_event_count": 46.016666666666666,
+    "sampled_mean_worker_load_variance": 8.78665277777778,
+    "sampled_mean_worker_load_variance_heuristic_gap_percent": 426.32078313832284,
+    "sampled_mean_worker_matching_deficit_event_count": 46.016666666666666,
+    "sampled_mean_worker_switch_ratio": 0.9362047944934156,
+    "sampled_minus_greedy_completion_rate": -0.01666666666666672,
+    "sampled_minus_greedy_mean_feasibility_proxy_return": -0.05092592592592604,
+    "sampled_minus_greedy_mean_relative_heuristic_gap_percent": 8.655233510639542,
+    "sampled_minus_greedy_mean_unfinished_orders": 0.23333333333333334,
+    "sampled_parallel_envs": 10,
+    "sampled_repeat_count": 3,
+    "sampled_schedule_violation_count": 0,
+    "sampled_std_candidate_recovery_advance_count": 1.856048289845199,
+    "sampled_std_completed_reconfigurations": 6.583556815201267,
+    "sampled_std_fatigue_masked_action_ratio": 0.16706649400644313,
+    "sampled_std_feasibility_proxy_return": 0.3944705260026073,
+    "sampled_std_flow_time_objective": 739.8423799992512,
+    "sampled_std_heuristic_quality_score": 0.08439668110893261,
+    "sampled_std_machine_waiting_for_worker_time": 116.16909226285253,
+    "sampled_std_makespan": 26.159380221685304,
+    "sampled_std_makespan_heuristic_gap_percent": 5.635643534849153,
+    "sampled_std_matching_preserving_worker_action_count": 26.55523504837749,
+    "sampled_std_maximum_worker_fatigue": 0.2184413031082309,
+    "sampled_std_mean_peak_worker_fatigue": 0.21724440442364956,
+    "sampled_std_minimum_worker_alternatives": 0.9583118396017571,
+    "sampled_std_quality_score": 0.08747358210582912,
+    "sampled_std_reconfiguration_cost": 480.95713812976027,
+    "sampled_std_reconfiguration_cost_heuristic_gap_percent": 29.33399281923713,
+    "sampled_std_relative_heuristic_gap_percent": 46.15889900678071,
+    "sampled_std_resource_admission_masked_action_count": 5247.429906805441,
+    "sampled_std_resource_admission_masked_action_ratio": 0.24571849504056711,
+    "sampled_std_safe_fatigue_limit": 0.0,
+    "sampled_std_total_flow_time": 380.77456154687644,
+    "sampled_std_unfinished_orders": 1.8073922282301278,
+    "sampled_std_worker_competition_event_count": 290.74466004491427,
+    "sampled_std_worker_load_variance": 6.052019216219906,
+    "sampled_std_worker_load_variance_heuristic_gap_percent": 923.5891760785554,
+    "sampled_std_worker_matching_deficit_event_count": 290.74466004491427,
+    "sampled_std_worker_switch_ratio": 0.06386104527370663,
+    "sampled_total_inference_time_seconds": 140.5533555004513,
+    "sampled_total_solve_time_seconds": 1187.1202173007769,
+    "sampled_truncated_count": 1,
+    "sampled_unique_instance_count": 20,
+    "schedule_violation_count": 0,
+    "std_candidate_recovery_advance_count": 1.6630662866176473,
+    "std_completed_reconfigurations": 6.893169769683916,
+    "std_fatigue_masked_action_ratio": 0.16614576314627616,
+    "std_feasibility_proxy_return": 0.0,
+    "std_flow_time_objective": 407.9716842599436,
+    "std_heuristic_quality_score": 0.08586455952008606,
+    "std_machine_waiting_for_worker_time": 6.781623776989666,
+    "std_makespan": 27.400180560296352,
+    "std_makespan_heuristic_gap_percent": 11.785568837655578,
+    "std_matching_preserving_worker_action_count": 28.20488946040534,
+    "std_maximum_worker_fatigue": 0.24479621438536428,
+    "std_mean_peak_worker_fatigue": 0.24411653530151486,
+    "std_minimum_worker_alternatives": 0.9787209698591858,
+    "std_quality_score": 0.08943132976800972,
+    "std_reconfiguration_cost": 401.4572882699961,
+    "std_reconfiguration_cost_heuristic_gap_percent": 12.258128030039002,
+    "std_relative_heuristic_gap_percent": 3.9174448897292034,
+    "std_resource_admission_masked_action_count": 207.50878231256166,
+    "std_resource_admission_masked_action_ratio": 0.26130628043890824,
+    "std_safe_fatigue_limit": 0.0,
+    "std_total_flow_time": 407.9716842599436,
+    "std_unfinished_orders": 0.0,
+    "std_worker_competition_event_count": 22.282575207877944,
+    "std_worker_load_variance": 2.4572994238999106,
+    "std_worker_load_variance_heuristic_gap_percent": 231.56063166835105,
+    "std_worker_matching_deficit_event_count": 22.282575207877944,
+    "std_worker_switch_ratio": 0.02842108791731641,
+    "total_inference_time_seconds": 18.99736359977396,
+    "total_solve_time_seconds": 195.13286290015094,
+    "truncated_count": 0,
+    "validation_event": "accepted",
+    "validations_without_improvement": 7
+  },
+  "checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\checkpoint.pt",
+  "checkpoint_sha256": "25b26c4e4ff3e27d28fa0f030ccf7e7d4ac50f315083f04c8dd36e625bad27d5",
+  "environment_steps": 506383,
+  "episodes": 2000,
+  "estimated_worker_step_round_trips_avoided": 0,
+  "feasibility_rollbacks": 11,
+  "final_checkpoint_evaluation": {
+    "checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\checkpoint.pt",
+    "checkpoint_metadata": {
+      "accepted_episode": 1420,
+      "algorithm_seed": 37,
+      "checkpoint_role": "shadow_best",
+      "dataset_manifest_sha256": "a06eeb9529928683c53debde1f8dcc313f45077e8d9bc8792eab7e3d808baf44",
+      "effective_config": {
+        "algorithm_seeds": [
+          11,
+          23,
+          37,
+          53,
+          71
+        ],
+        "dataset": {
+          "profiles": {
+            "dev": {
+              "ood": 20,
+              "stress": 20,
+              "test": 20,
+              "validation": 20
+            },
+            "publication": {
+              "ood": 500,
+              "stress": 500,
+              "test": 1000,
+              "validation": 500
+            }
+          },
+          "schema_version": "1.1.0",
+          "splits": {
+            "ood": {
+              "persist": true,
+              "seed_end": 5000000,
+              "seed_start": 4000000
+            },
+            "stress": {
+              "persist": true,
+              "seed_end": 6000000,
+              "seed_start": 5000000
+            },
+            "test": {
+              "persist": true,
+              "seed_end": 4000000,
+              "seed_start": 3000000
+            },
+            "train": {
+              "persist": false,
+              "seed_end": 2000000,
+              "seed_start": 1000000
+            },
+            "validation": {
+              "persist": true,
+              "seed_end": 3000000,
+              "seed_start": 2000000
+            }
+          },
+          "template_instance": "fixed_15x4_v1"
+        },
+        "device": "cpu",
+        "environment": {
+          "max_decisions": 5000,
+          "max_zero_time_actions": 1000,
+          "production_defer": {
+            "allow_recovery_improvement": true
+          },
+          "worker_resource_control": {
+            "candidate_recovery_advance": true,
+            "mode": "matching_admission_v1",
+            "non_delay_worker_dispatch": true,
+            "preserve_matching_on_worker_action": true,
+            "require_full_matching": true
+          }
+        },
+        "evaluation": {
+          "quality_metric": {
+            "cost_scale": 1000.0,
+            "flow_scale": 1200.0,
+            "quality_weights": {
+              "cost": 0.3,
+              "flow": 0.5,
+              "variance": 0.2
+            },
+            "variance_scale": 50.0,
+            "version": "canonical_bounded_quality_v1"
+          },
+          "result_schema_version": "4.2.0"
+        },
+        "experiment_name": "v7_e2_preference_conditioned",
+        "experiment_suite_version": "v7_e2_preference_protocol_v1",
+        "generator": {
+          "acceptance": {
+            "arrival_min_overlap": 0.5,
+            "machine_min_module_load": 0.35,
+            "max_heuristic_makespan_minutes": 240.0,
+            "reconfiguration_min_ratio": 0.25,
+            "reconfiguration_min_ready_gap": 0.5
+          },
+          "cost_factor_local": [
+            0.9,
+            1.1
+          ],
+          "cost_profile_weights": {
+            "balanced_cost": 0.4,
+            "downtime_dominant": 0.2,
+            "fixed_cost_dominant": 0.2,
+            "labor_dominant": 0.2
+          },
+          "curriculum": {
+            "anchors": [
+              {
+                "at_fraction": 0.0,
+                "weights": {
+                  "balanced": 0.5,
+                  "easy": 0.3,
+                  "fatigue_bottleneck": 0.04,
+                  "high_arrival_pressure": 0.04,
+                  "machine_bottleneck": 0.04,
+                  "reconfiguration_bottleneck": 0.04,
+                  "worker_bottleneck": 0.04
+                }
+              },
+              {
+                "at_fraction": 0.2,
+                "weights": {
+                  "balanced": 0.5,
+                  "easy": 0.3,
+                  "fatigue_bottleneck": 0.04,
+                  "high_arrival_pressure": 0.04,
+                  "machine_bottleneck": 0.04,
+                  "reconfiguration_bottleneck": 0.04,
+                  "worker_bottleneck": 0.04
+                }
+              },
+              {
+                "at_fraction": 0.55,
+                "weights": {
+                  "balanced": 0.4,
+                  "easy": 0.1,
+                  "fatigue_bottleneck": 0.1,
+                  "high_arrival_pressure": 0.1,
+                  "machine_bottleneck": 0.1,
+                  "reconfiguration_bottleneck": 0.1,
+                  "worker_bottleneck": 0.1
+                }
+              },
+              {
+                "at_fraction": 0.8,
+                "weights": {
+                  "balanced": 0.35,
+                  "easy": 0.05,
+                  "fatigue_bottleneck": 0.1,
+                  "high_arrival_pressure": 0.1,
+                  "machine_bottleneck": 0.15,
+                  "reconfiguration_bottleneck": 0.15,
+                  "worker_bottleneck": 0.1
+                }
+              },
+              {
+                "at_fraction": 1.0,
+                "weights": {
+                  "balanced": 0.35,
+                  "easy": 0.05,
+                  "fatigue_bottleneck": 0.1,
+                  "high_arrival_pressure": 0.1,
+                  "machine_bottleneck": 0.15,
+                  "reconfiguration_bottleneck": 0.15,
+                  "worker_bottleneck": 0.1
+                }
+              }
+            ],
+            "mode": "linear"
+          },
+          "dataset_pressure_weights": {
+            "balanced": 0.35,
+            "easy": 0.05,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.1
+          },
+          "initial_fatigue": [
+            0.05,
+            0.15
+          ],
+          "max_counterfactual_candidates": 3,
+          "max_generation_attempts": 100,
+          "ood": {
+            "factors": [
+              "processing_time_heterogeneity",
+              "reconfiguration_time_scale",
+              "arrival_overlap",
+              "worker_qualification_sparsity",
+              "initial_fatigue",
+              "module_demand_imbalance"
+            ]
+          },
+          "pressure_profiles": {
+            "balanced": {
+              "dominant_module_share": [
+                0.62,
+                0.72
+              ],
+              "operations_per_order": [
+                3,
+                5
+              ],
+              "order_count": [
+                12,
+                18
+              ],
+              "reconfiguration_scale": [
+                0.9,
+                1.1
+              ],
+              "release_windows": [
+                [
+                  0.0,
+                  0.2
+                ],
+                [
+                  0.2,
+                  0.45
+                ],
+                [
+                  0.45,
+                  0.7
+                ]
+              ]
+            },
+            "easy": {
+              "dominant_module_share": [
+                0.6,
+                0.68
+              ],
+              "operations_per_order": [
+                3,
+                4
+              ],
+              "order_count": [
+                12,
+                14
+              ],
+              "reconfiguration_scale": [
+                0.85,
+                1.0
+              ],
+              "release_windows": [
+                [
+                  0.0,
+                  0.08
+                ],
+                [
+                  0.25,
+                  0.32
+                ],
+                [
+                  0.5,
+                  0.57
+                ]
+              ]
+            },
+            "fatigue_bottleneck": {
+              "dominant_module_share": [
+                0.65,
+                0.75
+              ],
+              "operations_per_order": [
+                4,
+                5
+              ],
+              "order_count": [
+                15,
+                18
+              ],
+              "reconfiguration_scale": [
+                1.1,
+                1.3
+              ],
+              "release_windows": [
+                [
+                  0.0,
+                  0.04
+                ],
+                [
+                  0.08,
+                  0.12
+                ],
+                [
+                  0.16,
+                  0.22
+                ]
+              ]
+            },
+            "high_arrival_pressure": {
+              "dominant_module_share": [
+                0.6,
+                0.7
+              ],
+              "operations_per_order": [
+                4,
+                5
+              ],
+              "order_count": [
+                16,
+                18
+              ],
+              "reconfiguration_scale": [
+                0.9,
+                1.1
+              ],
+              "release_windows": [
+                [
+                  0.0,
+                  0.04
+                ],
+                [
+                  0.07,
+                  0.11
+                ],
+                [
+                  0.14,
+                  0.18
+                ]
+              ]
+            },
+            "machine_bottleneck": {
+              "dominant_module_share": [
+                0.7,
+                0.75
+              ],
+              "operations_per_order": [
+                4,
+                5
+              ],
+              "order_count": [
+                16,
+                18
+              ],
+              "reconfiguration_scale": [
+                0.9,
+                1.1
+              ],
+              "release_windows": [
+                [
+                  0.0,
+                  0.12
+                ],
+                [
+                  0.15,
+                  0.3
+                ],
+                [
+                  0.32,
+                  0.48
+                ]
+              ]
+            },
+            "reconfiguration_bottleneck": {
+              "dominant_module_share": [
+                0.65,
+                0.75
+              ],
+              "operations_per_order": [
+                4,
+                5
+              ],
+              "order_count": [
+                15,
+                18
+              ],
+              "reconfiguration_scale": [
+                1.2,
+                1.6
+              ],
+              "release_windows": [
+                [
+                  0.0,
+                  0.12
+                ],
+                [
+                  0.18,
+                  0.3
+                ],
+                [
+                  0.35,
+                  0.48
+                ]
+              ]
+            },
+            "worker_bottleneck": {
+              "dominant_module_share": [
+                0.65,
+                0.75
+              ],
+              "operations_per_order": [
+                4,
+                5
+              ],
+              "order_count": [
+                15,
+                18
+              ],
+              "reconfiguration_scale": [
+                0.95,
+                1.1
+              ],
+              "release_windows": [
+                [
+                  0.0,
+                  0.04
+                ],
+                [
+                  0.08,
+                  0.12
+                ],
+                [
+                  0.16,
+                  0.22
+                ]
+              ]
+            }
+          },
+          "processing_factor_local": [
+            0.95,
+            1.05
+          ],
+          "processing_time": [
+            8,
+            14
+          ],
+          "reconfiguration_factor_local": [
+            0.9,
+            1.1
+          ],
+          "stress": {
+            "max_truncated_fraction": 0.2
+          },
+          "version": "1.2.0",
+          "wave_count": 3
+        },
+        "logging": {
+          "visdom": {
+            "base_url": "/",
+            "connection_timeout_seconds": 2.0,
+            "diagnostic_every_validations": 5,
+            "enabled": false,
+            "env_prefix": "fatigue_assembly",
+            "fail_fast": false,
+            "port": 8097,
+            "representative_instance_index": 0,
+            "rolling_window_updates": 20,
+            "save_environment": true,
+            "server": "http://localhost",
+            "update_every": 1
+          }
+        },
+        "m1_gates": {
+          "bc": {
+            "algorithm_seed": 190,
+            "batch_size": 256,
+            "learning_rate": 0.0003,
+            "maximum_epochs": 200,
+            "maximum_ranking_pairs_per_state": 64,
+            "patience_epochs": 20,
+            "select_context_pruned_diagnostic": true,
+            "weight_decay": 1e-05
+          },
+          "bc_train_instance_count": 15,
+          "diagnostic_instance_count": 20,
+          "diagnostic_seed_start": 1900000,
+          "overfit": {
+            "algorithm_seed": 101,
+            "consecutive_passes": 3,
+            "instance_stages": [
+              5,
+              10,
+              20
+            ],
+            "maximum_updates_per_stage": 100
+          },
+          "thresholds": {
+            "maximum_cost_gap_percent": 5.0,
+            "maximum_flow_gap_percent": 5.0,
+            "maximum_production_regret_percent": 5.0,
+            "maximum_quality_gap_percent": 0.0,
+            "maximum_variance_gap_percent": 5.0,
+            "maximum_worker_fatigue_regret": 0.02,
+            "maximum_worker_variance_regret_percent": 5.0,
+            "minimum_production_spearman": 0.8,
+            "minimum_worker_spearman": 0.8
+          }
+        },
+        "method_version": "M1_candidate_graph_v7",
+        "network": {
+          "candidate_context_mode": "bounded_ranker_scale_v7",
+          "common_context_gate_initial_logit": -4.0,
+          "dropout": 0.0,
+          "encoder_type": "hetero_gnn",
+          "hidden_dim": 128,
+          "message_passing_layers": 2,
+          "policy_head_version": 7,
+          "preference_conditioning": "separate_encoder_v1",
+          "production_action_edge_features": true,
+          "production_action_semantics": "pair_plus_defer_v1",
+          "production_candidate_relative_features": true,
+          "production_relative_feature_names": [
+            "processing_time_norm",
+            "reconfiguration_time_norm",
+            "fixed_reconfiguration_cost_norm",
+            "estimated_labor_cost_norm",
+            "estimated_downtime_cost_norm",
+            "horizon_slack_norm"
+          ],
+          "production_relative_initial_weights": [
+            0.3,
+            0.3,
+            0.2,
+            0.2,
+            0.2,
+            0.3
+          ],
+          "relative_weight_parameterization": "independent_softplus_signed_v6",
+          "residual_context_gate_initial_logit": -2.0,
+          "residual_scale_ratio": 2.0,
+          "worker_action_edge_features": true,
+          "worker_candidate_relative_features": true,
+          "worker_common_context_enabled": false,
+          "worker_relative_feature_names": [
+            "stage_duration_norm",
+            "projected_fatigue_ratio",
+            "incremental_labor_cost_norm",
+            "incremental_downtime_cost_norm",
+            "incremental_load_variance_norm"
+          ],
+          "worker_relative_initial_weights": [
+            0.3,
+            0.3,
+            0.2,
+            0.2,
+            0.2
+          ],
+          "worker_relative_weight_sharing": "independent_softplus_v6"
+        },
+        "paths": {
+          "fixed_instance": "data/instances/fixed_instance.yaml",
+          "instance_cache": "data/instances/fixed_15x4_v1.pkl",
+          "instances_root": "data/instances",
+          "manifests_root": "data/manifests",
+          "result_root": "result/runs"
+        },
+        "ppo": {
+          "batch_size": 64,
+          "clip_epsilon": 0.2,
+          "entropy_coefficient": 0.01,
+          "epochs": 2,
+          "gae_lambda": 0.95,
+          "gamma": 1.0,
+          "learning_rate": 0.0001,
+          "max_grad_norm": 0.5,
+          "value_coefficient": 0.5
+        },
+        "preference": {
+          "default": [
+            0.5,
+            0.3,
+            0.2
+          ],
+          "enabled": true,
+          "evaluation_grid": {
+            "denominator": 5,
+            "include_default": true
+          },
+          "names": [
+            "flow",
+            "cost",
+            "variance"
+          ],
+          "sampler": {
+            "anchors": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ],
+              [
+                0.3333333333333333,
+                0.3333333333333333,
+                0.3333333333333333
+              ],
+              [
+                0.5,
+                0.3,
+                0.2
+              ]
+            ],
+            "concentration": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "dirichlet_probability": 0.7,
+            "version": "dirichlet_anchor_mixture_v1"
+          }
+        },
+        "reward": {
+          "cost_scale": 1000.0,
+          "cost_weight": 1.0,
+          "feasibility_shaping": {
+            "coefficient": 0.25,
+            "enabled": true,
+            "weights": {
+              "horizon_slack": 0.25,
+              "operation_progress": 0.5,
+              "resource_margin": 0.25
+            }
+          },
+          "flow_scale": 1200.0,
+          "flow_weight": 1.0,
+          "mode": "hierarchical_constrained_v1",
+          "quality_budget": 0.5,
+          "quality_weights": {
+            "cost": 0.3,
+            "flow": 0.5,
+            "variance": 0.2
+          },
+          "truncation_penalty": 0.5,
+          "unfinished_order_penalty": 1.0,
+          "variance_scale": 50.0,
+          "variance_weight": 1.0
+        },
+        "seed": 37,
+        "training": {
+          "ablation_gate": {
+            "failure_instance_id": "validation_reconfiguration_bottleneck_2000009",
+            "failure_instance_max_worker_wait": 100.0,
+            "last_ten_validation_completion_rate": 0.95,
+            "maximum_rollback_rate": 0.2,
+            "minimum_learning_rate": 2.5e-05,
+            "reconfiguration_completion_rate": 0.6,
+            "reward_identity_tolerance": 1e-08,
+            "training_window_instances": 200
+          },
+          "episodes": 2000,
+          "final_evaluation_sampling_seeds": [
+            100011,
+            100012,
+            100013
+          ],
+          "forced_action_compression": false,
+          "multiprocessing_start_method": "spawn",
+          "online_instances": true,
+          "parallel_envs": 10,
+          "smoke_episodes": 2,
+          "smoke_parallel_envs": 2,
+          "smoke_rollout_steps": 64,
+          "smoke_validation_instance_limit": 2,
+          "torch_num_threads": 4,
+          "two_stage": {
+            "completion_target": 1.0,
+            "consecutive_validations": 3,
+            "quality_checkpoint_promotion": "balanced_guarded_v7",
+            "quality_completion_floor": 1.0,
+            "quality_promotion_constraints": {
+              "fatigue_cvar_relative_tolerance": 0.05,
+              "minimum_normalized_quality_improvement": 0.0001,
+              "sampled_completion_drop_tolerance": 0.02,
+              "tail_fraction": 0.1,
+              "variance_relative_tolerance": 0.05
+            },
+            "quality_validate_every_update": true
+          },
+          "validation_control": {
+            "feasibility_rollback": {
+              "completion_drop": 0.1,
+              "consecutive_validations": 2,
+              "cooldown_validations": 3
+            },
+            "learning_rate_plateau": {
+              "factor": 0.5,
+              "minimum": 2.5e-05,
+              "patience_validations": 15
+            },
+            "sampled": {
+              "every_validations": 5,
+              "repeats": 3,
+              "seed_offset": 100000
+            }
+          },
+          "validation_instance_limit": null,
+          "validation_interval_episodes": 10,
+          "validation_parallel_envs": 10,
+          "validation_split": "validation",
+          "worker_local_physical_forced_actions": true,
+          "worker_timeout_seconds": 600
+        }
+      },
+      "effective_config_sha256": "93d31721082ab03a951de59aeccb229c3431f86c8d422fab444284fe83cb8e27",
+      "experiment_suite_version": "v7_e2_preference_protocol_v1",
+      "network_weights_sha256": "3eb71a188ef3ec2793f270bbf84a59215eab6fc5d8fc27c8a621fb562be1011d",
+      "parallel_envs": 10,
+      "policy_head_diagnostics": {
+        "policy_head_gate_production_common": 0.018276747316122055,
+        "policy_head_gate_production_residual": 0.1280960738658905,
+        "policy_head_gate_worker_common": 0.01798621006309986,
+        "policy_head_gate_worker_residual": 0.12806671857833862,
+        "policy_head_weight_production_estimated_downtime_cost_norm": -0.21028652787208557,
+        "policy_head_weight_production_estimated_labor_cost_norm": -0.21063998341560364,
+        "policy_head_weight_production_fixed_reconfiguration_cost_norm": -0.21067899465560913,
+        "policy_head_weight_production_horizon_slack_norm": 0.31232574582099915,
+        "policy_head_weight_production_processing_time_norm": -0.30189046263694763,
+        "policy_head_weight_production_reconfiguration_time_norm": -0.31530845165252686,
+        "policy_head_weight_worker_incremental_downtime_cost_norm": -0.21173246204853058,
+        "policy_head_weight_worker_incremental_labor_cost_norm": -0.1951652616262436,
+        "policy_head_weight_worker_incremental_load_variance_norm": -0.22117090225219727,
+        "policy_head_weight_worker_projected_fatigue_ratio": -0.32122093439102173,
+        "policy_head_weight_worker_stage_duration_norm": -0.31641849875450134
+      },
+      "provenance": {
+        "checkpoint_protocol_version": "v7_e2_preference_protocol_v1",
+        "checkpoint_sha256": null,
+        "dataset_manifest_sha256": "a06eeb9529928683c53debde1f8dcc313f45077e8d9bc8792eab7e3d808baf44",
+        "effective_config_sha256": "93d31721082ab03a951de59aeccb229c3431f86c8d422fab444284fe83cb8e27",
+        "evaluator_protocol_version": "v7_e2_preference_protocol_v1",
+        "experiment_fingerprint_sha256": "f023b057174dc3fb790043b14f27da0f5c30faa384eafb37939809566c795391",
+        "fixed_instance_sha256": "e54d96aa6b3c55dfb6fddfbaa2ee55776762622a2b27d955fda23af03ccbe8bc",
+        "git": {
+          "commit": "2405d7b950127c40a2406fbb6cb1edef51c97ad6",
+          "dirty": true
+        },
+        "network_weights_sha256": "3eb71a188ef3ec2793f270bbf84a59215eab6fc5d8fc27c8a621fb562be1011d",
+        "provenance_schema_version": "1.0.0",
+        "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+        "quality_metric_version": "canonical_bounded_quality_v1",
+        "result_schema_version": "4.1.0",
+        "sampled_rng_version": "per_instance_sha256_v1",
+        "source_file_count": 35,
+        "source_state_sha256": "070157dbc71402a25c1b4305fd832a9c1abfb5e1bd659eed977c9bef50d4eb99",
+        "template_sha256": "da0b427b63958b6ae3569bc15688b26c41470aadb8490f9a961921e433475a65"
+      },
+      "quality_score": 0.36114339580538435,
+      "result_schema_version": "4.2.0",
+      "seed": 37,
+      "source_state_sha256": "070157dbc71402a25c1b4305fd832a9c1abfb5e1bd659eed977c9bef50d4eb99",
+      "validation": {
+        "best_completion_rate": 1.0,
+        "best_episode": 1020,
+        "candidate_phase": "quality",
+        "completed_count": 20,
+        "completion_rate": 1.0,
+        "consecutive_completion_successes": 3,
+        "consecutive_degraded_validations": 0,
+        "dataset": "validation",
+        "degraded": false,
+        "episode": 1420,
+        "feasibility_rollback_applied": false,
+        "improved": false,
+        "instance_count": 20,
+        "learning_rate_after_validation": 2.5e-05,
+        "learning_rate_before_validation": 2.5e-05,
+        "learning_rate_decay_applied": false,
+        "mean_candidate_recovery_advance_count": 0.65,
+        "mean_completed_reconfigurations": 15.6,
+        "mean_fatigue_masked_action_ratio": 0.06973669759342224,
+        "mean_feasibility_proxy_return": 2.0,
+        "mean_flow_time_objective": 1129.6400000000003,
+        "mean_heuristic_quality_score": 0.3721786036468983,
+        "mean_machine_waiting_for_worker_time": 2.4899999999999998,
+        "mean_makespan": 195.96,
+        "mean_makespan_heuristic_gap_percent": 7.356342084078683,
+        "mean_matching_preserving_worker_action_count": 74.4,
+        "mean_maximum_worker_fatigue": 0.3799934534649999,
+        "mean_mean_peak_worker_fatigue": 0.3351087440424999,
+        "mean_minimum_worker_alternatives": 1.3,
+        "mean_quality_score": 0.36114339580538435,
+        "mean_reconfiguration_cost": 741.7796390374891,
+        "mean_reconfiguration_cost_heuristic_gap_percent": -13.475100153263384,
+        "mean_relative_heuristic_gap_percent": 1.661515844893841,
+        "mean_resource_admission_masked_action_count": 71.0,
+        "mean_resource_admission_masked_action_ratio": 0.11868793565937115,
+        "mean_safe_fatigue_limit": 0.75,
+        "mean_total_flow_time": 1129.6400000000003,
+        "mean_unfinished_orders": 0.0,
+        "mean_worker_competition_event_count": 8.25,
+        "mean_worker_load_variance": 2.2681250000000004,
+        "mean_worker_load_variance_heuristic_gap_percent": 49.6289379288081,
+        "mean_worker_matching_deficit_event_count": 8.25,
+        "mean_worker_switch_ratio": 0.9809674383587428,
+        "parallel_envs": 10,
+        "phase_after_validation": "quality",
+        "promotion_anchor_episode": 940,
+        "promotion_anchor_normalized_quality_score": 0.3686627657431458,
+        "promotion_anchor_sampled_completion_rate": 0.95,
+        "promotion_anchor_sampled_fatigue_cvar90": 0.7499089686999966,
+        "promotion_candidate_normalized_quality_score": 0.36114339580538435,
+        "promotion_candidate_sampled_completion_rate": 0.95,
+        "promotion_candidate_sampled_fatigue_cvar90": 0.749866927316666,
+        "promotion_completion_constraint_pass": true,
+        "promotion_decision_reason": "accepted",
+        "promotion_event": "accepted",
+        "promotion_mode": "balanced_guarded_v7",
+        "promotion_normalized_quality_constraint_pass": true,
+        "promotion_sampled_completion_constraint_pass": true,
+        "promotion_sampled_fatigue_cvar_constraint_pass": true,
+        "promotion_sampled_fatigue_safe_line_pass": true,
+        "promotion_sampled_guard_executed": true,
+        "promotion_variance_constraint_pass": true,
+        "rollback": false,
+        "rollback_cooldown_blocked_count": 5,
+        "rollback_cooldown_remaining": 0,
+        "rollback_cooldown_validation_count": 30,
+        "sampled_completed_count": 59,
+        "sampled_completion_rate": 0.9833333333333333,
+        "sampled_instance_count": 60,
+        "sampled_mean_candidate_recovery_advance_count": 0.75,
+        "sampled_mean_completed_reconfigurations": 16.75,
+        "sampled_mean_fatigue_masked_action_ratio": 0.06484038388038083,
+        "sampled_mean_feasibility_proxy_return": 1.949074074074074,
+        "sampled_mean_flow_time_objective": 1225.8433333333353,
+        "sampled_mean_heuristic_quality_score": 0.3721786036468983,
+        "sampled_mean_machine_waiting_for_worker_time": 17.771666666666665,
+        "sampled_mean_makespan": 191.35762711864407,
+        "sampled_mean_makespan_heuristic_gap_percent": 4.883481982154634,
+        "sampled_mean_matching_preserving_worker_action_count": 80.15,
+        "sampled_mean_maximum_worker_fatigue": 0.42296102396833324,
+        "sampled_mean_mean_peak_worker_fatigue": 0.3488284281191666,
+        "sampled_mean_minimum_worker_alternatives": 1.1166666666666667,
+        "sampled_mean_quality_score": 0.39650686085569975,
+        "sampled_mean_reconfiguration_cost": 849.5018832489015,
+        "sampled_mean_reconfiguration_cost_heuristic_gap_percent": 5.033243259305686,
+        "sampled_mean_relative_heuristic_gap_percent": 10.316749355533384,
+        "sampled_mean_resource_admission_masked_action_count": 716.4833333333333,
+        "sampled_mean_resource_admission_masked_action_ratio": 0.10388888488078112,
+        "sampled_mean_safe_fatigue_limit": 0.75,
+        "sampled_mean_total_flow_time": 1143.7016949152544,
+        "sampled_mean_unfinished_orders": 0.23333333333333334,
+        "sampled_mean_worker_competition_event_count": 46.016666666666666,
+        "sampled_mean_worker_load_variance": 8.78665277777778,
+        "sampled_mean_worker_load_variance_heuristic_gap_percent": 426.32078313832284,
+        "sampled_mean_worker_matching_deficit_event_count": 46.016666666666666,
+        "sampled_mean_worker_switch_ratio": 0.9362047944934156,
+        "sampled_minus_greedy_completion_rate": -0.01666666666666672,
+        "sampled_minus_greedy_mean_feasibility_proxy_return": -0.05092592592592604,
+        "sampled_minus_greedy_mean_relative_heuristic_gap_percent": 8.655233510639542,
+        "sampled_minus_greedy_mean_unfinished_orders": 0.23333333333333334,
+        "sampled_parallel_envs": 10,
+        "sampled_repeat_count": 3,
+        "sampled_schedule_violation_count": 0,
+        "sampled_std_candidate_recovery_advance_count": 1.856048289845199,
+        "sampled_std_completed_reconfigurations": 6.583556815201267,
+        "sampled_std_fatigue_masked_action_ratio": 0.16706649400644313,
+        "sampled_std_feasibility_proxy_return": 0.3944705260026073,
+        "sampled_std_flow_time_objective": 739.8423799992512,
+        "sampled_std_heuristic_quality_score": 0.08439668110893261,
+        "sampled_std_machine_waiting_for_worker_time": 116.16909226285253,
+        "sampled_std_makespan": 26.159380221685304,
+        "sampled_std_makespan_heuristic_gap_percent": 5.635643534849153,
+        "sampled_std_matching_preserving_worker_action_count": 26.55523504837749,
+        "sampled_std_maximum_worker_fatigue": 0.2184413031082309,
+        "sampled_std_mean_peak_worker_fatigue": 0.21724440442364956,
+        "sampled_std_minimum_worker_alternatives": 0.9583118396017571,
+        "sampled_std_quality_score": 0.08747358210582912,
+        "sampled_std_reconfiguration_cost": 480.95713812976027,
+        "sampled_std_reconfiguration_cost_heuristic_gap_percent": 29.33399281923713,
+        "sampled_std_relative_heuristic_gap_percent": 46.15889900678071,
+        "sampled_std_resource_admission_masked_action_count": 5247.429906805441,
+        "sampled_std_resource_admission_masked_action_ratio": 0.24571849504056711,
+        "sampled_std_safe_fatigue_limit": 0.0,
+        "sampled_std_total_flow_time": 380.77456154687644,
+        "sampled_std_unfinished_orders": 1.8073922282301278,
+        "sampled_std_worker_competition_event_count": 290.74466004491427,
+        "sampled_std_worker_load_variance": 6.052019216219906,
+        "sampled_std_worker_load_variance_heuristic_gap_percent": 923.5891760785554,
+        "sampled_std_worker_matching_deficit_event_count": 290.74466004491427,
+        "sampled_std_worker_switch_ratio": 0.06386104527370663,
+        "sampled_total_inference_time_seconds": 140.5533555004513,
+        "sampled_total_solve_time_seconds": 1187.1202173007769,
+        "sampled_truncated_count": 1,
+        "sampled_unique_instance_count": 20,
+        "schedule_violation_count": 0,
+        "std_candidate_recovery_advance_count": 1.6630662866176473,
+        "std_completed_reconfigurations": 6.893169769683916,
+        "std_fatigue_masked_action_ratio": 0.16614576314627616,
+        "std_feasibility_proxy_return": 0.0,
+        "std_flow_time_objective": 407.9716842599436,
+        "std_heuristic_quality_score": 0.08586455952008606,
+        "std_machine_waiting_for_worker_time": 6.781623776989666,
+        "std_makespan": 27.400180560296352,
+        "std_makespan_heuristic_gap_percent": 11.785568837655578,
+        "std_matching_preserving_worker_action_count": 28.20488946040534,
+        "std_maximum_worker_fatigue": 0.24479621438536428,
+        "std_mean_peak_worker_fatigue": 0.24411653530151486,
+        "std_minimum_worker_alternatives": 0.9787209698591858,
+        "std_quality_score": 0.08943132976800972,
+        "std_reconfiguration_cost": 401.4572882699961,
+        "std_reconfiguration_cost_heuristic_gap_percent": 12.258128030039002,
+        "std_relative_heuristic_gap_percent": 3.9174448897292034,
+        "std_resource_admission_masked_action_count": 207.50878231256166,
+        "std_resource_admission_masked_action_ratio": 0.26130628043890824,
+        "std_safe_fatigue_limit": 0.0,
+        "std_total_flow_time": 407.9716842599436,
+        "std_unfinished_orders": 0.0,
+        "std_worker_competition_event_count": 22.282575207877944,
+        "std_worker_load_variance": 2.4572994238999106,
+        "std_worker_load_variance_heuristic_gap_percent": 231.56063166835105,
+        "std_worker_matching_deficit_event_count": 22.282575207877944,
+        "std_worker_switch_ratio": 0.02842108791731641,
+        "total_inference_time_seconds": 18.99736359977396,
+        "total_solve_time_seconds": 195.13286290015094,
+        "truncated_count": 0,
+        "validation_event": "accepted",
+        "validations_without_improvement": 7
+      }
+    },
+    "checkpoint_sha256": "25b26c4e4ff3e27d28fa0f030ccf7e7d4ac50f315083f04c8dd36e625bad27d5",
+    "evaluation_config": {
+      "dataset": "validation",
+      "greedy": true,
+      "instance_limit": null,
+      "sampling_seeds": [
+        100011,
+        100012,
+        100013
+      ]
+    },
+    "greedy": {
+      "all_instance_metrics": {
+        "advance_event_action_count": {
+          "count": 20,
+          "mean": 38.05,
+          "std": 29.484117044516303
+        },
+        "candidate_recovery_advance_count": {
+          "count": 20,
+          "mean": 0.65,
+          "std": 1.6630662866176473
+        },
+        "commit_reconfig_action_count": {
+          "count": 20,
+          "mean": 15.6,
+          "std": 6.893169769683916
+        },
+        "completed_reconfigurations": {
+          "count": 20,
+          "mean": 15.6,
+          "std": 6.893169769683916
+        },
+        "conditional_worker_wait_duration_improvement_ticks_sum": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_fatigue_improvement_sum": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_max_consecutive_observed": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_opportunity_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_pair_gain_sum": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_selected_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_total_ticks": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "context_override_rate": {
+          "count": 20,
+          "mean": 0.0636896044300004,
+          "std": 0.02969614436353549
+        },
+        "defer_production_action_count": {
+          "count": 20,
+          "mean": 121.7,
+          "std": 37.51504961170145
+        },
+        "direct_process_action_count": {
+          "count": 20,
+          "mean": 54.9,
+          "std": 7.4261274175072325
+        },
+        "fatigue_masked_action_ratio": {
+          "count": 20,
+          "mean": 0.06973669759342224,
+          "std": 0.16614576314627616
+        },
+        "feasibility_proxy_return": {
+          "count": 20,
+          "mean": 2.0,
+          "std": 0.0
+        },
+        "flow_time_objective": {
+          "count": 20,
+          "mean": 1129.6400000000003,
+          "std": 407.9716842599436
+        },
+        "forced_action_chain_count": {
+          "count": 20,
+          "mean": 83.5,
+          "std": 14.424029658141562
+        },
+        "forced_action_state_count": {
+          "count": 20,
+          "mean": 146.0,
+          "std": 65.66822511286325
+        },
+        "forced_advance_count": {
+          "count": 20,
+          "mean": 141.5,
+          "std": 60.56445022931313
+        },
+        "forced_advance_pair_physically_unavailable_count": {
+          "count": 20,
+          "mean": 141.5,
+          "std": 60.56445022931313
+        },
+        "forced_future_event_advance_count": {
+          "count": 20,
+          "mean": 141.5,
+          "std": 60.56445022931313
+        },
+        "forced_mixed_wait_stage_count": {
+          "count": 20,
+          "mean": 0.55,
+          "std": 0.6863327411532597
+        },
+        "forced_pair_advance_blocked_non_delay_count": {
+          "count": 20,
+          "mean": 4.5,
+          "std": 6.660962471942893
+        },
+        "forced_pair_advance_physically_unavailable_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "forced_pair_count": {
+          "count": 20,
+          "mean": 4.5,
+          "std": 6.660962471942893
+        },
+        "forced_phase_handoff_count": {
+          "count": 20,
+          "mean": 36.15,
+          "std": 28.96872178928962
+        },
+        "forced_production_advance_count": {
+          "count": 20,
+          "mean": 103.45,
+          "std": 31.603589069997465
+        },
+        "forced_production_count": {
+          "count": 20,
+          "mean": 103.45,
+          "std": 31.603589069997465
+        },
+        "forced_production_pair_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "forced_recovery_advance_count": {
+          "count": 20,
+          "mean": 19.15,
+          "std": 54.92125942512703
+        },
+        "forced_wait_dis_count": {
+          "count": 20,
+          "mean": 16.85,
+          "std": 9.10335392213106
+        },
+        "forced_wait_ins_count": {
+          "count": 20,
+          "mean": 32.6,
+          "std": 48.979480128766276
+        },
+        "forced_worker_advance_count": {
+          "count": 20,
+          "mean": 38.05,
+          "std": 29.484117044516303
+        },
+        "forced_worker_count": {
+          "count": 20,
+          "mean": 42.55,
+          "std": 34.77972034632281
+        },
+        "forced_worker_pair_count": {
+          "count": 20,
+          "mean": 4.5,
+          "std": 6.660962471942893
+        },
+        "forced_worker_pair_non_delay_count": {
+          "count": 20,
+          "mean": 4.5,
+          "std": 6.660962471942893
+        },
+        "heuristic_quality_score": {
+          "count": 20,
+          "mean": 0.3721786036468983,
+          "std": 0.08586455952008606
+        },
+        "heuristic_reward_quality_score": {
+          "count": 20,
+          "mean": 0.3721786036468983,
+          "std": 0.08586455952008606
+        },
+        "inference_time_per_decision_ms": {
+          "count": 20,
+          "mean": 5.116888617154139,
+          "std": 0.24173383942258517
+        },
+        "inference_time_seconds": {
+          "count": 20,
+          "mean": 1.3502960150595755,
+          "std": 0.47809860290933504
+        },
+        "longest_forced_action_chain": {
+          "count": 20,
+          "mean": 13.25,
+          "std": 17.64824428422809
+        },
+        "machine_waiting_for_worker_time": {
+          "count": 20,
+          "mean": 2.4899999999999998,
+          "std": 6.781623776989666
+        },
+        "matching_preserving_worker_action_count": {
+          "count": 20,
+          "mean": 74.4,
+          "std": 28.20488946040534
+        },
+        "maximum_worker_fatigue": {
+          "count": 20,
+          "mean": 0.3799934534649999,
+          "std": 0.24479621438536428
+        },
+        "mean_commit_set_logit": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "mean_forced_action_chain_length": {
+          "count": 20,
+          "mean": 1.7240086374838453,
+          "std": 0.6639408946746687
+        },
+        "mean_peak_worker_fatigue": {
+          "count": 20,
+          "mean": 0.3351087440424999,
+          "std": 0.24411653530151486
+        },
+        "minimum_worker_alternatives": {
+          "count": 20,
+          "mean": 1.3,
+          "std": 0.9787209698591858
+        },
+        "preference_quality_score": {
+          "count": 20,
+          "mean": 0.36114339580538435,
+          "std": 0.08943132976800972
+        },
+        "production_decision_state_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "production_defer_recovery_improvement_count": {
+          "count": 20,
+          "mean": 0.85,
+          "std": 1.1367080817685316
+        },
+        "production_defer_wait_time": {
+          "count": 20,
+          "mean": 157.04500000000002,
+          "std": 32.197294345300115
+        },
+        "production_pair_plus_defer_ratio": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "production_pair_plus_defer_state_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "qualification_scarcity_regret": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "quality_score": {
+          "count": 20,
+          "mean": 0.36114339580538435,
+          "std": 0.08943132976800972
+        },
+        "ranker_top_selection_rate": {
+          "count": 20,
+          "mean": 0.8129997171743527,
+          "std": 0.0772782277587129
+        },
+        "reconfiguration_cost": {
+          "count": 20,
+          "mean": 741.7796390374891,
+          "std": 401.4572882699961
+        },
+        "reconfiguration_reuse_count": {
+          "count": 20,
+          "mean": 38.9,
+          "std": 16.163311281384992
+        },
+        "resource_admission_masked_action_count": {
+          "count": 20,
+          "mean": 71.0,
+          "std": 207.50878231256166
+        },
+        "resource_admission_masked_action_ratio": {
+          "count": 20,
+          "mean": 0.11868793565937115,
+          "std": 0.26130628043890824
+        },
+        "reward_quality_score": {
+          "count": 20,
+          "mean": 0.36114339580538435,
+          "std": 0.08943132976800972
+        },
+        "safe_fatigue_limit": {
+          "count": 20,
+          "mean": 0.75,
+          "std": 0.0
+        },
+        "solve_time_seconds": {
+          "count": 20,
+          "mean": 2.1372813649999443,
+          "std": 0.7450281760805906
+        },
+        "unfinished_orders": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "worker_assign_action_count": {
+          "count": 20,
+          "mean": 31.2,
+          "std": 13.786339539367832
+        },
+        "worker_competition_event_count": {
+          "count": 20,
+          "mean": 8.25,
+          "std": 22.282575207877944
+        },
+        "worker_decision_state_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "worker_load_variance": {
+          "count": 20,
+          "mean": 2.2681250000000004,
+          "std": 2.4572994238999106
+        },
+        "worker_matching_deficit_event_count": {
+          "count": 20,
+          "mean": 8.25,
+          "std": 22.282575207877944
+        },
+        "worker_pair_plus_advance_ratio": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "worker_pair_plus_advance_state_count": {
+          "count": 20,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "worker_switch_ratio": {
+          "count": 20,
+          "mean": 0.9809674383587428,
+          "std": 0.02842108791731641
+        }
+      },
+      "completed_count": 20,
+      "completed_metrics": {
+        "makespan": {
+          "count": 20,
+          "mean": 195.96,
+          "std": 27.400180560296352
+        },
+        "total_flow_time": {
+          "count": 20,
+          "mean": 1129.6400000000003,
+          "std": 407.9716842599436
+        }
+      },
+      "completion_rate": 1.0,
+      "dataset": "validation",
+      "dataset_manifest_sha256": "a06eeb9529928683c53debde1f8dcc313f45077e8d9bc8792eab7e3d808baf44",
+      "decision_count": 5229,
+      "decode_mode": "greedy",
+      "evaluation_schema_version": "4.2.0",
+      "gap_metrics": {
+        "makespan_heuristic_gap_percent": {
+          "count": 20,
+          "mean": 7.356342084078683,
+          "std": 11.785568837655578
+        },
+        "quality_score_heuristic_gap_percent": {
+          "count": 20,
+          "mean": -3.0768543906466705,
+          "std": 5.5459853538844825
+        },
+        "reconfiguration_cost_heuristic_gap_percent": {
+          "count": 20,
+          "mean": -13.475100153263384,
+          "std": 12.258128030039002
+        },
+        "relative_heuristic_gap_percent": {
+          "count": 20,
+          "mean": 1.661515844893841,
+          "std": 3.9174448897292034
+        },
+        "worker_load_variance_heuristic_gap_percent": {
+          "count": 20,
+          "mean": 49.6289379288081,
+          "std": 231.56063166835105
+        }
+      },
+      "instance_count": 20,
+      "manifest": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\data\\manifests\\validation\\manifest.json",
+      "policy": "ppo",
+      "quality_metric": {
+        "cost_scale": 1000.0,
+        "flow_scale": 1200.0,
+        "quality_weights": {
+          "cost": 0.3,
+          "flow": 0.5,
+          "variance": 0.2
+        },
+        "variance_scale": 50.0,
+        "version": "canonical_bounded_quality_v1"
+      },
+      "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+      "quality_metric_version": "canonical_bounded_quality_v1",
+      "schedule_violation_count": 0,
+      "tail_metrics": {
+        "forced_action_chain": {
+          "count": 20,
+          "cvar": 70.0,
+          "max": 70.0,
+          "quantile": 44.0
+        },
+        "maximum_worker_fatigue": {
+          "count": 20,
+          "cvar": 0.7497850064499987,
+          "max": 0.7498700128999988,
+          "quantile": 0.7496590687000002
+        },
+        "worker_load_variance": {
+          "count": 20,
+          "cvar": 8.022916666666669,
+          "max": 11.6225,
+          "quantile": 4.128888888888889
+        }
+      },
+      "total_inference_time_seconds": 27.00592030119151,
+      "total_solve_time_seconds": 42.74562729999889,
+      "truncated_count": 0
+    },
+    "provenance": {
+      "checkpoint_protocol_version": "v7_e2_preference_protocol_v1",
+      "checkpoint_sha256": "25b26c4e4ff3e27d28fa0f030ccf7e7d4ac50f315083f04c8dd36e625bad27d5",
+      "dataset_manifest_sha256": "a06eeb9529928683c53debde1f8dcc313f45077e8d9bc8792eab7e3d808baf44",
+      "effective_config_sha256": "93d31721082ab03a951de59aeccb229c3431f86c8d422fab444284fe83cb8e27",
+      "evaluator_protocol_version": "v7_e2_preference_protocol_v1",
+      "experiment_fingerprint_sha256": "efe8a4c0cc9a06c296b25b2642cc83820dd46be8fdd5279b9b6ed6ba990ded64",
+      "fixed_instance_sha256": "e54d96aa6b3c55dfb6fddfbaa2ee55776762622a2b27d955fda23af03ccbe8bc",
+      "git": {
+        "commit": "2405d7b950127c40a2406fbb6cb1edef51c97ad6",
+        "dirty": true
+      },
+      "network_weights_sha256": "3eb71a188ef3ec2793f270bbf84a59215eab6fc5d8fc27c8a621fb562be1011d",
+      "provenance_schema_version": "1.0.0",
+      "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+      "quality_metric_version": "canonical_bounded_quality_v1",
+      "result_schema_version": "4.1.0",
+      "sampled_rng_version": "per_instance_sha256_v1",
+      "source_file_count": 35,
+      "source_state_sha256": "070157dbc71402a25c1b4305fd832a9c1abfb5e1bd659eed977c9bef50d4eb99",
+      "template_sha256": "da0b427b63958b6ae3569bc15688b26c41470aadb8490f9a961921e433475a65"
+    },
+    "sampled": {
+      "all_instance_metrics": {
+        "advance_event_action_count": {
+          "count": 60,
+          "mean": 77.55,
+          "std": 287.91043952319734
+        },
+        "candidate_recovery_advance_count": {
+          "count": 60,
+          "mean": 0.75,
+          "std": 1.856048289845199
+        },
+        "commit_reconfig_action_count": {
+          "count": 60,
+          "mean": 16.816666666666666,
+          "std": 6.440053865093889
+        },
+        "completed_reconfigurations": {
+          "count": 60,
+          "mean": 16.75,
+          "std": 6.583556815201267
+        },
+        "conditional_worker_wait_duration_improvement_ticks_sum": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_fatigue_improvement_sum": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_max_consecutive_observed": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_opportunity_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_pair_gain_sum": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_selected_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "conditional_worker_wait_total_ticks": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "context_override_rate": {
+          "count": 60,
+          "mean": 0.04022788452370077,
+          "std": 0.02736891862593388
+        },
+        "defer_production_action_count": {
+          "count": 60,
+          "mean": 160.45,
+          "std": 278.1029211384927
+        },
+        "direct_process_action_count": {
+          "count": 60,
+          "mean": 52.78333333333333,
+          "std": 8.433371295776642
+        },
+        "fatigue_masked_action_ratio": {
+          "count": 60,
+          "mean": 0.06484038388038083,
+          "std": 0.16706649400644313
+        },
+        "feasibility_proxy_return": {
+          "count": 60,
+          "mean": 1.949074074074074,
+          "std": 0.3944705260026073
+        },
+        "flow_time_objective": {
+          "count": 60,
+          "mean": 1225.8433333333353,
+          "std": 739.8423799992512
+        },
+        "forced_action_chain_count": {
+          "count": 60,
+          "mean": 83.78333333333333,
+          "std": 16.926653004091033
+        },
+        "forced_action_state_count": {
+          "count": 60,
+          "mean": 223.85,
+          "std": 567.8511330639694
+        },
+        "forced_advance_count": {
+          "count": 60,
+          "mean": 218.93333333333334,
+          "std": 567.4568860399213
+        },
+        "forced_advance_pair_physically_unavailable_count": {
+          "count": 60,
+          "mean": 218.93333333333334,
+          "std": 567.4568860399213
+        },
+        "forced_future_event_advance_count": {
+          "count": 60,
+          "mean": 179.9,
+          "std": 272.07823525907935
+        },
+        "forced_mixed_wait_stage_count": {
+          "count": 60,
+          "mean": 0.95,
+          "std": 1.2812202869642728
+        },
+        "forced_pair_advance_blocked_non_delay_count": {
+          "count": 60,
+          "mean": 4.916666666666667,
+          "std": 6.282317575886608
+        },
+        "forced_pair_advance_physically_unavailable_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "forced_pair_count": {
+          "count": 60,
+          "mean": 4.916666666666667,
+          "std": 6.282317575886608
+        },
+        "forced_phase_handoff_count": {
+          "count": 60,
+          "mean": 75.91666666666667,
+          "std": 287.4334877619615
+        },
+        "forced_production_advance_count": {
+          "count": 60,
+          "mean": 141.38333333333333,
+          "std": 279.6264512879406
+        },
+        "forced_production_count": {
+          "count": 60,
+          "mean": 141.38333333333333,
+          "std": 279.6264512879406
+        },
+        "forced_production_pair_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "forced_recovery_advance_count": {
+          "count": 60,
+          "mean": 20.55,
+          "std": 79.62463314445995
+        },
+        "forced_wait_dis_count": {
+          "count": 60,
+          "mean": 18.066666666666666,
+          "std": 8.410781351209476
+        },
+        "forced_wait_ins_count": {
+          "count": 60,
+          "mean": 109.73333333333333,
+          "std": 579.1738671259105
+        },
+        "forced_worker_advance_count": {
+          "count": 60,
+          "mean": 77.55,
+          "std": 287.91043952319734
+        },
+        "forced_worker_count": {
+          "count": 60,
+          "mean": 82.46666666666667,
+          "std": 288.2933690993719
+        },
+        "forced_worker_pair_count": {
+          "count": 60,
+          "mean": 4.916666666666667,
+          "std": 6.282317575886608
+        },
+        "forced_worker_pair_non_delay_count": {
+          "count": 60,
+          "mean": 4.916666666666667,
+          "std": 6.282317575886608
+        },
+        "heuristic_quality_score": {
+          "count": 60,
+          "mean": 0.3721786036468983,
+          "std": 0.08439668110893261
+        },
+        "heuristic_reward_quality_score": {
+          "count": 60,
+          "mean": 0.3721786036468983,
+          "std": 0.08439668110893261
+        },
+        "inference_time_per_decision_ms": {
+          "count": 60,
+          "mean": 5.3591257612152825,
+          "std": 0.24631085990301474
+        },
+        "inference_time_seconds": {
+          "count": 60,
+          "mean": 1.8619566083546184,
+          "std": 3.185666017092611
+        },
+        "longest_forced_action_chain": {
+          "count": 60,
+          "mean": 55.28333333333333,
+          "std": 330.23346090389595
+        },
+        "machine_waiting_for_worker_time": {
+          "count": 60,
+          "mean": 17.771666666666665,
+          "std": 116.16909226285253
+        },
+        "matching_preserving_worker_action_count": {
+          "count": 60,
+          "mean": 80.15,
+          "std": 26.55523504837749
+        },
+        "maximum_worker_fatigue": {
+          "count": 60,
+          "mean": 0.42296102396833324,
+          "std": 0.2184413031082309
+        },
+        "mean_commit_set_logit": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "mean_forced_action_chain_length": {
+          "count": 60,
+          "mean": 4.069528745069693,
+          "std": 17.93589560165948
+        },
+        "mean_peak_worker_fatigue": {
+          "count": 60,
+          "mean": 0.3488284281191666,
+          "std": 0.21724440442364956
+        },
+        "minimum_worker_alternatives": {
+          "count": 60,
+          "mean": 1.1166666666666667,
+          "std": 0.9583118396017571
+        },
+        "preference_quality_score": {
+          "count": 60,
+          "mean": 0.39650686085569975,
+          "std": 0.08747358210582912
+        },
+        "production_decision_state_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "production_defer_recovery_improvement_count": {
+          "count": 60,
+          "mean": 0.9333333333333333,
+          "std": 0.9719222028339418
+        },
+        "production_defer_wait_time": {
+          "count": 60,
+          "mean": 147.0966666666667,
+          "std": 34.93370460621267
+        },
+        "production_pair_plus_defer_ratio": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "production_pair_plus_defer_state_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "qualification_scarcity_regret": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "quality_score": {
+          "count": 60,
+          "mean": 0.39650686085569975,
+          "std": 0.08747358210582912
+        },
+        "ranker_top_selection_rate": {
+          "count": 60,
+          "mean": 0.5772642664673494,
+          "std": 0.05462225654111343
+        },
+        "reconfiguration_cost": {
+          "count": 60,
+          "mean": 849.5018832489015,
+          "std": 480.95713812976027
+        },
+        "reconfiguration_reuse_count": {
+          "count": 60,
+          "mean": 37.95,
+          "std": 14.608361896124274
+        },
+        "resource_admission_masked_action_count": {
+          "count": 60,
+          "mean": 716.4833333333333,
+          "std": 5247.429906805441
+        },
+        "resource_admission_masked_action_ratio": {
+          "count": 60,
+          "mean": 0.10388888488078112,
+          "std": 0.24571849504056711
+        },
+        "reward_quality_score": {
+          "count": 60,
+          "mean": 0.39650686085569975,
+          "std": 0.08747358210582912
+        },
+        "safe_fatigue_limit": {
+          "count": 60,
+          "mean": 0.75,
+          "std": 0.0
+        },
+        "solve_time_seconds": {
+          "count": 60,
+          "mean": 2.929151309997542,
+          "std": 5.125669189457776
+        },
+        "unfinished_orders": {
+          "count": 60,
+          "mean": 0.23333333333333334,
+          "std": 1.8073922282301278
+        },
+        "worker_assign_action_count": {
+          "count": 60,
+          "mean": 33.56666666666667,
+          "std": 13.014160041351916
+        },
+        "worker_competition_event_count": {
+          "count": 60,
+          "mean": 46.016666666666666,
+          "std": 290.74466004491427
+        },
+        "worker_decision_state_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "worker_load_variance": {
+          "count": 60,
+          "mean": 8.78665277777778,
+          "std": 6.052019216219906
+        },
+        "worker_matching_deficit_event_count": {
+          "count": 60,
+          "mean": 46.03333333333333,
+          "std": 290.8727350966379
+        },
+        "worker_pair_plus_advance_ratio": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "worker_pair_plus_advance_state_count": {
+          "count": 60,
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "worker_switch_ratio": {
+          "count": 60,
+          "mean": 0.9362047944934156,
+          "std": 0.06386104527370663
+        }
+      },
+      "completed_count": 59,
+      "completed_metrics": {
+        "makespan": {
+          "count": 59,
+          "mean": 191.35762711864407,
+          "std": 26.159380221685304
+        },
+        "total_flow_time": {
+          "count": 59,
+          "mean": 1143.7016949152544,
+          "std": 380.77456154687644
+        }
+      },
+      "completion_rate": 0.9833333333333333,
+      "dataset": "validation",
+      "decision_count": 20470,
+      "decode_mode": "sampled",
+      "evaluation_schema_version": "4.2.0",
+      "fatigue_cvar90": 0.749866927316666,
+      "fatigue_safe_line_pass": true,
+      "gap_metrics": {
+        "makespan_heuristic_gap_percent": {
+          "count": 60,
+          "mean": 4.883481982154634,
+          "std": 5.635643534849153
+        },
+        "quality_score_heuristic_gap_percent": {
+          "count": 60,
+          "mean": 7.338902660877554,
+          "std": 9.752700152464898
+        },
+        "reconfiguration_cost_heuristic_gap_percent": {
+          "count": 60,
+          "mean": 5.033243259305686,
+          "std": 29.33399281923713
+        },
+        "relative_heuristic_gap_percent": {
+          "count": 60,
+          "mean": 10.316749355533384,
+          "std": 46.15889900678071
+        },
+        "worker_load_variance_heuristic_gap_percent": {
+          "count": 60,
+          "mean": 426.32078313832284,
+          "std": 923.5891760785554
+        }
+      },
+      "instance_count": 60,
+      "manifest": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\data\\manifests\\validation\\manifest.json",
+      "maximum_observed_fatigue": 0.7499972797000001,
+      "minimum_repeat_completion_rate": 0.95,
+      "parallel_envs": 1,
+      "policy": "ppo",
+      "quality_metric": {
+        "cost_scale": 1000.0,
+        "flow_scale": 1200.0,
+        "quality_weights": {
+          "cost": 0.3,
+          "flow": 0.5,
+          "variance": 0.2
+        },
+        "variance_scale": 50.0,
+        "version": "canonical_bounded_quality_v1"
+      },
+      "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+      "quality_metric_version": "canonical_bounded_quality_v1",
+      "repeat_completion_rates": [
+        1.0,
+        1.0,
+        0.95
+      ],
+      "repeat_count": 3,
+      "schedule_violation_count": 0,
+      "tail_metrics": {
+        "forced_action_chain": {
+          "count": 60,
+          "cvar": 921.0,
+          "max": 2566.0,
+          "quantile": 59.0
+        },
+        "maximum_worker_fatigue": {
+          "count": 60,
+          "cvar": 0.749866927316666,
+          "max": 0.7499972797000001,
+          "quantile": 0.7496314262999971
+        },
+        "worker_load_variance": {
+          "count": 60,
+          "cvar": 21.78476851851853,
+          "max": 30.564722222222244,
+          "quantile": 16.870000000000005
+        }
+      },
+      "total_inference_time_seconds": 111.71739650127711,
+      "total_solve_time_seconds": 175.7490785998525,
+      "truncated_count": 1,
+      "unique_instance_count": 20
+    }
+  },
+  "forced_action_diagnostics": {
+    "forced_action_chain_count": 160046,
+    "forced_action_state_count": 296751,
+    "forced_advance_count": 289834,
+    "forced_advance_event_count": 81833,
+    "forced_advance_pair_physically_unavailable_count": 289834,
+    "forced_commit_reconfig_count": 0,
+    "forced_defer_production_count": 208001,
+    "forced_direct_process_count": 5,
+    "forced_future_event_advance_count": 278484,
+    "forced_mixed_wait_stage_count": 1452,
+    "forced_pair_advance_blocked_non_delay_count": 6912,
+    "forced_pair_advance_physically_unavailable_count": 5,
+    "forced_pair_count": 6917,
+    "forced_phase_handoff_count": 79192,
+    "forced_production_advance_count": 208001,
+    "forced_production_count": 208006,
+    "forced_production_pair_count": 5,
+    "forced_recovery_advance_count": 19340,
+    "forced_wait_dis_count": 31289,
+    "forced_wait_ins_count": 81798,
+    "forced_worker_advance_count": 81833,
+    "forced_worker_assign_count": 6912,
+    "forced_worker_count": 88745,
+    "forced_worker_pair_count": 6912,
+    "forced_worker_pair_non_delay_count": 6912,
+    "maximum_forced_action_chain": 2404,
+    "mean_episode_longest_forced_action_chain": 15.689,
+    "mean_forced_action_chain_length": 1.8541606788048437,
+    "p95_episode_longest_forced_action_chain": 33.0
+  },
+  "forced_action_ratio": 0.0,
+  "forced_actions": 0,
+  "formal_training_status": "quality_constrained",
+  "last_candidate_checkpoint": null,
+  "last_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\last_checkpoint.pt",
+  "last_episode": {
+    "advance_event_action_count": 15,
+    "advantage_mean": 0.00046432053204625845,
+    "advantage_std": 0.01132961269468069,
+    "approx_kl": 0.0010169538753953848,
+    "batch_transition_count": 2790,
+    "candidate_recovery_advance_count": 0,
+    "candidate_status": "not_promoted",
+    "clip_fraction": 0.01083096590909091,
+    "commit_reconfig_action_count": 9,
+    "completed_operation_ratio": 1.0,
+    "completed_operations": 53,
+    "completed_order_ratio": 1.0,
+    "completed_reconfigurations": 9,
+    "conditional_worker_wait_duration_improvement_ticks_sum": 0,
+    "conditional_worker_wait_fatigue_improvement_sum": 0.0,
+    "conditional_worker_wait_max_consecutive_observed": 0,
+    "conditional_worker_wait_opportunity_count": 0,
+    "conditional_worker_wait_pair_gain_sum": 0,
+    "conditional_worker_wait_reason_counts": "{}",
+    "conditional_worker_wait_selected_count": 0,
+    "conditional_worker_wait_total_ticks": 0,
+    "conditional_worker_wait_total_time": 0.0,
+    "cost_profile": "labor_dominant",
+    "defer_production_action_count": 84,
+    "direct_process_action_count": 44,
+    "entropy": 0.5154738331382925,
+    "environment_step_time_seconds": 0.22838370013050735,
+    "episode": 1999,
+    "estimated_worker_step_round_trips_avoided": 0,
+    "expected_reward": 1.8564595050486439,
+    "fatigue_masked_action_count": 0,
+    "fatigue_masked_action_ratio": 0.0,
+    "flow_time_objective": 691.4,
+    "forced_action_chain_count": 54,
+    "forced_action_ratio": 0.0,
+    "forced_action_state_count": 77,
+    "forced_actions": 0,
+    "forced_advance_count": 76,
+    "forced_advance_event_count": 15,
+    "forced_advance_pair_physically_unavailable_count": 76,
+    "forced_commit_reconfig_count": 0,
+    "forced_defer_production_count": 61,
+    "forced_direct_process_count": 0,
+    "forced_future_event_advance_count": 76,
+    "forced_mixed_wait_stage_count": 1,
+    "forced_pair_advance_blocked_non_delay_count": 1,
+    "forced_pair_advance_physically_unavailable_count": 0,
+    "forced_pair_count": 1,
+    "forced_phase_handoff_count": 11,
+    "forced_production_advance_count": 61,
+    "forced_production_count": 61,
+    "forced_production_pair_count": 0,
+    "forced_recovery_advance_count": 0,
+    "forced_wait_dis_count": 5,
+    "forced_wait_ins_count": 8,
+    "forced_worker_advance_count": 15,
+    "forced_worker_assign_count": 1,
+    "forced_worker_count": 16,
+    "forced_worker_pair_count": 1,
+    "forced_worker_pair_non_delay_count": 1,
+    "generation_time_seconds": 0.15904100000625476,
+    "gradient_clipped_fraction": 0.07954545454545454,
+    "gradient_norm": 0.2619115733964877,
+    "gradient_norm_max": 0.7875230312347412,
+    "instance_id": "train_balanced_1001999",
+    "instance_seed": 1001999,
+    "learning_rate": 2.5e-05,
+    "longest_forced_action_chain": 8,
+    "loss": -0.006610731155061248,
+    "loss_scope": "parallel_episode_batch",
+    "machine_waiting_for_worker_time": 0.0,
+    "matching_preserving_worker_action_count": 48,
+    "maximum_worker_fatigue": 0.2373255978,
+    "mean_forced_action_chain_length": 1.4259259259259258,
+    "mean_peak_worker_fatigue": 0.17891722131666668,
+    "minimum_worker_alternatives": 1,
+    "parallel_envs": 10,
+    "policy_head_gate_production_common": 0.018433572724461555,
+    "policy_head_gate_production_residual": 0.12957142293453217,
+    "policy_head_gate_worker_common": 0.01798621006309986,
+    "policy_head_gate_worker_residual": 0.1313476264476776,
+    "policy_head_weight_production_estimated_downtime_cost_norm": -0.21213319897651672,
+    "policy_head_weight_production_estimated_labor_cost_norm": -0.21257427334785461,
+    "policy_head_weight_production_fixed_reconfiguration_cost_norm": -0.213057741522789,
+    "policy_head_weight_production_horizon_slack_norm": 0.31484025716781616,
+    "policy_head_weight_production_processing_time_norm": -0.30197352170944214,
+    "policy_head_weight_production_reconfiguration_time_norm": -0.31804683804512024,
+    "policy_head_weight_worker_incremental_downtime_cost_norm": -0.21603867411613464,
+    "policy_head_weight_worker_incremental_labor_cost_norm": -0.1941305547952652,
+    "policy_head_weight_worker_incremental_load_variance_norm": -0.22876305878162384,
+    "policy_head_weight_worker_projected_fatigue_ratio": -0.3290591537952423,
+    "policy_head_weight_worker_stage_duration_norm": -0.3227401077747345,
+    "policy_inference_time_seconds": 19.95865970023442,
+    "policy_loss": -0.0015107674672352996,
+    "policy_steps": 170,
+    "ppo_update_time_seconds": 34.013089400017634,
+    "pre_update_explained_variance": 0.998049795627594,
+    "preference_quality_score": 0.28708098990271236,
+    "preference_source": "dirichlet",
+    "pressure_type": "balanced",
+    "production_defer_recovery_improvement_count": 2,
+    "production_defer_wait_ticks": 1855,
+    "production_defer_wait_time": 185.5,
+    "qualification_scarcity_decision_count": 0,
+    "qualification_scarcity_regret": 0.0,
+    "quality_score": 0.29173904395332506,
+    "ratio_mean": 0.9998108317906206,
+    "reconfiguration_cost": 347.0393637308902,
+    "reconfiguration_reuse_count": 20,
+    "resource_admission_masked_action_count": 0,
+    "resource_admission_masked_action_ratio": 0.0,
+    "return_mean": 1.5879075527191162,
+    "return_std": 0.2565537095069885,
+    "reward": 1.793959505048644,
+    "reward_base": 1.856459505048644,
+    "reward_completion_bonus": 1.0,
+    "reward_completion_progress": 0.9999999999999997,
+    "reward_cost": -347.0393637308902,
+    "reward_feasibility_shaping": -0.0625,
+    "reward_flow": -691.4,
+    "reward_identity_error": 2.220446049250313e-16,
+    "reward_phase": "quality",
+    "reward_quality": -0.28708098990271236,
+    "reward_shaping": -0.0625,
+    "reward_training": 1.793959505048644,
+    "reward_truncation": 0.0,
+    "reward_unfinished": 0.0,
+    "reward_variance": -9.408888888888885,
+    "safe_fatigue_limit": 0.75,
+    "sampling_wall_time_seconds": 23.775667499983683,
+    "schedule_violation_count": 0,
+    "steps": 170,
+    "terminal_reason": "completed",
+    "terminated": true,
+    "time": 209.10000000000002,
+    "total_flow_time": 691.4,
+    "truncated": false,
+    "unattributed_forced_reward": 0.0,
+    "update_id": 200,
+    "value_loss": 0.00010954735167119493,
+    "value_prediction_mean": 1.5874431133270264,
+    "value_prediction_std": 0.2556590139865875,
+    "w_cost": 0.04863804513970861,
+    "w_flow": 0.5979424527619918,
+    "w_variance": 0.35341950209829953,
+    "worker_assign_action_count": 18,
+    "worker_competition_event_count": 0,
+    "worker_load_variance": 9.408888888888887,
+    "worker_local_physical_forced_action_count": 0,
+    "worker_local_physical_forced_share": 0.0,
+    "worker_matching_deficit_event_count": 0,
+    "worker_step_command_count": 170,
+    "worker_switch_ratio": 0.8888888888888888
+  },
+  "last_sampled_validation": {
+    "all_instance_metrics": {
+      "advance_event_action_count": {
+        "count": 60,
+        "mean": 77.55,
+        "std": 287.91043952319734
+      },
+      "candidate_recovery_advance_count": {
+        "count": 60,
+        "mean": 0.75,
+        "std": 1.856048289845199
+      },
+      "commit_reconfig_action_count": {
+        "count": 60,
+        "mean": 16.816666666666666,
+        "std": 6.440053865093889
+      },
+      "completed_reconfigurations": {
+        "count": 60,
+        "mean": 16.75,
+        "std": 6.583556815201267
+      },
+      "conditional_worker_wait_duration_improvement_ticks_sum": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "conditional_worker_wait_fatigue_improvement_sum": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "conditional_worker_wait_max_consecutive_observed": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "conditional_worker_wait_opportunity_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "conditional_worker_wait_pair_gain_sum": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "conditional_worker_wait_selected_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "conditional_worker_wait_total_ticks": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "context_override_rate": {
+        "count": 60,
+        "mean": 0.04022788452370077,
+        "std": 0.02736891862593388
+      },
+      "defer_production_action_count": {
+        "count": 60,
+        "mean": 160.45,
+        "std": 278.1029211384927
+      },
+      "direct_process_action_count": {
+        "count": 60,
+        "mean": 52.78333333333333,
+        "std": 8.433371295776642
+      },
+      "fatigue_masked_action_ratio": {
+        "count": 60,
+        "mean": 0.06484038388038083,
+        "std": 0.16706649400644313
+      },
+      "feasibility_proxy_return": {
+        "count": 60,
+        "mean": 1.949074074074074,
+        "std": 0.3944705260026073
+      },
+      "flow_time_objective": {
+        "count": 60,
+        "mean": 1225.8433333333353,
+        "std": 739.8423799992512
+      },
+      "forced_action_chain_count": {
+        "count": 60,
+        "mean": 83.78333333333333,
+        "std": 16.926653004091033
+      },
+      "forced_action_state_count": {
+        "count": 60,
+        "mean": 223.85,
+        "std": 567.8511330639694
+      },
+      "forced_advance_count": {
+        "count": 60,
+        "mean": 218.93333333333334,
+        "std": 567.4568860399213
+      },
+      "forced_advance_pair_physically_unavailable_count": {
+        "count": 60,
+        "mean": 218.93333333333334,
+        "std": 567.4568860399213
+      },
+      "forced_future_event_advance_count": {
+        "count": 60,
+        "mean": 179.9,
+        "std": 272.07823525907935
+      },
+      "forced_mixed_wait_stage_count": {
+        "count": 60,
+        "mean": 0.95,
+        "std": 1.2812202869642728
+      },
+      "forced_pair_advance_blocked_non_delay_count": {
+        "count": 60,
+        "mean": 4.916666666666667,
+        "std": 6.282317575886608
+      },
+      "forced_pair_advance_physically_unavailable_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "forced_pair_count": {
+        "count": 60,
+        "mean": 4.916666666666667,
+        "std": 6.282317575886608
+      },
+      "forced_phase_handoff_count": {
+        "count": 60,
+        "mean": 75.91666666666667,
+        "std": 287.4334877619615
+      },
+      "forced_production_advance_count": {
+        "count": 60,
+        "mean": 141.38333333333333,
+        "std": 279.6264512879406
+      },
+      "forced_production_count": {
+        "count": 60,
+        "mean": 141.38333333333333,
+        "std": 279.6264512879406
+      },
+      "forced_production_pair_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "forced_recovery_advance_count": {
+        "count": 60,
+        "mean": 20.55,
+        "std": 79.62463314445995
+      },
+      "forced_wait_dis_count": {
+        "count": 60,
+        "mean": 18.066666666666666,
+        "std": 8.410781351209476
+      },
+      "forced_wait_ins_count": {
+        "count": 60,
+        "mean": 109.73333333333333,
+        "std": 579.1738671259105
+      },
+      "forced_worker_advance_count": {
+        "count": 60,
+        "mean": 77.55,
+        "std": 287.91043952319734
+      },
+      "forced_worker_count": {
+        "count": 60,
+        "mean": 82.46666666666667,
+        "std": 288.2933690993719
+      },
+      "forced_worker_pair_count": {
+        "count": 60,
+        "mean": 4.916666666666667,
+        "std": 6.282317575886608
+      },
+      "forced_worker_pair_non_delay_count": {
+        "count": 60,
+        "mean": 4.916666666666667,
+        "std": 6.282317575886608
+      },
+      "heuristic_quality_score": {
+        "count": 60,
+        "mean": 0.3721786036468983,
+        "std": 0.08439668110893261
+      },
+      "heuristic_reward_quality_score": {
+        "count": 60,
+        "mean": 0.3721786036468983,
+        "std": 0.08439668110893261
+      },
+      "inference_time_per_decision_ms": {
+        "count": 60,
+        "mean": 7.267105549567987,
+        "std": 0.46095739575057704
+      },
+      "inference_time_seconds": {
+        "count": 60,
+        "mean": 2.3425559250075216,
+        "std": 3.001776852009374
+      },
+      "longest_forced_action_chain": {
+        "count": 60,
+        "mean": 55.28333333333333,
+        "std": 330.23346090389595
+      },
+      "machine_waiting_for_worker_time": {
+        "count": 60,
+        "mean": 17.771666666666665,
+        "std": 116.16909226285253
+      },
+      "matching_preserving_worker_action_count": {
+        "count": 60,
+        "mean": 80.15,
+        "std": 26.55523504837749
+      },
+      "maximum_worker_fatigue": {
+        "count": 60,
+        "mean": 0.42296102396833324,
+        "std": 0.2184413031082309
+      },
+      "mean_commit_set_logit": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "mean_forced_action_chain_length": {
+        "count": 60,
+        "mean": 4.069528745069693,
+        "std": 17.93589560165948
+      },
+      "mean_peak_worker_fatigue": {
+        "count": 60,
+        "mean": 0.3488284281191666,
+        "std": 0.21724440442364956
+      },
+      "minimum_worker_alternatives": {
+        "count": 60,
+        "mean": 1.1166666666666667,
+        "std": 0.9583118396017571
+      },
+      "preference_quality_score": {
+        "count": 60,
+        "mean": 0.39650686085569975,
+        "std": 0.08747358210582912
+      },
+      "production_decision_state_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "production_defer_recovery_improvement_count": {
+        "count": 60,
+        "mean": 0.9333333333333333,
+        "std": 0.9719222028339418
+      },
+      "production_defer_wait_time": {
+        "count": 60,
+        "mean": 147.0966666666667,
+        "std": 34.93370460621267
+      },
+      "production_pair_plus_defer_ratio": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "production_pair_plus_defer_state_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "qualification_scarcity_regret": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "quality_score": {
+        "count": 60,
+        "mean": 0.39650686085569975,
+        "std": 0.08747358210582912
+      },
+      "ranker_top_selection_rate": {
+        "count": 60,
+        "mean": 0.5772642664673494,
+        "std": 0.05462225654111343
+      },
+      "reconfiguration_cost": {
+        "count": 60,
+        "mean": 849.5018832489015,
+        "std": 480.95713812976027
+      },
+      "reconfiguration_reuse_count": {
+        "count": 60,
+        "mean": 37.95,
+        "std": 14.608361896124274
+      },
+      "resource_admission_masked_action_count": {
+        "count": 60,
+        "mean": 716.4833333333333,
+        "std": 5247.429906805441
+      },
+      "resource_admission_masked_action_ratio": {
+        "count": 60,
+        "mean": 0.10388888488078112,
+        "std": 0.24571849504056711
+      },
+      "reward_quality_score": {
+        "count": 60,
+        "mean": 0.39650686085569975,
+        "std": 0.08747358210582912
+      },
+      "safe_fatigue_limit": {
+        "count": 60,
+        "mean": 0.75,
+        "std": 0.0
+      },
+      "solve_time_seconds": {
+        "count": 60,
+        "mean": 19.785336955012948,
+        "std": 6.731750272210019
+      },
+      "unfinished_orders": {
+        "count": 60,
+        "mean": 0.23333333333333334,
+        "std": 1.8073922282301278
+      },
+      "worker_assign_action_count": {
+        "count": 60,
+        "mean": 33.56666666666667,
+        "std": 13.014160041351916
+      },
+      "worker_competition_event_count": {
+        "count": 60,
+        "mean": 46.016666666666666,
+        "std": 290.74466004491427
+      },
+      "worker_decision_state_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "worker_load_variance": {
+        "count": 60,
+        "mean": 8.78665277777778,
+        "std": 6.052019216219906
+      },
+      "worker_matching_deficit_event_count": {
+        "count": 60,
+        "mean": 46.016666666666666,
+        "std": 290.74466004491427
+      },
+      "worker_pair_plus_advance_ratio": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "worker_pair_plus_advance_state_count": {
+        "count": 60,
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "worker_switch_ratio": {
+        "count": 60,
+        "mean": 0.9362047944934156,
+        "std": 0.06386104527370663
+      }
+    },
+    "completed_count": 59,
+    "completed_metrics": {
+      "makespan": {
+        "count": 59,
+        "mean": 191.35762711864407,
+        "std": 26.159380221685304
+      },
+      "total_flow_time": {
+        "count": 59,
+        "mean": 1143.7016949152544,
+        "std": 380.77456154687644
+      }
+    },
+    "completion_rate": 0.9833333333333333,
+    "dataset": "validation",
+    "decision_count": 20470,
+    "decode_mode": "sampled",
+    "evaluation_schema_version": "4.2.0",
+    "fatigue_cvar90": 0.749866927316666,
+    "fatigue_safe_line_pass": true,
+    "gap_metrics": {
+      "makespan_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 4.883481982154634,
+        "std": 5.635643534849153
+      },
+      "quality_score_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 7.338902660877554,
+        "std": 9.752700152464898
+      },
+      "reconfiguration_cost_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 5.033243259305686,
+        "std": 29.33399281923713
+      },
+      "relative_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 10.316749355533384,
+        "std": 46.15889900678071
+      },
+      "worker_load_variance_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 426.32078313832284,
+        "std": 923.5891760785554
+      }
+    },
+    "instance_count": 60,
+    "manifest": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\data\\manifests\\validation\\manifest.json",
+    "maximum_observed_fatigue": 0.7499972797000001,
+    "minimum_repeat_completion_rate": 0.95,
+    "parallel_envs": 10,
+    "policy": "ppo",
+    "quality_metric": {
+      "cost_scale": 1000.0,
+      "flow_scale": 1200.0,
+      "quality_weights": {
+        "cost": 0.3,
+        "flow": 0.5,
+        "variance": 0.2
+      },
+      "variance_scale": 50.0,
+      "version": "canonical_bounded_quality_v1"
+    },
+    "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+    "quality_metric_version": "canonical_bounded_quality_v1",
+    "repeat_completion_rates": [
+      1.0,
+      1.0,
+      0.95
+    ],
+    "repeat_count": 3,
+    "schedule_violation_count": 0,
+    "tail_metrics": {
+      "forced_action_chain": {
+        "count": 60,
+        "cvar": 921.0,
+        "max": 2566.0,
+        "quantile": 59.0
+      },
+      "maximum_worker_fatigue": {
+        "count": 60,
+        "cvar": 0.749866927316666,
+        "max": 0.7499972797000001,
+        "quantile": 0.7496314262999971
+      },
+      "worker_load_variance": {
+        "count": 60,
+        "cvar": 21.78476851851853,
+        "max": 30.564722222222244,
+        "quantile": 16.870000000000005
+      }
+    },
+    "total_inference_time_seconds": 140.5533555004513,
+    "total_solve_time_seconds": 1187.1202173007769,
+    "truncated_count": 1,
+    "unique_instance_count": 20
+  },
+  "last_update": {
+    "advantage_mean": 0.00046432053204625845,
+    "advantage_std": 0.01132961269468069,
+    "approx_kl": 0.0010169538753953848,
+    "candidate_status": "not_promoted",
+    "clip_fraction": 0.01083096590909091,
+    "entropy": 0.5154738331382925,
+    "environment_step_count": 2790,
+    "environment_step_time_seconds": 2.5790077000274323,
+    "episode_count": 10,
+    "episode_end": 1999,
+    "episode_start": 1990,
+    "estimated_worker_step_round_trips_avoided": 0,
+    "forced_action_count": 0,
+    "forced_action_ratio": 0.0,
+    "generation_time_seconds": 2.1840705999638885,
+    "gradient_clipped_fraction": 0.07954545454545454,
+    "gradient_norm": 0.2619115733964877,
+    "gradient_norm_max": 0.7875230312347412,
+    "learning_rate": 2.5e-05,
+    "loss": -0.006610731155061248,
+    "parallel_envs": 10,
+    "policy_head_gate_production_common": 0.018433572724461555,
+    "policy_head_gate_production_residual": 0.12957142293453217,
+    "policy_head_gate_worker_common": 0.01798621006309986,
+    "policy_head_gate_worker_residual": 0.1313476264476776,
+    "policy_head_weight_production_estimated_downtime_cost_norm": -0.21213319897651672,
+    "policy_head_weight_production_estimated_labor_cost_norm": -0.21257427334785461,
+    "policy_head_weight_production_fixed_reconfiguration_cost_norm": -0.213057741522789,
+    "policy_head_weight_production_horizon_slack_norm": 0.31484025716781616,
+    "policy_head_weight_production_processing_time_norm": -0.30197352170944214,
+    "policy_head_weight_production_reconfiguration_time_norm": -0.31804683804512024,
+    "policy_head_weight_worker_incremental_downtime_cost_norm": -0.21603867411613464,
+    "policy_head_weight_worker_incremental_labor_cost_norm": -0.1941305547952652,
+    "policy_head_weight_worker_incremental_load_variance_norm": -0.22876305878162384,
+    "policy_head_weight_worker_projected_fatigue_ratio": -0.3290591537952423,
+    "policy_head_weight_worker_stage_duration_norm": -0.3227401077747345,
+    "policy_inference_time_seconds": 19.95865970023442,
+    "policy_loss": -0.0015107674672352996,
+    "ppo_update_time_seconds": 34.013089400017634,
+    "pre_update_explained_variance": 0.998049795627594,
+    "ratio_mean": 0.9998108317906206,
+    "return_mean": 1.5879075527191162,
+    "return_std": 0.2565537095069885,
+    "reward_phase": "quality",
+    "sampling_wall_time_seconds": 23.775667499983683,
+    "transition_count": 2790,
+    "transitions_per_second": 48.279287350441976,
+    "update_id": 200,
+    "value_loss": 0.00010954735167119493,
+    "value_prediction_mean": 1.5874431133270264,
+    "value_prediction_std": 0.2556590139865875,
+    "worker_local_physical_forced_action_count": 0,
+    "worker_local_physical_forced_share": 0.0,
+    "worker_step_command_count": 2790
+  },
+  "late_500_episode_diagnostics": {
+    "by_pressure_type": {
+      "balanced": {
+        "completion_rate": 1.0,
+        "mean_completed_order_ratio": 1.0,
+        "sample_count": 182
+      },
+      "easy": {
+        "completion_rate": 1.0,
+        "mean_completed_order_ratio": 1.0,
+        "sample_count": 26
+      },
+      "fatigue_bottleneck": {
+        "completion_rate": 0.94,
+        "mean_completed_order_ratio": 0.9574509803921569,
+        "sample_count": 50
+      },
+      "high_arrival_pressure": {
+        "completion_rate": 1.0,
+        "mean_completed_order_ratio": 1.0,
+        "sample_count": 51
+      },
+      "machine_bottleneck": {
+        "completion_rate": 0.9857142857142858,
+        "mean_completed_order_ratio": 0.9992063492063492,
+        "sample_count": 70
+      },
+      "reconfiguration_bottleneck": {
+        "completion_rate": 1.0,
+        "mean_completed_order_ratio": 1.0,
+        "sample_count": 74
+      },
+      "worker_bottleneck": {
+        "completion_rate": 0.9787234042553191,
+        "mean_completed_order_ratio": 0.9872340425531915,
+        "sample_count": 47
+      }
+    },
+    "completion_rate": 0.99,
+    "means": {
+      "candidate_recovery_advance_count": 0.742,
+      "completed_operation_ratio": 0.9955858019564224,
+      "completed_order_ratio": 0.9944339869281046,
+      "fatigue_masked_action_ratio": 0.049609408226475436,
+      "machine_waiting_for_worker_time": 8.676600000000002,
+      "matching_preserving_worker_action_count": 79.526,
+      "minimum_worker_alternatives": 1.218,
+      "production_defer_recovery_improvement_count": 1.08,
+      "production_defer_wait_time": 147.5128,
+      "resource_admission_masked_action_count": 278.234,
+      "resource_admission_masked_action_ratio": 0.07349842230379076,
+      "reward_base": 1.8021413068254382,
+      "reward_shaping": -0.0625,
+      "reward_training": 1.7396413068254382,
+      "worker_matching_deficit_event_count": 21.824
+    },
+    "observed_episode_count": 500,
+    "requested_window_episodes": 500
+  },
+  "learning_rate_decays": 2,
+  "mean_policy_steps_per_episode": 253.1915,
+  "mean_transitions_per_second": 49.680430606823165,
+  "online_instances": true,
+  "parallel_envs": 10,
+  "phase1_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\phase1_checkpoint.pt",
+  "policy_head_diagnostics": {
+    "policy_head_gate_production_common": 0.018433572724461555,
+    "policy_head_gate_production_residual": 0.12957142293453217,
+    "policy_head_gate_worker_common": 0.01798621006309986,
+    "policy_head_gate_worker_residual": 0.1313476264476776,
+    "policy_head_weight_production_estimated_downtime_cost_norm": -0.21213319897651672,
+    "policy_head_weight_production_estimated_labor_cost_norm": -0.21257427334785461,
+    "policy_head_weight_production_fixed_reconfiguration_cost_norm": -0.213057741522789,
+    "policy_head_weight_production_horizon_slack_norm": 0.31484025716781616,
+    "policy_head_weight_production_processing_time_norm": -0.30197352170944214,
+    "policy_head_weight_production_reconfiguration_time_norm": -0.31804683804512024,
+    "policy_head_weight_worker_incremental_downtime_cost_norm": -0.21603867411613464,
+    "policy_head_weight_worker_incremental_labor_cost_norm": -0.1941305547952652,
+    "policy_head_weight_worker_incremental_load_variance_norm": -0.22876305878162384,
+    "policy_head_weight_worker_projected_fatigue_ratio": -0.3290591537952423,
+    "policy_head_weight_worker_stage_duration_norm": -0.3227401077747345
+  },
+  "provenance": {
+    "checkpoint_protocol_version": "v7_e2_preference_protocol_v1",
+    "checkpoint_sha256": "25b26c4e4ff3e27d28fa0f030ccf7e7d4ac50f315083f04c8dd36e625bad27d5",
+    "dataset_manifest_sha256": "a06eeb9529928683c53debde1f8dcc313f45077e8d9bc8792eab7e3d808baf44",
+    "effective_config_sha256": "93d31721082ab03a951de59aeccb229c3431f86c8d422fab444284fe83cb8e27",
+    "evaluator_protocol_version": "v7_e2_preference_protocol_v1",
+    "experiment_fingerprint_sha256": "efe8a4c0cc9a06c296b25b2642cc83820dd46be8fdd5279b9b6ed6ba990ded64",
+    "fixed_instance_sha256": "e54d96aa6b3c55dfb6fddfbaa2ee55776762622a2b27d955fda23af03ccbe8bc",
+    "git": {
+      "commit": "2405d7b950127c40a2406fbb6cb1edef51c97ad6",
+      "dirty": true
+    },
+    "network_weights_sha256": "3eb71a188ef3ec2793f270bbf84a59215eab6fc5d8fc27c8a621fb562be1011d",
+    "provenance_schema_version": "1.0.0",
+    "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+    "quality_metric_version": "canonical_bounded_quality_v1",
+    "result_schema_version": "4.1.0",
+    "sampled_rng_version": "per_instance_sha256_v1",
+    "source_file_count": 35,
+    "source_state_sha256": "070157dbc71402a25c1b4305fd832a9c1abfb5e1bd659eed977c9bef50d4eb99",
+    "template_sha256": "da0b427b63958b6ae3569bc15688b26c41470aadb8490f9a961921e433475a65"
+  },
+  "safe_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e2_pareto_seed37\\safe_checkpoint.pt",
+  "sampled_validation_runs": 12,
+  "total_policy_inference_time_seconds": 3485.596959228802,
+  "total_ppo_update_time_seconds": 5883.551147299528,
+  "total_sampling_time_seconds": 4309.255030400003,
+  "training_phase": {
+    "accepted_normalized_quality_score": 0.36114339580538435,
+    "accepted_quality_episode": 1420,
+    "accepted_quality_score": [
+      -1.0,
+      0.36114339580538435,
+      741.7796390374891,
+      2.2681250000000004
+    ],
+    "accepted_quality_updates": 10,
+    "accepted_sampled_completion_rate": 0.95,
+    "accepted_sampled_fatigue_cvar90": 0.749866927316666,
+    "completion_target": 1.0,
+    "consecutive_validation_successes": 3,
+    "consecutive_validations_required": 3,
+    "enabled": true,
+    "formal_training_status": "quality_constrained",
+    "last_promotion_diagnostics": {
+      "promotion_anchor_episode": 1420,
+      "promotion_anchor_normalized_quality_score": 0.36114339580538435,
+      "promotion_candidate_normalized_quality_score": 0.3554905780890335,
+      "promotion_completion_constraint_pass": true,
+      "promotion_decision_reason": "variance_regressed",
+      "promotion_event": "rejected",
+      "promotion_mode": "balanced_guarded_v7",
+      "promotion_normalized_quality_constraint_pass": true,
+      "promotion_sampled_guard_executed": false,
+      "promotion_variance_constraint_pass": false
+    },
+    "not_promoted_quality_updates": 0,
+    "phase": "quality",
+    "phase_transition_episode": 30,
+    "quality_checkpoint_promotion": "balanced_guarded_v7",
+    "quality_completion_floor": 1.0,
+    "quality_promotion_constraints": {
+      "fatigue_cvar_relative_tolerance": 0.05,
+      "minimum_normalized_quality_improvement": 0.0001,
+      "sampled_completion_drop_tolerance": 0.02,
+      "tail_fraction": 0.1,
+      "variance_relative_tolerance": 0.05
+    },
+    "rejected_quality_updates": 187
+  },
+  "transitions": 506383,
+  "unique_instance_count": 2000,
+  "updates": 200,
+  "validation_parallel_envs": 10,
+  "validation_runs": 200,
+  "validation_stability": {
+    "best_completion_rate": 1.0,
+    "best_episode": 1630,
+    "consecutive_degraded_validations": 0,
+    "current_learning_rate": 2.5e-05,
+    "feasibility_rollbacks": 11,
+    "greedy_validation_runs": 200,
+    "learning_rate_decay_factor": 0.5,
+    "learning_rate_decays": 2,
+    "minimum_learning_rate": 2.5e-05,
+    "plateau_patience_validations": 15,
+    "rollback_completion_drop": 0.1,
+    "rollback_consecutive_validations": 2,
+    "rollback_cooldown_blocked_count": 5,
+    "rollback_cooldown_remaining": 0,
+    "rollback_cooldown_validation_count": 33,
+    "rollback_cooldown_validations": 3,
+    "sampled_episode_milestones": null,
+    "sampled_every_validations": 5,
+    "sampled_repeats": 3,
+    "sampled_validation_runs": 12,
+    "validations_without_improvement": 13
+  },
+  "visdom": {
+    "connected": false,
+    "enabled": false,
+    "environment": null,
+    "event_log": null
+  },
+  "worker_local_physical_forced_action_count": 0,
+  "worker_local_physical_forced_share": 0.0,
+  "worker_step_command_count": 506383
+}

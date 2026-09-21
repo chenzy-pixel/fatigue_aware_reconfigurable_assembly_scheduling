@@ -1,0 +1,10 @@
+﻿episode,instance_id,truncated,schedule_violation_count,unfinished_orders,maximum_worker_fatigue,safe_fatigue_limit,failure_reason,audit_event
+180,validation_machine_bottleneck_2000001,True,0,3,0.17200000000000001,0.75,incomplete;truncated,audit_passed_not_accepted
+180,validation_balanced_2000056,True,0,2,0.1483348784,0.75,incomplete;truncated,audit_passed_not_accepted
+320,validation_balanced_2000056,True,0,1,0.1483348784,0.75,incomplete;truncated,audit_passed_not_accepted
+320,validation_machine_bottleneck_2000064,True,0,2,0.24000000000000002,0.75,incomplete;truncated,audit_passed_not_accepted
+340,validation_balanced_2000056,True,0,2,0.1483348784,0.75,incomplete;truncated,audit_passed_not_accepted
+360,validation_balanced_2000056,True,0,2,0.1483348784,0.75,incomplete;truncated,audit_passed_not_accepted
+380,validation_reconfiguration_bottleneck_2000156,True,0,1,0.7500000000000002,0.75,incomplete;truncated,audit_passed_not_accepted
+780,validation_reconfiguration_bottleneck_2000156,True,0,4,0.7500000000000004,0.75,incomplete;truncated,audit_passed_not_accepted
+820,validation_reconfiguration_bottleneck_2000156,True,0,1,0.7497778172999998,0.75,incomplete;truncated,audit_passed_not_accepted

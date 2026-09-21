@@ -1,0 +1,16 @@
+﻿episode,instance_id,truncated,schedule_violation_count,unfinished_orders,maximum_worker_fatigue,safe_fatigue_limit,failure_reason,audit_event
+200,validation_balanced_2000056,True,0,1,0.1483348784,0.75,incomplete;truncated,audit_passed_not_accepted
+220,validation_balanced_2000056,True,0,1,0.15440000000000004,0.75,incomplete;truncated,audit_passed_not_accepted
+260,validation_balanced_2000000,True,0,2,0.193,0.75,incomplete;truncated,audit_passed_not_accepted
+420,validation_balanced_2000000,True,0,1,0.17159999999999997,0.75,incomplete;truncated,audit_passed_not_accepted
+420,validation_balanced_2000056,True,0,2,0.1483348784,0.75,incomplete;truncated,audit_passed_not_accepted
+460,validation_balanced_2000056,True,0,2,0.1483348784,0.75,incomplete;truncated,audit_passed_not_accepted
+1120,validation_balanced_2000100,True,0,1,0.31500000000000006,0.75,incomplete;truncated,audit_passed_not_accepted
+1120,validation_reconfiguration_bottleneck_2000156,True,0,1,0.7499999999999998,0.75,incomplete;truncated,audit_passed_not_accepted
+1160,validation_reconfiguration_bottleneck_2000044,True,0,1,0.7499967450000002,0.75,incomplete;truncated,audit_rejected
+1160,validation_reconfiguration_bottleneck_2000058,True,0,4,0.7499199884000001,0.75,incomplete;truncated,audit_rejected
+1160,validation_reconfiguration_bottleneck_2000096,True,0,3,0.7499090087999998,0.75,incomplete;truncated,audit_rejected
+1160,validation_reconfiguration_bottleneck_2000147,True,0,2,0.7498747759999999,0.75,incomplete;truncated,audit_rejected
+1160,validation_reconfiguration_bottleneck_2000156,True,0,1,0.7499421688,0.75,incomplete;truncated,audit_rejected
+1200,validation_reconfiguration_bottleneck_2000090,True,0,1,0.7499384281999999,0.75,incomplete;truncated,audit_passed_not_accepted
+1200,validation_reconfiguration_bottleneck_2000120,True,0,1,0.7498356274,0.75,incomplete;truncated,audit_passed_not_accepted

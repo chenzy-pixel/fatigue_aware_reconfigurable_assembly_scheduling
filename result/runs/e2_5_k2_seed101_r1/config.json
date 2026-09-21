@@ -1,0 +1,781 @@
+{
+  "algorithm_seeds": [
+    101
+  ],
+  "dataset": {
+    "profiles": {
+      "dev": {
+        "ood": 20,
+        "stress": 20,
+        "test": 20,
+        "validation": 20
+      },
+      "publication": {
+        "ood": 500,
+        "stress": 500,
+        "test": 1000,
+        "validation": 500
+      }
+    },
+    "schema_version": "1.1.0",
+    "splits": {
+      "ood": {
+        "persist": true,
+        "seed_end": 5000000,
+        "seed_start": 4000000
+      },
+      "stress": {
+        "persist": true,
+        "seed_end": 6000000,
+        "seed_start": 5000000
+      },
+      "test": {
+        "persist": true,
+        "seed_end": 4000000,
+        "seed_start": 3000000
+      },
+      "train": {
+        "persist": false,
+        "seed_end": 2000000,
+        "seed_start": 1000000
+      },
+      "validation": {
+        "persist": true,
+        "seed_end": 3000000,
+        "seed_start": 2000000
+      }
+    },
+    "template_instance": "fixed_15x4_v1"
+  },
+  "device": "cpu",
+  "environment": {
+    "max_decisions": 5000,
+    "max_zero_time_actions": 1000,
+    "production_defer": {
+      "allow_recovery_improvement": true
+    },
+    "worker_resource_control": {
+      "candidate_recovery_advance": true,
+      "mode": "matching_admission_recovery_v2",
+      "non_delay_worker_dispatch": true,
+      "preserve_matching_on_worker_action": true,
+      "require_full_matching": true
+    }
+  },
+  "evaluation": {
+    "quality_metric": {
+      "cost_scale": 1000.0,
+      "flow_scale": 1200.0,
+      "quality_weights": {
+        "cost": 0.3,
+        "flow": 0.5,
+        "variance": 0.2
+      },
+      "variance_scale": 50.0,
+      "version": "canonical_bounded_quality_v1"
+    },
+    "result_schema_version": "4.6.0"
+  },
+  "experiment_name": "v7_e2_5_calibration_k2_seed101",
+  "experiment_suite_version": "v7_e2_5_safe_monotone_gate_v1",
+  "generator": {
+    "acceptance": {
+      "arrival_min_overlap": 0.5,
+      "machine_min_module_load": 0.35,
+      "max_heuristic_makespan_minutes": 240.0,
+      "reconfiguration_min_ratio": 0.25,
+      "reconfiguration_min_ready_gap": 0.5
+    },
+    "cost_factor_local": [
+      0.9,
+      1.1
+    ],
+    "cost_profile_weights": {
+      "balanced_cost": 0.4,
+      "downtime_dominant": 0.2,
+      "fixed_cost_dominant": 0.2,
+      "labor_dominant": 0.2
+    },
+    "curriculum": {
+      "anchors": [
+        {
+          "at_fraction": 0.0,
+          "weights": {
+            "balanced": 0.5,
+            "easy": 0.3,
+            "fatigue_bottleneck": 0.04,
+            "high_arrival_pressure": 0.04,
+            "machine_bottleneck": 0.04,
+            "reconfiguration_bottleneck": 0.04,
+            "worker_bottleneck": 0.04
+          }
+        },
+        {
+          "at_fraction": 0.2,
+          "weights": {
+            "balanced": 0.5,
+            "easy": 0.3,
+            "fatigue_bottleneck": 0.04,
+            "high_arrival_pressure": 0.04,
+            "machine_bottleneck": 0.04,
+            "reconfiguration_bottleneck": 0.04,
+            "worker_bottleneck": 0.04
+          }
+        },
+        {
+          "at_fraction": 0.55,
+          "weights": {
+            "balanced": 0.4,
+            "easy": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1,
+            "machine_bottleneck": 0.1,
+            "reconfiguration_bottleneck": 0.1,
+            "worker_bottleneck": 0.1
+          }
+        },
+        {
+          "at_fraction": 0.8,
+          "weights": {
+            "balanced": 0.35,
+            "easy": 0.05,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.1
+          }
+        },
+        {
+          "at_fraction": 1.0,
+          "weights": {
+            "balanced": 0.35,
+            "easy": 0.05,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.1
+          }
+        }
+      ],
+      "mode": "linear"
+    },
+    "dataset_pressure_weights": {
+      "balanced": 0.35,
+      "easy": 0.05,
+      "fatigue_bottleneck": 0.1,
+      "high_arrival_pressure": 0.1,
+      "machine_bottleneck": 0.15,
+      "reconfiguration_bottleneck": 0.15,
+      "worker_bottleneck": 0.1
+    },
+    "initial_fatigue": [
+      0.05,
+      0.15
+    ],
+    "max_counterfactual_candidates": 3,
+    "max_generation_attempts": 100,
+    "ood": {
+      "factors": [
+        "processing_time_heterogeneity",
+        "reconfiguration_time_scale",
+        "arrival_overlap",
+        "worker_qualification_sparsity",
+        "initial_fatigue",
+        "module_demand_imbalance"
+      ]
+    },
+    "pressure_profiles": {
+      "balanced": {
+        "dominant_module_share": [
+          0.62,
+          0.72
+        ],
+        "operations_per_order": [
+          3,
+          5
+        ],
+        "order_count": [
+          12,
+          18
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.2
+          ],
+          [
+            0.2,
+            0.45
+          ],
+          [
+            0.45,
+            0.7
+          ]
+        ]
+      },
+      "easy": {
+        "dominant_module_share": [
+          0.6,
+          0.68
+        ],
+        "operations_per_order": [
+          3,
+          4
+        ],
+        "order_count": [
+          12,
+          14
+        ],
+        "reconfiguration_scale": [
+          0.85,
+          1.0
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.08
+          ],
+          [
+            0.25,
+            0.32
+          ],
+          [
+            0.5,
+            0.57
+          ]
+        ]
+      },
+      "fatigue_bottleneck": {
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "order_count": [
+          15,
+          18
+        ],
+        "reconfiguration_scale": [
+          1.1,
+          1.3
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.04
+          ],
+          [
+            0.08,
+            0.12
+          ],
+          [
+            0.16,
+            0.22
+          ]
+        ]
+      },
+      "high_arrival_pressure": {
+        "dominant_module_share": [
+          0.6,
+          0.7
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "order_count": [
+          16,
+          18
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.04
+          ],
+          [
+            0.07,
+            0.11
+          ],
+          [
+            0.14,
+            0.18
+          ]
+        ]
+      },
+      "machine_bottleneck": {
+        "dominant_module_share": [
+          0.7,
+          0.75
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "order_count": [
+          16,
+          18
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.12
+          ],
+          [
+            0.15,
+            0.3
+          ],
+          [
+            0.32,
+            0.48
+          ]
+        ]
+      },
+      "reconfiguration_bottleneck": {
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "order_count": [
+          15,
+          18
+        ],
+        "reconfiguration_scale": [
+          1.2,
+          1.6
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.12
+          ],
+          [
+            0.18,
+            0.3
+          ],
+          [
+            0.35,
+            0.48
+          ]
+        ]
+      },
+      "worker_bottleneck": {
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "order_count": [
+          15,
+          18
+        ],
+        "reconfiguration_scale": [
+          0.95,
+          1.1
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.04
+          ],
+          [
+            0.08,
+            0.12
+          ],
+          [
+            0.16,
+            0.22
+          ]
+        ]
+      }
+    },
+    "processing_factor_local": [
+      0.95,
+      1.05
+    ],
+    "processing_time": [
+      8,
+      14
+    ],
+    "reconfiguration_factor_local": [
+      0.9,
+      1.1
+    ],
+    "stress": {
+      "max_truncated_fraction": 0.2
+    },
+    "version": "1.2.0",
+    "wave_count": 3
+  },
+  "logging": {
+    "visdom": {
+      "base_url": "/",
+      "connection_timeout_seconds": 2.0,
+      "diagnostic_every_validations": 5,
+      "enabled": false,
+      "env_prefix": "fatigue_assembly",
+      "fail_fast": false,
+      "port": 8097,
+      "representative_instance_index": 0,
+      "rolling_window_updates": 20,
+      "save_environment": true,
+      "server": "http://localhost",
+      "update_every": 1
+    }
+  },
+  "m1_gates": {
+    "bc": {
+      "algorithm_seed": 190,
+      "batch_size": 256,
+      "learning_rate": 0.0003,
+      "maximum_epochs": 200,
+      "maximum_ranking_pairs_per_state": 64,
+      "patience_epochs": 20,
+      "select_context_pruned_diagnostic": true,
+      "weight_decay": 1e-05
+    },
+    "bc_train_instance_count": 15,
+    "diagnostic_instance_count": 20,
+    "diagnostic_seed_start": 1900000,
+    "overfit": {
+      "algorithm_seed": 101,
+      "consecutive_passes": 3,
+      "instance_stages": [
+        5,
+        10,
+        20
+      ],
+      "maximum_updates_per_stage": 100
+    },
+    "thresholds": {
+      "maximum_cost_gap_percent": 5.0,
+      "maximum_flow_gap_percent": 5.0,
+      "maximum_production_regret_percent": 5.0,
+      "maximum_quality_gap_percent": 0.0,
+      "maximum_variance_gap_percent": 5.0,
+      "maximum_worker_fatigue_regret": 0.02,
+      "maximum_worker_variance_regret_percent": 5.0,
+      "minimum_production_spearman": 0.8,
+      "minimum_worker_spearman": 0.8
+    }
+  },
+  "method_version": "M1_candidate_graph_v7",
+  "network": {
+    "candidate_context_mode": "bounded_ranker_scale_v7",
+    "common_context_gate_initial_logit": -4.0,
+    "dropout": 0.0,
+    "encoder_type": "hetero_gnn",
+    "hidden_dim": 128,
+    "message_passing_layers": 2,
+    "policy_head_version": 7,
+    "preference_action_score": {
+      "enabled": true,
+      "initial_scale": 1.0,
+      "minimum_scale": 0.1,
+      "production_scale": {
+        "initial_scale": 1.5,
+        "maximum_scale": 3.0,
+        "minimum_scale": 0.5
+      },
+      "scope": "production_plus_safe_worker_variance",
+      "shared_scale": false,
+      "standardization": "legal_candidate_zscore",
+      "version": "direct_safe_worker_variance_rank_v3",
+      "worker_scale": {
+        "initial_scale": 1.0,
+        "maximum_scale": 2.0,
+        "minimum_scale": 0.1
+      }
+    },
+    "preference_conditioning": "separate_encoder_v1",
+    "production_action_edge_features": true,
+    "production_action_semantics": "hierarchical_state_only_gate_then_pair_v3",
+    "production_candidate_relative_features": true,
+    "production_commit_set_scorer": true,
+    "production_gate": {
+      "flow_commit_residual": {
+        "activation_threshold": 0.2,
+        "apply_during_feasibility": false,
+        "enabled": true,
+        "scale": 2.0
+      },
+      "freeze_base_after_feasibility": true,
+      "preference_conditioning": false,
+      "tie_break": "commit",
+      "version": "state_only_monotone_flow_commit_gate_v2"
+    },
+    "production_relative_feature_names": [
+      "processing_time_norm",
+      "reconfiguration_time_norm",
+      "fixed_reconfiguration_cost_norm",
+      "estimated_labor_cost_norm",
+      "estimated_downtime_cost_norm",
+      "horizon_slack_norm"
+    ],
+    "production_relative_initial_weights": [
+      0.3,
+      0.3,
+      0.2,
+      0.2,
+      0.2,
+      0.3
+    ],
+    "relative_weight_parameterization": "independent_softplus_signed_v6",
+    "residual_context_gate_initial_logit": -2.0,
+    "residual_scale_ratio": 2.0,
+    "worker_action_edge_features": true,
+    "worker_candidate_relative_features": true,
+    "worker_common_context_enabled": false,
+    "worker_relative_feature_names": [
+      "stage_duration_norm",
+      "projected_fatigue_ratio",
+      "incremental_labor_cost_norm",
+      "incremental_downtime_cost_norm",
+      "incremental_load_variance_norm"
+    ],
+    "worker_relative_initial_weights": [
+      0.3,
+      0.3,
+      0.2,
+      0.2,
+      0.2
+    ],
+    "worker_relative_weight_sharing": "independent_softplus_v6"
+  },
+  "paths": {
+    "fixed_instance": "data/instances/fixed_instance.yaml",
+    "instance_cache": "data/instances/fixed_15x4_v1.pkl",
+    "instances_root": "data/instances",
+    "manifests_root": "data/manifests",
+    "result_root": "result/runs"
+  },
+  "ppo": {
+    "batch_size": 64,
+    "clip_epsilon": 0.2,
+    "entropy_coefficient": 0.01,
+    "epochs": 2,
+    "gae_lambda": 0.95,
+    "gamma": 1.0,
+    "learning_rate": 0.0001,
+    "max_grad_norm": 0.5,
+    "value_coefficient": 0.5
+  },
+  "preference": {
+    "default": [
+      0.5,
+      0.3,
+      0.2
+    ],
+    "enabled": true,
+    "evaluation_grid": {
+      "denominator": 5,
+      "include_default": true
+    },
+    "names": [
+      "flow",
+      "cost",
+      "variance"
+    ],
+    "sampler": {
+      "anchors": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.3333333333333333,
+          0.3333333333333333,
+          0.3333333333333333
+        ],
+        [
+          0.5,
+          0.3,
+          0.2
+        ]
+      ],
+      "concentration": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "dirichlet_probability": 0.7,
+      "version": "dirichlet_anchor_mixture_v1"
+    }
+  },
+  "reward": {
+    "cost_scale": 1000.0,
+    "cost_weight": 1.0,
+    "feasibility_shaping": {
+      "coefficient": 0.25,
+      "enabled": true,
+      "weights": {
+        "horizon_slack": 0.25,
+        "operation_progress": 0.5,
+        "resource_margin": 0.25
+      }
+    },
+    "flow_scale": 1200.0,
+    "flow_weight": 1.0,
+    "mode": "hierarchical_constrained_v1",
+    "quality_budget": 0.5,
+    "quality_weights": {
+      "cost": 0.3,
+      "flow": 0.5,
+      "variance": 0.2
+    },
+    "truncation_penalty": 0.5,
+    "unfinished_order_penalty": 1.0,
+    "variance_scale": 50.0,
+    "variance_weight": 1.0
+  },
+  "seed": 101,
+  "training": {
+    "ablation_gate": {
+      "failure_instance_id": "validation_reconfiguration_bottleneck_2000009",
+      "failure_instance_max_worker_wait": 100.0,
+      "last_ten_validation_completion_rate": 0.95,
+      "maximum_rollback_rate": 0.2,
+      "minimum_learning_rate": 2.5e-05,
+      "reconfiguration_completion_rate": 0.6,
+      "reward_identity_tolerance": 1e-08,
+      "training_window_instances": 200
+    },
+    "episodes": 500,
+    "final_evaluation_sampling_seeds": [
+      100011,
+      100012,
+      100013
+    ],
+    "forced_action_compression": false,
+    "multiprocessing_start_method": "spawn",
+    "online_instances": true,
+    "parallel_envs": 10,
+    "preference_grouping": {
+      "anchors": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.3333333333333333,
+          0.3333333333333333,
+          0.3333333333333333
+        ],
+        [
+          0.5,
+          0.3,
+          0.2
+        ]
+      ],
+      "enabled": true,
+      "version": "fixed_anchor_group_v1"
+    },
+    "smoke_episodes": 10,
+    "smoke_parallel_envs": 10,
+    "smoke_rollout_steps": 64,
+    "smoke_validation_instance_limit": 2,
+    "torch_num_threads": 4,
+    "two_stage": {
+      "completion_target": 1.0,
+      "consecutive_validations": 3,
+      "pareto_promotion": {
+        "anchor_validate_every_updates": 5,
+        "canonical_absolute_tolerance": 1e-06,
+        "canonical_relative_tolerance": 0.01,
+        "fatigue_absolute_tolerance": 1e-09,
+        "full_grid_validate_every_updates": 20,
+        "maximum_preference_response_spearman_cost": -0.05,
+        "maximum_preference_response_spearman_flow": -0.05,
+        "maximum_preference_response_spearman_variance": -0.05,
+        "minimum_hv_improvement": 0.0001,
+        "minimum_mean_nondominated_count": 4.0,
+        "minimum_mean_unique_action_trace_count": 8.0,
+        "minimum_mean_unique_objective_count": 8.0,
+        "required_full_grid_candidate_count": 440,
+        "required_full_grid_instance_count": 20,
+        "required_full_grid_preference_count": 22,
+        "safety_guard_consecutive_failures": 2,
+        "safety_guard_learning_rate_decay_factor": 0.5,
+        "safety_guard_minimum_learning_rate": 1e-05
+      },
+      "quality_checkpoint_promotion": "pareto_guarded_e2_5_v1",
+      "quality_completion_floor": 1.0,
+      "quality_promotion_constraints": {
+        "fatigue_cvar_relative_tolerance": 0.05,
+        "minimum_normalized_quality_improvement": 0.0001,
+        "sampled_completion_drop_tolerance": 0.02,
+        "tail_fraction": 0.1,
+        "variance_relative_tolerance": 0.05
+      },
+      "quality_validate_every_update": true
+    },
+    "validation_control": {
+      "feasibility_rollback": {
+        "completion_drop": 0.1,
+        "consecutive_validations": 2,
+        "cooldown_validations": 3
+      },
+      "learning_rate_plateau": {
+        "factor": 0.5,
+        "minimum": 2.5e-05,
+        "patience_validations": 15
+      },
+      "sampled": {
+        "every_validations": 5,
+        "repeats": 3,
+        "seed_offset": 100000
+      }
+    },
+    "validation_instance_limit": null,
+    "validation_interval_episodes": 20,
+    "validation_parallel_envs": 20,
+    "validation_split": "validation",
+    "worker_local_physical_forced_actions": true,
+    "worker_timeout_seconds": 600
+  }
+}

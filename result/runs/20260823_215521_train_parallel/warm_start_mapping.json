@@ -1,0 +1,40 @@
+{
+  "canonical_identity_contract": "exact E1 shared tensors; centered residuals are zero at w=(0.5,0.3,0.2)",
+  "canonical_identity_result": {
+    "pass": true,
+    "preference": [
+      0.5,
+      0.3,
+      0.2
+    ],
+    "probabilities_exact": true,
+    "probability_max_abs_error": 0.0,
+    "raw_logits_exact": true,
+    "raw_logits_max_abs_error": 0.0,
+    "value_exact": true,
+    "value_max_abs_error": 0.0
+  },
+  "loaded_shared_parameter_count": 116,
+  "missing_shared_parameter_count": 0,
+  "mode": "e1_to_e2_7_lossless_warm_start_v1",
+  "new_parameter_count": 10,
+  "new_parameter_keys": [
+    "centered_gate_coefficients.0.bias",
+    "centered_gate_coefficients.0.weight",
+    "centered_gate_coefficients.3.bias",
+    "centered_gate_coefficients.3.weight",
+    "centered_production_pair_scale_raw",
+    "centered_value_adapter.0.bias",
+    "centered_value_adapter.0.weight",
+    "centered_value_adapter.3.bias",
+    "centered_value_adapter.3.weight",
+    "centered_worker_variance_scale_raw"
+  ],
+  "optimizer_restored": false,
+  "optimizer_state_entry_count": 0,
+  "shape_mismatch_count": 0,
+  "source_accepted_episode": 1820,
+  "source_checkpoint": "C:\\Users\\Administrator\\Projects\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\v7_2000_e1_seed11\\accepted_checkpoint.pt",
+  "source_checkpoint_sha256": "084184afa53cebfb04d691f5f70a9abb630a1aa0d7f4ecfdb28caeca87299533",
+  "source_network_weights_sha256": "5eb2e5660f07b03bddd419b6b50d52fd0ee3430140921c00444a0bcc82dbd0bc"
+}

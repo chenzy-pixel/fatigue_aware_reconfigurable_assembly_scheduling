@@ -1,0 +1,135 @@
+{
+  "cache_fingerprint": "c5f2fab8dbfc6b40f76bc3e1e887646dcc27834e7d5e9defb954b62cd0ff0ada",
+  "cache_hit_count": 2000,
+  "cache_hit_rate": 1.0,
+  "generation_rejection_reasons": {
+    "configuration_gap": 345,
+    "easy_reconfiguration": 97,
+    "easy_worker_competition": 3,
+    "fatigue_mask": 36,
+    "heuristic_truncated": 210,
+    "machine_load": 10,
+    "order_module_diversity": 4,
+    "reconfiguration_ratio": 17,
+    "worker_competition": 116,
+    "worker_wait": 116
+  },
+  "generation_time_seconds": {
+    "max": 0.013229100004537031,
+    "p50": 0.008336299993970897,
+    "p95": 0.01045596500262036,
+    "p99": 0.01089826100927894
+  },
+  "generator_environment_precheck_config_hash": "08bc1010f3936cc751f8efa74092457047b92d3d46404a9426452fc7787e3357",
+  "generator_version": "1.3.0",
+  "instance_count": 2000,
+  "slow_seeds": [
+    {
+      "generation_time_seconds": 0.011395599998650141,
+      "seed": 1000003,
+      "train_index": 3
+    },
+    {
+      "generation_time_seconds": 0.011517400009324774,
+      "seed": 1000008,
+      "train_index": 8
+    },
+    {
+      "generation_time_seconds": 0.011184200004208833,
+      "seed": 1000224,
+      "train_index": 224
+    },
+    {
+      "generation_time_seconds": 0.010926999995717779,
+      "seed": 1000229,
+      "train_index": 229
+    },
+    {
+      "generation_time_seconds": 0.01136229999247007,
+      "seed": 1000238,
+      "train_index": 238
+    },
+    {
+      "generation_time_seconds": 0.011095499998191372,
+      "seed": 1000325,
+      "train_index": 325
+    },
+    {
+      "generation_time_seconds": 0.010999400008586235,
+      "seed": 1000565,
+      "train_index": 565
+    },
+    {
+      "generation_time_seconds": 0.011149500001920387,
+      "seed": 1000608,
+      "train_index": 608
+    },
+    {
+      "generation_time_seconds": 0.01170099999580998,
+      "seed": 1000638,
+      "train_index": 638
+    },
+    {
+      "generation_time_seconds": 0.01130090000515338,
+      "seed": 1000639,
+      "train_index": 639
+    },
+    {
+      "generation_time_seconds": 0.01105269999243319,
+      "seed": 1000828,
+      "train_index": 828
+    },
+    {
+      "generation_time_seconds": 0.011316000003716908,
+      "seed": 1000843,
+      "train_index": 843
+    },
+    {
+      "generation_time_seconds": 0.01100399999995716,
+      "seed": 1000868,
+      "train_index": 868
+    },
+    {
+      "generation_time_seconds": 0.011356000002706423,
+      "seed": 1000941,
+      "train_index": 941
+    },
+    {
+      "generation_time_seconds": 0.013229100004537031,
+      "seed": 1000978,
+      "train_index": 978
+    },
+    {
+      "generation_time_seconds": 0.01110089999565389,
+      "seed": 1001029,
+      "train_index": 1029
+    },
+    {
+      "generation_time_seconds": 0.010904300012043677,
+      "seed": 1001056,
+      "train_index": 1056
+    },
+    {
+      "generation_time_seconds": 0.011095399997429922,
+      "seed": 1001163,
+      "train_index": 1163
+    },
+    {
+      "generation_time_seconds": 0.010943700006464496,
+      "seed": 1001175,
+      "train_index": 1175
+    },
+    {
+      "generation_time_seconds": 0.011355900001944974,
+      "seed": 1001569,
+      "train_index": 1569
+    }
+  ],
+  "template_sha256": "da0b427b63958b6ae3569bc15688b26c41470aadb8490f9a961921e433475a65",
+  "temporal_budget_termination_reasons": {
+    "episode_option_budget_exhausted": 420
+  },
+  "temporal_unknown_count": 420,
+  "total_training_episode_count": 2000,
+  "version": "training_instance_cache_manifest_v1"
+}

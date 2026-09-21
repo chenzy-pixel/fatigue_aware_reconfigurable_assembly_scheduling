@@ -1,0 +1,19 @@
+{
+  "completed_episode_count": 12600,
+  "dominated_options": 17004610613,
+  "frontier_options_after": 21434021,
+  "frontier_options_before": 17026044634,
+  "option_evaluations": 17033669190,
+  "oracle_calls": 3175720,
+  "root_cache_hits": 0,
+  "search_nodes": 3289982,
+  "subproblem_cache_hits": 653,
+  "termination_reasons": {
+    "call_option_budget_exhausted": 4,
+    "decision_option_budget_exhausted": 1883,
+    "episode_option_budget_exhausted": 1155398
+  },
+  "unknown_count": 1157285,
+  "unknown_rate": 0.3644165732495308,
+  "version": "temporal_search_summary_v1"
+}
