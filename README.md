@@ -119,6 +119,11 @@ preference receives its own SHA256-derived Torch generator seed.
 .\.venv\Scripts\python.exe single_objective_analysis.py result\runs\flow_seed11 --plots
 ```
 
+For a hash-verified sampled trajectory replay with per-decision environment
+snapshots and optional bounded branch continuations, use
+`deadlock_replay.py`. The investigated Flow failure and the evidence standard
+for branch results are documented in [DEADLOCK_REPLAY_FINDINGS.md](DEADLOCK_REPLAY_FINDINGS.md).
+
 The test suite covers reward telescoping, fixed progress denominators,
 termination/bootstrap semantics, horizon-boundary completion, deterministic
 serial/parallel rollout, checkpoint ranking, preference-balanced aggregation,

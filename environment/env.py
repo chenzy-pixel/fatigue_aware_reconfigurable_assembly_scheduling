@@ -4138,10 +4138,24 @@ class AssemblySchedulingEnv:
         if self.decision_type != DecisionType.TERMINAL:
             mask = self.get_action_mask()
             if bool(mask.all()):
-                self._record_unrecoverable_deadlock_diagnostic()
-                self._truncate_at_horizon("unrecoverable_deadlock")
+                reason = self._masked_state_terminal_reason()
+                self._record_unrecoverable_deadlock_diagnostic(
+                    classified_terminal_reason=reason
+                )
+                self._truncate_at_horizon(reason)
 
-    def _record_unrecoverable_deadlock_diagnostic(self) -> None:
+    def _masked_state_terminal_reason(self) -> str:
+        """Separate structural deadlock from progress that misses the horizon."""
+
+        if any(tick > self.horizon_tick for tick, *_ in self._events):
+            return "horizon"
+        return "unrecoverable_deadlock"
+
+    def _record_unrecoverable_deadlock_diagnostic(
+        self,
+        *,
+        classified_terminal_reason: str = "unrecoverable_deadlock",
+    ) -> None:
         if self._first_unrecoverable_deadlock_diagnostic is not None:
             return
         unfinished = [
@@ -4175,6 +4189,7 @@ class AssemblySchedulingEnv:
                 self._last_wait_certificate or {}
             ).get("reason"),
             "wait_certificate": dict(self._last_wait_certificate or {}),
+            "classified_terminal_reason": classified_terminal_reason,
         }
 
     def _truncate_at_horizon(self, reason: str) -> None:

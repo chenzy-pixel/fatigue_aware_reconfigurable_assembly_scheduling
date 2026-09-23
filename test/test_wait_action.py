@@ -133,3 +133,58 @@ def test_wait_allows_process_completion_exactly_at_horizon(
     assert metrics["operation_progress"] == 1.0
     assert metrics["preference_quality_score"] < 1.0
     assert reward.operation_progress > 0.0
+
+
+def test_process_completion_after_horizon_is_not_labeled_deadlock(
+    config,
+    fixed_instance,
+):
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(fixed_instance, build_observation=False)
+    pair_actions = [
+        int(action)
+        for action in np.flatnonzero(~environment.get_action_mask())
+        if int(action) != environment.wait_action
+    ]
+    action = next(
+        action
+        for action in pair_actions
+        if environment.machines[
+            environment.decode_production_action(action)[1]
+        ].current_module
+        == environment.operations[
+            environment.decode_production_action(action)[0]
+        ].spec.required_module
+    )
+    operation_index, machine_index = environment.decode_production_action(action)
+    environment.step(action, build_observation=False)
+
+    for index, operation in enumerate(environment.operations):
+        if index != operation_index:
+            operation.state = OperationState.DONE
+    operation_id = environment.operations[operation_index].spec.id
+    environment._events = [
+        event
+        for event in environment._events
+        if event[3] == EventType.PROCESS_COMPLETE
+        and event[4].get("operation_id") == operation_id
+    ]
+    heapq.heapify(environment._events)
+    completion_tick = environment.machines[machine_index].busy_until_tick
+    assert completion_tick is not None
+    environment.horizon_tick = completion_tick - 1
+    assert environment.current_tick < environment.horizon_tick
+    environment._invalidate_resource_snapshot()
+
+    environment._resolve_terminal_or_deadlock()
+
+    assert environment.terminated is False
+    assert environment.truncated is True
+    assert environment.terminal_reason == "horizon"
+    assert environment.current_tick == environment.horizon_tick
+    diagnostic = environment.metrics()[
+        "first_unrecoverable_deadlock_diagnostic"
+    ]
+    assert diagnostic is not None
+    assert diagnostic["tick"] < completion_tick
+    assert diagnostic["classified_terminal_reason"] == "horizon"
