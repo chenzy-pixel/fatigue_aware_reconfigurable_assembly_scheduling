@@ -1,0 +1,1214 @@
+{
+  "best_checkpoint": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\single_stage_flow_seed11_500_20260922_013711\\best_checkpoint.pt",
+  "checkpoint_selection": {
+    "best_completion_rate": 0.9733333333333334,
+    "best_episode": 500,
+    "best_preference_balanced_quality_score": 0.4746989815705531,
+    "eligible_validations": 13,
+    "has_best": true,
+    "improvement_count": 9,
+    "last_decision": {
+      "best_completion_rate": 0.9733333333333334,
+      "best_episode": 500,
+      "best_preference_balanced_quality_score": 0.4746989815705531,
+      "candidate_completion_rate": 0.9733333333333334,
+      "candidate_preference_balanced_quality_score": 0.4746989815705531,
+      "checkpoint_decision_reason": "completion_improved",
+      "checkpoint_eligible": true,
+      "checkpoint_event": "best_improved",
+      "previous_best_score": [
+        0.9666666666666667,
+        0.47463802830710816
+      ]
+    },
+    "protocol": "single_stage_lexicographic_v1",
+    "selection_tolerance": 1e-12,
+    "tie_count": 0,
+    "unsafe_validations": 0
+  },
+  "elapsed_seconds": 107896.23419750005,
+  "episodes": 500,
+  "experiment_name": "e1_single_flow",
+  "final_greedy": {
+    "all_instance_metrics": {
+      "commit_reconfig_action_count": {
+        "count": 20,
+        "mean": 4.05,
+        "median": 4.0,
+        "std": 2.704285098641939
+      },
+      "completed_reconfigurations": {
+        "count": 20,
+        "mean": 3.45,
+        "median": 3.0,
+        "std": 2.704285098641939
+      },
+      "context_override_rate": {
+        "count": 20,
+        "mean": 0.04846048824983014,
+        "median": 0.045711733174508634,
+        "std": 0.029017852800499358
+      },
+      "current_worker_matching_deficit": {
+        "count": 0,
+        "mean": null,
+        "median": null,
+        "std": null
+      },
+      "direct_process_action_count": {
+        "count": 20,
+        "mean": 56.85,
+        "median": 55.5,
+        "std": 9.54366695496906
+      },
+      "fatigue_masked_action_ratio": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "flow_time_objective": {
+        "count": 20,
+        "mean": 2661.8900000000003,
+        "median": 2643.7000000000003,
+        "std": 1248.3352615214772
+      },
+      "forced_action_chain_count": {
+        "count": 20,
+        "mean": 28.2,
+        "median": 26.5,
+        "std": 15.879811744873791
+      },
+      "forced_action_state_count": {
+        "count": 20,
+        "mean": 35.8,
+        "median": 32.5,
+        "std": 21.13764414498456
+      },
+      "forced_future_event_wait_count": {
+        "count": 20,
+        "mean": 35.8,
+        "median": 32.5,
+        "std": 21.13764414498456
+      },
+      "forced_mixed_wait_stage_count": {
+        "count": 20,
+        "mean": 0.25,
+        "median": 0.0,
+        "std": 0.44426165831931924
+      },
+      "forced_pair_count": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_pair_wait_physically_unavailable_count": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_phase_handoff_count": {
+        "count": 20,
+        "mean": 5.3,
+        "median": 4.5,
+        "std": 4.473312678070858
+      },
+      "forced_production_count": {
+        "count": 20,
+        "mean": 28.95,
+        "median": 24.5,
+        "std": 18.58260363605533
+      },
+      "forced_production_pair_count": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_production_wait_count": {
+        "count": 20,
+        "mean": 28.95,
+        "median": 24.5,
+        "std": 18.58260363605533
+      },
+      "forced_recovery_wait_count": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_wait_count": {
+        "count": 20,
+        "mean": 71.6,
+        "median": 65.0,
+        "std": 42.27528828996912
+      },
+      "forced_wait_dis_count": {
+        "count": 20,
+        "mean": 2.85,
+        "median": 2.5,
+        "std": 2.207046132634963
+      },
+      "forced_wait_ins_count": {
+        "count": 20,
+        "mean": 2.8,
+        "median": 2.5,
+        "std": 2.706716791515818
+      },
+      "forced_wait_pair_physically_unavailable_count": {
+        "count": 20,
+        "mean": 35.8,
+        "median": 32.5,
+        "std": 21.13764414498456
+      },
+      "forced_worker_count": {
+        "count": 20,
+        "mean": 6.85,
+        "median": 6.0,
+        "std": 5.070814322644524
+      },
+      "forced_worker_pair_count": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_worker_wait_count": {
+        "count": 20,
+        "mean": 6.85,
+        "median": 6.0,
+        "std": 5.070814322644524
+      },
+      "heuristic_quality_score": {
+        "count": 20,
+        "mean": 0.37229273990820516,
+        "median": 0.38879601071793657,
+        "std": 0.08290926369578998
+      },
+      "heuristic_reward_quality_score": {
+        "count": 20,
+        "mean": 0.46247469048783013,
+        "median": 0.5014987320904071,
+        "std": 0.08924985327381843
+      },
+      "inference_time_per_decision_ms": {
+        "count": 20,
+        "mean": 72.83221573687577,
+        "median": 71.90418101392433,
+        "std": 2.074082420762249
+      },
+      "inference_time_seconds": {
+        "count": 20,
+        "mean": 11.531876310048393,
+        "median": 10.642031491992913,
+        "std": 2.4291483588120903
+      },
+      "initial_preference_quality_score": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "initial_progress": {
+        "count": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "longest_forced_action_chain": {
+        "count": 20,
+        "mean": 2.75,
+        "median": 3.0,
+        "std": 1.019545822516343
+      },
+      "machine_waiting_for_worker_time": {
+        "count": 20,
+        "mean": 0.1,
+        "median": 0.0,
+        "std": 0.40262297892432164
+      },
+      "maximum_worker_fatigue": {
+        "count": 20,
+        "mean": 0.271838799995,
+        "median": 0.24580555945000002,
+        "std": 0.13435504171618678
+      },
+      "maximum_worker_matching_deficit": {
+        "count": 0,
+        "mean": null,
+        "median": null,
+        "std": null
+      },
+      "mean_forced_action_chain_length": {
+        "count": 20,
+        "mean": 1.2406308098078622,
+        "median": 1.25,
+        "std": 0.15013420735914795
+      },
+      "mean_peak_worker_fatigue": {
+        "count": 20,
+        "mean": 0.18332606596583334,
+        "median": 0.16222890239999999,
+        "std": 0.09361815023353255
+      },
+      "minimum_worker_alternatives": {
+        "count": 20,
+        "mean": 2.55,
+        "median": 3.0,
+        "std": 1.5381123085406379
+      },
+      "operation_progress": {
+        "count": 20,
+        "mean": 0.8497017293028323,
+        "median": 0.8736689814814815,
+        "std": 0.13581232977207186
+      },
+      "preference_quality_score": {
+        "count": 20,
+        "mean": 0.8957949593013079,
+        "median": 1.0,
+        "std": 0.2183053170417742
+      },
+      "production_decision_state_count": {
+        "count": 20,
+        "mean": 143.1,
+        "median": 133.5,
+        "std": 21.718049733125817
+      },
+      "production_pair_plus_wait_ratio": {
+        "count": 20,
+        "mean": 0.9549891342041162,
+        "median": 0.9544457349335398,
+        "std": 0.024938132898591415
+      },
+      "production_pair_plus_wait_state_count": {
+        "count": 20,
+        "mean": 136.8,
+        "median": 128.5,
+        "std": 22.096915717143112
+      },
+      "production_wait_action_count": {
+        "count": 20,
+        "mean": 82.2,
+        "median": 77.0,
+        "std": 12.429167732648706
+      },
+      "production_wait_ticks": {
+        "count": 20,
+        "mean": 2162.1,
+        "median": 2225.0,
+        "std": 269.8363831736012
+      },
+      "production_wait_time": {
+        "count": 20,
+        "mean": 216.20999999999998,
+        "median": 222.5,
+        "std": 26.98363831736012
+      },
+      "quality_score": {
+        "count": 20,
+        "mean": 0.4025827072494386,
+        "median": 0.4091583582165531,
+        "std": 0.09742285298040533
+      },
+      "ranker_top_selection_rate": {
+        "count": 20,
+        "mean": 0.5252492409533356,
+        "median": 0.5135780885780886,
+        "std": 0.08315505754374533
+      },
+      "reconfiguration_cost": {
+        "count": 20,
+        "mean": 167.0502674122965,
+        "median": 155.64673849742002,
+        "std": 122.62068822718622
+      },
+      "reconfiguration_reuse_count": {
+        "count": 20,
+        "mean": 21.5,
+        "median": 17.5,
+        "std": 18.271346564037305
+      },
+      "reward_quality_score": {
+        "count": 20,
+        "mean": 0.8957949593013079,
+        "median": 1.0,
+        "std": 0.2183053170417742
+      },
+      "safe_fatigue_limit": {
+        "count": 20,
+        "mean": 0.75,
+        "median": 0.75,
+        "std": 0.0
+      },
+      "single_stage_proxy_return": {
+        "count": 20,
+        "mean": -0.04609322999847579,
+        "median": -0.12633101851851852,
+        "std": 0.3147610040355079
+      },
+      "solve_time_seconds": {
+        "count": 20,
+        "mean": 226.38989686502026,
+        "median": 224.95114399999147,
+        "std": 21.106445374042178
+      },
+      "unfinished_orders": {
+        "count": 20,
+        "mean": 3.95,
+        "median": 4.0,
+        "std": 3.1701734968294715
+      },
+      "wait_action_count": {
+        "count": 20,
+        "mean": 89.05,
+        "median": 85.0,
+        "std": 16.103203342650083
+      },
+      "wait_min_estimated_deadline_slack_ticks": {
+        "count": 20,
+        "mean": -182.6,
+        "median": -320.5,
+        "std": 375.4690259844135
+      },
+      "wait_total_ticks": {
+        "count": 20,
+        "mean": 2301.95,
+        "median": 2378.0,
+        "std": 242.50392834582678
+      },
+      "wait_total_time": {
+        "count": 20,
+        "mean": 230.19500000000002,
+        "median": 237.8,
+        "std": 24.25039283458268
+      },
+      "worker_assign_action_count": {
+        "count": 20,
+        "mean": 7.65,
+        "median": 7.5,
+        "std": 5.3041691645643985
+      },
+      "worker_competition_event_count": {
+        "count": 20,
+        "mean": 0.1,
+        "median": 0.0,
+        "std": 0.30779350562554625
+      },
+      "worker_decision_state_count": {
+        "count": 20,
+        "mean": 14.5,
+        "median": 13.5,
+        "std": 10.344080432788601
+      },
+      "worker_load_variance": {
+        "count": 20,
+        "mean": 12.57916666666667,
+        "median": 10.602361111111112,
+        "std": 11.62713341424913
+      },
+      "worker_matching_deficit_event_count": {
+        "count": 20,
+        "mean": 0.1,
+        "median": 0.0,
+        "std": 0.30779350562554625
+      },
+      "worker_pair_plus_wait_ratio": {
+        "count": 20,
+        "mean": 0.7442759598413756,
+        "median": 0.8333333333333334,
+        "std": 0.2986365502448949
+      },
+      "worker_pair_plus_wait_state_count": {
+        "count": 20,
+        "mean": 12.65,
+        "median": 11.0,
+        "std": 9.777928959490456
+      },
+      "worker_switch_ratio": {
+        "count": 17,
+        "mean": 0.9488795518207283,
+        "median": 1.0,
+        "std": 0.11478721085052669
+      },
+      "worker_wait_action_count": {
+        "count": 20,
+        "mean": 6.85,
+        "median": 6.0,
+        "std": 5.070814322644524
+      },
+      "worker_wait_ticks": {
+        "count": 20,
+        "mean": 139.85,
+        "median": 128.0,
+        "std": 104.82430162193458
+      },
+      "worker_wait_time": {
+        "count": 20,
+        "mean": 13.985,
+        "median": 12.8,
+        "std": 10.482430162193458
+      }
+    },
+    "completed_count": 4,
+    "completed_metrics": {
+      "flow_time_objective": {
+        "count": 4,
+        "mean": 1179.425,
+        "median": 1206.0500000000002,
+        "std": 482.2995153429038
+      },
+      "makespan": {
+        "count": 4,
+        "mean": 198.70000000000002,
+        "median": 209.9,
+        "std": 45.31644293189835
+      },
+      "preference_quality_score": {
+        "count": 4,
+        "mean": 0.4789747965065402,
+        "median": 0.4967080699231581,
+        "std": 0.11074260993281901
+      },
+      "quality_score": {
+        "count": 4,
+        "mean": 0.3148593917709108,
+        "median": 0.31828784329908866,
+        "std": 0.09725996939754741
+      },
+      "reconfiguration_cost": {
+        "count": 4,
+        "mean": 188.62751911669503,
+        "median": 185.47030809225004,
+        "std": 151.10153255300497
+      },
+      "total_flow_time": {
+        "count": 4,
+        "mean": 1179.425,
+        "median": 1206.0500000000002,
+        "std": 482.2995153429038
+      },
+      "worker_load_variance": {
+        "count": 4,
+        "mean": 9.710694444444444,
+        "median": 8.554027777777778,
+        "std": 7.00740314176031
+      }
+    },
+    "completion_rate": 0.2,
+    "dataset": "test",
+    "dataset_manifest_sha256": "f09b6bc6361798fd288dd1410118e266ef04dbbee6c7159e8450d10389fd89cf",
+    "decision_count": 3152,
+    "decode_mode": "greedy",
+    "evaluation_schema_version": "7.0.0",
+    "gap_metrics": {
+      "makespan_heuristic_gap_percent": {
+        "count": 20,
+        "mean": 27.543485076486537,
+        "median": 18.527883684636812,
+        "std": 20.480285761698138
+      },
+      "quality_score_heuristic_gap_percent": {
+        "count": 20,
+        "mean": 8.867437079421839,
+        "median": 9.238960767265471,
+        "std": 17.50810085022632
+      },
+      "reconfiguration_cost_heuristic_gap_percent": {
+        "count": 20,
+        "mean": -81.05336485849558,
+        "median": -78.20385370492247,
+        "std": 10.833169708961814
+      },
+      "relative_heuristic_gap_percent": {
+        "count": 20,
+        "mean": 150.1348666993494,
+        "median": 126.15085768966676,
+        "std": 105.36300997835019
+      },
+      "worker_load_variance_heuristic_gap_percent": {
+        "count": 20,
+        "mean": 631.0351897684039,
+        "median": 315.83442329292785,
+        "std": 1365.2992201057098
+      }
+    },
+    "instance_count": 20,
+    "instance_offset": 0,
+    "manifest": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\data\\manifests\\test\\manifest.json",
+    "parallel_envs": 20,
+    "physical_safety_pass": true,
+    "policy": "ppo",
+    "preference_balanced_quality_score": 0.4789747965065402,
+    "preference_quality_by_key": {
+      "d17fb47064bdfcb2": 0.4789747965065402
+    },
+    "quality_metric": {
+      "cost_scale": 1000.0,
+      "flow_scale": 1200.0,
+      "quality_weights": {
+        "cost": 0.3,
+        "flow": 0.5,
+        "variance": 0.2
+      },
+      "variance_scale": 50.0,
+      "version": "canonical_bounded_quality_v1"
+    },
+    "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+    "quality_metric_version": "canonical_bounded_quality_v1",
+    "repeat_count": 1,
+    "result_role": "greedy_diagnostic",
+    "sampling_rng_version": null,
+    "sampling_seed": null,
+    "schedule_violation_count": 0,
+    "tail_metrics": {
+      "forced_action_chain": {
+        "count": 20,
+        "cvar": 5.0,
+        "max": 5.0,
+        "quantile": 4.0
+      },
+      "maximum_worker_fatigue": {
+        "count": 20,
+        "cvar": 0.5128450387000001,
+        "max": 0.5642462983000002,
+        "quantile": 0.43824443879999997
+      },
+      "worker_load_variance": {
+        "count": 20,
+        "cvar": 39.88236111111112,
+        "max": 46.0188888888889,
+        "quantile": 21.321388888888894
+      }
+    },
+    "total_inference_time_seconds": 230.63752620096787,
+    "total_solve_time_seconds": 4527.7979373004055,
+    "truncated_count": 16,
+    "unique_instance_count": 20
+  },
+  "final_greedy_failure_progress": {
+    "bins": {
+      "[0.00,0.25)": 0,
+      "[0.25,0.50)": 0,
+      "[0.50,0.75)": 5,
+      "[0.75,0.90)": 6,
+      "[0.90,0.99)": 5,
+      "[0.99,1.00]": 0
+    },
+    "count": 16,
+    "maximum": 0.9866666666666667,
+    "mean": 0.8121271616285403,
+    "median": 0.852986111111111,
+    "minimum": 0.5972222222222222
+  },
+  "final_sampled": {
+    "all_instance_metrics": {
+      "commit_reconfig_action_count": {
+        "count": 60,
+        "mean": 17.366666666666667,
+        "median": 18.0,
+        "std": 6.136765190688798
+      },
+      "completed_reconfigurations": {
+        "count": 60,
+        "mean": 17.316666666666666,
+        "median": 18.0,
+        "std": 6.0351840342845895
+      },
+      "context_override_rate": {
+        "count": 60,
+        "mean": 0.028469413404519108,
+        "median": 0.02485334979932078,
+        "std": 0.018699019527669582
+      },
+      "current_worker_matching_deficit": {
+        "count": 0,
+        "mean": null,
+        "median": null,
+        "std": null
+      },
+      "direct_process_action_count": {
+        "count": 60,
+        "mean": 52.13333333333333,
+        "median": 52.0,
+        "std": 6.768487968411488
+      },
+      "fatigue_masked_action_ratio": {
+        "count": 60,
+        "mean": 0.13266623829811133,
+        "median": 0.0,
+        "std": 0.26558414337518277
+      },
+      "flow_time_objective": {
+        "count": 60,
+        "mean": 1228.5766666666668,
+        "median": 1239.15,
+        "std": 535.087761649121
+      },
+      "forced_action_chain_count": {
+        "count": 60,
+        "mean": 91.76666666666667,
+        "median": 93.0,
+        "std": 17.586943025203425
+      },
+      "forced_action_state_count": {
+        "count": 60,
+        "mean": 139.18333333333334,
+        "median": 134.5,
+        "std": 39.80822318024709
+      },
+      "forced_future_event_wait_count": {
+        "count": 60,
+        "mean": 139.05,
+        "median": 134.5,
+        "std": 39.765168729276084
+      },
+      "forced_mixed_wait_stage_count": {
+        "count": 60,
+        "mean": 7.566666666666666,
+        "median": 1.0,
+        "std": 22.007215046986154
+      },
+      "forced_pair_count": {
+        "count": 60,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_pair_wait_physically_unavailable_count": {
+        "count": 60,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_phase_handoff_count": {
+        "count": 60,
+        "mean": 36.833333333333336,
+        "median": 32.0,
+        "std": 22.974685159803396
+      },
+      "forced_production_count": {
+        "count": 60,
+        "mean": 99.91666666666667,
+        "median": 102.5,
+        "std": 16.92585192174492
+      },
+      "forced_production_pair_count": {
+        "count": 60,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_production_wait_count": {
+        "count": 60,
+        "mean": 99.91666666666667,
+        "median": 102.5,
+        "std": 16.92585192174492
+      },
+      "forced_recovery_wait_count": {
+        "count": 60,
+        "mean": 20.55,
+        "median": 0.0,
+        "std": 47.34561887987783
+      },
+      "forced_wait_count": {
+        "count": 60,
+        "mean": 278.3666666666667,
+        "median": 269.0,
+        "std": 79.61644636049418
+      },
+      "forced_wait_dis_count": {
+        "count": 60,
+        "mean": 30.766666666666666,
+        "median": 17.0,
+        "std": 42.85623055257125
+      },
+      "forced_wait_ins_count": {
+        "count": 60,
+        "mean": 23.8,
+        "median": 16.0,
+        "std": 25.010370730314985
+      },
+      "forced_wait_pair_physically_unavailable_count": {
+        "count": 60,
+        "mean": 139.18333333333334,
+        "median": 134.5,
+        "std": 39.80822318024709
+      },
+      "forced_worker_count": {
+        "count": 60,
+        "mean": 39.266666666666666,
+        "median": 33.5,
+        "std": 25.405102027733484
+      },
+      "forced_worker_pair_count": {
+        "count": 60,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "forced_worker_wait_count": {
+        "count": 60,
+        "mean": 39.266666666666666,
+        "median": 33.5,
+        "std": 25.405102027733484
+      },
+      "heuristic_quality_score": {
+        "count": 60,
+        "mean": 0.37229273990820516,
+        "median": 0.38879601071793657,
+        "std": 0.08149190688473909
+      },
+      "heuristic_reward_quality_score": {
+        "count": 60,
+        "mean": 0.4624746904878301,
+        "median": 0.5014987320904071,
+        "std": 0.08772410232894105
+      },
+      "inference_time_per_decision_ms": {
+        "count": 60,
+        "mean": 147.6913473263289,
+        "median": 147.79093293112726,
+        "std": 3.496663143413481
+      },
+      "inference_time_seconds": {
+        "count": 60,
+        "mean": 39.20722106999601,
+        "median": 39.307372300187126,
+        "std": 9.792439401609277
+      },
+      "initial_preference_quality_score": {
+        "count": 60,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "initial_progress": {
+        "count": 60,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0
+      },
+      "longest_forced_action_chain": {
+        "count": 60,
+        "mean": 5.233333333333333,
+        "median": 5.0,
+        "std": 1.6810677263468512
+      },
+      "machine_waiting_for_worker_time": {
+        "count": 60,
+        "mean": 36.983333333333334,
+        "median": 3.1,
+        "std": 108.31083043122034
+      },
+      "maximum_worker_fatigue": {
+        "count": 60,
+        "mean": 0.5304550345766667,
+        "median": 0.6082500000000002,
+        "std": 0.20578507090837156
+      },
+      "maximum_worker_matching_deficit": {
+        "count": 0,
+        "mean": null,
+        "median": null,
+        "std": null
+      },
+      "mean_forced_action_chain_length": {
+        "count": 60,
+        "mean": 1.495499810381979,
+        "median": 1.4455445544554455,
+        "std": 0.15176009428816364
+      },
+      "mean_peak_worker_fatigue": {
+        "count": 60,
+        "mean": 0.3792160849330556,
+        "median": 0.3196665989333333,
+        "std": 0.2031597327428887
+      },
+      "minimum_worker_alternatives": {
+        "count": 60,
+        "mean": 1.0833333333333333,
+        "median": 1.0,
+        "std": 0.8885651482017906
+      },
+      "operation_progress": {
+        "count": 60,
+        "mean": 0.9949305555555555,
+        "median": 1.0,
+        "std": 0.021386756381084785
+      },
+      "preference_quality_score": {
+        "count": 60,
+        "mean": 0.517619307223587,
+        "median": 0.5147282515330627,
+        "std": 0.16767204611871073
+      },
+      "production_decision_state_count": {
+        "count": 60,
+        "mean": 188.73333333333332,
+        "median": 194.5,
+        "std": 28.92589401613662
+      },
+      "production_pair_plus_wait_ratio": {
+        "count": 60,
+        "mean": 0.9976519468693262,
+        "median": 1.0,
+        "std": 0.0035127330512427306
+      },
+      "production_pair_plus_wait_state_count": {
+        "count": 60,
+        "mean": 188.31666666666666,
+        "median": 194.5,
+        "std": 29.03504117130212
+      },
+      "production_wait_action_count": {
+        "count": 60,
+        "mean": 119.23333333333333,
+        "median": 122.0,
+        "std": 21.32664972987002
+      },
+      "production_wait_ticks": {
+        "count": 60,
+        "mean": 1355.2833333333333,
+        "median": 1400.5,
+        "std": 381.9996491109697
+      },
+      "production_wait_time": {
+        "count": 60,
+        "mean": 135.52833333333334,
+        "median": 140.05,
+        "std": 38.19996491109697
+      },
+      "quality_score": {
+        "count": 60,
+        "mean": 0.45161358309235045,
+        "median": 0.4722592911145762,
+        "std": 0.08233615920251226
+      },
+      "ranker_top_selection_rate": {
+        "count": 60,
+        "mean": 0.4531664302774932,
+        "median": 0.4610076721556886,
+        "std": 0.05865042315698907
+      },
+      "reconfiguration_cost": {
+        "count": 60,
+        "mean": 938.5666859540906,
+        "median": 805.1136748885253,
+        "std": 637.0924299331143
+      },
+      "reconfiguration_reuse_count": {
+        "count": 60,
+        "mean": 36.78333333333333,
+        "median": 38.5,
+        "std": 11.099078701522883
+      },
+      "reward_quality_score": {
+        "count": 60,
+        "mean": 0.517619307223587,
+        "median": 0.5147282515330627,
+        "std": 0.16767204611871073
+      },
+      "safe_fatigue_limit": {
+        "count": 60,
+        "mean": 0.75,
+        "median": 0.75,
+        "std": 0.0
+      },
+      "single_stage_proxy_return": {
+        "count": 60,
+        "mean": 0.4773112483319686,
+        "median": 0.48527174846693727,
+        "std": 0.18315296238818535
+      },
+      "solve_time_seconds": {
+        "count": 60,
+        "mean": 703.8864259550077,
+        "median": 735.7338828000356,
+        "std": 91.00651260834067
+      },
+      "unfinished_orders": {
+        "count": 60,
+        "mean": 0.2,
+        "median": 0.0,
+        "std": 0.8791367106043311
+      },
+      "wait_action_count": {
+        "count": 60,
+        "mean": 160.85,
+        "median": 156.5,
+        "std": 46.12246961503504
+      },
+      "wait_min_estimated_deadline_slack_ticks": {
+        "count": 60,
+        "mean": 455.0,
+        "median": 473.5,
+        "std": 304.4203717096877
+      },
+      "wait_total_ticks": {
+        "count": 60,
+        "mean": 1923.0,
+        "median": 1924.0,
+        "std": 263.7487247940897
+      },
+      "wait_total_time": {
+        "count": 60,
+        "mean": 192.3,
+        "median": 192.40000000000003,
+        "std": 26.374872479408975
+      },
+      "worker_assign_action_count": {
+        "count": 60,
+        "mean": 34.65,
+        "median": 36.0,
+        "std": 12.10102250897468
+      },
+      "worker_competition_event_count": {
+        "count": 60,
+        "mean": 10.716666666666667,
+        "median": 0.0,
+        "std": 25.76299518503147
+      },
+      "worker_decision_state_count": {
+        "count": 60,
+        "mean": 76.26666666666667,
+        "median": 71.0,
+        "std": 37.95218520167081
+      },
+      "worker_load_variance": {
+        "count": 60,
+        "mean": 36.610009259259265,
+        "median": 32.62694444444445,
+        "std": 26.785400216629792
+      },
+      "worker_matching_deficit_event_count": {
+        "count": 60,
+        "mean": 10.75,
+        "median": 0.0,
+        "std": 25.893278363443663
+      },
+      "worker_pair_plus_wait_ratio": {
+        "count": 60,
+        "mean": 0.998607664736697,
+        "median": 1.0,
+        "std": 0.007761394751573557
+      },
+      "worker_pair_plus_wait_state_count": {
+        "count": 60,
+        "mean": 76.2,
+        "median": 71.0,
+        "std": 37.99991079382928
+      },
+      "worker_switch_ratio": {
+        "count": 60,
+        "mean": 0.9035708798120462,
+        "median": 0.9,
+        "std": 0.07426437282187284
+      },
+      "worker_wait_action_count": {
+        "count": 60,
+        "mean": 41.61666666666667,
+        "median": 35.0,
+        "std": 27.252797503218133
+      },
+      "worker_wait_ticks": {
+        "count": 60,
+        "mean": 567.7166666666667,
+        "median": 432.5,
+        "std": 397.4858313930096
+      },
+      "worker_wait_time": {
+        "count": 60,
+        "mean": 56.77166666666667,
+        "median": 43.25,
+        "std": 39.74858313930097
+      }
+    },
+    "completed_count": 55,
+    "completed_metrics": {
+      "flow_time_objective": {
+        "count": 55,
+        "mean": 1138.3,
+        "median": 1137.8000000000002,
+        "std": 368.1663206074527
+      },
+      "makespan": {
+        "count": 55,
+        "mean": 188.56727272727275,
+        "median": 190.10000000000002,
+        "std": 24.253285799121574
+      },
+      "preference_quality_score": {
+        "count": 55,
+        "mean": 0.47376651697118577,
+        "median": 0.4866968945162118,
+        "std": 0.08492879669121388
+      },
+      "quality_score": {
+        "count": 55,
+        "mean": 0.44282792536086885,
+        "median": 0.4698095915625964,
+        "std": 0.07777087837508995
+      },
+      "reconfiguration_cost": {
+        "count": 55,
+        "mean": 809.7960039774749,
+        "median": 798.0496383237402,
+        "std": 390.1306708497652
+      },
+      "total_flow_time": {
+        "count": 55,
+        "mean": 1138.3,
+        "median": 1137.8000000000002,
+        "std": 368.1663206074527
+      },
+      "worker_load_variance": {
+        "count": 55,
+        "mean": 38.793873737373744,
+        "median": 35.23222222222222,
+        "std": 26.780057518228674
+      }
+    },
+    "completion_rate": 0.9166666666666666,
+    "dataset": "test",
+    "decision_count": 15900,
+    "decode_mode": "sampled",
+    "evaluation_schema_version": "7.0.0",
+    "gap_metrics": {
+      "makespan_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 4.864954171163199,
+        "median": 4.712834335475849,
+        "std": 7.60096799201138
+      },
+      "quality_score_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 23.13354833495424,
+        "median": 23.2377852499347,
+        "std": 14.541168386871721
+      },
+      "reconfiguration_cost_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 11.835612711114514,
+        "median": 4.721674563053362,
+        "std": 30.749167145323433
+      },
+      "relative_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 12.615996161969163,
+        "median": 8.110460056461823,
+        "std": 27.016063380771385
+      },
+      "worker_load_variance_heuristic_gap_percent": {
+        "count": 60,
+        "mean": 2160.096872117915,
+        "median": 923.2213348264829,
+        "std": 3859.3354986470026
+      }
+    },
+    "instance_count": 60,
+    "manifest": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\data\\manifests\\test\\manifest.json",
+    "physical_safety_pass": true,
+    "policy": "ppo",
+    "preference_balanced_quality_score": 0.47376651697118577,
+    "preference_quality_by_key": {
+      "d17fb47064bdfcb2": 0.47376651697118577
+    },
+    "quality_metric": {
+      "cost_scale": 1000.0,
+      "flow_scale": 1200.0,
+      "quality_weights": {
+        "cost": 0.3,
+        "flow": 0.5,
+        "variance": 0.2
+      },
+      "variance_scale": 50.0,
+      "version": "canonical_bounded_quality_v1"
+    },
+    "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+    "quality_metric_version": "canonical_bounded_quality_v1",
+    "repeat_count": 3,
+    "result_role": "formal_sampled",
+    "sampling_seeds": [
+      300011,
+      300012,
+      300013
+    ],
+    "schedule_violation_count": 0,
+    "tail_metrics": {
+      "forced_action_chain": {
+        "count": 60,
+        "cvar": 10.0,
+        "max": 11.0,
+        "quantile": 9.0
+      },
+      "maximum_worker_fatigue": {
+        "count": 60,
+        "cvar": 0.7499724193666663,
+        "max": 0.7499999999999999,
+        "quantile": 0.7498471515000003
+      },
+      "worker_load_variance": {
+        "count": 60,
+        "cvar": 93.80907407407409,
+        "max": 138.71472222222226,
+        "quantile": 70.50000000000004
+      }
+    },
+    "total_inference_time_seconds": 2352.4332641997607,
+    "total_solve_time_seconds": 42233.18555730046,
+    "truncated_count": 5,
+    "unique_instance_count": 20
+  },
+  "final_sampled_failure_progress": {
+    "bins": {
+      "[0.00,0.25)": 0,
+      "[0.25,0.50)": 0,
+      "[0.50,0.75)": 0,
+      "[0.75,0.90)": 1,
+      "[0.90,0.99)": 4,
+      "[0.99,1.00]": 0
+    },
+    "count": 5,
+    "maximum": 0.9861111111111112,
+    "mean": 0.9391666666666667,
+    "median": 0.9375,
+    "minimum": 0.8638888888888889
+  },
+  "last_checkpoint": "C:\\Users\\chenz\\Desktop\\fatigue_aware_reconfigurable_assembly_scheduling\\result\\runs\\single_stage_flow_seed11_500_20260922_013711\\last_checkpoint.pt",
+  "learning_rate_control": {
+    "learning_rate": 0.0001,
+    "learning_rate_decay_count": 0,
+    "minimum_learning_rate": 2.5e-05,
+    "plateau_factor": 0.5,
+    "plateau_patience_validations": 15,
+    "stale_validations": 0
+  },
+  "objective_name": "flow",
+  "provenance": {
+    "checkpoint_protocol_version": "single_stage_progress_quality_v1",
+    "checkpoint_sha256": "2ad18327583372b8f895b3bf9ee8e3b971eded3c0116b5973afdaa1e7a550b41",
+    "dataset_manifest_sha256": "e0ce378b914ff37a884c9468e6086674a9f6c0f4eac66dee3e1e6bda4ccadd12",
+    "effective_config_sha256": "7ffafffe53a114cd83e8563fbb24084cb9e7ef22f309ef10946ab68e498aa117",
+    "evaluator_protocol_version": "single_stage_progress_quality_v1",
+    "experiment_fingerprint_sha256": "cfc98b4065dd0059e66525ae9e8380b28e13e64d6e6e94afa30b890f853f36ce",
+    "fixed_instance_sha256": "e54d96aa6b3c55dfb6fddfbaa2ee55776762622a2b27d955fda23af03ccbe8bc",
+    "git": {
+      "commit": "2ef5057aba0b9046411ae9c6eae50dad0c69e535",
+      "dirty": true
+    },
+    "network_weights_sha256": "7dba5000387ab31e2c4d4811860c7c2255d0ac2bb44a5a51fe61eaa861028b02",
+    "provenance_schema_version": "1.0.0",
+    "quality_metric_sha256": "cd7a75eec571f2801dad1b7bcac15263d02db4a27e1a43d5c6febd3e057f88de",
+    "quality_metric_version": "canonical_bounded_quality_v1",
+    "result_schema_version": "7.0.0",
+    "sampled_rng_version": "evaluation_unit_sha256_v2",
+    "source_file_count": 52,
+    "source_state_sha256": "f027d64e4300de85810a10d0284907fb7806971ee6645a390f3ac6d6e81a30f8",
+    "template_sha256": "da0b427b63958b6ae3569bc15688b26c41470aadb8490f9a961921e433475a65"
+  },
+  "reward_mode": "single_stage_progress_quality_v1",
+  "seed": 11
+}
