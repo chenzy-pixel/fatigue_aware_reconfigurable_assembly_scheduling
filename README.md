@@ -56,8 +56,8 @@ without reading the evaluation-only failure quality bound.
 
 ## Checkpoint selection
 
-Formal validation uses sampled decoding at temperature `1.0`; greedy decoding
-is recorded as a diagnostic. Checkpoints are ranked lexicographically:
+Formal validation uses sampled decoding at temperature `1.0`. Checkpoints are
+ranked lexicographically:
 
 1. higher sampled completion rate;
 2. lower preference-balanced quality when completion ties within `1e-12`.

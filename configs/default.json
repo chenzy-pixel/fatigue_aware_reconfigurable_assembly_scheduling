@@ -318,9 +318,6 @@
         "patience_validations": 15,
         "factor": 0.5,
         "minimum": 0.000025
-      },
-      "greedy_diagnostic": {
-        "every_validations": 1
       }
     },
     "worker_timeout_seconds": 600,

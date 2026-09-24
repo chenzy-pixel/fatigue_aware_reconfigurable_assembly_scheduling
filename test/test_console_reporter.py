@@ -55,21 +55,21 @@ def test_single_stage_run_and_training_update_are_compact():
     assert "audit" not in text.lower()
 
 
-def test_validation_reports_sampled_rank_and_greedy_diagnostic():
+def test_validation_reports_sampled_rank():
     reporter, output = _reporter(None)
     row = {
         "episode": 100,
         "completion_rate": 0.95,
         "preference_balanced_quality_score": 0.31,
         "mean_operation_progress": 0.98,
-        "greedy_completion_rate": 0.90,
         "physical_safety_pass": True,
         "checkpoint_event": "best_improved",
     }
     reporter.validation(row, selector_state={"best_episode": 100})
     text = "\n".join(output)
     assert "sampled complete 95.0% | quality 0.310000" in text
-    assert "greedy complete 90.0%" in text
+    assert "safety=PASS" in text
+    assert "greedy" not in text.lower()
     assert "event=best_improved | best_ep=100" in text
 
 

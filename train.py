@@ -214,18 +214,14 @@ def _evaluate_policy(
     ppo_agent: PPOAgent,
     runner: ParallelEpisodeRunner,
     instance_limit: int,
-    decode_mode: str,
-    sampling_seeds: list[int] | None = None,
+    sampling_seeds: list[int],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     universal = _is_universal(config)
-    seeds: list[int | None] = (
-        [None] if decode_mode == "greedy" else list(sampling_seeds or [])
-    )
-    if not seeds:
+    if not sampling_seeds:
         raise ValueError("sampled evaluation requires at least one seed")
     rows: list[dict[str, Any]] = []
     reference: dict[str, Any] | None = None
-    for repeat_index, seed in enumerate(seeds):
+    for repeat_index, seed in enumerate(sampling_seeds):
         if universal:
             current_rows, current = evaluate_preference_grid_parallel(
                 config,
@@ -233,7 +229,7 @@ def _evaluate_policy(
                 ppo_agent=ppo_agent,
                 runner=runner,
                 instance_limit=instance_limit,
-                decode_mode=decode_mode,
+                decode_mode="sampled",
                 sampling_seed=seed,
             )
         else:
@@ -243,7 +239,7 @@ def _evaluate_policy(
                 ppo_agent=ppo_agent,
                 runner=runner,
                 instance_limit=instance_limit,
-                decode_mode=decode_mode,
+                decode_mode="sampled",
                 sampling_seed=seed,
             )
         for row in current_rows:
@@ -252,21 +248,16 @@ def _evaluate_policy(
         reference = current
     if reference is None:
         raise RuntimeError("evaluation produced no aggregate")
-    if decode_mode == "sampled":
-        aggregate = _aggregate_formal_rows(
-            config,
-            rows=rows,
-            dataset_name=dataset_name,
-            manifest=str(reference["manifest"]),
-            unique_instance_count=instance_limit,
-            repeat_count=len(seeds),
-            universal=universal,
-        )
-        aggregate["sampling_seeds"] = [int(seed) for seed in seeds if seed is not None]
-    else:
-        aggregate = reference
-        aggregate["repeat_count"] = 1
-        aggregate["unique_instance_count"] = instance_limit
+    aggregate = _aggregate_formal_rows(
+        config,
+        rows=rows,
+        dataset_name=dataset_name,
+        manifest=str(reference["manifest"]),
+        unique_instance_count=instance_limit,
+        repeat_count=len(sampling_seeds),
+        universal=universal,
+    )
+    aggregate["sampling_seeds"] = [int(seed) for seed in sampling_seeds]
     aggregate["physical_safety_pass"] = _rows_are_physically_safe(rows)
     return rows, aggregate
 
@@ -314,43 +305,6 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
             all_metrics, "unfinished_orders"
         ),
     }
-
-
-def _attach_greedy_diagnostic(
-    row: dict[str, Any], greedy: dict[str, Any]
-) -> None:
-    completed = greedy["completed_metrics"]
-    all_metrics = greedy["all_instance_metrics"]
-    row.update(
-        {
-            "greedy_completion_rate": float(greedy["completion_rate"]),
-            "greedy_truncated_count": int(greedy["truncated_count"]),
-            "greedy_schedule_violation_count": int(
-                greedy["schedule_violation_count"]
-            ),
-            "greedy_physical_safety_pass": bool(
-                greedy["physical_safety_pass"]
-            ),
-            "greedy_preference_balanced_quality_score": float(
-                greedy["preference_balanced_quality_score"]
-            ),
-            "greedy_mean_flow_time_objective": _summary_value(
-                completed, "flow_time_objective"
-            ),
-            "greedy_mean_reconfiguration_cost": _summary_value(
-                completed, "reconfiguration_cost"
-            ),
-            "greedy_mean_worker_load_variance": _summary_value(
-                completed, "worker_load_variance"
-            ),
-            "greedy_mean_operation_progress": _summary_value(
-                all_metrics, "operation_progress"
-            ),
-            "greedy_mean_single_stage_proxy_return": _summary_value(
-                all_metrics, "single_stage_proxy_return"
-            ),
-        }
-    )
 
 
 @dataclass
@@ -638,7 +592,6 @@ def _train_single_stage(
     update_rows: list[dict[str, Any]] = []
     validation_rows: list[dict[str, Any]] = []
     sampled_validation_rows: list[dict[str, Any]] = []
-    greedy_validation_rows: list[dict[str, Any]] = []
     best_checkpoint_metadata: dict[str, Any] | None = None
     best_validation_row: dict[str, Any] | None = None
 
@@ -693,29 +646,15 @@ def _train_single_stage(
                 ppo_agent=agent,
                 runner=runner,
                 instance_limit=validation_limit,
-                decode_mode="sampled",
                 sampling_seeds=validation_seeds,
-            )
-            greedy_rows, greedy = _evaluate_policy(
-                config,
-                dataset_name=validation_split,
-                ppo_agent=agent,
-                runner=runner,
-                instance_limit=validation_limit,
-                decode_mode="greedy",
             )
             sampled_validation_rows.extend(
                 {"validation_episode": completed_episodes, **row}
                 for row in formal_rows
             )
-            greedy_validation_rows.extend(
-                {"validation_episode": completed_episodes, **row}
-                for row in greedy_rows
-            )
             validation_row = _validation_log_row(
                 formal, episode=completed_episodes
             )
-            _attach_greedy_diagnostic(validation_row, greedy)
             event = selector.observe(
                 formal,
                 completed_episodes=completed_episodes,
@@ -764,9 +703,7 @@ def _train_single_stage(
         )
 
         final_sampled: dict[str, Any] | None = None
-        final_greedy: dict[str, Any] | None = None
         final_sampled_rows: list[dict[str, Any]] = []
-        final_greedy_rows: list[dict[str, Any]] = []
         if selector.has_best:
             agent.load(best_checkpoint, load_optimizer=False)
             final_split = validation_split if smoke else "test"
@@ -781,18 +718,9 @@ def _train_single_stage(
                 ppo_agent=agent,
                 runner=runner,
                 instance_limit=final_limit,
-                decode_mode="sampled",
                 sampling_seeds=configured_formal_evaluation_sampling_seeds(
                     config, "final_test"
                 ),
-            )
-            final_greedy_rows, final_greedy = _evaluate_policy(
-                config,
-                dataset_name=final_split,
-                ppo_agent=agent,
-                runner=runner,
-                instance_limit=final_limit,
-                decode_mode="greedy",
             )
 
     write_csv(run_directory / "train_log.csv", episode_rows)
@@ -802,19 +730,10 @@ def _train_single_stage(
         run_directory / "sampled_validation_instance_metrics.csv",
         sampled_validation_rows,
     )
-    write_csv(
-        run_directory / "greedy_validation_instance_metrics.csv",
-        greedy_validation_rows,
-    )
     if final_sampled_rows:
         write_csv(
             run_directory / "final_sampled_instance_metrics.csv",
             final_sampled_rows,
-        )
-    if final_greedy_rows:
-        write_csv(
-            run_directory / "final_greedy_instance_metrics.csv",
-            final_greedy_rows,
         )
     checkpoint = best_checkpoint if selector.has_best else None
     provenance = build_provenance(
@@ -839,12 +758,8 @@ def _train_single_stage(
         "best_checkpoint": str(best_checkpoint) if selector.has_best else None,
         "last_checkpoint": str(last_checkpoint),
         "final_sampled": final_sampled,
-        "final_greedy": final_greedy,
         "final_sampled_failure_progress": _failure_progress_summary(
             final_sampled_rows
-        ),
-        "final_greedy_failure_progress": _failure_progress_summary(
-            final_greedy_rows
         ),
         "elapsed_seconds": time.perf_counter() - started_at,
         "provenance": provenance,

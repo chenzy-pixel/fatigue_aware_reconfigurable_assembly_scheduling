@@ -45,8 +45,7 @@ simplex grid.
 ## Formal selection
 
 Validation evaluates each fixed manifest instance with three sampled repeats at
-temperature `1.0`. Greedy evaluation is emitted alongside it as a diagnostic.
-The rank is:
+temperature `1.0`. The rank is:
 
 1. maximum sampled completion; Universal uses the minimum completion across the
    66 preferences;
@@ -59,7 +58,7 @@ preference yields `+inf`.
 The first safe validation creates `best_checkpoint.pt`. Later writes require a
 strict lexicographic improvement. `last_checkpoint.pt` records the final online
 state independently. Final evaluation reloads the best file and uses independent
-sampled roots plus a greedy diagnostic pass.
+sampled roots.
 
 ## Reproducibility record
 

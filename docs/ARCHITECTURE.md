@@ -134,12 +134,11 @@ value loss、entropy、GAE 和梯度裁剪。正式配置强制 `gamma=1`。
 collect_training_batch
   → PPOAgent.update
   → 固定 manifest sampled validation
-  → 同步 greedy diagnostic
   → LexicographicCheckpointSelector.observe
   → 条件写 best_checkpoint.pt
   → 始终写 last_checkpoint.pt
   → 从磁盘重载 best
-  → 独立 final-test sampled + greedy
+  → 独立 final-test sampled
 ```
 
 `training/protocol.py` 只维护以下状态：安全合格次数、最佳 sampled 完成率、最佳
@@ -179,12 +178,12 @@ checkpoint metadata 保存数据 manifest hash、实例顺序、实例 seed、�
 
 - `config.json`、`terminal.log`、`summary.json`；
 - `train_log.csv`、`update_log.csv`、`validation_log.csv`；
-- sampled/greedy validation 逐轨迹 CSV；
+- sampled validation 逐轨迹 CSV；
 - `last_checkpoint.pt`；
 - 安全候选存在时的 `best_checkpoint.pt`；
-- sampled/greedy final-test 逐轨迹 CSV。
+- sampled final-test 逐轨迹 CSV。
 
-`summary.json` 同时记录 final sampled/greedy 聚合、偏好质量、工序进度回报和失败
+`summary.json` 记录 final sampled 聚合、偏好质量、工序进度回报和失败
 轨迹进度分布。
 
 ## 9. 测试边界

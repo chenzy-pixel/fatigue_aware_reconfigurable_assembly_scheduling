@@ -45,6 +45,8 @@ def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
     assert config["ppo"]["gamma"] == 1.0
     assert config["reward"]["feasibility_shaping"]["enabled"] is False
     assert "two_stage" not in config["training"]
+    assert config["training"]["formal_evaluation"]["decode_mode"] == "sampled"
+    assert "greedy_diagnostic" not in config["training"]["validation_control"]
     assert "audit_seed_offset" not in config["training"]["formal_evaluation"]
     assert not {
         "completion_bonus",

@@ -117,8 +117,7 @@ class TrainingConsoleReporter:
             f"{_percent(row.get('completion_rate'))} | quality "
             f"{_metric(row.get('preference_balanced_quality_score'), 6)} "
             f"| progress {_metric(row.get('mean_operation_progress'))}",
-            f"      greedy complete {_percent(row.get('greedy_completion_rate'))} "
-            f"| safety={'PASS' if row.get('physical_safety_pass') else 'FAIL'} "
+            f"      safety={'PASS' if row.get('physical_safety_pass') else 'FAIL'} "
             f"| event={row.get('checkpoint_event', 'n/a')} "
             f"| best_ep={selector_state.get('best_episode')}",
         )
