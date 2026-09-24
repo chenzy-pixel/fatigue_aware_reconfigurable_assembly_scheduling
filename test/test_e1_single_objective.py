@@ -38,7 +38,10 @@ def _validation(
 def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
     config = load_config("configs/default.json")
     public = public_config(config)
-    assert config["reward"]["mode"] == "single_stage_progress_quality_v1"
+    assert config["reward"]["mode"] == (
+        "single_stage_progress_quality_failure_v2"
+    )
+    assert config["reward"]["terminal_failure_penalty"] == 1.0
     assert config["ppo"]["gamma"] == 1.0
     assert config["reward"]["feasibility_shaping"]["enabled"] is False
     assert "two_stage" not in config["training"]
@@ -49,7 +52,7 @@ def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
         "unfinished_order_penalty",
     }.intersection(config["reward"])
     assert public["runtime_manifest"]["training_protocol"] == (
-        "single_stage_lexicographic_v1"
+        "single_stage_lexicographic_failure_v2"
     )
 
 

@@ -33,15 +33,18 @@ from .types import (
     DecisionType,
     EdgeStore,
     EdgeType,
+    FAILURE_PENALTY_REWARD,
     HeterogeneousGraphObservation,
     Observation,
     PolicyObservation,
     RewardVector,
+    LEGACY_PROGRESS_QUALITY_REWARD,
     bounded_quality_score,
     objective_scalarizer_config,
     proxy_return_from_metrics,
     reward_config,
     terminal_quality_score,
+    terminal_failure_penalty,
 )
 
 __all__ = [
@@ -56,8 +59,10 @@ __all__ = [
     "DecisionType",
     "EdgeStore",
     "EdgeType",
+    "FAILURE_PENALTY_REWARD",
     "HeterogeneousGraphObservation",
     "LOCKED_EDGE",
+    "LEGACY_PROGRESS_QUALITY_REWARD",
     "MACHINE_MODULE_EDGE",
     "Observation",
     "OPERATION_ORDER_EDGE",
@@ -84,4 +89,5 @@ __all__ = [
     "reward_config",
     "simplex_lattice",
     "terminal_quality_score",
+    "terminal_failure_penalty",
 ]

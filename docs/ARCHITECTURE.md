@@ -31,8 +31,8 @@ configs → data → environment → agent/ppo → training + train.py → resul
 | Pair 可行性 | `instant_physical_pair_mask_v1` |
 | WAIT mask | `progress_certified_wait_v2` |
 | Observation | schema 5 |
-| Reward | `single_stage_progress_quality_v1` |
-| 训练协议 | `single_stage_lexicographic_v1` |
+| Reward | `single_stage_progress_quality_failure_v2` |
+| 训练协议 | `single_stage_lexicographic_failure_v2` |
 
 ## 3. 环境契约
 
@@ -70,16 +70,17 @@ RewardVector
   flow, cost, variance          原始诊断差分
   operation_progress           P(t+1)-P(t)
   quality                      -(Q(t+1)-Q(t))
+  failure                      仅任务失败终止步骤为 -1
   feasibility_shaping          可选势函数差分
 ```
 
-当前训练标量为 `operation_progress + quality`。势函数需要的资源余量与时间裕量
-计算仍服务于资源诊断和可选实验配置。
+当前训练标量为 `operation_progress + quality + failure`。势函数需要的资源余量与
+时间裕量计算仍服务于资源诊断和可选实验配置。
 
 `proxy_return_from_metrics` 按一般形式重算：
 
 \[
-P_T-P_0-Q_T+Q_0.
+P_T-P_0+Q_0-Q_T-I.
 \]
 
 collector 在 episode 结束时检查累计基础奖励与代理回报在 `1e-8` 内一致。
@@ -96,9 +97,10 @@ collector 在 episode 结束时检查累计基础奖励与代理回报在 `1e-8`
   → 检查 horizon 与其他失败条件
 ```
 
-成功使用实际 `Q_T`，环境失败使用 `Q_T=1`。PPO collector 只对这两种真实任务
-结束提交 `done=True` 和 `last_value=0`。采集步数 cutoff 保持 `done=False`，并从
-实际下一 observation 调用 `value_batch` 自举。
+训练奖励始终使用实际 `Q_T`；环境失败另扣一次 1。正式评测仍可把失败质量标记为
+1，且该字段不进入 v2 回报重建。PPO collector 只对真实任务成功或失败提交
+`done=True` 和 `last_value=0`。采集步数 cutoff 保持 `done=False`，并从实际下一
+observation 调用 `value_batch` 自举。
 
 ## 4. 网络与 PPO
 

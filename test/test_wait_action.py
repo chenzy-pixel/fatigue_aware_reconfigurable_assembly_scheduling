@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from agent.baselines import HeuristicPolicy
+from deadlock_replay import _unfinished_order_timing
 from environment import AssemblySchedulingEnv, DecisionType
 from environment.types import EventType, OperationState
 
@@ -188,3 +189,32 @@ def test_process_completion_after_horizon_is_not_labeled_deadlock(
     assert diagnostic is not None
     assert diagnostic["tick"] < completion_tick
     assert diagnostic["classified_terminal_reason"] == "horizon"
+    assert diagnostic["future_event_count"] == 1
+    assert diagnostic["within_horizon_event_count"] == 0
+    assert diagnostic["post_horizon_event_count"] == 1
+    assert diagnostic["next_future_event_tick"] == completion_tick
+    assert diagnostic["next_future_event_type"] == "PROCESS_COMPLETE"
+    assert diagnostic["horizon_overrun_evidence"] is True
+    assert (
+        diagnostic["structural_recoverability"]
+        == "not_assessed_beyond_horizon"
+    )
+
+    timing = _unfinished_order_timing(environment)
+    assert len(timing) == 1
+    active = timing[0]
+    expected_elapsed = (
+        environment.horizon_tick
+        - environment.operations[operation_index].start_tick
+    ) * environment.resolution
+    expected_overrun = (
+        completion_tick - environment.horizon_tick
+    ) * environment.resolution
+    assert active["processing_elapsed_time"] == pytest.approx(expected_elapsed)
+    assert active["processing_planned_time"] == pytest.approx(
+        (completion_tick - environment.operations[operation_index].start_tick)
+        * environment.resolution
+    )
+    assert active["remaining_processing_lower_bound_time"] == pytest.approx(
+        expected_overrun
+    )

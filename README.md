@@ -10,7 +10,7 @@ simulation, and schema-5 heterogeneous graph observations.
 Every PPO entry point uses one reward throughout training:
 
 \[
-r_t=(P_{t+1}-P_t)-(Q_{t+1}-Q_t).
+r_t=(P_{t+1}-P_t)+(Q_t-Q_{t+1})-I_t.
 \]
 
 For an instance with all orders fixed at reset,
@@ -21,13 +21,15 @@ P_t=\frac{1}{N}\sum_{i=1}^{N}\frac{c_i(t)}{n_i},
 
 where only `DONE` operations contribute to `c_i(t)`. Unreleased orders remain
 in the denominator, and order release does not change progress. `Q_t` is the
-existing bounded preference quality score. A successful task uses its measured
-terminal quality; a failed task uses `Q_T=1`.
+existing bounded preference quality score computed from the actual objectives.
+`I_t=1` only on a task-failure terminal step and is zero otherwise. Evaluation
+continues to expose the formal failure quality bound separately; it is not used
+by the failure-v2 training reward.
 
 With `gamma=1`, every trajectory is checked against the general identity
 
 \[
-G=P_T-P_0-Q_T+Q_0.
+G=P_T-P_0+Q_0-Q_T-I.
 \]
 
 Standard from-scratch resets assert `P_0=Q_0=0`. The feasibility potential and
@@ -36,15 +38,21 @@ the published configurations set its reward coefficient path to disabled.
 
 ## Termination and PPO bootstrap
 
-| Outcome | Terminal quality | Transition `done` | Critic bootstrap |
-|---|---:|---:|---:|
-| All operations complete | measured quality | yes | no |
-| Deadlock, task horizon, environment decision limit | `1` | yes | no |
-| Rollout collection cutoff | current quality | no | yes |
+| Outcome | Training quality | Failure penalty | Transition `done` | Critic bootstrap |
+|---|---:|---:|---:|---:|
+| All operations complete | measured quality | 0 | yes | no |
+| Deadlock, task horizon, environment decision limit | measured quality | 1 once | yes | no |
+| Rollout collection cutoff | current quality | 0 | no | yes |
 
 At a horizon boundary, the simulator first processes every event at the target
 tick and checks completion. A final operation completing exactly at the horizon
 is therefore a successful task.
+
+Runs persist `reward.mode=single_stage_progress_quality_failure_v2` and
+`reward.terminal_failure_penalty=1.0` in the effective config and runtime
+manifest. Episode/evaluation rows record actual quality, failure penalty, base
+cumulative reward, and scalar training reward so returns can be reconstructed
+without reading the evaluation-only failure quality bound.
 
 ## Checkpoint selection
 

@@ -258,6 +258,7 @@ def test_parallel_training_seeds_and_cleanup(
                 "variance",
                 "operation_progress",
                 "quality",
+                "failure",
                 "feasibility_shaping",
             }
             for value in rollout.episodes
@@ -293,6 +294,7 @@ def test_environment_failure_marks_done_and_disables_critic_bootstrap(
     buffer.compute_gae(last_value=123.0, gamma=1.0, gae_lambda=0.95)
     transition = buffer.transitions[0]
     assert environment.metrics()["task_failed"] is True
+    assert reward.failure == pytest.approx(-1.0)
     assert transition.done is True
     assert transition.return_value == pytest.approx(transition.reward)
 
@@ -559,6 +561,8 @@ def test_mixed_preference_quality_rollout_uses_episode_contexts(
             + episode.reward_components["quality"],
             abs=1e-8,
         )
+        assert episode.reward_components["failure"] == 0.0
+        assert episode.metrics["task_failed"] is False
         assert all(
             transition.observation.preference.tolist() == preference
             for transition in episode.buffer.transitions

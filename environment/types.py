@@ -15,6 +15,12 @@ from .preference import (
 
 EdgeType = tuple[str, str, str]
 
+LEGACY_PROGRESS_QUALITY_REWARD = "single_stage_progress_quality_v1"
+FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v2"
+SUPPORTED_REWARD_MODES = frozenset(
+    {LEGACY_PROGRESS_QUALITY_REWARD, FAILURE_PENALTY_REWARD}
+)
+
 PRECEDES_EDGE: EdgeType = ("operation", "precedes", "operation")
 CAPABLE_EDGE: EdgeType = ("operation", "capable_on", "machine")
 LOCKED_EDGE: EdgeType = ("operation", "locked_to", "machine")
@@ -113,6 +119,7 @@ class RewardVector:
     variance: float
     operation_progress: float = 0.0
     quality: float = 0.0
+    failure: float = 0.0
     feasibility_shaping: float = 0.0
     preference_key: str | None = None
 
@@ -130,10 +137,13 @@ class RewardVector:
     def base_scalarize(self, config: dict) -> float:
         """Return progress increment plus preference-conditioned quality delta."""
 
-        mode = str(config.get("mode", "single_stage_progress_quality_v1"))
-        if mode != "single_stage_progress_quality_v1":
+        mode = str(config.get("mode", LEGACY_PROGRESS_QUALITY_REWARD))
+        if mode not in SUPPORTED_REWARD_MODES:
             raise ValueError(f"unknown reward mode {mode!r}")
-        return self.operation_progress + self.quality
+        reward = self.operation_progress + self.quality
+        if mode == FAILURE_PENALTY_REWARD:
+            reward += self.failure
+        return reward
 
     def as_dict(self) -> dict[str, float | str]:
         result = {
@@ -142,6 +152,7 @@ class RewardVector:
             "variance": self.variance,
             "operation_progress": self.operation_progress,
             "quality": self.quality,
+            "failure": self.failure,
             "feasibility_shaping": self.feasibility_shaping,
         }
         if self.preference_key is not None:
@@ -175,7 +186,7 @@ def objective_scalarizer_config(config: dict) -> dict:
         raise ValueError("objective scalarizer scales must be finite and positive")
     default_kind = (
         "normalized_augmented_tchebycheff_v1"
-        if str(raw.get("mode", "")) == "single_stage_progress_quality_v1"
+        if str(raw.get("mode", "")) in SUPPORTED_REWARD_MODES
         else "legacy_bounded_weighted_sum_v1"
     )
     kind = str(raw.get("type", default_kind))
@@ -193,6 +204,18 @@ def reward_config(config: dict) -> dict:
     if not isinstance(raw, dict):
         raise TypeError("reward must be an object")
     return raw
+
+
+def terminal_failure_penalty(config: dict) -> float:
+    """Return the configured positive one-shot task-failure penalty."""
+
+    reward = reward_config(config)
+    value = float(reward.get("terminal_failure_penalty", 1.0))
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(
+            "reward.terminal_failure_penalty must be finite and non-negative"
+        )
+    return value
 
 
 def bounded_quality_score(
@@ -279,11 +302,11 @@ def proxy_return_from_metrics(
     *,
     preference: PreferenceInput | None = None,
 ) -> float:
-    """Recompute ``P_T - P_0 - Q_T + Q_0`` from trajectory metrics."""
+    """Rebuild the versioned undiscounted training return from metrics."""
 
     reward = reward_config(config)
-    mode = str(reward.get("mode", "single_stage_progress_quality_v1"))
-    if mode != "single_stage_progress_quality_v1":
+    mode = str(reward.get("mode", LEGACY_PROGRESS_QUALITY_REWARD))
+    if mode not in SUPPORTED_REWARD_MODES:
         raise ValueError(f"unknown reward mode {mode!r}")
     initial_progress = float(metrics.get("initial_progress", 0.0))
     terminal_progress = float(metrics["operation_progress"])
@@ -304,24 +327,46 @@ def proxy_return_from_metrics(
         )
     else:
         initial_score = float(initial_score_value)
-    terminal_score_value = metrics.get("preference_quality_score")
-    terminal_score = (
-        terminal_quality_score(
+    if mode == FAILURE_PENALTY_REWARD:
+        terminal_score_value = metrics.get(
+            "actual_preference_quality_score",
+            metrics.get("raw_preference_quality_score"),
+        )
+        terminal_score = (
+            bounded_quality_score(
+                float(metrics["flow_time_objective"]),
+                float(metrics["reconfiguration_cost"]),
+                float(metrics["worker_load_variance"]),
+                config,
+                preference=preference,
+            )
+            if terminal_score_value is None
+            else float(terminal_score_value)
+        )
+    else:
+        terminal_score_value = metrics.get("preference_quality_score")
+        terminal_score = terminal_quality_score(
             float(metrics["flow_time_objective"]),
             float(metrics["reconfiguration_cost"]),
             float(metrics["worker_load_variance"]),
             config,
             preference=preference,
-            terminal_failure=bool(metrics.get("task_failed", metrics["truncated"])),
-        )
-        if terminal_score_value is None
-        else float(terminal_score_value)
+            terminal_failure=bool(
+                metrics.get("task_failed", metrics.get("truncated", False))
+            ),
+        ) if terminal_score_value is None else float(terminal_score_value)
+    task_failed = bool(metrics.get("task_failed", metrics.get("truncated", False)))
+    failure_penalty = (
+        terminal_failure_penalty(config)
+        if mode == FAILURE_PENALTY_REWARD and task_failed
+        else 0.0
     )
     return (
         terminal_progress
         - initial_progress
         - terminal_score
         + initial_score
+        - failure_penalty
     )
 
 

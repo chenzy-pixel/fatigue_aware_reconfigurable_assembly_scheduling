@@ -46,6 +46,7 @@ from environment.types import (
     EdgeStore,
     EdgeType,
     EventType,
+    FAILURE_PENALTY_REWARD,
     HeterogeneousGraphObservation,
     MachineState,
     Observation,
@@ -56,6 +57,7 @@ from environment.types import (
     bounded_quality_score,
     objective_scalarizer_config,
     terminal_quality_score,
+    terminal_failure_penalty,
 )
 
 
@@ -195,6 +197,10 @@ class AssemblySchedulingEnv:
         self._observation_cache_version = -1
         self._observation_cache: Observation | None = None
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
+        self._cumulative_base_training_reward = 0.0
+        self._cumulative_training_reward = 0.0
+        self._cumulative_failure_reward = 0.0
+        self._failure_penalty_applied = False
         self._initial_objectives = (0.0, 0.0, 0.0)
         self._initial_progress = 0.0
         self._initial_preference_quality_score = 0.0
@@ -348,6 +354,10 @@ class AssemblySchedulingEnv:
         self._minimum_worker_alternatives_seen = None
         self._invalidate_resource_snapshot()
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
+        self._cumulative_base_training_reward = 0.0
+        self._cumulative_training_reward = 0.0
+        self._cumulative_failure_reward = 0.0
+        self._failure_penalty_applied = False
         self._order_released = {order.id: False for order in instance.orders}
         self._order_completion_tick = {}
         self._progress_order_operation_indices = tuple(
@@ -1983,12 +1993,30 @@ class AssemblySchedulingEnv:
         self._invalidate_resource_snapshot()
         after = self._objective_vector()
         progress_after = self.operation_progress()
-        quality_after = terminal_quality_score(
+        reward_mode = str(self.config["reward"]["mode"])
+        actual_quality_after = bounded_quality_score(
             *after,
             self.config,
             preference=self.preference,
-            terminal_failure=self.task_failed,
         )
+        quality_after = (
+            actual_quality_after
+            if reward_mode == FAILURE_PENALTY_REWARD
+            else terminal_quality_score(
+                *after,
+                self.config,
+                preference=self.preference,
+                terminal_failure=self.task_failed,
+            )
+        )
+        failure_reward = 0.0
+        if (
+            reward_mode == FAILURE_PENALTY_REWARD
+            and self.task_failed
+            and not self._failure_penalty_applied
+        ):
+            failure_reward = -terminal_failure_penalty(self.config)
+            self._failure_penalty_applied = True
         potential_after = self.feasibility_potential() if shaping_enabled else 0.0
         feasibility_shaping = (
             shaping_coefficient * (potential_after - potential_before)
@@ -2001,6 +2029,7 @@ class AssemblySchedulingEnv:
             variance=-(after[2] - before[2]),
             operation_progress=progress_after - progress_before,
             quality=-(quality_after - quality_before),
+            failure=failure_reward,
             feasibility_shaping=feasibility_shaping,
             preference_key=self.preference_context.key,
         )
@@ -2016,6 +2045,13 @@ class AssemblySchedulingEnv:
                 self._worker_assignment_nonzero_variance_reward_count += 1
         self._cumulative_reward += np.asarray(
             [reward.flow, reward.cost, reward.variance], dtype=np.float64
+        )
+        self._cumulative_base_training_reward += (
+            reward.operation_progress + reward.quality
+        )
+        self._cumulative_failure_reward += reward.failure
+        self._cumulative_training_reward += reward.scalarize(
+            self.config["reward"]
         )
         info = {
             "time": self.current_time,
@@ -2442,6 +2478,13 @@ class AssemblySchedulingEnv:
             preference=self.preference,
             terminal_failure=self.task_failed,
         )
+        reward_mode = str(self.config["reward"]["mode"])
+        configured_failure_penalty = terminal_failure_penalty(self.config)
+        training_preference_quality_score = (
+            raw_preference_quality_score
+            if reward_mode == FAILURE_PENALTY_REWARD
+            else preference_quality_score
+        )
         operation_progress = self.operation_progress()
         return {
             "instance_id": self.instance.instance_id,
@@ -2572,10 +2615,19 @@ class AssemblySchedulingEnv:
             "initial_preference_quality_score": (
                 self._initial_preference_quality_score
             ),
+            "reward_version": reward_mode,
+            "terminal_failure_penalty_configured": configured_failure_penalty,
+            "terminal_failure_penalty_applied": -self._cumulative_failure_reward,
+            "base_cumulative_reward": self._cumulative_base_training_reward,
+            "training_cumulative_reward": self._cumulative_training_reward,
             "quality_score": quality_score,
             "preference_quality_score": preference_quality_score,
             "raw_quality_score": raw_quality_score,
             "raw_preference_quality_score": raw_preference_quality_score,
+            "actual_preference_quality_score": raw_preference_quality_score,
+            "training_preference_quality_score": (
+                training_preference_quality_score
+            ),
             "preference": self.preference.as_dict(),
             "preference_context": self.preference_context.as_dict(),
             "preference_key": self.preference_context.key,
@@ -4145,7 +4197,12 @@ class AssemblySchedulingEnv:
                 self._truncate_at_horizon(reason)
 
     def _masked_state_terminal_reason(self) -> str:
-        """Separate structural deadlock from progress that misses the horizon."""
+        """Return the primary failure cause without claiming recoverability.
+
+        If the next deterministic event falls after the horizon, the current
+        schedule has already missed its time budget. Later structural
+        feasibility remains a separate diagnostic axis.
+        """
 
         if any(tick > self.horizon_tick for tick, *_ in self._events):
             return "horizon"
@@ -4168,6 +4225,14 @@ class AssemblySchedulingEnv:
             for operation in self.operations
             if operation.state != OperationState.DONE
         ]
+        future_events = sorted(self._events)
+        within_horizon_events = [
+            event for event in future_events if event[0] <= self.horizon_tick
+        ]
+        post_horizon_events = [
+            event for event in future_events if event[0] > self.horizon_tick
+        ]
+        next_event = future_events[0] if future_events else None
         self._first_unrecoverable_deadlock_diagnostic = {
             "state_version": int(self._state_version),
             "time": float(self.current_time),
@@ -4190,6 +4255,23 @@ class AssemblySchedulingEnv:
             ).get("reason"),
             "wait_certificate": dict(self._last_wait_certificate or {}),
             "classified_terminal_reason": classified_terminal_reason,
+            "future_event_count": len(future_events),
+            "within_horizon_event_count": len(within_horizon_events),
+            "post_horizon_event_count": len(post_horizon_events),
+            "next_future_event_tick": (
+                None if next_event is None else int(next_event[0])
+            ),
+            "next_future_event_type": (
+                None if next_event is None else next_event[3].value
+            ),
+            "horizon_overrun_evidence": bool(
+                post_horizon_events and not within_horizon_events
+            ),
+            "structural_recoverability": (
+                "not_assessed_beyond_horizon"
+                if post_horizon_events
+                else "not_assessed_no_future_event"
+            ),
         }
 
     def _truncate_at_horizon(self, reason: str) -> None:

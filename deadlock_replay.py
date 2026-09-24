@@ -12,7 +12,14 @@ import torch
 from agent.baselines import HeuristicPolicy
 from configs import load_config, project_path
 from data import load_dataset_split
-from environment import AssemblySchedulingEnv, DecisionType
+from environment import (
+    AssemblySchedulingEnv,
+    DecisionType,
+    FAILURE_PENALTY_REWARD,
+    LEGACY_PROGRESS_QUALITY_REWARD,
+    proxy_return_from_metrics,
+    terminal_failure_penalty,
+)
 from eval import EvaluationPolicy
 from result.io import write_json
 from utils import action_trace_sha256, set_seed
@@ -328,6 +335,307 @@ def snapshot_environment(
     }
 
 
+def _unfinished_order_timing(
+    environment: AssemblySchedulingEnv,
+    *,
+    observation_tick: int | None = None,
+) -> list[dict[str, Any]]:
+    """Summarize elapsed and remaining work for orders unfinished at a tick.
+
+    Worker waiting is derived from the exact reconfiguration runtime timestamps.
+    Processing estimates are machine-minimum lower bounds and are labelled as
+    such; they do not claim that a globally feasible continuation exists.
+    """
+
+    tick = int(
+        environment.current_tick
+        if observation_tick is None
+        else observation_tick
+    )
+
+    def to_minutes(value: int) -> float:
+        return float(value * environment.resolution)
+
+    operation_by_id = {
+        operation.spec.id: operation for operation in environment.operations
+    }
+    reconfigurations_by_order: dict[str, list[Any]] = {}
+    for reconfiguration in environment.reconfigurations.values():
+        operation = operation_by_id[reconfiguration.operation_id]
+        reconfigurations_by_order.setdefault(operation.spec.order_id, []).append(
+            reconfiguration
+        )
+
+    summaries: list[dict[str, Any]] = []
+    for order in environment.instance.orders:
+        operations = [operation_by_id[spec.id] for spec in order.operations]
+        if all(operation.state.value == "DONE" for operation in operations):
+            continue
+
+        processing_records = {
+            str(record["operation_id"]): record
+            for record in environment.schedule_log
+            if record["order_id"] == order.id
+        }
+        processing_elapsed_time = float(
+            sum(float(record["duration"]) for record in processing_records.values())
+        )
+        processing_planned_time = float(
+            sum(
+                float(record.get("planned_end", record["end"]))
+                - float(record["start"])
+                for record in processing_records.values()
+            )
+        )
+        remaining_processing_lb_ticks = 0
+        remaining_operations = []
+        for operation in operations:
+            if operation.state.value == "DONE":
+                continue
+            compatible_ticks = [
+                environment.estimate_processing_ticks(
+                    environment.operations.index(operation), machine_index
+                )
+                for machine_index, machine in enumerate(environment.machines)
+                if operation.spec.required_module in machine.spec.module_parameters
+            ]
+            processing_record = processing_records.get(operation.spec.id)
+            if processing_record is not None:
+                planned_end = float(
+                    processing_record.get("planned_end", processing_record["end"])
+                )
+                remaining_ticks = max(
+                    0,
+                    int(
+                        round(
+                            (planned_end - tick * environment.resolution)
+                            / environment.resolution
+                        )
+                    ),
+                )
+            else:
+                remaining_ticks = min(compatible_ticks) if compatible_ticks else None
+            if remaining_ticks is not None:
+                remaining_processing_lb_ticks += int(remaining_ticks)
+            remaining_operations.append(
+                {
+                    "operation_id": operation.spec.id,
+                    "state": operation.state.value,
+                    "required_module": operation.spec.required_module,
+                    "machine_id": operation.machine_id,
+                    "remaining_processing_lower_bound_ticks": remaining_ticks,
+                }
+            )
+
+        worker_wait_dis_ticks = 0
+        worker_wait_ins_ticks = 0
+        disassembly_active_ticks = 0
+        installation_active_ticks = 0
+        reconfiguration_details = []
+        for reconfiguration in sorted(
+            reconfigurations_by_order.get(order.id, []),
+            key=lambda value: value.lock_tick,
+        ):
+            cap_tick = tick
+            dis_start = (
+                reconfiguration.disassembly_start_tick
+                if reconfiguration.disassembly_start_tick is not None
+                else cap_tick
+            )
+            worker_wait_dis_ticks += max(
+                0, min(dis_start, cap_tick) - reconfiguration.lock_tick
+            )
+            dis_end = reconfiguration.disassembly_end_tick
+            if reconfiguration.disassembly_start_tick is not None:
+                disassembly_active_ticks += max(
+                    0,
+                    min(dis_end if dis_end is not None else cap_tick, cap_tick)
+                    - reconfiguration.disassembly_start_tick,
+                )
+            if dis_end is not None and dis_end <= cap_tick:
+                ins_start = (
+                    reconfiguration.installation_start_tick
+                    if reconfiguration.installation_start_tick is not None
+                    else cap_tick
+                )
+                worker_wait_ins_ticks += max(0, min(ins_start, cap_tick) - dis_end)
+            if reconfiguration.installation_start_tick is not None:
+                ins_end = reconfiguration.installation_end_tick
+                installation_active_ticks += max(
+                    0,
+                    min(ins_end if ins_end is not None else cap_tick, cap_tick)
+                    - reconfiguration.installation_start_tick,
+                )
+            reconfiguration_details.append(
+                {
+                    "id": reconfiguration.id,
+                    "operation_id": reconfiguration.operation_id,
+                    "machine_id": reconfiguration.machine_id,
+                    "source_module": reconfiguration.source_module,
+                    "target_module": reconfiguration.target_module,
+                    "stage": reconfiguration.stage.value,
+                    "lock_tick": reconfiguration.lock_tick,
+                    "disassembly_start_tick": reconfiguration.disassembly_start_tick,
+                    "disassembly_end_tick": reconfiguration.disassembly_end_tick,
+                    "installation_start_tick": reconfiguration.installation_start_tick,
+                    "installation_end_tick": reconfiguration.installation_end_tick,
+                }
+            )
+
+        summaries.append(
+            {
+                "order_id": order.id,
+                "release_time": float(order.release_time),
+                "unfinished_operation_count": len(remaining_operations),
+                "remaining_operations": remaining_operations,
+                "processing_elapsed_time": processing_elapsed_time,
+                "processing_planned_time": processing_planned_time,
+                "remaining_processing_lower_bound_time": to_minutes(
+                    remaining_processing_lb_ticks
+                ),
+                "worker_wait_before_disassembly_time": to_minutes(
+                    worker_wait_dis_ticks
+                ),
+                "worker_wait_before_installation_time": to_minutes(
+                    worker_wait_ins_ticks
+                ),
+                "worker_wait_time": to_minutes(
+                    worker_wait_dis_ticks + worker_wait_ins_ticks
+                ),
+                "reconfiguration_active_time": to_minutes(
+                    disassembly_active_ticks + installation_active_ticks
+                ),
+                "reconfiguration_count": len(reconfiguration_details),
+                "reconfigurations": reconfiguration_details,
+            }
+        )
+    return summaries
+
+
+def _failure_evidence(environment: AssemblySchedulingEnv) -> dict[str, Any]:
+    events = sorted(environment._events)
+    within = [event for event in events if event[0] <= environment.horizon_tick]
+    after = [event for event in events if event[0] > environment.horizon_tick]
+    next_event = events[0] if events else None
+    return {
+        "first_inability_tick": (
+            None
+            if environment.deadlock_detection_snapshot is None
+            else environment.deadlock_detection_snapshot["tick"]
+        ),
+        "future_event_count": len(events),
+        "within_horizon_event_count": len(within),
+        "post_horizon_event_count": len(after),
+        "next_future_event": (
+            None
+            if next_event is None
+            else {
+                "tick": int(next_event[0]),
+                "time": float(next_event[0] * environment.resolution),
+                "event_type": next_event[3].value,
+                "payload": dict(next_event[4]),
+            }
+        ),
+        "horizon_overrun_evidence": bool(after and not within),
+        "structural_recoverability": (
+            "not_assessed_beyond_horizon"
+            if after
+            else "not_assessed_no_future_event"
+        ),
+        "interpretation": (
+            "A post-horizon event proves that the current schedule cannot make "
+            "its next deterministic progress before the horizon. It does not "
+            "prove that every remaining operation is structurally recoverable."
+        ),
+    }
+
+
+def _reward_audit(
+    environment: AssemblySchedulingEnv,
+    transitions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    metrics = environment.metrics()
+    sums = {
+        name: float(sum(float(item["reward"].get(name, 0.0)) for item in transitions))
+        for name in (
+            "flow",
+            "cost",
+            "variance",
+            "operation_progress",
+            "quality",
+            "failure",
+            "feasibility_shaping",
+        )
+    }
+    initial_progress = float(metrics["initial_progress"])
+    final_progress = float(metrics["operation_progress"])
+    initial_quality = float(metrics["initial_preference_quality_score"])
+    formal_final_quality = float(metrics["preference_quality_score"])
+    actual_final_quality = float(metrics["raw_preference_quality_score"])
+    task_failed = bool(metrics["task_failed"])
+    penalty = terminal_failure_penalty(environment.config) if task_failed else 0.0
+    legacy_identity = (
+        final_progress
+        - initial_progress
+        - formal_final_quality
+        + initial_quality
+    )
+    failure_v2_base_identity = (
+        final_progress
+        - initial_progress
+        - actual_final_quality
+        + initial_quality
+    )
+    failure_v2_identity = failure_v2_base_identity - penalty
+    recorded_base_return = sums["operation_progress"] + sums["quality"]
+    recorded_training_return = recorded_base_return + sums["failure"]
+    configured_mode = str(environment.config["reward"]["mode"])
+    return {
+        "recorded_reward_version": configured_mode,
+        "component_sums": sums,
+        "base_cumulative_reward": recorded_base_return,
+        "scalar_training_return": recorded_training_return,
+        "configured_proxy_return": proxy_return_from_metrics(
+            metrics,
+            environment.config,
+            preference=metrics.get("preference"),
+        ),
+        "configured_identity_residual": float(
+            recorded_training_return
+            - proxy_return_from_metrics(
+                metrics,
+                environment.config,
+                preference=metrics.get("preference"),
+            )
+        ),
+        "recomputed_versions": {
+            LEGACY_PROGRESS_QUALITY_REWARD: {
+                "terminal_quality": formal_final_quality,
+                "failure_penalty": 0.0,
+                "base_cumulative_reward": legacy_identity,
+                "training_cumulative_reward": legacy_identity,
+            },
+            FAILURE_PENALTY_REWARD: {
+                "terminal_quality": actual_final_quality,
+                "failure_penalty": penalty,
+                "base_cumulative_reward": failure_v2_base_identity,
+                "training_cumulative_reward": failure_v2_identity,
+            },
+        },
+        "initial_progress": initial_progress,
+        "final_progress": final_progress,
+        "initial_quality": initial_quality,
+        "formal_final_quality": formal_final_quality,
+        "actual_final_quality": actual_final_quality,
+        "flow_objective": float(metrics["flow_time_objective"]),
+        "unfinished_order_penalty_component": float(environment._flow_penalty),
+        "flow_integral_component": float(environment._flow_integral),
+        "failed_trajectory_quality_overwrite": bool(
+            task_failed and configured_mode == LEGACY_PROGRESS_QUALITY_REWARD
+        ),
+    }
+
+
 class ReplayEnvironment(AssemblySchedulingEnv):
     """Capture the state before the normal deadlock handler advances to horizon."""
 
@@ -392,6 +700,134 @@ def _rollout_sampled_ppo(
         "decisions": len(actions),
         "action_trace_sha256": action_trace_sha256(actions),
         "actions": actions if metrics["task_succeeded"] else None,
+        "timing": {
+            "makespan": float(metrics["time"]),
+            "flow_time_objective": float(metrics["flow_time_objective"]),
+            "wait_total_time": float(metrics["wait_total_time"]),
+            "worker_wait_time": float(metrics["worker_wait_time"]),
+            "machine_waiting_for_worker_time": float(
+                metrics["machine_waiting_for_worker_time"]
+            ),
+        },
+        "unfinished_order_timing": _unfinished_order_timing(environment),
+    }
+
+
+def paired_continuation_comparison(
+    config: dict[str, Any],
+    instance,
+    actions: list[int],
+    *,
+    decision_index: int | None,
+    alternative_action: int | None,
+    ppo_agent,
+    seeds: list[int],
+) -> dict[str, Any]:
+    """Compare original and replacement actions with common continuation seeds."""
+
+    if decision_index is None or alternative_action is None or not seeds:
+        return {"status": "not_requested", "pairs": []}
+    if decision_index < 0 or decision_index >= len(actions):
+        raise ValueError(f"paired decision index out of range: {decision_index}")
+
+    environment = AssemblySchedulingEnv(config)
+    environment.reset(instance, build_observation=False)
+    for prefix_action in actions[:decision_index]:
+        mask = environment.get_action_mask()
+        if prefix_action >= len(mask) or bool(mask[prefix_action]):
+            raise RuntimeError("recorded prefix is illegal during paired replay")
+        environment.step(prefix_action, build_observation=False)
+    if environment.task_done:
+        raise RuntimeError("paired branch point is already terminal")
+
+    original_action = int(actions[decision_index])
+    mask = environment.get_action_mask()
+    for label, action in (
+        ("original", original_action),
+        ("replacement", int(alternative_action)),
+    ):
+        if action < 0 or action >= len(mask) or bool(mask[action]):
+            raise ValueError(f"{label} paired action {action} is not legal")
+
+    pairs = []
+    for seed in seeds:
+        outcomes = {}
+        for label, action in (
+            ("original", original_action),
+            ("replacement", int(alternative_action)),
+        ):
+            branch = deepcopy(environment)
+            branch.step(action, build_observation=False)
+            outcomes[label] = _rollout_sampled_ppo(
+                branch,
+                ppo_agent,
+                seed=seed,
+            )
+        pairs.append({"seed": int(seed), **outcomes})
+
+    def aggregate(label: str) -> dict[str, Any]:
+        outcomes = [pair[label] for pair in pairs]
+        successes = [item for item in outcomes if item["task_succeeded"]]
+        return {
+            "count": len(outcomes),
+            "success_count": len(successes),
+            "completion_rate": len(successes) / len(outcomes),
+            "mean_operation_progress": float(
+                np.mean([item["operation_progress"] for item in outcomes])
+            ),
+            "mean_wait_total_time": float(
+                np.mean([item["timing"]["wait_total_time"] for item in outcomes])
+            ),
+            "mean_machine_waiting_for_worker_time": float(
+                np.mean(
+                    [
+                        item["timing"]["machine_waiting_for_worker_time"]
+                        for item in outcomes
+                    ]
+                )
+            ),
+            "mean_success_flow_time_objective": (
+                None
+                if not successes
+                else float(
+                    np.mean(
+                        [item["timing"]["flow_time_objective"] for item in successes]
+                    )
+                )
+            ),
+        }
+
+    discordant = {
+        "original_only_success": sum(
+            pair["original"]["task_succeeded"]
+            and not pair["replacement"]["task_succeeded"]
+            for pair in pairs
+        ),
+        "replacement_only_success": sum(
+            pair["replacement"]["task_succeeded"]
+            and not pair["original"]["task_succeeded"]
+            for pair in pairs
+        ),
+    }
+    return {
+        "status": "completed",
+        "decision_index": int(decision_index),
+        "tick": int(environment.current_tick),
+        "progress": float(environment.operation_progress()),
+        "original_action": _describe_action(environment, original_action),
+        "replacement_action": _describe_action(
+            environment, int(alternative_action)
+        ),
+        "continuation_seeds": [int(seed) for seed in seeds],
+        "original": aggregate("original"),
+        "replacement": aggregate("replacement"),
+        "discordant_pairs": discordant,
+        "pairs": pairs,
+        "evidence_note": (
+            "Common random-number seeds reduce avoidable sampling variation, "
+            "but divergent states induce different action distributions. This "
+            "is an exploratory paired comparison, not proof of causality."
+        ),
     }
 
 
@@ -497,6 +933,19 @@ def search_late_alternatives(
 
 
 def replay(args: argparse.Namespace) -> dict[str, Any]:
+    paired_fields_present = (
+        args.paired_decision_index is not None,
+        args.paired_alternative_action is not None,
+    )
+    if any(paired_fields_present) != all(paired_fields_present):
+        raise ValueError(
+            "paired decision index and alternative action must be provided together"
+        )
+    if args.paired_seed_count < 0:
+        raise ValueError("paired seed count cannot be negative")
+    if all(paired_fields_present) and args.paired_seed_count <= 0:
+        raise ValueError("paired comparison requires a positive seed count")
+
     config = _load_effective_config(args.config)
     config["device"] = args.device
     set_seed(int(config["seed"]))
@@ -571,6 +1020,19 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
             ppo_samples=args.branch_ppo_samples,
             ppo_seed_start=args.branch_ppo_seed_start,
         )
+        paired_seeds = [
+            args.paired_seed_start + index
+            for index in range(args.paired_seed_count)
+        ]
+        paired_comparison = paired_continuation_comparison(
+            config,
+            record.instance,
+            actions,
+            decision_index=args.paired_decision_index,
+            alternative_action=args.paired_alternative_action,
+            ppo_agent=policy.ppo_agent,
+            seeds=paired_seeds,
+        )
     finally:
         policy.restore_mode(branch_was_training)
     return {
@@ -593,10 +1055,18 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
         "terminal_snapshot": snapshot_environment(
             environment, include_mask=False
         ),
+        "failure_evidence": _failure_evidence(environment),
+        "unfinished_order_timing": _unfinished_order_timing(environment),
+        "reward_audit": _reward_audit(environment, transitions),
+        "schedule_log": list(environment.schedule_log),
+        "reconfiguration_log": list(environment.reconfiguration_log),
         "late_alternative_search": branch_search,
+        "paired_continuation_comparison": paired_comparison,
         "evidence_note": (
-            "A successful continuation proves recoverability. No success in "
-            "the bounded heuristic or sampled search does not prove infeasibility."
+            "A successful continuation proves recoverability at that snapshot. "
+            "No success in a bounded search does not prove infeasibility. A "
+            "post-horizon event proves delayed deterministic progress, not "
+            "structural recoverability of all remaining work."
         ),
     }
 
@@ -623,6 +1093,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--branch-ppo-samples", type=int, default=0)
     parser.add_argument("--branch-ppo-seed-start", type=int, default=910_000)
+    parser.add_argument("--paired-decision-index", type=int)
+    parser.add_argument("--paired-alternative-action", type=int)
+    parser.add_argument("--paired-seed-count", type=int, default=0)
+    parser.add_argument("--paired-seed-start", type=int, default=960_000)
     parser.add_argument("--output", required=True)
     return parser
 
@@ -643,6 +1117,9 @@ def main() -> None:
                 "branch_search_status": result["late_alternative_search"].get(
                     "search_status"
                 ),
+                "paired_comparison_status": result[
+                    "paired_continuation_comparison"
+                ].get("status"),
             },
             ensure_ascii=False,
             indent=2,

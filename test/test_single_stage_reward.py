@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import csv
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from agent.baselines import HeuristicPolicy
-from environment import AssemblySchedulingEnv, proxy_return_from_metrics
+from deadlock_replay import _reward_audit
+from environment import (
+    AssemblySchedulingEnv,
+    FAILURE_PENALTY_REWARD,
+    LEGACY_PROGRESS_QUALITY_REWARD,
+    proxy_return_from_metrics,
+)
 from environment.types import OperationState
+from result.io import write_csv
+from train import _episode_log_row
 
 
 def _two_order_instance(fixed_instance, *, counts=(2, 4), second_release=100.0):
@@ -109,6 +119,7 @@ def test_general_proxy_identity_supports_nonzero_initial_state(config):
         "operation_progress": 0.75,
         "initial_preference_quality_score": 0.20,
         "preference_quality_score": 0.40,
+        "raw_preference_quality_score": 0.40,
         "flow_time_objective": 1.0,
         "reconfiguration_cost": 1.0,
         "worker_load_variance": 1.0,
@@ -138,7 +149,7 @@ def test_standard_reset_and_successful_trajectory_satisfy_general_identity(
 
 
 @pytest.mark.parametrize("reason", ("decision_limit", "horizon"))
-def test_environment_failures_keep_actual_progress_and_use_unit_terminal_quality(
+def test_environment_failures_keep_actual_quality_and_apply_one_penalty(
     config, fixed_instance, reason
 ):
     effective = deepcopy(config)
@@ -149,14 +160,148 @@ def test_environment_failures_keep_actual_progress_and_use_unit_terminal_quality
     environment = AssemblySchedulingEnv(effective)
     environment.reset(fixed_instance)
     reward_sum = 0.0
+    failure_sum = 0.0
+    transitions = []
     policy = HeuristicPolicy()
     while not environment.task_done:
         _, reward, _, _, _ = environment.step(policy.select_action(environment))
         reward_sum += reward.scalarize(effective["reward"])
+        failure_sum += reward.failure
+        transitions.append({"reward": reward.as_dict()})
     metrics = environment.metrics()
     assert metrics["task_failed"] is True
     assert metrics["preference_quality_score"] == 1.0
+    assert metrics["actual_preference_quality_score"] < 1.0
+    assert metrics["terminal_failure_penalty_applied"] == pytest.approx(1.0)
+    assert failure_sum == pytest.approx(-1.0)
     assert 0.0 <= metrics["operation_progress"] < 1.0
     assert reward_sum == pytest.approx(
         proxy_return_from_metrics(metrics, effective), abs=1e-8
     )
+    audit = _reward_audit(environment, transitions)
+    assert audit["component_sums"]["failure"] == pytest.approx(-1.0)
+    assert audit["base_cumulative_reward"] == pytest.approx(
+        metrics["base_cumulative_reward"], abs=1e-8
+    )
+    assert audit["scalar_training_return"] == pytest.approx(
+        metrics["training_cumulative_reward"], abs=1e-8
+    )
+    assert audit["configured_identity_residual"] == pytest.approx(0.0, abs=1e-8)
+    assert audit["recomputed_versions"][FAILURE_PENALTY_REWARD][
+        "training_cumulative_reward"
+    ] == pytest.approx(reward_sum, abs=1e-8)
+
+
+def test_failure_v2_distinguishes_equal_progress_by_actual_quality(config):
+    common = {
+        "initial_progress": 0.0,
+        "operation_progress": 0.94,
+        "initial_preference_quality_score": 0.0,
+        "preference_quality_score": 1.0,
+        "flow_time_objective": 1.0,
+        "reconfiguration_cost": 0.0,
+        "worker_load_variance": 0.0,
+        "task_failed": True,
+        "truncated": True,
+    }
+    better = {**common, "raw_preference_quality_score": 0.65}
+    worse = {**common, "raw_preference_quality_score": 0.80}
+    better_return = proxy_return_from_metrics(better, config)
+    worse_return = proxy_return_from_metrics(worse, config)
+    assert better_return == pytest.approx(-0.71)
+    assert worse_return == pytest.approx(-0.86)
+    assert better_return - worse_return == pytest.approx(0.15)
+
+
+def test_successful_action_trace_and_step_rewards_match_legacy_v1(
+    config, fixed_instance
+):
+    current = AssemblySchedulingEnv(config)
+    observation = current.reset(fixed_instance)
+    del observation
+    policy = HeuristicPolicy()
+    actions: list[int] = []
+    current_rewards: list[float] = []
+    while not current.task_done:
+        action = policy.select_action(current)
+        actions.append(action)
+        _, reward, _, _, _ = current.step(action)
+        current_rewards.append(reward.scalarize(config["reward"]))
+    assert current.task_succeeded
+
+    legacy_config = deepcopy(config)
+    legacy_config["reward"]["mode"] = LEGACY_PROGRESS_QUALITY_REWARD
+    legacy = AssemblySchedulingEnv(legacy_config)
+    legacy.reset(fixed_instance)
+    legacy_rewards: list[float] = []
+    for action in actions:
+        _, reward, _, _, _ = legacy.step(action)
+        legacy_rewards.append(reward.scalarize(legacy_config["reward"]))
+    assert legacy.task_succeeded
+    assert legacy_rewards == pytest.approx(current_rewards, abs=1e-12)
+    for field in (
+        "operation_progress",
+        "flow_time_objective",
+        "reconfiguration_cost",
+        "worker_load_variance",
+        "terminal_reason",
+    ):
+        assert legacy.metrics()[field] == current.metrics()[field]
+
+
+def test_episode_csv_row_reconstructs_failed_training_return(
+    config, fixed_instance, tmp_path
+):
+    effective = deepcopy(config)
+    effective["environment"]["max_decisions"] = 3
+    environment = AssemblySchedulingEnv(effective)
+    environment.reset(fixed_instance)
+    policy = HeuristicPolicy()
+    components = {
+        "flow": 0.0,
+        "cost": 0.0,
+        "variance": 0.0,
+        "operation_progress": 0.0,
+        "quality": 0.0,
+        "failure": 0.0,
+        "feasibility_shaping": 0.0,
+    }
+    reward_sum = 0.0
+    steps = 0
+    while not environment.task_done:
+        _, reward, _, _, _ = environment.step(policy.select_action(environment))
+        reward_sum += reward.scalarize(effective["reward"])
+        for name in components:
+            components[name] += float(getattr(reward, name))
+        steps += 1
+    metrics = environment.metrics()
+    expected = proxy_return_from_metrics(metrics, effective)
+    episode = SimpleNamespace(
+        episode_index=0,
+        instance_id=metrics["instance_id"],
+        reward_sum=reward_sum,
+        base_reward_sum=components["operation_progress"] + components["quality"],
+        unshaped_reward_sum=(
+            components["operation_progress"]
+            + components["quality"]
+            + components["failure"]
+        ),
+        expected_reward=expected,
+        metrics=metrics,
+        step_count=steps,
+        policy_step_count=steps,
+        forced_action_count=0,
+        forced_action_ratio=0.0,
+        reward_components=components,
+    )
+    path = tmp_path / "episodes.csv"
+    write_csv(path, [_episode_log_row(episode)])
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["reward_version"] == FAILURE_PENALTY_REWARD
+    assert float(row["reward_failure"]) == pytest.approx(-1.0)
+    assert float(row["base_reward"]) + float(row["reward_failure"]) == pytest.approx(
+        float(row["reward"]), abs=1e-8
+    )
+    assert float(row["reward"]) == pytest.approx(float(row["expected_reward"]), abs=1e-8)
+    assert float(row["reward_identity_error"]) == pytest.approx(0.0, abs=1e-8)

@@ -488,6 +488,7 @@ def _evaluation_row(
         "unfinished_orders": metrics["unfinished_orders"],
         "initial_progress": metrics.get("initial_progress"),
         "operation_progress": metrics.get("operation_progress"),
+        "reward_version": metrics.get("reward_version"),
         "initial_preference_quality_score": metrics.get(
             "initial_preference_quality_score"
         ),
@@ -501,6 +502,19 @@ def _evaluation_row(
         "preference": metrics.get("preference"),
         "preference_key": metrics.get("preference_key"),
         "preference_quality_score": metrics.get("preference_quality_score"),
+        "actual_preference_quality_score": metrics.get(
+            "actual_preference_quality_score"
+        ),
+        "terminal_failure_penalty_configured": metrics.get(
+            "terminal_failure_penalty_configured"
+        ),
+        "terminal_failure_penalty_applied": metrics.get(
+            "terminal_failure_penalty_applied"
+        ),
+        "base_cumulative_reward": metrics.get("base_cumulative_reward"),
+        "training_cumulative_reward": metrics.get(
+            "training_cumulative_reward"
+        ),
         "preference_flow": preference.get("flow"),
         "preference_cost": preference.get("cost"),
         "preference_variance": preference.get("variance"),

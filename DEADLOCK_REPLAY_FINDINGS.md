@@ -1,111 +1,164 @@
-# Deadlock replay findings
+# Formal sampled failure attribution
 
-## Reproduction target
+## Reproduction scope
 
 - Run: `result/runs/single_stage_flow_seed11_500_20260922_013711`
 - Checkpoint SHA-256: `2ad18327583372b8f895b3bf9ee8e3b971eded3c0116b5973afdaa1e7a550b41`
-- Dataset instance: `test_reconfiguration_bottleneck_3000002`
-- Formal sampling seed: `300012`
-- Derived sampling seed: `5410848691043856757`
-- Expected action trace SHA-256: `73dee8995402f0e8ed36a22096261b6e5a040f473e81635ed5e373beaaf3e46d`
+- Evaluation role: formal final sampled evaluation
+- Decode temperature: `1.0`
+- Failure count: 5 of 60 trajectories
 
-The CUDA replay matches all of the recorded identifiers above and contains 376
-decisions. The failure progress is `0.9375`.
+All five CUDA replays match the recorded instance ID, sampling seed, derived
+seed, decision count, progress, and action-trace SHA-256. The diagnostic keeps
+two separate facts:
 
-## Terminal-state attribution
+1. whether the current schedule can make its next deterministic progress by
+   the horizon; and
+2. whether all remaining work is structurally recoverable after the horizon.
 
-The state previously labeled `unrecoverable_deadlock` is not a structural
-resource deadlock:
+A post-horizon event establishes the first fact only. Structural
+recoverability is reported as `not_assessed_beyond_horizon` unless separately
+proved by a continuation.
 
-- The all-actions-masked state is first reached at tick 2307 (230.7 minutes).
-- The horizon is tick 2400 (240.0 minutes).
-- There are no pending reconfigurations and no resource cycle.
-- The only active event is completion of `O_R12_1` on `M2` at tick 2427.
-- `O_R12_2`, `O_R12_3`, and `O_R12_4` are blocked by that predecessor.
-- WAIT is masked because the next real event is after the horizon.
+## Five-failure attribution
 
-This is a horizon failure: the selected schedule cannot complete within the
-time budget. Advancing to the horizon and applying failure quality remains
-correct, but the termination reason must be `horizon`, not
-`unrecoverable_deadlock`.
+| Instance | Seed | First inability (min) | Progress | Remaining | Next deterministic events (min) | Formal label | Primary cause | Structural status |
+|---|---:|---:|---:|---:|---|---|---|---|
+| `test_reconfiguration_bottleneck_3000009` | 300011 | 237.7 | 0.8639 | 10 ops / 6 orders | process completions at 243.7, 247.4, 248.3 | `unrecoverable_deadlock` | `horizon` | Three additional reconfigurations are waiting for fatigue-safe workers; later completion is not established. |
+| `test_reconfiguration_bottleneck_3000002` | 300012 | 230.7 | 0.9375 | 4 ops / 1 order | `O_R12_1` completes at 242.7 | `unrecoverable_deadlock` | `horizon` | No pending reconfiguration at detection; successors remain precedence-blocked. |
+| `test_reconfiguration_bottleneck_3000009` | 300012 | 234.9 | 0.9861 | 1 op / 1 order | `O_R14_4` completes at 247.5 | `unrecoverable_deadlock` | `horizon` | No pending reconfiguration at detection. |
+| `test_balanced_3000019` | 300012 | 226.8 | 0.9833 | 1 op / 1 order | `O_R15_4` completes at 241.2 | `unrecoverable_deadlock` | `horizon` | No pending reconfiguration at detection. |
+| `test_reconfiguration_bottleneck_3000002` | 300013 | 236.7 | 0.9250 | 5 ops / 3 orders | process completions at 241.5, 244.5, 246.8 | `unrecoverable_deadlock` | `horizon` | No pending reconfiguration at detection; two successor operations remain precedence-blocked. |
 
-## Causal replay
+The primary label is `horizon` for all five because no event remains within
+the time budget and the next deterministic event occurs after it. This does
+not collapse the mixed case in seed 300011: its three waiting
+reconfigurations remain visible as concurrent resource/fatigue blockers.
 
-In the failed trace, decision 159 at tick 907 commits `O_R12_1` to `M2`, which
-requires reconfiguration from `A1` to `A3`. The task then waits until tick 2183
-for a safe `A1` disassembly worker. Disassembly completes at tick 2246,
-installation completes at tick 2307, and processing would complete at tick
-2427.
+## Remaining-order time decomposition
 
-The action was not provably impossible when selected. At tick 907 the
-environment's optimistic resource projection was:
+Times below are measured through the horizon. `Remaining process LB` is the
+sum of active-operation overrun plus the fastest compatible-machine duration
+for operations not yet started. It excludes future reconfiguration and worker
+waiting, so it is a lower bound rather than a feasibility certificate.
 
-- resource-ready tick: 991
-- processing-start tick: 1115
-- predicted finish tick: 1235
-- horizon slack: 1165 ticks
-- safe disassembly workers immediately available: 0
-- matching deficit after the commitment: 1
+| Instance / seed | Order | Remaining ops | Processing elapsed | Reconfiguration active | Waiting for worker | Remaining process LB |
+|---|---|---:|---:|---:|---:|---:|
+| 3000009 / 300011 | R11 | 1 | 34.6 | 24.6 | 119.3 | 3.7 |
+| 3000009 / 300011 | R12 | 2 | 23.0 | 11.1 | 126.9 | 15.9 |
+| 3000009 / 300011 | R15 | 1 | 26.6 | 7.8 | 26.1 | 7.1 |
+| 3000009 / 300011 | R16 | 1 | 42.7 | 10.5 | 2.5 | 8.3 |
+| 3000009 / 300011 | R14 | 2 | 22.2 | 24.6 | 48.7 | 20.3 |
+| 3000009 / 300011 | R18 | 3 | 13.7 | 11.1 | 103.0 | 30.3 |
+| 3000002 / 300012 | R12 | 4 | 9.3 | 12.4 | 127.6 | 35.5 |
+| 3000009 / 300012 | R14 | 1 | 40.1 | 14.5 | 49.6 | 7.5 |
+| 3000019 / 300012 | R15 | 1 | 39.0 | 11.7 | 0.0 | 1.2 |
+| 3000002 / 300013 | R10 | 2 | 28.7 | 23.4 | 121.3 | 15.8 |
+| 3000002 / 300013 | R16 | 1 | 55.4 | 9.8 | 59.1 | 6.8 |
+| 3000002 / 300013 | R12 | 2 | 33.4 | 11.1 | 43.1 | 13.4 |
 
-Subsequent worker commitments repeatedly consume or re-fatigue the qualified
-`A1` workers, causing the large gap between the optimistic projection and the
-actual start.
+Four failures occur on reconfiguration-bottleneck instances: 3000002 fails
+in two of three sampled repeats and 3000009 fails in two of three. Across the
+fixed test manifest, the reconfiguration-bottleneck class fails 4 of 9
+sampled trajectories (44.4%). Balanced fails 1 of 21 (4.8%); every other
+pressure class completes all sampled trajectories. The recurring signature
+is accumulated worker/fatigue waiting followed by processing that starts too
+late, rather than a common terminal resource cycle.
 
-The successful formal trace for sampling seed `300011` provides a useful
-contrast. It directly processes `O_R12_1` on an already configured `A3`
-machine (`M3`) at 98.3 minutes. Order `R12` completes at 184.6 minutes and the
-whole instance completes at 187.9 minutes.
+## R12 wait chain in 3000002 / seed 300012
 
-## Branch evidence
+At decision 159 (tick 907, 90.7 minutes), the policy commits `O_R12_1` to
+`M2`, requiring `A1 -> A3` reconfiguration. This is the only legal R12 action
+at that state. The complete chain is:
 
-A bounded branch search found successful continuations:
+| Segment | Tick interval | Time |
+|---|---|---:|
+| Wait for a fatigue-safe A1 disassembly worker | 907–2183 | 127.6 |
+| Disassembly by H3 | 2183–2246 | 6.3 |
+| Installation by H6 | 2246–2307 | 6.1 |
+| Processing executed before horizon | 2307–2400 | 9.3 |
+| Processing overrun to planned completion | 2400–2427 | 2.7 |
 
-1. At decision 159, replacing `COMMIT_RECONFIG O_R12_1 -> M2` with
-   `COMMIT_RECONFIG O_R8_2 -> M1`, followed by sampled continuation seed
-   `2532002`, completes the instance.
-2. Even after the original decision 159, decision 160 is still recoverable.
-   Replacing `COMMIT_RECONFIG O_R8_2 -> M1` with
-   `COMMIT_RECONFIG O_R14_1 -> M1`, followed by sampled continuation seed
-   `2557601`, completes the instance.
+At commitment time, H1 and H3 are idle but their predicted post-task fatigue
+is 0.8046 and 0.8036, above the 0.75 safety limit; H2 is busy. During every
+worker decision before tick 2183, assigning a worker to R12 remains masked by
+fatigue safety. At tick 2183, H3 reaches a predicted fatigue of exactly 0.75
+and becomes the first legal assignment.
 
-Therefore the last **proven** recoverable point in this replay is decision 160
-at tick 907. Bounded searches at decisions 164, 291, 299, 328, and 349 did not
-find a successful continuation. That negative result is not proof that every
-continuation from those states is infeasible.
+The policy does assign H1/H2/H3 to other reconfigurations during this
+interval, but those assignments are not alternatives for R12 at the same
+worker decision: R12 is still fatigue-masked. The actionable alternatives
+occur earlier, when production commitments determine later fatigue demand.
+At decision 159 the legal choices are commitments for R8, R9, R14, R16, the
+R12 commitment, or WAIT; there is no already-configured machine available for
+direct R12 processing.
 
-## State-information audit
+## Decision-160 paired continuation
 
-The current observation already exposes the relevant information:
+The paired experiment starts from the identical snapshot at decision 160,
+tick 907, progress 0.403125. Each row uses the same continuation seed for both
+branches:
 
-- released and future remaining demand and workload per module;
-- installed and target module ratios;
-- machine current/target modules and locked reconfiguration edges;
-- all capable operation-machine alternatives;
-- resource-ready time, predicted finish time, horizon slack, safe-worker
-  ratios, and matching deficit for production candidates;
-- worker qualifications, fatigue, busy state, and projected assignment
-  fatigue.
+- Original: `COMMIT_RECONFIG O_R8_2 -> M1`
+- Replacement: `COMMIT_RECONFIG O_R14_1 -> M1`
+- Continuation seeds: 960000 through 960007
 
-The replay therefore does not support adding a state feature at this stage.
-It also does not justify masking a particular action solely because it appears
-in the failed trajectory. The proven defect is the terminal-reason
-classification.
+| Outcome | Original | Replacement |
+|---|---:|---:|
+| Completed | 2 / 8 | 1 / 8 |
+| Mean final progress | 0.9559 | 0.9629 |
+| Mean environment wait time | 231.29 | 234.33 |
+| Mean machine waiting-for-worker time | 204.85 | 232.00 |
+| Mean Flow among successful continuations | 1348.15 | 1475.90 |
 
-## Implemented change
+Pair outcomes are: one original-only success, zero replacement-only
+successes, one both-success, and six both-fail. The original branch succeeds
+under seeds 960001 and 960006; the replacement succeeds only under 960006.
+Decision 160 is therefore a proven recoverable state, but this experiment
+does not identify it as a last recoverable state or establish the replacement
+as an improvement. Common random-number seeds reduce avoidable sampling
+variation, while the two post-action state distributions still diverge.
 
-When an all-actions-masked state still has a real event after the horizon, the
-environment now classifies the failure as `horizon`. Reward settlement,
-failure quality, action masks, event ordering, and the action trajectory are
-unchanged.
+## Flow reward audit
 
-Verification:
+The environment accumulates Flow continuously. During every time advance,
+each released order that has not completed contributes one unit per minute to
+`_flow_integral`. In the R12 trace, R12 is released and committed at 90.7
+minutes, so it contributes continuously through the 240-minute horizon. At
+failure, the environment also adds the configured 240-point unfinished-order
+penalty.
 
-- Focused WAIT/mask/horizon tests: 10 passed.
-- Full test suite: 189 passed, 2 skipped.
-- Post-fix replay: the same 376 actions and action-trace hash are preserved;
-  progress remains `0.9375`; only the reason changes to `horizon`.
+For 3000002 / seed 300012:
 
-## Replay command
+- flow integral: 1527.7;
+- unfinished-order penalty: 240.0;
+- diagnostic Flow objective: 1767.7;
+- sum of raw `flow` reward component: -1767.7;
+- recorded v1 sum of quality deltas after terminal failure settlement: -1.0;
+- operation-progress return: +0.9375;
+- recorded v1 scalar training return: -0.0625.
+
+The general return identity has zero numerical residual:
+
+`0.9375 - 0.0 - 1.0 + 0.0 = -0.0625`.
+
+Thus R12 delay was fully visible in the raw Flow metric and in intermediate
+quality potentials, but the recorded v1 terminal overwrite made every failed
+trajectory telescope to quality `-1`. The failure-v2 reward now retains the
+actual terminal quality and applies a separate one-shot penalty of 1. Replay
+output reports both the recorded v1 return and the failure-v2 reconstruction,
+including base return, scalar training return, and identity residual.
+
+## Diagnostic implementation
+
+The environment records both the primary failure label and the independent
+evidence fields: within-horizon event count, post-horizon event count, next
+event tick/type, horizon-overrun evidence, and structural-recoverability
+status. `deadlock_replay.py` additionally records full snapshots, schedule and
+reconfiguration logs, per-order timing, reward-identity audit, and paired
+continuations.
+
+Example paired command:
 
 ```powershell
 python deadlock_replay.py `
@@ -116,10 +169,12 @@ python deadlock_replay.py `
   --sampling-seed 300012 `
   --device cuda `
   --expected-action-trace-sha256 73dee8995402f0e8ed36a22096261b6e5a040f473e81635ed5e373beaaf3e46d `
-  --output result/analysis/deadlock_replay_3000002_seed300012.json
+  --paired-decision-index 160 `
+  --paired-alternative-action 376 `
+  --paired-seed-start 960000 `
+  --paired-seed-count 8 `
+  --output result/analysis/formal_failure_test_reconfiguration_bottleneck_3000002_seed300012_paired.json
 ```
 
-Use `--branch-decision-index`, `--branch-ppo-samples`, and
-`--branch-ppo-seed-start` for bounded continuation searches. A successful
-continuation proves recoverability; absence of one does not prove
-infeasibility.
+Successful bounded continuations prove recoverability at their branch
+snapshot. Unsuccessful bounded searches remain inconclusive.

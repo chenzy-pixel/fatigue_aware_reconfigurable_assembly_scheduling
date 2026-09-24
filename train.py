@@ -402,10 +402,13 @@ def _episode_log_row(episode) -> dict[str, Any]:
     row = {
         "episode": int(episode.episode_index) + 1,
         "instance_id": episode.instance_id,
+        "reward_version": metrics["reward_version"],
         "reward": float(episode.reward_sum),
+        "base_reward": float(episode.base_reward_sum),
+        "unshaped_training_reward": float(episode.unshaped_reward_sum),
         "expected_reward": float(episode.expected_reward),
         "reward_identity_error": float(
-            episode.base_reward_sum - episode.expected_reward
+            episode.unshaped_reward_sum - episode.expected_reward
         ),
         "terminated": bool(metrics["terminated"]),
         "truncated": bool(metrics["truncated"]),
@@ -421,6 +424,15 @@ def _episode_log_row(episode) -> dict[str, Any]:
             metrics["initial_preference_quality_score"]
         ),
         "preference_quality_score": float(metrics["preference_quality_score"]),
+        "actual_preference_quality_score": float(
+            metrics["actual_preference_quality_score"]
+        ),
+        "terminal_failure_penalty_configured": float(
+            metrics["terminal_failure_penalty_configured"]
+        ),
+        "terminal_failure_penalty_applied": float(
+            metrics["terminal_failure_penalty_applied"]
+        ),
         "flow_time_objective": float(metrics["flow_time_objective"]),
         "reconfiguration_cost": float(metrics["reconfiguration_cost"]),
         "worker_load_variance": float(metrics["worker_load_variance"]),
@@ -819,6 +831,9 @@ def _train_single_stage(
         "episodes": episodes,
         "objective_name": _objective_name(config),
         "reward_mode": config["reward"]["mode"],
+        "terminal_failure_penalty": config["reward"].get(
+            "terminal_failure_penalty", 0.0
+        ),
         "checkpoint_selection": selector.as_dict(),
         "learning_rate_control": plateau.as_dict(),
         "best_checkpoint": str(best_checkpoint) if selector.has_best else None,

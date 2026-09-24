@@ -15,22 +15,24 @@ base logits. The actor and critic receive the same episode preference.
 Training uses
 
 \[
-r_t=(P_{t+1}-P_t)-(Q_{t+1}-Q_t),
+r_t=(P_{t+1}-P_t)+(Q_t-Q_{t+1})-I_t,
 \]
 
 where `P` is order-balanced completed-operation progress and `Q` is the bounded
 augmented Tchebycheff score under the trajectory's preference. Every order is
-present in the progress denominator from reset. Successful tasks use measured
-terminal quality; failed tasks use the common terminal bound `1`.
+present in the progress denominator from reset. `Q` always uses measured
+objectives; `I_t` is one only on the task-failure terminal step.
 
 With `gamma=1`, the collector verifies
 
 \[
-\sum_t r_t=P_T-P_0-Q_T+Q_0.
+\sum_t r_t=P_T-P_0+Q_0-Q_T-I.
 \]
 
 Flow, Cost, and Variance remain in `RewardVector` and result rows as raw
-diagnostics. The configured scalar reward is `operation_progress + quality`.
+diagnostics. The configured scalar reward is
+`operation_progress + quality + failure`; the failure component is zero on
+successful trajectories and `-1` exactly once on failed trajectories.
 
 ## Preference schedules
 

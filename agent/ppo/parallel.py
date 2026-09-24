@@ -112,6 +112,12 @@ class EpisodeRollout:
         )
 
     @property
+    def unshaped_reward_sum(self) -> float:
+        return self.base_reward_sum + float(
+            self.reward_components.get("failure", 0.0)
+        )
+
+    @property
     def policy_step_count(self) -> int:
         return len(self.buffer)
 
@@ -1105,6 +1111,7 @@ class ParallelEpisodeRunner:
                     "variance": 0.0,
                     "operation_progress": 0.0,
                     "quality": 0.0,
+                    "failure": 0.0,
                     "feasibility_shaping": 0.0,
                 },
                 "step_count": response.environment_step_count,

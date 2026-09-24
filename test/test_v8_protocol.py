@@ -64,6 +64,10 @@ def test_universal_keeps_fixed_66_point_grid_and_training_sequence():
 def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     config = deepcopy(load_config("configs/default.json"))
     config.pop("runtime_manifest")
+    config["experiment_suite_version"] = "single_stage_progress_quality_v1"
+    with pytest.raises(ValueError, match="experiment_suite_version"):
+        validate_latest_only_config(config)
+    config["experiment_suite_version"] = "single_stage_progress_quality_failure_v2"
     config["reward"]["quality_weights"] = {
         "flow": 1.0,
         "cost": 0.0,
@@ -72,6 +76,10 @@ def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     with pytest.raises(ValueError, match="reward.quality_weights"):
         validate_latest_only_config(config)
     config["reward"].pop("quality_weights")
+    config["reward"]["terminal_failure_penalty"] = 0.5
+    with pytest.raises(ValueError, match="terminal_failure_penalty"):
+        validate_latest_only_config(config)
+    config["reward"]["terminal_failure_penalty"] = 1.0
     config["ppo"]["gamma"] = 0.99
     with pytest.raises(ValueError, match="gamma"):
         validate_latest_only_config(config)

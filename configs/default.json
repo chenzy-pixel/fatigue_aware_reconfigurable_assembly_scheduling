@@ -1,6 +1,6 @@
 {
   "experiment_name": "v8_universal",
-  "experiment_suite_version": "single_stage_progress_quality_v1",
+  "experiment_suite_version": "single_stage_progress_quality_failure_v2",
   "method_version": "M1_hgnn_objective_experts_v8",
   "seed": 11,
   "algorithm_seeds": [11, 23, 37, 53, 71],
@@ -246,7 +246,8 @@
     "normalization_manifest_sha256": null
   },
   "reward": {
-    "mode": "single_stage_progress_quality_v1",
+    "mode": "single_stage_progress_quality_failure_v2",
+    "terminal_failure_penalty": 1.0,
     "feasibility_shaping": {
       "enabled": false,
       "coefficient": 0.25,

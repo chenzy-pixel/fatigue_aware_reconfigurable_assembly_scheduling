@@ -35,7 +35,9 @@ class LexicographicCheckpointSelector:
 
     @classmethod
     def from_config(cls, config: dict) -> "LexicographicCheckpointSelector":
-        if str(config["reward"].get("mode")) != "single_stage_progress_quality_v1":
+        if str(config["reward"].get("mode")) != (
+            "single_stage_progress_quality_failure_v2"
+        ):
             raise ValueError(
                 "single-stage checkpoint selection requires the single-stage reward"
             )
@@ -144,7 +146,7 @@ class LexicographicCheckpointSelector:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "protocol": "single_stage_lexicographic_v1",
+            "protocol": "single_stage_lexicographic_failure_v2",
             "selection_tolerance": SELECTION_TOLERANCE,
             "has_best": self.has_best,
             "best_completion_rate": self.best_completion_rate,

@@ -124,7 +124,7 @@ def test_single_stage_reward_is_unshaped_and_telescopes(config, fixed_instance):
     "preference",
     ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
 )
-def test_terminal_failure_uses_unit_quality_bound_and_telescopes(
+def test_terminal_failure_uses_actual_quality_plus_one_penalty(
     config,
     fixed_instance,
     preference,
@@ -144,6 +144,7 @@ def test_terminal_failure_uses_unit_quality_bound_and_telescopes(
 
     policy = HeuristicPolicy()
     reward_return = 0.0
+    failure_return = 0.0
     terminated = False
     truncated = False
     while not (terminated or truncated):
@@ -151,16 +152,19 @@ def test_terminal_failure_uses_unit_quality_bound_and_telescopes(
             policy.select_action(environment)
         )
         reward_return += reward.scalarize(truncated_config["reward"])
+        failure_return += reward.failure
     metrics = environment.metrics()
 
     assert terminated is False
     assert truncated is True
     assert metrics["preference_quality_score"] == 1.0
     assert metrics["raw_preference_quality_score"] < 1.0
+    assert failure_return == pytest.approx(-1.0)
     expected = (
         metrics["operation_progress"]
         - metrics["initial_progress"]
         + initial_score
+        - metrics["raw_preference_quality_score"]
         - 1.0
     )
     assert reward_return == pytest.approx(
