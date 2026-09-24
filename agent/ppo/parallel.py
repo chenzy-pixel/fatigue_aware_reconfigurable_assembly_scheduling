@@ -1517,7 +1517,7 @@ class ParallelEpisodeRunner:
         )
         reward_identity_tolerance = 1e-8
         reward_identity_error = (
-            episode.base_reward_sum - episode.expected_reward
+            episode.unshaped_reward_sum - episode.expected_reward
         )
         if abs(reward_identity_error) > reward_identity_tolerance:
             raise RuntimeError(

@@ -299,6 +299,60 @@ def test_environment_failure_marks_done_and_disables_critic_bootstrap(
     assert transition.return_value == pytest.approx(transition.reward)
 
 
+def test_parallel_collector_accepts_failed_episode_reward_identity(
+    config,
+    fixed_instance,
+):
+    effective_config = deepcopy(config)
+    effective_config["environment"]["max_decisions"] = 1
+    environment = AssemblySchedulingEnv(effective_config)
+    environment.reset(fixed_instance)
+    action = int(np.flatnonzero(~environment.get_action_mask())[0])
+    _, reward, _, truncated, _ = environment.step(action)
+    assert truncated is True
+
+    reward_components = {
+        name: float(getattr(reward, name))
+        for name in (
+            "flow",
+            "cost",
+            "variance",
+            "operation_progress",
+            "quality",
+            "failure",
+            "feasibility_shaping",
+        )
+    }
+    scalar_reward = reward.scalarize(effective_config["reward"])
+    context = {
+        "episode_index": 0,
+        "instance_id": fixed_instance.instance_id,
+        "metadata": {},
+        "buffer": RolloutBuffer(),
+        "reward_sum": scalar_reward,
+        "reward_components": reward_components,
+        "step_count": 1,
+        "policy_step_count": 0,
+        "forced_action_count": 1,
+        "worker_step_command_count": 1,
+        "worker_local_physical_forced_action_count": 0,
+        "pending_transition": None,
+        "policy_diagnostic_rows": [],
+        "unattributed_forced_reward": scalar_reward,
+        "generation_time_seconds": 0.0,
+        "environment_step_time_seconds": 0.0,
+    }
+    runner = object.__new__(ParallelEpisodeRunner)
+    runner.config = effective_config
+    episode = runner._episode_result(context, environment.metrics())
+    assert episode.metrics["task_failed"] is True
+    assert episode.reward_components["failure"] == pytest.approx(-1.0)
+    assert episode.unshaped_reward_sum == pytest.approx(
+        episode.expected_reward,
+        abs=1e-8,
+    )
+
+
 def test_parallel_compression_skips_singleton_policy_masks(
     config,
     fixed_instance,
