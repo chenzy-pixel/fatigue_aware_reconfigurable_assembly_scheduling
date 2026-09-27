@@ -1,0 +1,12 @@
+{
+  "extends": "single_flow.json",
+  "experiment_name": "e1_single_flow_relative_worker_time",
+  "network": {
+    "worker_flow_time_normalization": "candidate_zscore_v1",
+    "worker_flow_time_std_floor": 0.001
+  },
+  "training": {
+    "episodes": 1000,
+    "parallel_envs": 20
+  }
+}

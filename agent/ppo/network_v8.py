@@ -102,6 +102,12 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     floor = float(config.get("residual_std_floor", RESIDUAL_STD_FLOOR))
     if not np.isfinite(floor) or floor <= 0.0:
         raise ValueError("network.residual_std_floor must be positive")
+    worker_time_mode = str(config.get("worker_flow_time_normalization", "absolute_v1"))
+    if worker_time_mode not in {"absolute_v1", "candidate_zscore_v1"}:
+        raise ValueError("unknown network.worker_flow_time_normalization")
+    worker_time_floor = float(config.get("worker_flow_time_std_floor", 0.001))
+    if not np.isfinite(worker_time_floor) or worker_time_floor <= 0:
+        raise ValueError("network.worker_flow_time_std_floor must be finite and positive")
     manifest_sha = config.get("normalization_manifest_sha256")
     if manifest_sha is not None:
         manifest_sha = str(manifest_sha).lower()
@@ -118,6 +124,8 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "preference_embedding_dim": PREFERENCE_ENCODER_DIM,
         "residual_gate_initial_logit": gate,
         "residual_std_floor": floor,
+        "worker_flow_time_normalization": worker_time_mode,
+        "worker_flow_time_std_floor": worker_time_floor,
         "expert_weight_parameterization": EXPERT_WEIGHT_PARAMETERIZATION,
         "normalization_manifest_sha256": manifest_sha,
     }
@@ -161,7 +169,10 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     for name, expected in expected_schemas.items():
         if spec.get(name) != expected:
             raise ValueError(f"checkpoint {name} is incompatible with V8")
-    normalize_network_config(spec)
+    normalized = normalize_network_config(spec)
+    # Older V8 checkpoints used absolute time and did not store these fields.
+    for name in ("worker_flow_time_normalization", "worker_flow_time_std_floor"):
+        spec[name] = normalized[name]
     return spec
 
 
@@ -178,6 +189,8 @@ def assert_network_config_matches_spec(
         "preference_embedding_dim",
         "residual_gate_initial_logit",
         "residual_std_floor",
+        "worker_flow_time_normalization",
+        "worker_flow_time_std_floor",
         "expert_weight_parameterization",
         "normalization_manifest_sha256",
     ):
@@ -372,6 +385,8 @@ class HeteroGraphActorCritic(nn.Module):
         residual_gate_initial_logit: float = 0.0,
         residual_std_floor: float = RESIDUAL_STD_FLOOR,
         normalization_manifest_sha256: str | None = None,
+        worker_flow_time_normalization: str = "absolute_v1",
+        worker_flow_time_std_floor: float = 0.001,
     ):
         super().__init__()
         self.feature_dimensions = {name: int(value) for name, value in feature_dimensions.items()}
@@ -387,6 +402,12 @@ class HeteroGraphActorCritic(nn.Module):
         self.residual_gate_initial_logit = float(residual_gate_initial_logit)
         self.residual_std_floor = float(residual_std_floor)
         self.normalization_manifest_sha256 = normalization_manifest_sha256
+        worker_time_config = normalize_network_config({
+            "worker_flow_time_normalization": worker_flow_time_normalization,
+            "worker_flow_time_std_floor": worker_flow_time_std_floor,
+        })
+        self.worker_flow_time_normalization = worker_time_config["worker_flow_time_normalization"]
+        self.worker_flow_time_std_floor = worker_time_config["worker_flow_time_std_floor"]
         if set(self.feature_dimensions) != set((*NODE_TYPES, "global")):
             raise ValueError("feature dimensions must contain six nodes and global")
         if set(self.edge_feature_dimensions) != set(ASSEMBLY_EDGE_TYPES):
@@ -492,6 +513,8 @@ class HeteroGraphActorCritic(nn.Module):
             "wait_direct_feature_schema": _schema_serializable(WAIT_DIRECT_SCHEMA),
             "residual_gate_initial_logit": self.residual_gate_initial_logit,
             "residual_std_floor": self.residual_std_floor,
+            "worker_flow_time_normalization": self.worker_flow_time_normalization,
+            "worker_flow_time_std_floor": self.worker_flow_time_std_floor,
             "feature_dimensions": dict(self.feature_dimensions),
             "edge_feature_dimensions": dict(self.edge_feature_dimensions),
             "action_set_feature_names": self.action_set_feature_names,
@@ -719,7 +742,28 @@ class HeteroGraphActorCritic(nn.Module):
         names = service.feature_names
         columns = {name: dense[:, names.index(name)] for name in names}
         direct = self._direct_from_columns(WORKER_DIRECT_SCHEMA, columns)
+        if self.worker_flow_time_normalization == "candidate_zscore_v1":
+            direct["flow"] = self._relative_worker_flow_time(
+                columns["stage_duration_norm"], ~mask[:pair_count]
+            ).unsqueeze(-1)
         return action, direct
+
+    def _relative_worker_flow_time(
+        self, durations: torch.Tensor, legal: torch.Tensor
+    ) -> torch.Tensor:
+        """Center legal pair durations; WAIT and masked pairs do not set the scale.
+
+        Values enter the existing negative-sign tanh ranker directly. The floor
+        is in duration/horizon units and prevents tiny time differences from
+        becoming a strong preference. Absolute edge features remain available
+        to the action encoder.
+        """
+        selected = durations[legal]
+        if selected.numel() < 2:
+            return torch.zeros_like(durations)
+        scale = selected.std(unbiased=False).clamp_min(self.worker_flow_time_std_floor)
+        relative = (durations - selected.mean()) / scale
+        return torch.where(legal, relative, torch.zeros_like(relative))
 
     def _wait_direct(
         self, observation: HeterogeneousGraphObservation, features: torch.Tensor
@@ -907,4 +951,6 @@ def build_actor_critic(
         residual_gate_initial_logit=config["residual_gate_initial_logit"],
         residual_std_floor=config["residual_std_floor"],
         normalization_manifest_sha256=config["normalization_manifest_sha256"],
+        worker_flow_time_normalization=config["worker_flow_time_normalization"],
+        worker_flow_time_std_floor=config["worker_flow_time_std_floor"],
     )
