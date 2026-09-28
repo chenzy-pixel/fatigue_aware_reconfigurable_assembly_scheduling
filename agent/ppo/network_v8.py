@@ -490,6 +490,8 @@ class HeteroGraphActorCritic(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
         self._latest_policy_decision_diagnostics: list[dict[str, Any]] = []
+        # Benchmark-only reference path; it does not add checkpoint parameters.
+        self.execution_mode = "phase_batched_v1"
 
     @staticmethod
     def _residual_mlp(width: int, hidden_dim: int) -> nn.Sequential:
@@ -527,7 +529,11 @@ class HeteroGraphActorCritic(nn.Module):
         *,
         device: torch.device | str,
     ) -> tuple[_GraphBatch, dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
-        batch = self._collate_graphs(observations, device=device)
+        reference = self.execution_mode == "reference_v8"
+        batch = (
+            self._collate_graphs_reference(observations, device=device)
+            if reference else self._collate_graphs(observations, device=device)
+        )
         embeddings = {
             name: self.node_projectors[name](batch.node_features[name])
             for name in NODE_TYPES
@@ -536,7 +542,9 @@ class HeteroGraphActorCritic(nn.Module):
             embeddings = layer(embeddings, batch.relations)
         global_embeddings = self.global_encoder(batch.global_features)
         pooled = {
-            name: self._pool_slices(embeddings[name], batch.node_slices[name])
+            name: (self._pool_slices_reference if reference else self._pool_slices)(
+                embeddings[name], batch.node_slices[name]
+            )
             for name in NODE_TYPES
         }
         graph_context = torch.cat(
@@ -565,12 +573,17 @@ class HeteroGraphActorCritic(nn.Module):
             raise ValueError("observation/action-mask batches must be non-empty and aligned")
         if any(not isinstance(item, HeterogeneousGraphObservation) for item in observations):
             raise TypeError("V8 requires heterogeneous graph observations")
+        if any(item.decision_type not in (DecisionType.PRODUCTION, DecisionType.WORKER)
+               for item in observations):
+            raise ValueError("actor cannot evaluate a terminal observation")
         self._latest_policy_decision_diagnostics.clear()
         batch, embeddings, global_embeddings, graph_context = self.encode_graph(
             observations, device=device
         )
-        preference = torch.stack(
-            [torch.as_tensor(item.preference, dtype=torch.float32, device=device) for item in observations]
+        preference = torch.as_tensor(
+            np.stack([item.preference for item in observations]),
+            dtype=torch.float32,
+            device=device,
         )
         preference_embedding = self.preference_encoder(preference)
         values = self.critic(torch.cat((graph_context, preference_embedding), dim=-1)).squeeze(-1)
@@ -580,25 +593,218 @@ class HeteroGraphActorCritic(nn.Module):
             torch.finfo(values.dtype).min,
         )
         graph_hidden = self.graph_context_projector(graph_context)
-        for index, observation in enumerate(observations):
-            nodes = {
-                name: self._node_slice(embeddings[name], batch.node_slices[name][index])
-                for name in NODE_TYPES
-            }
-            logits = self._phase_logits(
-                observation,
-                nodes,
-                global_embeddings[index],
-                graph_hidden[index],
-                preference[index],
-                preference_embedding[index],
-                masks[index],
-                device=device,
+        if self.execution_mode == "reference_v8":
+            for index, observation in enumerate(observations):
+                nodes = {
+                    name: self._node_slice(embeddings[name], batch.node_slices[name][index])
+                    for name in NODE_TYPES
+                }
+                logits = self._phase_logits(
+                    observation, nodes, global_embeddings[index], graph_hidden[index],
+                    preference[index], preference_embedding[index], masks[index], device=device,
+                )
+                result[index, :masks[index].numel()] = logits.masked_fill(
+                    masks[index], torch.finfo(values.dtype).min
+                )
+            return result, values
+        for phase in (DecisionType.PRODUCTION, DecisionType.WORKER):
+            indices = [i for i, item in enumerate(observations) if item.decision_type == phase]
+            if not indices:
+                continue
+            logits_by_index = self._phase_logits_grouped(
+                phase, indices, observations, batch, embeddings, global_embeddings,
+                graph_hidden, preference, preference_embedding, masks, device=device,
             )
-            result[index, : masks[index].numel()] = logits.masked_fill(
-                masks[index], torch.finfo(values.dtype).min
-            )
+            for index, logits in logits_by_index.items():
+                result[index, : masks[index].numel()] = logits.masked_fill(
+                    masks[index], torch.finfo(values.dtype).min
+                )
+        if not torch.is_grad_enabled():
+            # Grouped phases are computed separately; diagnostics follow input order.
+            phase_rows = list(self._latest_policy_decision_diagnostics)
+            phase_rows.sort(key=lambda row: row["_batch_index"])
+            for row in phase_rows:
+                del row["_batch_index"]
+            self._latest_policy_decision_diagnostics = phase_rows
         return result, values
+
+    def _phase_logits_grouped(
+        self,
+        phase: DecisionType,
+        indices: list[int],
+        observations: Sequence[HeterogeneousGraphObservation],
+        batch: _GraphBatch,
+        embeddings: Mapping[str, torch.Tensor],
+        global_embeddings: torch.Tensor,
+        graph_hidden: torch.Tensor,
+        preference: torch.Tensor,
+        preference_embedding: torch.Tensor,
+        masks: Sequence[torch.Tensor],
+        *,
+        device: torch.device | str,
+    ) -> dict[int, torch.Tensor]:
+        """Run each phase's candidate and residual networks once per graph batch."""
+        edge_type = CAPABLE_EDGE if phase == DecisionType.PRODUCTION else SERVICE_CANDIDATE_EDGE
+        edge_width = self.edge_feature_dimensions[edge_type]
+        pair_features: list[np.ndarray] = []
+        first_indices: list[np.ndarray] = []
+        second_indices: list[np.ndarray] = []
+        pair_graph_ids: list[np.ndarray] = []
+        locked_machine_indices: list[np.ndarray] = []
+        locked_operation_indices: list[np.ndarray] = []
+        offsets: dict[int, tuple[int, int]] = {}
+        offset = 0
+        for index in indices:
+            item = observations[index]
+            if phase == DecisionType.PRODUCTION:
+                first_count = item.node_features["operation"].shape[0]
+                second_count = item.node_features["machine"].shape[0]
+                first_offset = batch.node_slices["operation"][index][0]
+                second_offset = batch.node_slices["machine"][index][0]
+            else:
+                first_count = item.node_features["machine"].shape[0]
+                second_count = item.node_features["worker"].shape[0]
+                first_offset = batch.node_slices["machine"][index][0]
+                second_offset = batch.node_slices["worker"][index][0]
+                locked = item.relations[LOCKED_EDGE].edge_index
+                if locked.shape[1]:
+                    if np.any(np.bincount(locked[1], minlength=first_count) > 1):
+                        raise ValueError("a machine cannot lock multiple operations")
+                    locked_machine_indices.append(locked[1].astype(np.int64) + first_offset)
+                    locked_operation_indices.append(
+                        locked[0].astype(np.int64) + batch.node_slices["operation"][index][0]
+                    )
+            count = first_count * second_count
+            if masks[index].numel() != count + 1:
+                raise ValueError(f"{phase.value} mask width does not match candidates")
+            offsets[index] = (offset, offset + count)
+            offset += count
+            first_indices.append(np.repeat(np.arange(first_count), second_count) + first_offset)
+            second_indices.append(np.tile(np.arange(second_count), first_count) + second_offset)
+            pair_graph_ids.append(np.full(count, index, dtype=np.int64))
+            dense = np.zeros((count, edge_width), dtype=np.float32)
+            store = item.relations[edge_type]
+            if store.num_edges:
+                actions = store.edge_index[0] * second_count + store.edge_index[1]
+                dense[actions] = store.edge_features
+            pair_features.append(dense)
+        dense = torch.as_tensor(np.concatenate(pair_features), dtype=torch.float32, device=device)
+        first = torch.as_tensor(np.concatenate(first_indices), dtype=torch.long, device=device)
+        second = torch.as_tensor(np.concatenate(second_indices), dtype=torch.long, device=device)
+        graph_ids = torch.as_tensor(np.concatenate(pair_graph_ids), dtype=torch.long, device=device)
+        global_part = global_embeddings.index_select(0, graph_ids)
+        if phase == DecisionType.PRODUCTION:
+            action_input = torch.cat((
+                embeddings["operation"].index_select(0, first),
+                embeddings["machine"].index_select(0, second),
+                global_part, self.production_edge_encoder(dense),
+            ), dim=-1)
+            action_embedding = self.production_action_encoder(action_input)
+            schema = PRODUCTION_DIRECT_SCHEMA
+            experts, wait_experts = self.production_experts, self.production_wait_experts
+            residual_mlp, gate = self.production_residual, self.production_residual_gate
+        else:
+            locked = torch.zeros_like(embeddings["machine"])
+            if locked_machine_indices:
+                locked = locked.index_copy(
+                    0,
+                    torch.as_tensor(np.concatenate(locked_machine_indices), dtype=torch.long, device=device),
+                    embeddings["operation"].index_select(
+                        0, torch.as_tensor(np.concatenate(locked_operation_indices), dtype=torch.long, device=device)
+                    ),
+                )
+            action_input = torch.cat((
+                locked.index_select(0, first),
+                embeddings["machine"].index_select(0, first),
+                embeddings["worker"].index_select(0, second),
+                global_part, self.worker_edge_encoder(dense),
+            ), dim=-1)
+            action_embedding = self.worker_action_encoder(action_input)
+            schema = WORKER_DIRECT_SCHEMA
+            experts, wait_experts = self.worker_experts, self.worker_wait_experts
+            residual_mlp, gate = self.worker_residual, self.worker_residual_gate
+        names = observations[indices[0]].relations[edge_type].feature_names
+        columns = {name: dense[:, names.index(name)] for name in names}
+        if phase == DecisionType.PRODUCTION:
+            columns["fixed_reconfiguration_cost_norm"] = (
+                columns["fixed_disassembly_cost_norm"] + columns["fixed_installation_cost_norm"]
+            )
+        direct = self._direct_from_columns(schema, columns)
+        if phase == DecisionType.WORKER and self.worker_flow_time_normalization == "candidate_zscore_v1":
+            durations = columns["stage_duration_norm"]
+            legal_pairs = torch.cat([~masks[index][:-1] for index in indices])
+            legal_float = legal_pairs.to(durations.dtype)
+            counts = durations.new_zeros(len(observations)).index_add(0, graph_ids, legal_float)
+            means = durations.new_zeros(len(observations)).index_add(
+                0, graph_ids, durations * legal_float
+            ) / counts.clamp_min(1)
+            centered = (durations - means.index_select(0, graph_ids)) * legal_float
+            variances = durations.new_zeros(len(observations)).index_add(
+                0, graph_ids, centered.square()
+            ) / counts.clamp_min(1)
+            scales = variances.clamp_min(self.worker_flow_time_std_floor ** 2).sqrt()
+            relative = torch.where(
+                legal_pairs & (counts.index_select(0, graph_ids) >= 2),
+                (durations - means.index_select(0, graph_ids))
+                / scales.index_select(0, graph_ids),
+                torch.zeros_like(durations),
+            )
+            direct["flow"] = relative.unsqueeze(-1)
+        pair_d, pair_c, pair_z = experts(action_embedding, direct)
+        wait_raw = torch.as_tensor(
+            np.stack([observations[index].action_set_features for index in indices]),
+            dtype=torch.float32, device=device,
+        )
+        wait_embedding = self.wait_action_encoder(torch.cat((
+            self.wait_feature_encoder(wait_raw), graph_hidden[indices],
+        ), dim=-1))
+        wait_columns = {
+            name: wait_raw[:, observations[indices[0]].action_set_feature_names.index(name)]
+            for name in observations[indices[0]].action_set_feature_names
+        }
+        wait_direct = self._direct_from_columns(WAIT_DIRECT_SCHEMA, wait_columns)
+        wait_d, wait_c, wait_z = wait_experts(wait_embedding, wait_direct)
+        all_embeddings, all_d, all_c, all_z = [], [], [], []
+        all_graph_ids, all_masks = [], []
+        for position, index in enumerate(indices):
+            start, end = offsets[index]
+            all_embeddings.extend((action_embedding[start:end], wait_embedding[position:position + 1]))
+            all_d.extend((pair_d[start:end], wait_d[position:position + 1]))
+            all_c.extend((pair_c[start:end], wait_c[position:position + 1]))
+            all_z.extend((pair_z[start:end], wait_z[position:position + 1]))
+            all_graph_ids.append(torch.full((end - start + 1,), index, dtype=torch.long, device=device))
+            all_masks.append(masks[index])
+        merged_embeddings = torch.cat(all_embeddings)
+        merged_d, merged_c, merged_z = map(torch.cat, (all_d, all_c, all_z))
+        merged_graph_ids = torch.cat(all_graph_ids)
+        merged_mask = torch.cat(all_masks)
+        base = (merged_z * preference.index_select(0, merged_graph_ids)).sum(dim=-1)
+        legal = (~merged_mask).to(base.dtype)
+        legal_count = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, legal)
+        mean = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, base * legal) / legal_count.clamp_min(1)
+        centered = (base - mean.index_select(0, merged_graph_ids)) * legal
+        variance = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, centered.square()) / legal_count.clamp_min(1)
+        scale = variance.clamp_min(self.residual_std_floor ** 2).sqrt().index_select(0, merged_graph_ids)
+        hidden = graph_hidden.index_select(0, merged_graph_ids)
+        pref_embed = preference_embedding.index_select(0, merged_graph_ids)
+        interaction = self.action_preference_projector(merged_embeddings) * pref_embed
+        residual_input = torch.cat((merged_embeddings, hidden, pref_embed, interaction), dim=-1)
+        residual = 2.0 * torch.sigmoid(gate) * scale * torch.tanh(residual_mlp(residual_input).squeeze(-1))
+        final = base + residual
+        output: dict[int, torch.Tensor] = {}
+        cursor = 0
+        for index in indices:
+            width = masks[index].numel()
+            segment = slice(cursor, cursor + width)
+            output[index] = final[segment]
+            self._record_components(
+                phase, masks[index], merged_d[segment], merged_c[segment], merged_z[segment],
+                base[segment], residual[segment], final[segment], preference[index],
+            )
+            if not torch.is_grad_enabled():
+                self._latest_policy_decision_diagnostics[-1]["_batch_index"] = index
+            cursor += width
+        return output
 
     def _phase_logits(
         self,
@@ -792,12 +998,13 @@ class HeteroGraphActorCritic(nn.Module):
             result[objective] = torch.stack(transformed, dim=-1)
         return result
 
-    def _collate_graphs(
+    def _collate_graphs_reference(
         self,
         observations: Sequence[HeterogeneousGraphObservation],
         *,
         device: torch.device | str,
     ) -> _GraphBatch:
+        """Prior graph packing path retained for measured before/after runs."""
         node_features: dict[str, torch.Tensor] = {}
         node_slices: dict[str, list[tuple[int, int]]] = {}
         for node_type in NODE_TYPES:
@@ -837,6 +1044,56 @@ class HeteroGraphActorCritic(nn.Module):
         )
         return _GraphBatch(node_features, node_slices, relations, global_features)
 
+    def _collate_graphs(
+        self,
+        observations: Sequence[HeterogeneousGraphObservation],
+        *,
+        device: torch.device | str,
+    ) -> _GraphBatch:
+        node_features: dict[str, torch.Tensor] = {}
+        node_slices: dict[str, list[tuple[int, int]]] = {}
+        for node_type in NODE_TYPES:
+            parts: list[np.ndarray] = []
+            slices: list[tuple[int, int]] = []
+            offset = 0
+            for observation in observations:
+                array = observation.node_features[node_type]
+                if array.shape[1] != self.feature_dimensions[node_type]:
+                    raise ValueError(f"{node_type} feature width changed")
+                count = array.shape[0]
+                slices.append((offset, offset + count))
+                offset += count
+                parts.append(array)
+            node_features[node_type] = torch.as_tensor(
+                np.concatenate(parts), dtype=torch.float32, device=device
+            )
+            node_slices[node_type] = slices
+        relations: dict[EdgeType, RelationBatch] = {}
+        for edge_type in ASSEMBLY_EDGE_TYPES:
+            source_type, _, target_type = edge_type
+            indices_parts: list[np.ndarray] = []
+            feature_parts: list[np.ndarray] = []
+            expected_bidirectional = edge_type in BIDIRECTIONAL_EDGE_TYPES
+            for index, observation in enumerate(observations):
+                store = observation.relations[edge_type]
+                if store.bidirectional != expected_bidirectional:
+                    raise ValueError(f"bidirectional flag changed for {edge_type}")
+                indices = np.array(store.edge_index, dtype=np.int64, copy=True)
+                indices[0] += node_slices[source_type][index][0]
+                indices[1] += node_slices[target_type][index][0]
+                indices_parts.append(indices)
+                feature_parts.append(store.edge_features)
+            relations[edge_type] = (
+                torch.as_tensor(np.concatenate(indices_parts, axis=1), dtype=torch.long, device=device),
+                torch.as_tensor(np.concatenate(feature_parts), dtype=torch.float32, device=device),
+                expected_bidirectional,
+            )
+        global_features = torch.as_tensor(
+            np.stack([item.global_features for item in observations]),
+            dtype=torch.float32, device=device,
+        )
+        return _GraphBatch(node_features, node_slices, relations, global_features)
+
     def _record_components(
         self,
         phase: DecisionType,
@@ -849,34 +1106,74 @@ class HeteroGraphActorCritic(nn.Module):
         final: torch.Tensor,
         preference: torch.Tensor,
     ) -> None:
+        # PPO updates do not consume action diagnostics. Avoid retaining their
+        # computation graph and transferring dozens of scalars per action.
+        if torch.is_grad_enabled():
+            return
         legal = ~mask
+        pair_legal = ~mask[:-1]
         row: dict[str, Any] = {
             "decision_type": phase.value,
-            "legal_pair_count": int((~mask[:-1]).sum().item()),
-            "terminal_legal": bool(legal[-1].item()),
+            "legal_pair_count": pair_legal.sum(),
+            "terminal_legal": legal[-1],
         }
         for name, values in (("direct", direct), ("context", context), ("expert", experts)):
             for index, objective in enumerate(OBJECTIVES):
                 selected = values[legal, index]
-                row[f"{name}_{objective}_mean"] = float(selected.mean().detach().cpu())
-                row[f"{name}_{objective}_std"] = float(selected.std(unbiased=False).detach().cpu())
-                row[f"{name}_{objective}_rms"] = float(selected.square().mean().sqrt().detach().cpu())
-                row[f"{name}_{objective}_saturation_ratio"] = float((selected.abs() > 0.99).float().mean().detach().cpu())
+                row[f"{name}_{objective}_mean"] = selected.mean()
+                row[f"{name}_{objective}_std"] = selected.std(unbiased=False)
+                row[f"{name}_{objective}_rms"] = selected.square().mean().sqrt()
+                row[f"{name}_{objective}_saturation_ratio"] = (selected.abs() > 0.99).float().mean()
                 contribution = selected * preference[index]
-                row[f"contribution_{objective}_rms"] = float(contribution.square().mean().sqrt().detach().cpu())
+                row[f"contribution_{objective}_rms"] = contribution.square().mean().sqrt()
         base_rms = base[legal].square().mean().sqrt()
         residual_rms = residual[legal].square().mean().sqrt()
-        row["residual_base_rms_ratio"] = float((residual_rms / base_rms.clamp_min(1e-12)).detach().cpu())
-        pair_legal = ~mask[:-1]
-        if bool(pair_legal.any()):
-            row["relative_top_action"] = int(torch.nonzero(pair_legal).flatten()[base[:-1][pair_legal].argmax()].item())
-            row["final_pair_top_action"] = int(torch.nonzero(pair_legal).flatten()[final[:-1][pair_legal].argmax()].item())
-            row["context_overrode_top"] = row["relative_top_action"] != row["final_pair_top_action"]
+        row["residual_base_rms_ratio"] = residual_rms / base_rms.clamp_min(1e-12)
+        minimum = torch.finfo(base.dtype).min
+        has_pair = pair_legal.any()
+        row["relative_top_action"] = torch.where(
+            has_pair, base[:-1].masked_fill(~pair_legal, minimum).argmax(), -1
+        )
+        row["final_pair_top_action"] = torch.where(
+            has_pair, final[:-1].masked_fill(~pair_legal, minimum).argmax(), -1
+        )
+        row["context_overrode_top"] = (
+            row["relative_top_action"] != row["final_pair_top_action"]
+        )
         self._latest_policy_decision_diagnostics.append(row)
 
     def consume_policy_decision_diagnostics(self) -> list[dict[str, Any]]:
-        result = list(self._latest_policy_decision_diagnostics)
+        pending = list(self._latest_policy_decision_diagnostics)
         self._latest_policy_decision_diagnostics.clear()
+        if not pending:
+            return []
+        # A single host transfer replaces one GPU synchronization per scalar.
+        entries = [
+            (row_index, name, value)
+            for row_index, row in enumerate(pending)
+            for name, value in row.items()
+            if isinstance(value, torch.Tensor)
+        ]
+        transferred = (
+            torch.stack([value.detach().float() for _, _, value in entries])
+            .cpu()
+            .tolist()
+        )
+        result = [{"decision_type": row["decision_type"]} for row in pending]
+        integers = {"legal_pair_count", "relative_top_action", "final_pair_top_action"}
+        booleans = {"terminal_legal", "context_overrode_top"}
+        for (row_index, name, _), value in zip(entries, transferred, strict=True):
+            if name in booleans:
+                result[row_index][name] = bool(value)
+            elif name in integers:
+                result[row_index][name] = int(value)
+            else:
+                result[row_index][name] = float(value)
+        for row in result:
+            if row["legal_pair_count"] == 0:
+                row.pop("relative_top_action")
+                row.pop("final_pair_top_action")
+                row.pop("context_overrode_top")
         return result
 
     def effective_relative_cost_weights(self) -> dict[str, dict[str, float]]:
@@ -912,9 +1209,25 @@ class HeteroGraphActorCritic(nn.Module):
 
     @staticmethod
     def _pool_slices(embeddings: torch.Tensor, slices: Sequence[tuple[int, int]]) -> torch.Tensor:
-        return torch.stack(
-            [embeddings[start:end].mean(0) if end > start else embeddings.new_zeros(embeddings.shape[-1]) for start, end in slices]
+        lengths = [end - start for start, end in slices]
+        graph_ids = torch.as_tensor(
+            np.repeat(np.arange(len(slices)), lengths),
+            dtype=torch.long,
+            device=embeddings.device,
         )
+        pooled = embeddings.new_zeros((len(slices), embeddings.shape[-1]))
+        pooled.index_add_(0, graph_ids, embeddings)
+        return pooled / torch.as_tensor(lengths, device=embeddings.device).clamp_min(1).unsqueeze(-1)
+
+    @staticmethod
+    def _pool_slices_reference(
+        embeddings: torch.Tensor, slices: Sequence[tuple[int, int]]
+    ) -> torch.Tensor:
+        return torch.stack([
+            embeddings[start:end].mean(0) if end > start
+            else embeddings.new_zeros(embeddings.shape[-1])
+            for start, end in slices
+        ])
 
     @staticmethod
     def _node_slice(embeddings: torch.Tensor, bounds: tuple[int, int]) -> torch.Tensor:
@@ -924,6 +1237,10 @@ class HeteroGraphActorCritic(nn.Module):
     def _validate_action_mask(
         mask: np.ndarray | torch.Tensor, *, device: torch.device | str
     ) -> torch.Tensor:
+        if isinstance(mask, np.ndarray):
+            if mask.ndim != 1 or bool(mask.all()):
+                raise ValueError("action mask must be one-dimensional with one legal action")
+            return torch.as_tensor(mask, dtype=torch.bool, device=device)
         value = torch.as_tensor(mask, dtype=torch.bool, device=device)
         if value.ndim != 1 or bool(value.all()):
             raise ValueError("action mask must be one-dimensional with one legal action")

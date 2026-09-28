@@ -30,6 +30,10 @@ def test_single_stage_run_and_training_update_are_compact():
             "entropy": 1.421,
             "approx_kl": 0.0061,
             "learning_rate": 1e-4,
+            "sampling_wall_time_seconds": 12.0,
+            "policy_inference_time_seconds": 3.0,
+            "ppo_update_time_seconds": 2.0,
+            "transitions_per_second": 100.0,
         },
         [
             {
@@ -51,6 +55,7 @@ def test_single_stage_run_and_training_update_are_compact():
     assert "val=50 × repeats=3 × prefs=1 | sampled T=1.0" in text
     assert "reward=ΔP-ΔQ | gamma=1.0" in text
     assert "complete 50.0% | reward 0.200 | progress 0.900" in text
+    assert "sample 12.0s | infer 3.0s | ppo 2.0s | throughput 100.0 trans/s" in text
     assert "phase" not in text.lower()
     assert "audit" not in text.lower()
 

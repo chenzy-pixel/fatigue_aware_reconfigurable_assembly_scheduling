@@ -95,6 +95,9 @@ python -m venv .venv
 
 All worker counts use the same `TrainingEngine`; `--parallel-envs 1` selects a
 serial collector.
+Use `--episodes-per-update` to keep the PPO episode count fixed while changing
+training workers, and `--validation-parallel-envs` to tune validation separately.
+The RTX 5060 Ti benchmark commands are in [docs/rtx5060ti_benchmark.md](docs/rtx5060ti_benchmark.md).
 
 ```powershell
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --smoke --parallel-envs 1 --run-name flow_smoke

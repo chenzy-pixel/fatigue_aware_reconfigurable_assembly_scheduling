@@ -105,6 +105,14 @@ class TrainingConsoleReporter:
             f"| kl {_metric(update_row.get('approx_kl'), 4)} "
             f"| lr={float(update_row.get('learning_rate', 0.0)):.1e}",
         )
+        if update_row.get("sampling_wall_time_seconds") is not None:
+            self.writer(
+                "        sample "
+                f"{_metric(update_row.get('sampling_wall_time_seconds'), 1)}s "
+                f"| infer {_metric(update_row.get('policy_inference_time_seconds'), 1)}s "
+                f"| ppo {_metric(update_row.get('ppo_update_time_seconds'), 1)}s "
+                f"| throughput {_metric(update_row.get('transitions_per_second'), 1)} trans/s"
+            )
 
     def validation(
         self,

@@ -165,14 +165,30 @@ class PPOAgent:
         *,
         deterministic: bool = False,
         generator: torch.Generator | None = None,
+        generators: Sequence[torch.Generator] | None = None,
     ) -> tuple[list[int], list[float], list[float]]:
+        if generators is not None and (
+            deterministic or generator is not None or len(generators) != len(observations)
+        ):
+            raise ValueError("generators must align with a sampled observation batch")
         logits, values = self.network.forward_batch(
             observations,
             action_masks,
             device=self.device,
         )
         distribution = Categorical(logits=logits)
-        if deterministic:
+        if generators is not None:
+            # Slice padded logits before sampling so each RNG sees its original
+            # action width, independent of the other observations in this batch.
+            actions = torch.stack([
+                torch.multinomial(
+                    Categorical(logits=logits[index, :len(mask)]).probs,
+                    num_samples=1,
+                    generator=generators[index],
+                ).squeeze(0)
+                for index, mask in enumerate(action_masks)
+            ])
+        elif deterministic:
             actions = torch.argmax(logits, dim=-1)
         elif generator is None:
             actions = distribution.sample()
@@ -183,13 +199,14 @@ class PPOAgent:
                 generator=generator,
             ).squeeze(-1)
         log_probabilities = distribution.log_prob(actions)
+        sampled = torch.stack(
+            (actions.to(dtype=values.dtype), log_probabilities, values),
+            dim=-1,
+        ).cpu().tolist()
         return (
-            [int(value) for value in actions.cpu().tolist()],
-            [
-                float(value)
-                for value in log_probabilities.cpu().tolist()
-            ],
-            [float(value) for value in values.cpu().tolist()],
+            [int(row[0]) for row in sampled],
+            [float(row[1]) for row in sampled],
+            [float(row[2]) for row in sampled],
         )
 
     @torch.no_grad()
@@ -260,7 +277,7 @@ class PPOAgent:
             "gradient_norm",
             "gradient_clipped_fraction",
         )
-        metrics: list[tuple[float, ...]] = []
+        metrics: list[torch.Tensor] = []
         for _ in range(epochs):
             permutation = torch.randperm(
                 len(buffer.transitions), device=self.device
@@ -346,25 +363,22 @@ class PPOAgent:
                     self.config["max_grad_norm"],
                 )
                 self.optimizer.step()
-                metrics.append(
-                    (
-                        float(policy_loss.detach().item()),
-                        float(value_loss.detach().item()),
-                        float(entropy.detach().item()),
-                        float(loss.detach().item()),
-                        float(approximate_kl.detach().item()),
-                        float(clip_fraction.detach().item()),
-                        float(ratios.detach().mean().item()),
-                        float(gradient_norm.detach().item()),
-                        float(
-                            (
-                                gradient_norm
-                                > float(self.config["max_grad_norm"])
-                            ).item()
-                        ),
-                    )
-                )
-        metric_array = np.asarray(metrics, dtype=np.float64)
+                metrics.append(torch.stack((
+                    policy_loss.detach(), value_loss.detach(), entropy.detach(),
+                    loss.detach(), approximate_kl.detach(), clip_fraction.detach(),
+                    ratios.detach().mean(), gradient_norm.detach(),
+                    (gradient_norm > float(self.config["max_grad_norm"])).float().detach(),
+                )))
+        # Read all minibatch metrics and summary statistics in one host transfer.
+        summaries = torch.stack((
+            return_values_all.mean(), return_values_all.std(unbiased=False),
+            raw_advantages.mean(), raw_advantages.std(unbiased=False),
+            value_predictions_before.mean(),
+            value_predictions_before.std(unbiased=False),
+            pre_update_explained_variance,
+        ))
+        packed = torch.cat((torch.stack(metrics).flatten(), summaries)).cpu().numpy()
+        metric_array = packed[:-7].reshape(len(metrics), len(metric_names)).astype(np.float64)
         means = np.mean(metric_array, axis=0)
         result = {
             name: float(value)
@@ -373,23 +387,12 @@ class PPOAgent:
         result["gradient_norm_max"] = float(
             np.max(metric_array[:, metric_names.index("gradient_norm")])
         )
-        result["return_mean"] = float(return_values_all.mean().item())
-        result["return_std"] = float(
-            return_values_all.std(unbiased=False).item()
-        )
-        result["advantage_mean"] = float(raw_advantages.mean().item())
-        result["advantage_std"] = float(
-            raw_advantages.std(unbiased=False).item()
-        )
-        result["value_prediction_mean"] = float(
-            value_predictions_before.mean().item()
-        )
-        result["value_prediction_std"] = float(
-            value_predictions_before.std(unbiased=False).item()
-        )
-        result["pre_update_explained_variance"] = float(
-            pre_update_explained_variance.item()
-        )
+        for name, value in zip((
+            "return_mean", "return_std", "advantage_mean", "advantage_std",
+            "value_prediction_mean", "value_prediction_std",
+            "pre_update_explained_variance",
+        ), packed[-7:]):
+            result[name] = float(value)
         result["learning_rate"] = float(
             self.optimizer.param_groups[0]["lr"]
         )

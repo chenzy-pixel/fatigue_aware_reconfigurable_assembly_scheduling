@@ -216,12 +216,19 @@ def _evaluate_policy(
     instance_limit: int,
     sampling_seeds: list[int],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    evaluation_started = time.perf_counter()
     universal = _is_universal(config)
     if not sampling_seeds:
         raise ValueError("sampled evaluation requires at least one seed")
     rows: list[dict[str, Any]] = []
     reference: dict[str, Any] | None = None
     for repeat_index, seed in enumerate(sampling_seeds):
+        repeat_started = time.perf_counter()
+        print(
+            f"[val] repeat {repeat_index + 1}/{len(sampling_seeds)}, "
+            f"instances={instance_limit}, workers={config['training']['validation_parallel_envs']}",
+            flush=True,
+        )
         if universal:
             current_rows, current = evaluate_preference_grid_parallel(
                 config,
@@ -246,6 +253,11 @@ def _evaluate_policy(
             row["sampling_repeat"] = repeat_index
         rows.extend(current_rows)
         reference = current
+        print(
+            f"[val] repeat {repeat_index + 1}/{len(sampling_seeds)} complete, "
+            f"{time.perf_counter() - repeat_started:.1f}s",
+            flush=True,
+        )
     if reference is None:
         raise RuntimeError("evaluation produced no aggregate")
     aggregate = _aggregate_formal_rows(
@@ -258,6 +270,7 @@ def _evaluate_policy(
         universal=universal,
     )
     aggregate["sampling_seeds"] = [int(seed) for seed in sampling_seeds]
+    aggregate["wall_time_seconds"] = time.perf_counter() - evaluation_started
     aggregate["physical_safety_pass"] = _rows_are_physically_safe(rows)
     return rows, aggregate
 
@@ -272,6 +285,7 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
     all_metrics = aggregate["all_instance_metrics"]
     return {
         "episode": int(episode),
+        "validation_wall_time_seconds": float(aggregate.get("wall_time_seconds", 0.0)),
         "instance_count": int(aggregate["instance_count"]),
         "cell_count": aggregate.get("cell_count", aggregate["instance_count"]),
         "repeat_count": int(aggregate.get("repeat_count", 1)),
@@ -448,6 +462,8 @@ class TrainingEngine:
         run_name: str | None = None,
         algorithm_seed: int | None = None,
         worker_count: int | None = None,
+        episodes_per_update: int | None = None,
+        validation_parallel_envs: int | None = None,
         visdom_enabled: bool | None = None,
         initial_checkpoint: str | Path | None = None,
     ) -> None:
@@ -456,6 +472,8 @@ class TrainingEngine:
         self.run_name = run_name
         self.algorithm_seed = algorithm_seed
         self.worker_count = worker_count
+        self.episodes_per_update = episodes_per_update
+        self.validation_parallel_envs = validation_parallel_envs
         self.visdom_enabled = visdom_enabled
         self.initial_checkpoint = initial_checkpoint
 
@@ -470,6 +488,9 @@ class TrainingEngine:
         )
         config["seed"] = seed
         set_seed(seed)
+        torch.set_num_threads(int(config["training"].get("torch_num_threads", 4)))
+        config["training"]["policy_execution_version"] = "phase_batched_v1"
+        config["training"]["policy_precision"] = "float32"
         if not math.isclose(float(config["ppo"]["gamma"]), 1.0):
             raise ValueError("single-stage training requires ppo.gamma = 1.0")
         episodes = int(
@@ -488,6 +509,18 @@ class TrainingEngine:
         config["training"][
             "smoke_parallel_envs" if self.smoke else "parallel_envs"
         ] = workers
+        update_size = int(
+            self.episodes_per_update
+            if self.episodes_per_update is not None
+            else config["training"].get("episodes_per_update", workers)
+        )
+        if update_size < 1:
+            raise ValueError("episodes_per_update must be positive")
+        config["training"]["episodes_per_update"] = update_size
+        if self.validation_parallel_envs is not None:
+            config["training"]["validation_parallel_envs"] = int(self.validation_parallel_envs)
+        if int(config["training"]["validation_parallel_envs"]) < 1:
+            raise ValueError("validation_parallel_envs must be positive")
         if self.initial_checkpoint is not None:
             config["training"]["initial_checkpoint"] = str(
                 Path(self.initial_checkpoint).resolve()
@@ -498,6 +531,7 @@ class TrainingEngine:
             run_name=self.run_name,
             episodes=episodes,
             parallel_envs=min(workers, episodes),
+            episodes_per_update=update_size,
             initial_checkpoint=self.initial_checkpoint,
         )
 
@@ -510,6 +544,8 @@ def train(
     online_instances: bool | None = None,
     algorithm_seed: int | None = None,
     parallel_envs: int | None = None,
+    episodes_per_update: int | None = None,
+    validation_parallel_envs: int | None = None,
     visdom_enabled: bool | None = None,
     initial_checkpoint: str | Path | None = None,
 ) -> Path:
@@ -521,6 +557,8 @@ def train(
         run_name=run_name,
         algorithm_seed=algorithm_seed,
         worker_count=parallel_envs,
+        episodes_per_update=episodes_per_update,
+        validation_parallel_envs=validation_parallel_envs,
         visdom_enabled=visdom_enabled,
         initial_checkpoint=initial_checkpoint,
     ).run()
@@ -533,6 +571,7 @@ def _train_single_stage(
     run_name: str | None,
     episodes: int,
     parallel_envs: int,
+    episodes_per_update: int,
     initial_checkpoint: str | Path | None,
 ) -> Path:
     started_at = time.perf_counter()
@@ -602,22 +641,26 @@ def _train_single_stage(
         worker_count=worker_count,
     ) as runner:
         for update_id, batch_start in enumerate(
-            range(0, episodes, parallel_envs), start=1
+            range(0, episodes, episodes_per_update), start=1
         ):
-            indices = list(range(batch_start, min(batch_start + parallel_envs, episodes)))
+            indices = list(range(batch_start, min(batch_start + episodes_per_update, episodes)))
             rollout = runner.collect_training_batch(
                 agent,
                 indices,
                 gamma=float(config["ppo"]["gamma"]),
                 gae_lambda=float(config["ppo"]["gae_lambda"]),
                 step_limit=step_limit,
+                max_parallelism=parallel_envs,
             )
             if rollout.transition_count == 0:
                 raise RuntimeError("training batch contains no policy transitions")
+            update_started = time.perf_counter()
             losses = agent.update(rollout.buffer)
+            ppo_update_seconds = time.perf_counter() - update_started
             batch_rows = [_episode_log_row(episode) for episode in rollout.episodes]
             episode_rows.extend(batch_rows)
             completed_episodes = indices[-1] + 1
+            training_seconds = rollout.sampling_wall_time_seconds + ppo_update_seconds
             update_row = {
                 "update_id": update_id,
                 "episode_start": indices[0],
@@ -627,15 +670,27 @@ def _train_single_stage(
                 "environment_step_count": rollout.environment_step_count,
                 "forced_action_count": rollout.forced_action_count,
                 "forced_action_ratio": rollout.forced_action_ratio,
+                "sampling_wall_time_seconds": rollout.sampling_wall_time_seconds,
+                "policy_inference_time_seconds": rollout.policy_inference_time_seconds,
+                "ppo_update_time_seconds": ppo_update_seconds,
+                "generation_time_seconds": sum(
+                    episode.generation_time_seconds for episode in rollout.episodes
+                ),
+                "environment_step_time_seconds": sum(
+                    episode.environment_step_time_seconds for episode in rollout.episodes
+                ),
+                "transitions_per_second": rollout.transition_count / training_seconds,
                 "learning_rate": plateau.learning_rate,
                 **losses,
             }
             update_rows.append(update_row)
+            write_csv(run_directory / "train_log.csv", episode_rows)
+            write_csv(run_directory / "update_log.csv", update_rows)
             dashboard.log_update(update_row, batch_rows, selector.as_dict())
             reporter.training_update(update_row, batch_rows)
 
             validation_due = (
-                completed_episodes % validation_interval == 0
+                batch_start // validation_interval < completed_episodes // validation_interval
                 or completed_episodes == episodes
             )
             if not validation_due:
@@ -680,6 +735,11 @@ def _train_single_stage(
                 agent.set_learning_rate(plateau.learning_rate)
             validation_row.update(plateau.as_dict())
             validation_rows.append(validation_row)
+            write_csv(run_directory / "validation_log.csv", validation_rows)
+            write_csv(
+                run_directory / "sampled_validation_instance_metrics.csv",
+                sampled_validation_rows,
+            )
             dashboard.log_validation(
                 validation_row,
                 best_validation=best_validation_row,
@@ -785,6 +845,8 @@ def main() -> int:
     parser.add_argument("--run-name")
     parser.add_argument("--algorithm-seed", type=int)
     parser.add_argument("--parallel-envs", type=int)
+    parser.add_argument("--episodes-per-update", type=int)
+    parser.add_argument("--validation-parallel-envs", type=int)
     parser.add_argument(
         "--visdom-enabled",
         action=argparse.BooleanOptionalAction,
@@ -818,6 +880,8 @@ def main() -> int:
                     online_instances=args.online_instances,
                     algorithm_seed=args.algorithm_seed,
                     parallel_envs=args.parallel_envs,
+                    episodes_per_update=args.episodes_per_update,
+                    validation_parallel_envs=args.validation_parallel_envs,
                     visdom_enabled=args.visdom_enabled,
                     initial_checkpoint=args.initial_checkpoint,
                 )

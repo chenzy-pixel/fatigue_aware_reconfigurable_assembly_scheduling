@@ -585,6 +585,9 @@ def _evaluation_row(
             "sampling_evaluation_key"
         ),
         "sampling_rng_version": metrics.get("sampling_rng_version"),
+        "policy_execution_version": config["training"].get("policy_execution_version", "legacy_v8"),
+        "policy_precision": config["training"].get("policy_precision", "float32"),
+        "validation_parallel_envs": int(config["training"].get("validation_parallel_envs", 1)),
         "inference_time_seconds": metrics[
             "inference_time_seconds"
         ],
@@ -990,7 +993,11 @@ def evaluate_preference_grid_parallel(
         rollouts = runner.evaluate_records(
             ppo_agent,
             records,
-            max_parallelism=min(runner.worker_count, len(records)),
+            max_parallelism=min(
+                int(config["training"]["validation_parallel_envs"]),
+                runner.worker_count,
+                len(records),
+            ),
             deterministic=decode_mode == "greedy",
             sampling_seed=sampling_seed,
             preferences=repeated_preferences,

@@ -96,6 +96,87 @@ def test_mixed_variable_size_batch_matches_individual_forward(
     assert not hasattr(compact, "relations")
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_phase_batched_head_matches_reference_values_and_gradients(
+    config, fixed_instance, device
+):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    effective_config = deepcopy(config)
+    effective_config["network"]["worker_flow_time_normalization"] = "candidate_zscore_v1"
+    validation_instance = load_dataset_split(effective_config, "validation")[0].instance
+    observations, masks = [], []
+    for instance in (fixed_instance, validation_instance):
+        environment = AssemblySchedulingEnv(effective_config)
+        observations.append(environment.reset(instance))
+        masks.append(environment.get_action_mask())
+    worker_observation, worker_mask = _find_worker_observation(effective_config, fixed_instance)
+    observations.append(worker_observation)
+    masks.append(worker_mask)
+    wait_only = np.ones_like(worker_mask, dtype=bool)
+    wait_only[-1] = False
+    observations.append(worker_observation)
+    masks.append(wait_only)
+    network = build_actor_critic(observations[0], effective_config["network"]).to(device)
+    network.eval()
+
+    def evaluate(mode):
+        network.zero_grad(set_to_none=True)
+        network.execution_mode = mode
+        logits, values = network.forward_batch(observations, masks, device=device)
+        loss = values.square().sum() + sum(
+            logits[index, :len(mask)][~torch.as_tensor(mask, device=device)].square().sum()
+            for index, mask in enumerate(masks)
+        )
+        loss.backward()
+        gradients = [
+            parameter.grad.detach().clone() if parameter.grad is not None else None
+            for parameter in network.parameters()
+        ]
+        return logits.detach().clone(), values.detach().clone(), gradients
+
+    reference_logits, reference_values, reference_gradients = evaluate("reference_v8")
+    batched_logits, batched_values, batched_gradients = evaluate("phase_batched_v1")
+    for index, mask in enumerate(masks):
+        torch.testing.assert_close(
+            batched_logits[index, :len(mask)], reference_logits[index, :len(mask)],
+            atol=1e-5, rtol=1e-4,
+        )
+        torch.testing.assert_close(
+            torch.softmax(batched_logits[index, :len(mask)], dim=-1),
+            torch.softmax(reference_logits[index, :len(mask)], dim=-1),
+            atol=1e-5, rtol=1e-4,
+        )
+    torch.testing.assert_close(batched_values, reference_values, atol=1e-5, rtol=1e-4)
+    for batched, reference in zip(batched_gradients, reference_gradients):
+        assert (batched is None) == (reference is None)
+        if batched is not None:
+            torch.testing.assert_close(batched, reference, atol=1e-5, rtol=1e-4)
+
+
+def test_batched_policy_diagnostics_are_plain_values(config, fixed_instance):
+    environment = AssemblySchedulingEnv(config)
+    observation = environment.reset(fixed_instance)
+    mask = environment.get_action_mask()
+    network = build_actor_critic(observation, config["network"])
+    with torch.no_grad():
+        network.forward_batch([observation, observation], [mask, mask], device="cpu")
+    rows = network.consume_policy_decision_diagnostics()
+    assert len(rows) == 2
+    for name, value in rows[0].items():
+        if isinstance(value, float):
+            assert rows[1][name] == pytest.approx(value, abs=1e-6)
+        else:
+            assert rows[1][name] == value
+    assert rows[0]["legal_pair_count"] == int((~mask[:-1]).sum())
+    assert all(
+        isinstance(value, (str, int, float, bool))
+        for row in rows
+        for value in row.values()
+    )
+    assert network.consume_policy_decision_diagnostics() == []
+
+
 def test_sampled_batch_uses_independent_reproducible_generator(
     config,
     fixed_instance,
