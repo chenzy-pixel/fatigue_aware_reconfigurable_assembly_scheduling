@@ -5,6 +5,28 @@ fatigue-aware reconfigurable assembly scheduling. Production and worker
 decisions use pair-plus-WAIT actions, exact action masks, deterministic event
 simulation, and schema-5 heterogeneous graph observations.
 
+## Confirmed main-experiment protocol (2026-09-28)
+
+The agreed objective scales are **Flow=1152.2093959731544,
+Cost=386.674652792805, worker-load variance=4.937746913580247**.
+Each scale is the median of the corresponding objective's successful-trajectory
+means at the final five validations (episodes 840, 880, 920, 960, and 1000).
+Flow uses the latest relative-worker-time run; Cost and variance use their
+respective 1000-episode single-objective runs. All main-method and structural ablation
+runs share these frozen scales.
+
+Universal training validation runs **every 100 episodes** on **50 fixed
+instances × 3 sampled repeats × 13 fixed preferences = 1950 trajectories**.
+The 13 preferences comprise three endpoints, three edge midpoints, the equal-weight
+center, and all six permutations of `(0.6, 0.3, 0.1)`.
+Final evaluation reloads the selected best checkpoint and uses the **66-point
+step-0.1 simplex grid** on the test set with three repeats per instance/preference.
+
+The full ordered preference list and scale provenance are in
+[the experiment protocol](docs/experiment_protocol.md). The Universal model uses
+`candidate_zscore_v1` for worker Flow time with a standard-deviation floor of
+`0.001`; its scales are loaded from the checked manifest in `configs/manifests/`.
+
 ## Reward contract
 
 Every PPO entry point uses one reward throughout training:
@@ -62,8 +84,8 @@ ranked lexicographically:
 1. higher sampled completion rate;
 2. lower preference-balanced quality when completion ties within `1e-12`.
 
-For the Universal policy, completion is the minimum over the fixed 66-point
-preference grid. Quality is averaged within each preference over successful
+Under the confirmed main-experiment protocol, Universal checkpoint selection
+uses the minimum completion over the fixed 13-point validation set. Quality is averaged within each preference over successful
 trajectories, then averaged equally across preferences. A preference without a
 successful trajectory gives aggregate quality `+inf`.
 
@@ -78,6 +100,8 @@ checkpoint metadata and provenance.
 
 - `agent/ppo/`: V8 HGNN actor-critic, rollout buffer, PPO update, and parallel collector.
 - `configs/`: the Universal configuration plus Flow, Cost, and Variance one-hot overrides.
+- `analysis/`: reusable Pareto and experiment analysis.
+- `scripts/`: baseline, audit, diagnostic, and batch-run entry points.
 - `data/`: instance models, deterministic online generation, fixed datasets, and manifests.
 - `environment/`: action codec, runtime state, masks, event simulation, reward, and metrics.
 - `training/`: completion-first checkpoint selector.
@@ -103,6 +127,7 @@ validation workers, and 40 episodes per PPO update.
 ```powershell
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --smoke --parallel-envs 1 --run-name flow_smoke
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --algorithm-seed 11 --parallel-envs 20 --run-name flow_seed11
+.\.venv\Scripts\python.exe -m scripts.run_00_smoke
 ```
 
 An explicit compatible checkpoint can initialize network weights:
@@ -113,11 +138,18 @@ An explicit compatible checkpoint can initialize network weights:
 
 E1 Flow, Cost, and Variance validate every 40 episodes. The default formal run
 contains 2,000 training episodes.
+Universal validates every 100 episodes on the ordered 13-point set and runs
+the 66-point final test after reloading its selected best checkpoint.
+Its training and validation worker counts are both 20 in the effective config.
+The five-seed batch entry point is `scripts/run_v8_universal.ps1`, which loads
+`configs/v8/universal.json` by default.
 
 ## Evaluate
 
 ```powershell
 .\.venv\Scripts\python.exe eval.py --config configs\e1\single_flow.json --dataset test --policy ppo --checkpoint result\runs\flow_seed11\best_checkpoint.pt
+.\.venv\Scripts\python.exe eval.py --config configs\v8\universal.json --dataset validation --policy ppo --checkpoint result\runs\v8_universal_seed11\best_checkpoint.pt --preference-set validation
+.\.venv\Scripts\python.exe eval.py --config configs\v8\universal.json --dataset test --policy ppo --checkpoint result\runs\v8_universal_seed11\best_checkpoint.pt --preference-set final_test
 ```
 
 Sampled validation seeds use `algorithm_seed + 100000 + repeat`; independent
@@ -128,13 +160,14 @@ preference receives its own SHA256-derived Torch generator seed.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe single_objective_analysis.py result\runs\flow_seed11 --plots
+.\.venv\Scripts\python.exe -m pytest -q --runslow -m slow
+.\.venv\Scripts\python.exe -m analysis.single_objective_analysis result\runs\flow_seed11 --plots
 ```
 
 For a hash-verified sampled trajectory replay with per-decision environment
 snapshots and optional bounded branch continuations, use
-`deadlock_replay.py`. The investigated Flow failure and the evidence standard
-for branch results are documented in [DEADLOCK_REPLAY_FINDINGS.md](DEADLOCK_REPLAY_FINDINGS.md).
+`python -m scripts.deadlock_replay`. The investigated Flow failure and the evidence standard
+for branch results are documented in [DEADLOCK_REPLAY_FINDINGS.md](docs/DEADLOCK_REPLAY_FINDINGS.md).
 
 The test suite covers reward telescoping, fixed progress denominators,
 termination/bootstrap semantics, horizon-boundary completion, deterministic

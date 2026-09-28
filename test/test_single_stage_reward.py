@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.baselines import HeuristicPolicy
-from deadlock_replay import _reward_audit
+from scripts.deadlock_replay import _reward_audit
 from environment import (
     AssemblySchedulingEnv,
     FAILURE_PENALTY_REWARD,

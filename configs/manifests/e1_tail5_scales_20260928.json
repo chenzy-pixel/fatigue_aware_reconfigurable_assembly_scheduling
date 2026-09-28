@@ -1,0 +1,81 @@
+{
+  "bounded_objective": "q_i=J_i/(s_i+J_i)",
+  "content_sha256": "81f005e3589991f3658bb84af21a510ced57ded111016f28cfd19c893b63ec45",
+  "formula": "median(mean_success(J_i, episode=e) for e in [840,880,920,960,1000])",
+  "scales": {
+    "cost": 386.674652792805,
+    "flow": 1152.2093959731544,
+    "variance": 4.937746913580247
+  },
+  "schema_version": "e1_tail_validation_scales_v1",
+  "sources": {
+    "cost": {
+      "algorithm_seed": 11,
+      "config_sha256": "97f6e488f1d3b95552f2ae374d0e603190ee74ca1d2b7f3faacf30191d958db4",
+      "run": "result/runs/e1_cost_seed11_ep1000",
+      "sampled_validation_rows_sha256": "6ed24bd265a40881203310b1c298b7d32cc9e36d02762b0dcfa5d77a44fbb7ac",
+      "successful_trajectory_means": [
+        386.674652792805,
+        372.1003743756831,
+        396.98860955649315,
+        384.811574265447,
+        409.0978125388277
+      ],
+      "summary_sha256": "5f939d8365e812704d6f139fd7d68d9b85ffe94ae42b6b32e2f533c1d66a908f",
+      "validation_episodes": [
+        840,
+        880,
+        920,
+        960,
+        1000
+      ],
+      "validation_log_sha256": "61775bb6eb252534919e2f05d19c8ae3c87239dc24cde8d65fe3cfa3a46a0d0b"
+    },
+    "flow": {
+      "algorithm_seed": 11,
+      "config_sha256": "5c0458c5441ef4dad287f4eaae7f280b4e3c9623fe933b05c9de2da93f9d791b",
+      "run": "result/runs/e1_flow_relative_time_seed11_ep1000",
+      "sampled_validation_rows_sha256": "53633baa3066cf3827b535f49f31ed0e27168baf88611d6ea6c5af071c6c76b5",
+      "successful_trajectory_means": [
+        1154.5095238095237,
+        1156.2864864864864,
+        1151.020945945946,
+        1150.7771812080537,
+        1152.2093959731544
+      ],
+      "summary_sha256": "73eddbe065a37ddde92bc09aef1b8a9e301fb50e83e9871c1c6b4ca396ae7da3",
+      "validation_episodes": [
+        840,
+        880,
+        920,
+        960,
+        1000
+      ],
+      "validation_log_sha256": "56b0992b37cb9ee6484557e4837c61b958f721549fdc35d6a446ced5818e4d59"
+    },
+    "variance": {
+      "algorithm_seed": 11,
+      "config_sha256": "281e036a5e512b55e9891b29acad3fab0c97622bc627bae9acaedab53924bee1",
+      "run": "result/runs/e1_variance_seed11_ep1000",
+      "sampled_validation_rows_sha256": "5d03d7d3e235ca82e7152cb3f964ff3165b4505ada9b19f816b691b3869daed6",
+      "successful_trajectory_means": [
+        5.197149024024025,
+        5.748519786910198,
+        4.483233182161754,
+        4.86385865457294,
+        4.937746913580247
+      ],
+      "summary_sha256": "3777d5222a5c0339b29378ec3f0db9ffeb108b39fe200dfce776d6383648020a",
+      "validation_episodes": [
+        840,
+        880,
+        920,
+        960,
+        1000
+      ],
+      "validation_log_sha256": "627524b407a8c9d5deb15809ea050bc5ffdbdf87fdfa85cc81e25efe7cdb6eed"
+    }
+  },
+  "validation_dataset_manifest": "data/manifests/validation/manifest.json",
+  "validation_dataset_manifest_sha256": "e0ce378b914ff37a884c9468e6086674a9f6c0f4eac66dee3e1e6bda4ccadd12"
+}

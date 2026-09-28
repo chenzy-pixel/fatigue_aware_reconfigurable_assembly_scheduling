@@ -12,6 +12,7 @@ from typing import Any
 import torch
 
 from configs.config import PROJECT_ROOT, project_path, public_config
+from configs.formal_preferences import formal_preferences
 from data.dataset import canonical_json_bytes, sha256_file, template_sha256
 from data.models import load_instance_yaml
 from result.metrics import (
@@ -98,7 +99,7 @@ def _normalized_source_bytes(path: Path) -> bytes:
 def source_files(root: str | Path = PROJECT_ROOT) -> list[Path]:
     base = Path(root).resolve()
     selected = set(base.glob("*.py"))
-    for package in ("agent", "configs", "data", "environment"):
+    for package in ("agent", "analysis", "configs", "data", "environment", "scripts", "training"):
         directory = base / package
         if directory.is_dir():
             selected.update(directory.rglob("*.py"))
@@ -196,6 +197,7 @@ def build_provenance(
     dataset_manifest_path: str | Path | None = None,
     checkpoint_path: str | Path | None = None,
     checkpoint_metadata: Mapping[str, Any] | None = None,
+    formal_evaluation_stage: str | None = None,
     root: str | Path = PROJECT_ROOT,
 ) -> dict[str, Any]:
     source = source_state_snapshot(root)
@@ -245,7 +247,19 @@ def build_provenance(
         "quality_metric_version": quality_metric["version"],
         "quality_metric_sha256": quality_metric_sha256(quality_metric),
         "sampled_rng_version": SAMPLED_EVALUATION_RNG_VERSION,
+        "objective_scales": dict(config["objective_scalarizer"]["scales"]),
+        "normalization_manifest_sha256": config["objective_scalarizer"].get("normalization_manifest_sha256"),
+        "normalization_manifest_content_sha256": config["objective_scalarizer"].get("normalization_manifest_content_sha256"),
+        "validation_preference_set": [point.preference.as_dict() for point in formal_preferences(config, "validation")],
+        "final_test_preference_set": [point.preference.as_dict() for point in formal_preferences(config, "final_test")],
     }
+    if formal_evaluation_stage is not None:
+        preferences = formal_preferences(config, formal_evaluation_stage)
+        provenance.update({
+            "formal_evaluation_stage": formal_evaluation_stage,
+            "preference_count": len(preferences),
+            "ordered_preference_set": [point.preference.as_dict() for point in preferences],
+        })
     fingerprint_components = {
         key: value
         for key, value in provenance.items()

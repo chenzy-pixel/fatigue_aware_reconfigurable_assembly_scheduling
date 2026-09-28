@@ -78,6 +78,13 @@ def test_validation_reports_sampled_rank():
     assert "event=best_improved | best_ep=100" in text
 
 
+def test_universal_run_header_uses_validation_preference_count():
+    reporter, output = _reporter(None)
+    reporter.config = load_config("configs/v8/universal.json")
+    reporter.start_run()
+    assert "prefs=13" in "\n".join(output)
+
+
 def test_done_never_substitutes_last_when_no_safe_best():
     reporter, output = _reporter("flow")
     reporter.done(

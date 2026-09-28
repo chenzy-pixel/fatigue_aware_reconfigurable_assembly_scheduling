@@ -19,11 +19,11 @@ from agent.ppo import PPOAgent, build_actor_critic
 from agent.ppo.parallel import ParallelEpisodeRunner
 from configs import load_config, project_path
 from configs.config import public_config
+from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from data.dataset import validate_algorithm_seed
 from data.models import load_instance_yaml
 from eval import evaluate_dataset_parallel, evaluate_preference_grid_parallel
-from environment import PreferenceContext, simplex_lattice
 from result import (
     EVALUATION_SCHEMA_VERSION,
     aggregate_evaluation_rows,
@@ -100,11 +100,7 @@ def _checkpoint_metadata(
     manifest_path = _validation_manifest_path(config, validation_split)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     files = list(manifest["files"][: int(validation_instance_limit)])
-    if _is_universal(config):
-        preferences = [point.as_dict() for point in simplex_lattice(10, include=())]
-    else:
-        fixed = config["preference"]["quality"]["fixed"]
-        preferences = [PreferenceContext.from_input(fixed).preference.as_dict()]
+    preferences = [point.preference.as_dict() for point in formal_preferences(config, "validation")]
     return {
         "checkpoint_role": role,
         "checkpoint_episode": int(episode),
@@ -115,6 +111,7 @@ def _checkpoint_metadata(
         "algorithm_seed": int(config["seed"]),
         "result_schema_version": EVALUATION_SCHEMA_VERSION,
         "selection_decode_mode": "sampled",
+        "formal_evaluation_stage": "validation",
         "selection_temperature": float(formal["temperature"]),
         "validation_split": validation_split,
         "validation_instance_limit": int(validation_instance_limit),
@@ -147,6 +144,8 @@ def _aggregate_formal_rows(
     unique_instance_count: int,
     repeat_count: int,
     universal: bool,
+    stage: str = "validation",
+    strict_counts: bool = False,
 ) -> dict[str, Any]:
     aggregate = aggregate_evaluation_rows(
         rows,
@@ -164,14 +163,35 @@ def _aggregate_formal_rows(
         }
     )
     if universal:
-        keys = sorted(
-            PreferenceContext.from_input(point).key
-            for point in simplex_lattice(10, include=())
-        )
+        expected_preferences = formal_preferences(config, stage)
+        keys = [point.key for point in expected_preferences]
         observed_keys = {str(row["preference_key"]) for row in rows}
-        if not observed_keys.issubset(keys):
-            raise ValueError("evaluation rows contain an unknown preference key")
+        if observed_keys != set(keys):
+            raise ValueError("evaluation rows do not cover the configured preference set")
         denominator = unique_instance_count * repeat_count
+        if strict_counts and any(
+            sum(str(row["preference_key"]) == key for row in rows) != denominator
+            for key in keys
+        ):
+            raise ValueError("evaluation rows have incomplete preference cells")
+        if strict_counts:
+            instance_ids = {str(row["instance_id"]) for row in rows}
+            units = {
+                (str(row["instance_id"]), str(row["preference_key"]), int(row["sampling_repeat"]))
+                for row in rows
+            }
+            expected_units = {
+                (instance_id, key, repeat)
+                for instance_id in instance_ids
+                for key in keys
+                for repeat in range(repeat_count)
+            }
+            if (
+                len(instance_ids) != unique_instance_count
+                or len(units) != len(rows)
+                or units != expected_units
+            ):
+                raise ValueError("evaluation rows have incomplete or duplicate instance/preference/repeat cells")
         completion_by_preference = {
             key: sum(
                 bool(row["terminated"]) and not bool(row["truncated"])
@@ -184,7 +204,17 @@ def _aggregate_formal_rows(
         aggregate["cell_count"] = int(aggregate["instance_count"])
         aggregate["completed_cell_count"] = int(aggregate["completed_count"])
         aggregate["instance_count"] = int(unique_instance_count)
+        aggregate["completed_count"] = sum(
+            all(
+                bool(row["terminated"]) and not bool(row["truncated"])
+                for row in rows
+                if str(row["instance_id"]) == instance_id
+            )
+            for instance_id in {str(row["instance_id"]) for row in rows}
+        )
         aggregate["preference_count"] = len(keys)
+        aggregate["ordered_preference_set"] = [point.preference.as_dict() for point in expected_preferences]
+        aggregate["formal_evaluation_stage"] = stage
         aggregate["completion_rate_by_preference"] = completion_by_preference
         quality_by_preference = {
             key: float(
@@ -215,6 +245,7 @@ def _evaluate_policy(
     runner: ParallelEpisodeRunner,
     instance_limit: int,
     sampling_seeds: list[int],
+    stage: str = "validation",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     evaluation_started = time.perf_counter()
     universal = _is_universal(config)
@@ -238,6 +269,7 @@ def _evaluate_policy(
                 instance_limit=instance_limit,
                 decode_mode="sampled",
                 sampling_seed=seed,
+                preferences=formal_preferences(config, stage),
             )
         else:
             current_rows, current = evaluate_dataset_parallel(
@@ -268,6 +300,8 @@ def _evaluate_policy(
         unique_instance_count=instance_limit,
         repeat_count=len(sampling_seeds),
         universal=universal,
+        stage=stage,
+        strict_counts=True,
     )
     aggregate["sampling_seeds"] = [int(seed) for seed in sampling_seeds]
     aggregate["wall_time_seconds"] = time.perf_counter() - evaluation_started
@@ -781,6 +815,7 @@ def _train_single_stage(
                 sampling_seeds=configured_formal_evaluation_sampling_seeds(
                     config, "final_test"
                 ),
+                stage="final_test",
             )
 
     write_csv(run_directory / "train_log.csv", episode_rows)
@@ -803,7 +838,16 @@ def _train_single_stage(
         ),
         checkpoint_path=checkpoint,
         checkpoint_metadata=best_checkpoint_metadata,
+        formal_evaluation_stage="validation",
     )
+    if final_sampled is not None:
+        final_sampled["provenance"] = build_provenance(
+            config,
+            dataset_manifest_path=_validation_manifest_path(config, final_split),
+            checkpoint_path=best_checkpoint,
+            checkpoint_metadata=best_checkpoint_metadata,
+            formal_evaluation_stage="final_test",
+        )
     summary = {
         "experiment_name": config["experiment_name"],
         "seed": int(config["seed"]),

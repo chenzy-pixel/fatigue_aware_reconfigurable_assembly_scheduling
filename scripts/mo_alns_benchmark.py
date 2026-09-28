@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from configs import load_config, project_path
-from mo_alns import PROTOCOL_VERSION, run_mo_alns_dataset
+from scripts.mo_alns import PROTOCOL_VERSION, run_mo_alns_dataset
 from result import build_provenance
 from result.io import write_config, write_csv, write_json
 

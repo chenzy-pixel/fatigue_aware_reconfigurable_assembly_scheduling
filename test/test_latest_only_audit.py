@@ -133,18 +133,17 @@ def test_pre_refactor_expanded_configs_match_archived_fingerprints():
 def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
     json_files = {
         path.as_posix() for path in Path("configs").rglob("*.json")
+        if "manifests" not in path.parts
     }
     assert json_files == {
         "configs/default.json",
         "configs/e1/single_flow.json",
         "configs/e1/single_cost.json",
         "configs/e1/single_variance.json",
+        "configs/e1/single_flow_relative_time.json",
         "configs/baselines/mo_alns.json",
         "configs/baselines/mo_alns_smoke.json",
         "configs/baselines/mo_alns_manifest.json",
         "configs/baselines/mo_alns_manifest.example.json",
-        "configs/v8/specialist_base.json",
-        "configs/v8/specialist_flow.json",
-        "configs/v8/specialist_cost.json",
-        "configs/v8/specialist_variance.json",
+        "configs/v8/universal.json",
     }

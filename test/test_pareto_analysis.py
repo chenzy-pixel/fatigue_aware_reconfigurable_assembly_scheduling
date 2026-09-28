@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pareto_analysis import (
+from analysis.pareto_analysis import (
     EXPECTED_SAMPLING_SEEDS,
     analyze_audit,
     dominates,

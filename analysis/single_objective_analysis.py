@@ -191,11 +191,13 @@ def plot_run(run_directory: str | Path, output: str | Path | None = None) -> Pat
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Analyze single-stage one-hot PPO runs")
     parser.add_argument("runs", nargs="+")
-    parser.add_argument("--output", default="single_objective_analysis.json")
+    parser.add_argument("--output", default="result/analysis/single_objective_analysis.json")
     parser.add_argument("--plots", action="store_true")
     args = parser.parse_args(argv)
     analyses = [analyze_run(path) for path in args.runs]
-    Path(args.output).write_text(
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
         json.dumps(analyses, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
