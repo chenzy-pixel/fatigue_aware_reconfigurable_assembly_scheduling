@@ -7,6 +7,8 @@
   },
   "training": {
     "episodes": 1000,
-    "parallel_envs": 20
+    "parallel_envs": 40,
+    "validation_parallel_envs": 40,
+    "episodes_per_update": 40
   }
 }

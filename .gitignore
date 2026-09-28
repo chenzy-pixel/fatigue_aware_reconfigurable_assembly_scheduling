@@ -3,7 +3,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 result/runs/
-result/benchmarks/
 result/run_logs/
 result/analysis/
 result/audits/
