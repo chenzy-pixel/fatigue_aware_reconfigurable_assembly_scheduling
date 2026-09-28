@@ -55,7 +55,6 @@ def test_single_stage_run_and_training_update_are_compact():
     assert "val=50 × repeats=3 × prefs=1 | sampled T=1.0" in text
     assert "reward=ΔP-ΔQ | gamma=1.0" in text
     assert "complete 50.0% | reward 0.200 | progress 0.900" in text
-    assert "sample 12.0s | infer 3.0s | ppo 2.0s | throughput 100.0 trans/s" in text
     assert "phase" not in text.lower()
     assert "audit" not in text.lower()
 

@@ -1240,7 +1240,6 @@ class ParallelEpisodeRunner:
 
         fill_available(range(min(parallelism, len(episode_indices))))
         inference_time = 0.0
-        last_progress = sampling_start
         while active:
             lanes = sorted(active)
             policy_lanes: list[int] = []
@@ -1453,17 +1452,6 @@ class ParallelEpisodeRunner:
                     )
                     active.remove(lane)
             fill_available([lane for lane in lanes if lane not in active])
-            now = time.perf_counter()
-            if now - last_progress >= 30.0:
-                transitions = sum(len(episode.buffer) for episode in completed) + sum(
-                    len(contexts[lane]["buffer"]) for lane in active
-                )
-                print(
-                    f"[train progress] {len(completed)}/{len(episode_indices)} episodes "
-                    f"{transitions} transitions, {now - sampling_start:.0f}s",
-                    flush=True,
-                )
-                last_progress = now
         completed.sort(key=lambda value: value.episode_index)
         combined = RolloutBuffer(
             preserve_graph=agent.requires_graph_observation
@@ -1586,8 +1574,6 @@ class ParallelEpisodeRunner:
         if preferences is not None and len(preferences) != len(records):
             raise ValueError("evaluation preferences must align with records")
         results: list[FixedEvaluationRollout] = []
-        evaluation_start = time.perf_counter()
-        last_progress = evaluation_start
         for start in range(0, len(records), parallelism):
             chunk = records[start : start + parallelism]
             chunk_start = time.perf_counter()
@@ -1756,14 +1742,6 @@ class ParallelEpisodeRunner:
                         active.remove(lane)
                     else:
                         states[lane] = response
-                now = time.perf_counter()
-                if now - last_progress >= 30.0:
-                    print(
-                        f"[val progress] {len(results)}/{len(records)} episodes, "
-                        f"{now - evaluation_start:.0f}s",
-                        flush=True,
-                    )
-                    last_progress = now
         results.sort(key=lambda value: value.record_index)
         return results
 

@@ -254,12 +254,6 @@ def _evaluate_policy(
     rows: list[dict[str, Any]] = []
     reference: dict[str, Any] | None = None
     for repeat_index, seed in enumerate(sampling_seeds):
-        repeat_started = time.perf_counter()
-        print(
-            f"[val] repeat {repeat_index + 1}/{len(sampling_seeds)}, "
-            f"instances={instance_limit}, workers={config['training']['validation_parallel_envs']}",
-            flush=True,
-        )
         if universal:
             current_rows, current = evaluate_preference_grid_parallel(
                 config,
@@ -285,11 +279,6 @@ def _evaluate_policy(
             row["sampling_repeat"] = repeat_index
         rows.extend(current_rows)
         reference = current
-        print(
-            f"[val] repeat {repeat_index + 1}/{len(sampling_seeds)} complete, "
-            f"{time.perf_counter() - repeat_started:.1f}s",
-            flush=True,
-        )
     if reference is None:
         raise RuntimeError("evaluation produced no aggregate")
     aggregate = _aggregate_formal_rows(
