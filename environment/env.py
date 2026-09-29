@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -11,6 +11,7 @@ from data.feasibility import maximum_matching_size as _maximum_matching_size
 from data.models import (
     AssemblyInstance,
 )
+from environment.fatigue_monitor import audit_fatigue
 from environment.actions import ActionCodec
 from environment.dynamics import EPSILON, quantize_to_ticks, ticks_to_minutes
 from environment.state import (
@@ -114,6 +115,10 @@ class AssemblySchedulingEnv:
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
+        self.fatigue_mode = str(config.get("environment", {}).get("fatigue_mode", "full"))
+        if self.fatigue_mode not in {"full", "neutral"}:
+            raise ValueError("environment.fatigue_mode must be full or neutral")
+        self.original_instance: AssemblyInstance | None = None
         self.preference_context = default_preference_context(config)
         # Compatibility alias retained for archived analysis code.
         self.preference: PreferenceVector = self.preference_context.preference
@@ -281,6 +286,16 @@ class AssemblySchedulingEnv:
             else PreferenceContext.from_input(preference)
         )
         self.preference = self.preference_context.preference
+        self.original_instance = instance
+        if self.fatigue_mode == "neutral":
+            zero_fatigue = replace(instance.fatigue,
+                disassembly_time_coefficient=0.0,
+                installation_time_coefficient=0.0,
+                disassembly_accumulation_rate_per_minute=0.0,
+                installation_accumulation_rate_per_minute=0.0,
+                idle_recovery_rate_per_minute=0.0)
+            instance = replace(instance, fatigue=zero_fatigue,
+                workers=tuple(replace(worker, initial_fatigue=0.0) for worker in instance.workers))
         self.instance = instance
         self.current_tick = 0
         self.horizon_tick = quantize_to_ticks(instance.horizon, instance.resolution)
@@ -2486,6 +2501,13 @@ class AssemblySchedulingEnv:
             else preference_quality_score
         )
         operation_progress = self.operation_progress()
+        reward_objectives = self._objective_vector()
+        reward_preference_quality_score = bounded_quality_score(
+            *reward_objectives, self.config, preference=self.preference)
+        monitor, _ = audit_fatigue(self.original_instance, self.reconfiguration_log, self.current_time)
+        monitor["completed_reconfigurations_per_operation"] = (
+            len(completed_reconfigurations) / completed_operations if completed_operations else None
+        )
         return {
             "instance_id": self.instance.instance_id,
             "terminated": self.terminated,
@@ -2628,10 +2650,18 @@ class AssemblySchedulingEnv:
             "training_preference_quality_score": (
                 training_preference_quality_score
             ),
+            "reward_preference_quality_score": reward_preference_quality_score,
+            "reward_objective_worker_load_variance": reward_objectives[2],
             "preference": self.preference.as_dict(),
             "preference_context": self.preference_context.as_dict(),
             "preference_key": self.preference_context.key,
+            "fatigue_mode": self.fatigue_mode,
+            **monitor,
         }
+
+    def fatigue_monitor_segments(self) -> list[dict[str, Any]]:
+        self._require_instance()
+        return audit_fatigue(self.original_instance, self.reconfiguration_log, self.current_time)[1]
 
     def validate_schedule(self) -> list[str]:
         """Return invariant violations; an empty list means the rollout is feasible."""

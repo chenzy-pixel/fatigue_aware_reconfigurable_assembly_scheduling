@@ -1,0 +1,7 @@
+{
+  "extends": "../e1/single_cost.json",
+  "experiment_name": "ablation_neutral_cost_seed11",
+  "environment": {"fatigue_mode": "neutral"},
+  "training": {"episodes": 1000, "parallel_envs": 20, "validation_parallel_envs": 20,
+    "episodes_per_update": 20, "validation_interval_episodes": 40}
+}

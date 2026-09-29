@@ -253,6 +253,10 @@ class InstanceGenerator:
         self.template = template
         self.settings = generator_config
         self.config = config or load_config("configs/default.json")
+        self.precheck_config = copy.deepcopy(self.config)
+        # Candidate acceptance is defined by the original physical benchmark.
+        # Neutral-fatigue policies must receive the same generated instances.
+        self.precheck_config.setdefault("environment", {})["fatigue_mode"] = "full"
         self.version = str(generator_config["version"])
         self.template_instance = str(
             self.config.get("dataset", {}).get(
@@ -368,7 +372,7 @@ class InstanceGenerator:
                 )
                 heuristic_metrics, environment = _rollout_metrics(
                     instance,
-                    self.config,
+                    self.precheck_config,
                     progress_callback=self.progress_callback,
                 )
                 metrics = {**static_metrics, **heuristic_metrics}
@@ -942,7 +946,7 @@ class InstanceGenerator:
         from agent.baselines import HeuristicPolicy
         from environment import AssemblySchedulingEnv, DecisionType
 
-        environment = AssemblySchedulingEnv(self.config)
+        environment = AssemblySchedulingEnv(self.precheck_config)
         environment.reset(instance, build_observation=False)
         policy = HeuristicPolicy()
         values: list[float] = []

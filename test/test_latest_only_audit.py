@@ -130,7 +130,7 @@ def test_pre_refactor_expanded_configs_match_archived_fingerprints():
         assert hashlib.sha256(payload).hexdigest() == expected
 
 
-def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
+def test_only_latest_v8_e1_mo_alns_and_ablation_configs_are_executable():
     json_files = {
         path.as_posix() for path in Path("configs").rglob("*.json")
         if "manifests" not in path.parts
@@ -146,4 +146,9 @@ def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
         "configs/baselines/mo_alns_manifest.json",
         "configs/baselines/mo_alns_manifest.example.json",
         "configs/v8/universal.json",
+        "configs/ablations/no_graph.json",
+        "configs/ablations/shared_head.json",
+        "configs/ablations/neutral_flow.json",
+        "configs/ablations/neutral_cost.json",
+        "configs/ablations/neutral_variance.json",
     }

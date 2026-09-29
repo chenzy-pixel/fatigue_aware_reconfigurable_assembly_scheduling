@@ -119,8 +119,9 @@ class TrainingConsoleReporter:
             f"{_percent(row.get('completion_rate'))} | quality "
             f"{_metric(row.get('preference_balanced_quality_score'), 6)} "
             f"| progress {_metric(row.get('mean_operation_progress'))}",
-            f"      safety={'PASS' if row.get('physical_safety_pass') else 'FAIL'} "
-            f"| event={row.get('checkpoint_event', 'n/a')} "
+            f"      safety={'PASS' if row.get('active_constraint_pass', row.get('physical_safety_pass')) else 'FAIL'} "
+            + ("| fatigue_audit=FAIL " if row.get('active_constraint_pass') and not row.get('physical_safety_pass') else "")
+            + f"| event={row.get('checkpoint_event', 'n/a')} "
             f"| best_ep={selector_state.get('best_episode')}",
         )
 

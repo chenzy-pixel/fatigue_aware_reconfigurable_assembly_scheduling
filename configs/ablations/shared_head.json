@@ -1,0 +1,5 @@
+{
+  "extends": "../v8/universal.json",
+  "experiment_name": "ablation_shared_head_seed11",
+  "network": {"actor_head_variant": "shared_preference"}
+}

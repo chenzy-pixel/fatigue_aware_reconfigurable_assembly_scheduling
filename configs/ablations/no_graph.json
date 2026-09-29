@@ -1,0 +1,5 @@
+{
+  "extends": "../v8/universal.json",
+  "experiment_name": "ablation_no_graph_seed11",
+  "network": {"encoder_variant": "node_mlp_pool"}
+}

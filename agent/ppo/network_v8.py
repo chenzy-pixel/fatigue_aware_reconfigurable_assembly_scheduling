@@ -32,6 +32,7 @@ OBJECTIVES = ("flow", "cost", "variance")
 POLICY_HEAD_VERSION = 8
 OBSERVATION_SCHEMA_VERSION = 5
 EXPERT_WEIGHT_PARAMETERIZATION = "simplex_softplus_v8"
+SHARED_HEAD_PARAMETERIZATION = "shared_preference_mlp_v1"
 PREFERENCE_ENCODER_DIM = 32
 RESIDUAL_STD_FLOOR = 1e-3
 
@@ -88,6 +89,12 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise TypeError("network config must be a mapping")
     hidden_dim = int(config.get("hidden_dim", 128))
     layers = int(config.get("message_passing_layers", 2))
+    encoder_variant = str(config.get("encoder_variant", "hetero_gnn"))
+    actor_head_variant = str(config.get("actor_head_variant", "objective_experts"))
+    if encoder_variant not in {"hetero_gnn", "node_mlp_pool"}:
+        raise ValueError("unknown network.encoder_variant")
+    if actor_head_variant not in {"objective_experts", "shared_preference"}:
+        raise ValueError("unknown network.actor_head_variant")
     dropout = float(config.get("dropout", 0.0))
     version = int(config.get("policy_head_version", POLICY_HEAD_VERSION))
     if version != POLICY_HEAD_VERSION:
@@ -116,7 +123,9 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         ):
             raise ValueError("normalization_manifest_sha256 must be a 64-digit hex digest")
     return {
-        "encoder_type": "hetero_gnn",
+        "encoder_type": encoder_variant,
+        "encoder_variant": encoder_variant,
+        "actor_head_variant": actor_head_variant,
         "hidden_dim": hidden_dim,
         "message_passing_layers": layers,
         "dropout": dropout,
@@ -126,7 +135,10 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "residual_std_floor": floor,
         "worker_flow_time_normalization": worker_time_mode,
         "worker_flow_time_std_floor": worker_time_floor,
-        "expert_weight_parameterization": EXPERT_WEIGHT_PARAMETERIZATION,
+        "expert_weight_parameterization": (
+            EXPERT_WEIGHT_PARAMETERIZATION if actor_head_variant == "objective_experts"
+            else SHARED_HEAD_PARAMETERIZATION
+        ),
         "normalization_manifest_sha256": manifest_sha,
     }
 
@@ -157,8 +169,11 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         raise ValueError("V7 and earlier checkpoints are rejected by V8 runtime")
     if int(spec.get("observation_schema_version", 0)) != OBSERVATION_SCHEMA_VERSION:
         raise ValueError("checkpoint observation schema is not V8 schema 5")
-    if spec.get("expert_weight_parameterization") != EXPERT_WEIGHT_PARAMETERIZATION:
-        raise ValueError("checkpoint does not use simplex_softplus_v8 experts")
+    variant = str(spec.get("actor_head_variant", "objective_experts"))
+    expected_head = (EXPERT_WEIGHT_PARAMETERIZATION if variant == "objective_experts"
+                     else SHARED_HEAD_PARAMETERIZATION)
+    if spec.get("expert_weight_parameterization") != expected_head:
+        raise ValueError("checkpoint actor head parameterization is incompatible")
     if int(spec.get("preference_embedding_dim", 0)) != PREFERENCE_ENCODER_DIM:
         raise ValueError("checkpoint preference encoder is not V8 3->32->ReLU->32")
     expected_schemas = {
@@ -171,7 +186,7 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
             raise ValueError(f"checkpoint {name} is incompatible with V8")
     normalized = normalize_network_config(spec)
     # Older V8 checkpoints used absolute time and did not store these fields.
-    for name in ("worker_flow_time_normalization", "worker_flow_time_std_floor"):
+    for name in ("encoder_variant", "actor_head_variant", "worker_flow_time_normalization", "worker_flow_time_std_floor"):
         spec[name] = normalized[name]
     return spec
 
@@ -182,6 +197,8 @@ def assert_network_config_matches_spec(
     configured = normalize_network_config(config)
     saved = infer_checkpoint_network_spec({"network_spec": checkpoint_spec})
     for name in (
+        "encoder_variant",
+        "actor_head_variant",
         "hidden_dim",
         "message_passing_layers",
         "dropout",
@@ -289,6 +306,20 @@ class ObjectiveExpertSet(nn.Module):
         return tuple(torch.stack(parts, dim=-1) for parts in zip(*values, strict=True))
 
 
+class SharedPreferenceHead(nn.Module):
+    def __init__(self, schema: Mapping[str, Sequence[tuple[str, int]]], hidden_dim: int):
+        super().__init__()
+        self.schema = {name: tuple(fields) for name, fields in schema.items()}
+        width = hidden_dim + PREFERENCE_ENCODER_DIM + sum(len(self.schema[name]) for name in OBJECTIVES)
+        self.score = nn.Sequential(nn.Linear(width, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1))
+
+    def forward(self, action_embedding: torch.Tensor, direct: Mapping[str, torch.Tensor],
+                preference_embedding: torch.Tensor) -> torch.Tensor:
+        features = torch.cat([direct[name] for name in OBJECTIVES], dim=-1)
+        values = torch.cat((action_embedding, preference_embedding, features), dim=-1)
+        return 2.0 * torch.tanh(self.score(values).squeeze(-1))
+
+
 RelationBatch = tuple[torch.Tensor, torch.Tensor, bool]
 
 
@@ -387,6 +418,8 @@ class HeteroGraphActorCritic(nn.Module):
         normalization_manifest_sha256: str | None = None,
         worker_flow_time_normalization: str = "absolute_v1",
         worker_flow_time_std_floor: float = 0.001,
+        encoder_variant: str = "hetero_gnn",
+        actor_head_variant: str = "objective_experts",
     ):
         super().__init__()
         self.feature_dimensions = {name: int(value) for name, value in feature_dimensions.items()}
@@ -395,10 +428,15 @@ class HeteroGraphActorCritic(nn.Module):
         }
         self.action_set_feature_names = tuple(action_set_feature_names)
         self.hidden_dim = int(hidden_dim)
+        self.encoder_variant = encoder_variant
+        self.actor_head_variant = actor_head_variant
         self.message_passing_layer_count = int(message_passing_layers)
         self.dropout_probability = float(dropout)
         self.policy_head_version = POLICY_HEAD_VERSION
-        self.expert_weight_parameterization = EXPERT_WEIGHT_PARAMETERIZATION
+        self.expert_weight_parameterization = (
+            EXPERT_WEIGHT_PARAMETERIZATION if actor_head_variant == "objective_experts"
+            else SHARED_HEAD_PARAMETERIZATION
+        )
         self.residual_gate_initial_logit = float(residual_gate_initial_logit)
         self.residual_std_floor = float(residual_std_floor)
         self.normalization_manifest_sha256 = normalization_manifest_sha256
@@ -432,14 +470,15 @@ class HeteroGraphActorCritic(nn.Module):
         self.global_encoder = nn.Sequential(
             nn.Linear(self.feature_dimensions["global"], hidden_dim), nn.ReLU()
         )
-        self.message_layers = nn.ModuleList(
-            [
-                HeterogeneousMessagePassingLayer(
-                    hidden_dim, self.edge_feature_dimensions, dropout
-                )
-                for _ in range(message_passing_layers)
-            ]
-        )
+        self.message_layers = nn.ModuleList([
+            HeterogeneousMessagePassingLayer(hidden_dim, self.edge_feature_dimensions, dropout)
+            for _ in range(message_passing_layers)
+        ]) if encoder_variant == "hetero_gnn" else nn.ModuleList()
+        self.node_mlp_layers = nn.ModuleList([
+            nn.ModuleDict({name: nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+                                               nn.Dropout(dropout)) for name in NODE_TYPES})
+            for _ in range(message_passing_layers)
+        ]) if encoder_variant == "node_mlp_pool" else nn.ModuleList()
         graph_width = hidden_dim * (len(NODE_TYPES) + 1)
         self.graph_context_projector = nn.Sequential(
             nn.Linear(graph_width, hidden_dim), nn.ReLU()
@@ -468,10 +507,16 @@ class HeteroGraphActorCritic(nn.Module):
         self.wait_action_encoder = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim), nn.ReLU()
         )
-        self.production_experts = ObjectiveExpertSet(PRODUCTION_DIRECT_SCHEMA, hidden_dim)
-        self.worker_experts = ObjectiveExpertSet(WORKER_DIRECT_SCHEMA, hidden_dim)
-        self.production_wait_experts = ObjectiveExpertSet(WAIT_DIRECT_SCHEMA, hidden_dim)
-        self.worker_wait_experts = ObjectiveExpertSet(WAIT_DIRECT_SCHEMA, hidden_dim)
+        if actor_head_variant == "objective_experts":
+            self.production_experts = ObjectiveExpertSet(PRODUCTION_DIRECT_SCHEMA, hidden_dim)
+            self.worker_experts = ObjectiveExpertSet(WORKER_DIRECT_SCHEMA, hidden_dim)
+            self.production_wait_experts = ObjectiveExpertSet(WAIT_DIRECT_SCHEMA, hidden_dim)
+            self.worker_wait_experts = ObjectiveExpertSet(WAIT_DIRECT_SCHEMA, hidden_dim)
+        else:
+            self.production_shared = SharedPreferenceHead(PRODUCTION_DIRECT_SCHEMA, hidden_dim)
+            self.worker_shared = SharedPreferenceHead(WORKER_DIRECT_SCHEMA, hidden_dim)
+            self.production_wait_shared = SharedPreferenceHead(WAIT_DIRECT_SCHEMA, hidden_dim)
+            self.worker_wait_shared = SharedPreferenceHead(WAIT_DIRECT_SCHEMA, hidden_dim)
 
         residual_width = hidden_dim * 2 + PREFERENCE_ENCODER_DIM * 2
         self.action_preference_projector = nn.Linear(hidden_dim, PREFERENCE_ENCODER_DIM)
@@ -499,14 +544,16 @@ class HeteroGraphActorCritic(nn.Module):
 
     def network_spec(self) -> dict[str, Any]:
         return {
-            "encoder_type": "hetero_gnn",
+            "encoder_type": self.encoder_variant,
+            "encoder_variant": self.encoder_variant,
+            "actor_head_variant": self.actor_head_variant,
             "hidden_dim": self.hidden_dim,
             "message_passing_layers": self.message_passing_layer_count,
             "dropout": self.dropout_probability,
             "policy_head_version": POLICY_HEAD_VERSION,
             "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
             "preference_embedding_dim": PREFERENCE_ENCODER_DIM,
-            "expert_weight_parameterization": EXPERT_WEIGHT_PARAMETERIZATION,
+            "expert_weight_parameterization": self.expert_weight_parameterization,
             "direct_output_range": [-1.0, 1.0],
             "context_output_range": [-1.0, 1.0],
             "expert_output_range": [-2.0, 2.0],
@@ -540,6 +587,8 @@ class HeteroGraphActorCritic(nn.Module):
         }
         for layer in self.message_layers:
             embeddings = layer(embeddings, batch.relations)
+        for layer in self.node_mlp_layers:
+            embeddings = {name: layer[name](embeddings[name]) for name in NODE_TYPES}
         global_embeddings = self.global_encoder(batch.global_features)
         pooled = {
             name: (self._pool_slices_reference if reference else self._pool_slices)(
@@ -551,6 +600,24 @@ class HeteroGraphActorCritic(nn.Module):
             tuple(pooled[name] for name in NODE_TYPES) + (global_embeddings,), dim=-1
         )
         return batch, embeddings, global_embeddings, graph_context
+
+    def _score_head(self, action_embedding: torch.Tensor,
+                    direct: Mapping[str, torch.Tensor],
+                    preference: torch.Tensor,
+                    preference_embedding: torch.Tensor,
+                    phase: DecisionType, *, wait: bool = False
+                    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        prefix = "production" if phase == DecisionType.PRODUCTION else "worker"
+        if wait:
+            prefix += "_wait"
+        if self.actor_head_variant == "objective_experts":
+            d, c, z = getattr(self, prefix + "_experts")(action_embedding, direct)
+            base = (z * preference).sum(dim=-1)
+        else:
+            base = getattr(self, prefix + "_shared")(
+                action_embedding, direct, preference_embedding)
+            d = c = z = action_embedding.new_zeros((action_embedding.shape[0], 3))
+        return d, c, z, base
 
     def forward(
         self,
@@ -701,7 +768,6 @@ class HeteroGraphActorCritic(nn.Module):
             ), dim=-1)
             action_embedding = self.production_action_encoder(action_input)
             schema = PRODUCTION_DIRECT_SCHEMA
-            experts, wait_experts = self.production_experts, self.production_wait_experts
             residual_mlp, gate = self.production_residual, self.production_residual_gate
         else:
             locked = torch.zeros_like(embeddings["machine"])
@@ -721,7 +787,6 @@ class HeteroGraphActorCritic(nn.Module):
             ), dim=-1)
             action_embedding = self.worker_action_encoder(action_input)
             schema = WORKER_DIRECT_SCHEMA
-            experts, wait_experts = self.worker_experts, self.worker_wait_experts
             residual_mlp, gate = self.worker_residual, self.worker_residual_gate
         names = observations[indices[0]].relations[edge_type].feature_names
         columns = {name: dense[:, names.index(name)] for name in names}
@@ -750,7 +815,9 @@ class HeteroGraphActorCritic(nn.Module):
                 torch.zeros_like(durations),
             )
             direct["flow"] = relative.unsqueeze(-1)
-        pair_d, pair_c, pair_z = experts(action_embedding, direct)
+        pair_d, pair_c, pair_z, pair_base = self._score_head(
+            action_embedding, direct, preference.index_select(0, graph_ids),
+            preference_embedding.index_select(0, graph_ids), phase)
         wait_raw = torch.as_tensor(
             np.stack([observations[index].action_set_features for index in indices]),
             dtype=torch.float32, device=device,
@@ -763,8 +830,10 @@ class HeteroGraphActorCritic(nn.Module):
             for name in observations[indices[0]].action_set_feature_names
         }
         wait_direct = self._direct_from_columns(WAIT_DIRECT_SCHEMA, wait_columns)
-        wait_d, wait_c, wait_z = wait_experts(wait_embedding, wait_direct)
-        all_embeddings, all_d, all_c, all_z = [], [], [], []
+        wait_d, wait_c, wait_z, wait_base = self._score_head(
+            wait_embedding, wait_direct, preference.index_select(0, torch.as_tensor(indices, device=device)),
+            preference_embedding.index_select(0, torch.as_tensor(indices, device=device)), phase, wait=True)
+        all_embeddings, all_d, all_c, all_z, all_base = [], [], [], [], []
         all_graph_ids, all_masks = [], []
         for position, index in enumerate(indices):
             start, end = offsets[index]
@@ -772,13 +841,14 @@ class HeteroGraphActorCritic(nn.Module):
             all_d.extend((pair_d[start:end], wait_d[position:position + 1]))
             all_c.extend((pair_c[start:end], wait_c[position:position + 1]))
             all_z.extend((pair_z[start:end], wait_z[position:position + 1]))
+            all_base.extend((pair_base[start:end], wait_base[position:position + 1]))
             all_graph_ids.append(torch.full((end - start + 1,), index, dtype=torch.long, device=device))
             all_masks.append(masks[index])
         merged_embeddings = torch.cat(all_embeddings)
         merged_d, merged_c, merged_z = map(torch.cat, (all_d, all_c, all_z))
         merged_graph_ids = torch.cat(all_graph_ids)
         merged_mask = torch.cat(all_masks)
-        base = (merged_z * preference.index_select(0, merged_graph_ids)).sum(dim=-1)
+        base = torch.cat(all_base)
         legal = (~merged_mask).to(base.dtype)
         legal_count = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, legal)
         mean = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, base * legal) / legal_count.clamp_min(1)
@@ -822,16 +892,12 @@ class HeteroGraphActorCritic(nn.Module):
             action_embedding, direct = self._production_candidates(
                 observation, nodes, global_embedding, mask, device=device
             )
-            experts = self.production_experts
-            wait_experts = self.production_wait_experts
             residual_mlp = self.production_residual
             gate = self.production_residual_gate
         elif observation.decision_type == DecisionType.WORKER:
             action_embedding, direct = self._worker_candidates(
                 observation, nodes, global_embedding, mask, device=device
             )
-            experts = self.worker_experts
-            wait_experts = self.worker_wait_experts
             residual_mlp = self.worker_residual
             gate = self.worker_residual_gate
         else:
@@ -843,13 +909,18 @@ class HeteroGraphActorCritic(nn.Module):
             torch.cat((self.wait_feature_encoder(wait_raw), graph_hidden.reshape(1, -1)), dim=-1)
         )
         wait_direct = self._wait_direct(observation, wait_raw)
-        direct_values, context_values, z = experts(action_embedding, direct)
-        wait_d, wait_c, wait_z = wait_experts(wait_embedding, wait_direct)
+        direct_values, context_values, z, pair_base = self._score_head(
+            action_embedding, direct, preference.reshape(1, 3).expand(action_embedding.shape[0], -1),
+            preference_embedding.reshape(1, -1).expand(action_embedding.shape[0], -1),
+            observation.decision_type)
+        wait_d, wait_c, wait_z, wait_base = self._score_head(
+            wait_embedding, wait_direct, preference.reshape(1, 3),
+            preference_embedding.reshape(1, -1), observation.decision_type, wait=True)
         all_embeddings = torch.cat((action_embedding, wait_embedding), dim=0)
         all_d = torch.cat((direct_values, wait_d), dim=0)
         all_c = torch.cat((context_values, wait_c), dim=0)
         all_z = torch.cat((z, wait_z), dim=0)
-        base = (all_z * preference.reshape(1, 3)).sum(dim=-1)
+        base = torch.cat((pair_base, wait_base))
         interaction = self.action_preference_projector(all_embeddings) * preference_embedding
         residual_input = torch.cat(
             (
@@ -1117,7 +1188,11 @@ class HeteroGraphActorCritic(nn.Module):
             "legal_pair_count": pair_legal.sum(),
             "terminal_legal": legal[-1],
         }
-        for name, values in (("direct", direct), ("context", context), ("expert", experts)):
+        if self.actor_head_variant == "objective_experts":
+            diagnostic_parts = (("direct", direct), ("context", context), ("expert", experts))
+        else:
+            diagnostic_parts = ()
+        for name, values in diagnostic_parts:
             for index, objective in enumerate(OBJECTIVES):
                 selected = values[legal, index]
                 row[f"{name}_{objective}_mean"] = selected.mean()
@@ -1177,6 +1252,8 @@ class HeteroGraphActorCritic(nn.Module):
         return result
 
     def effective_relative_cost_weights(self) -> dict[str, dict[str, float]]:
+        if self.actor_head_variant != "objective_experts":
+            return {}
         result: dict[str, dict[str, float]] = {}
         for phase, expert_set in (
             ("production", self.production_experts),
@@ -1270,4 +1347,6 @@ def build_actor_critic(
         normalization_manifest_sha256=config["normalization_manifest_sha256"],
         worker_flow_time_normalization=config["worker_flow_time_normalization"],
         worker_flow_time_std_floor=config["worker_flow_time_std_floor"],
+        encoder_variant=config["encoder_variant"],
+        actor_head_variant=config["actor_head_variant"],
     )

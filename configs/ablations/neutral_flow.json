@@ -1,0 +1,7 @@
+{
+  "extends": "../e1/single_flow_relative_time.json",
+  "experiment_name": "ablation_neutral_flow_seed11",
+  "environment": {"fatigue_mode": "neutral"},
+  "training": {"episodes": 1000, "parallel_envs": 40, "validation_parallel_envs": 40,
+    "episodes_per_update": 40, "validation_interval_episodes": 40}
+}

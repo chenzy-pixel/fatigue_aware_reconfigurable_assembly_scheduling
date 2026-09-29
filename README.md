@@ -1,5 +1,27 @@
 # Fatigue-aware reconfigurable assembly scheduling
 
+## Ablation runs
+
+The seed11 ablation matrix has two Universal network variants (node MLP with
+pooling; shared preference-conditioned actor head) and three fatigue-neutral
+single-objective variants (Flow, Cost, Variance). The fatigue-neutral simulator
+uses base reconfiguration durations and does not restrict actions by fatigue;
+an independent audit reconstructs fatigue exposure from executed worker tasks.
+The three matched full-fatigue single-objective checkpoints are the completed
+`rerun_20260928_223621` runs. See
+[the experiment protocol](docs/experiment_protocol.md) for the exact comparison.
+
+```powershell
+python scripts/run_10_ablation_smoke.py
+python scripts/run_11_train_structural.py
+python scripts/run_12_train_neutral.py
+python scripts/run_13_evaluate_ablations.py
+python scripts/run_14_summarize_ablations.py
+```
+
+The last command writes paired results to `result/analysis/ablation_seed11/`.
+The full training commands are long-running and can be launched separately.
+
 This repository trains a preference-conditioned HGNN policy with PPO for
 fatigue-aware reconfigurable assembly scheduling. Production and worker
 decisions use pair-plus-WAIT actions, exact action masks, deterministic event

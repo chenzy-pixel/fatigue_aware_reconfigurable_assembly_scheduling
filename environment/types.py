@@ -329,8 +329,9 @@ def proxy_return_from_metrics(
         initial_score = float(initial_score_value)
     if mode == FAILURE_PENALTY_REWARD:
         terminal_score_value = metrics.get(
-            "actual_preference_quality_score",
-            metrics.get("raw_preference_quality_score"),
+            "reward_preference_quality_score",
+            metrics.get("actual_preference_quality_score",
+                        metrics.get("raw_preference_quality_score")),
         )
         terminal_score = (
             bounded_quality_score(

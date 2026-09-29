@@ -77,7 +77,7 @@ def _is_universal(config: dict) -> bool:
 def _rows_are_physically_safe(rows: list[dict], tolerance: float = 1e-9) -> bool:
     return bool(rows) and all(
         int(row.get("schedule_violation_count", 0)) == 0
-        and float(row.get("maximum_worker_fatigue", math.inf))
+        and float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
         <= float(row.get("safe_fatigue_limit", -math.inf)) + tolerance
         for row in rows
     )
@@ -295,6 +295,12 @@ def _evaluate_policy(
     aggregate["sampling_seeds"] = [int(seed) for seed in sampling_seeds]
     aggregate["wall_time_seconds"] = time.perf_counter() - evaluation_started
     aggregate["physical_safety_pass"] = _rows_are_physically_safe(rows)
+    aggregate["active_constraint_pass"] = bool(rows) and all(
+        int(row.get("schedule_violation_count", 0)) == 0 and
+        (row.get("fatigue_mode", "full") == "neutral" or
+         float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
+         <= float(row.get("safe_fatigue_limit", -math.inf)) + 1e-9)
+        for row in rows)
     return rows, aggregate
 
 
@@ -316,6 +322,7 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
         "truncated_count": int(aggregate["truncated_count"]),
         "schedule_violation_count": int(aggregate["schedule_violation_count"]),
         "physical_safety_pass": bool(aggregate["physical_safety_pass"]),
+        "active_constraint_pass": bool(aggregate.get("active_constraint_pass", aggregate["physical_safety_pass"])),
         "preference_balanced_quality_score": float(
             aggregate["preference_balanced_quality_score"]
         ),
@@ -606,7 +613,8 @@ def _train_single_stage(
     network = build_actor_critic(bootstrap_observation, config["network"])
     agent = PPOAgent(network, config["ppo"], device=config["device"])
     if initial_checkpoint is not None:
-        agent.load(initial_checkpoint, load_optimizer=False)
+        from configs.runtime import assert_checkpoint_fatigue_mode
+        assert_checkpoint_fatigue_mode(agent.load(initial_checkpoint, load_optimizer=False), config)
 
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
@@ -736,7 +744,7 @@ def _train_single_stage(
             event = selector.observe(
                 formal,
                 completed_episodes=completed_episodes,
-                physical_safety_pass=bool(formal["physical_safety_pass"]),
+                physical_safety_pass=bool(formal.get("active_constraint_pass", formal["physical_safety_pass"])),
             )
             validation_row.update(selector.last_decision)
             improved = event in {"best_initialized", "best_improved"}
@@ -788,7 +796,8 @@ def _train_single_stage(
         final_sampled: dict[str, Any] | None = None
         final_sampled_rows: list[dict[str, Any]] = []
         if selector.has_best:
-            agent.load(best_checkpoint, load_optimizer=False)
+            from configs.runtime import assert_checkpoint_fatigue_mode
+            assert_checkpoint_fatigue_mode(agent.load(best_checkpoint, load_optimizer=False), config)
             final_split = validation_split if smoke else "test"
             final_limit = (
                 validation_limit

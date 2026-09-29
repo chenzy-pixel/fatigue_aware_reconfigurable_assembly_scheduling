@@ -171,7 +171,8 @@ class EvaluationPolicy:
                     config["ppo"],
                     device=config["device"],
                 )
-                ppo_agent.load(checkpoint_path)
+                from configs.runtime import assert_checkpoint_fatigue_mode
+                assert_checkpoint_fatigue_mode(ppo_agent.load(checkpoint_path), config)
             self.ppo_agent = ppo_agent
             self.device = ppo_agent.device
             if self.decode_mode == "sampled":
@@ -472,6 +473,9 @@ def _evaluation_row(
     metric_hash = quality_metric_sha256(quality_metric)
     preference = metrics.get("preference") or {}
     return {
+        "experiment_name": config.get("experiment_name"),
+        "encoder_variant": config.get("network", {}).get("encoder_variant", "hetero_gnn"),
+        "actor_head_variant": config.get("network", {}).get("actor_head_variant", "objective_experts"),
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
         "pressure_type": record.metadata["pressure_type"],
@@ -700,6 +704,17 @@ def _evaluation_row(
         "completed_reconfigurations": metrics[
             "completed_reconfigurations"
         ],
+        "fatigue_mode": metrics.get("fatigue_mode", "full"),
+        "active_constraint_pass": len(metrics["schedule_violations"]) == 0,
+        "physical_safety_pass": (
+            len(metrics["schedule_violations"]) == 0 and
+            metrics["fatigue_monitor_peak"] <= metrics["safe_fatigue_limit"] + 1e-9
+        ),
+        **{name: value for name, value in metrics.items() if name.startswith("fatigue_monitor_")},
+        **{name: metrics.get(name) for name in (
+            "worker_reconfiguration_busy_minutes", "mean_interstage_idle_minutes",
+            "max_consecutive_worker_stages", "completed_reconfigurations_per_minute",
+            "completed_reconfigurations_per_operation")},
         "worker_switch_ratio": metrics["worker_switch_ratio"],
         "schedule_violation_count": len(
             metrics["schedule_violations"]
@@ -1147,6 +1162,8 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
     )
     checkpoint_path = project_path(args.checkpoint)
     metadata = agent.load(checkpoint_path, load_optimizer=False)
+    from configs.runtime import assert_checkpoint_fatigue_mode
+    assert_checkpoint_fatigue_mode(metadata, config)
     seeds = (
         [int(args.sampling_seed)]
         if args.sampling_seed is not None
@@ -1203,6 +1220,9 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         checkpoint_metadata=metadata,
         formal_evaluation_stage=args.preference_set,
     )
+    for row in rows:
+        row["checkpoint_sha256"] = metrics["provenance"]["checkpoint_sha256"]
+        row["effective_config_sha256"] = metrics["provenance"]["effective_config_sha256"]
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label=f"eval_ppo_{decode_mode}_{args.dataset}_{args.preference_set}",
@@ -1235,11 +1255,14 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--run-name")
+    parser.add_argument("--device", choices=("cpu", "cuda"))
     parser.add_argument("--preference-set", choices=("validation", "final_test"))
     parser.add_argument("--instance-limit", type=int)
     args = parser.parse_args()
 
     config = deepcopy(load_config(args.config))
+    if args.device is not None:
+        config["device"] = args.device
     config["seed"] = validate_algorithm_seed(
         config,
         int(config["seed"])
@@ -1337,6 +1360,9 @@ def main() -> None:
         checkpoint_path=checkpoint_path,
         checkpoint_metadata=checkpoint_metadata,
     )
+    for row in rows:
+        row["checkpoint_sha256"] = metrics["provenance"]["checkpoint_sha256"]
+        row["effective_config_sha256"] = metrics["provenance"]["effective_config_sha256"]
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label=(
@@ -1352,6 +1378,21 @@ def main() -> None:
         run_directory / "reconfigurations.csv",
         reconfigurations,
     )
+    from collections import defaultdict
+    from environment.fatigue_monitor import audit_fatigue
+    original_instances = {item.instance.instance_id: item.instance
+                          for item in load_dataset_split(config, args.dataset)}
+    grouped: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for record in reconfigurations:
+        grouped[(str(record["instance_id"]), int(record["sampling_repeat"]))].append(record)
+    fatigue_segments = []
+    for row in rows:
+        key = (str(row["instance_id"]), int(row["sampling_repeat"]))
+        _, segments = audit_fatigue(original_instances[key[0]], grouped.get(key, []),
+                                    float(row["makespan"]))
+        fatigue_segments.extend({"instance_id": key[0], "sampling_repeat": key[1], **segment}
+                                for segment in segments)
+    write_csv(run_directory / "fatigue_segments.csv", fatigue_segments)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"results: {run_directory}")
 
