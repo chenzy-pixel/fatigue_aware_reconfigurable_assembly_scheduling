@@ -46,7 +46,7 @@ in the denominator, and order release does not change progress. `Q_t` is the
 existing bounded preference quality score computed from the actual objectives.
 `I_t=1` only on a task-failure terminal step and is zero otherwise.
 `lambda` is the finite, non-negative `reward.terminal_failure_penalty`:
-the default and E1 configs use `1.0`, and Universal uses `5.0`. Evaluation
+the default template uses `1.0`; all E1 configs and Universal use `5.0`. Evaluation
 continues to expose the formal failure quality bound separately; it is not used
 by the failure-v2 training reward.
 

@@ -37,6 +37,8 @@ def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
     preference: list[float],
 ):
     config = load_config(path)
+    assert config["reward"]["terminal_failure_penalty"] == 5.0
+    assert config["runtime_manifest"]["terminal_failure_penalty"] == 5.0
     assert "feasibility" not in config["preference"]
     assert config["preference"]["quality"]["fixed"] == preference
     assert quality_preference_for_episode(

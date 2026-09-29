@@ -1,6 +1,9 @@
 {
   "extends": "../default.json",
   "experiment_name": "e1_single_flow",
+  "reward": {
+    "terminal_failure_penalty": 5.0
+  },
   "preference": {
     "quality": {
       "mode": "fixed",
