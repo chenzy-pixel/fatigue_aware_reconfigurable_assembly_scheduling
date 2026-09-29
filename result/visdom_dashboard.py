@@ -98,11 +98,8 @@ DISPLAY_LABELS: dict[str, str] = {
     "ppo_update_time_seconds": "PPO 更新耗时（秒）",
     "generation_time_seconds": "实例生成耗时（秒）",
     "environment_step_time_seconds": "环境推进耗时（秒）",
-    "greedy_completion_rate": "贪心完成率",
     "sampled_completion_rate": "采样完成率",
-    "greedy_truncated_count": "贪心截断数",
     "sampled_truncated_count": "采样截断数",
-    "greedy_mean_unfinished_orders": "贪心平均未完成订单数",
     "sampled_mean_unfinished_orders": "采样平均未完成订单数",
     "schedule_violation_count": "调度违规数",
     "mean_makespan": "当前平均完工期",
@@ -117,11 +114,9 @@ DISPLAY_LABELS: dict[str, str] = {
     "best_worker_load_variance": "最佳平均负荷方差",
     "flow_gap": "流经时间差距",
     "sampled_flow_gap": "采样流经时间差距",
-    "greedy_flow_gap": "贪心流经时间差距",
     "makespan_gap": "完工期差距",
     "reconfiguration_cost_gap": "重构成本差距",
     "worker_load_variance_gap": "负荷方差差距",
-    "greedy": "贪心策略",
     "sampled": "采样策略",
     "mean_maximum_worker_fatigue": "平均最大工人疲劳",
     "mean_mean_peak_worker_fatigue": "平均峰值疲劳",
@@ -909,20 +904,11 @@ class TrainingDashboard:
             title="60 验证集可行性",
             x=completed_episodes,
             series={
-                "greedy_completion_rate": validation_row.get(
-                    "greedy_completion_rate"
-                ),
                 "sampled_completion_rate": validation_row.get(
                     "completion_rate"
                 ),
-                "greedy_truncated_count": validation_row.get(
-                    "greedy_truncated_count"
-                ),
                 "sampled_truncated_count": validation_row.get(
                     "truncated_count"
-                ),
-                "greedy_mean_unfinished_orders": validation_row.get(
-                    "greedy_mean_unfinished_orders"
                 ),
                 "sampled_mean_unfinished_orders": validation_row.get(
                     "mean_unfinished_orders"
@@ -995,9 +981,6 @@ class TrainingDashboard:
                 "sampled_flow_gap": validation_row.get(
                     "mean_relative_heuristic_gap_percent"
                 ),
-                "greedy_flow_gap": validation_row.get(
-                    "greedy_mean_relative_heuristic_gap_percent"
-                ),
                 "makespan_gap": validation_row.get(
                     "mean_makespan_heuristic_gap_percent"
                 ),
@@ -1015,9 +998,6 @@ class TrainingDashboard:
             title="66 验证集单阶段轨迹回报",
             x=completed_episodes,
             series={
-                "greedy": validation_row.get(
-                    "greedy_mean_single_stage_proxy_return"
-                ),
                 "sampled": validation_row.get(
                     "mean_single_stage_proxy_return"
                 ),

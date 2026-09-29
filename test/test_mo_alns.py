@@ -20,7 +20,7 @@ from agent.mo_alns.solver import (
     repair_solution,
 )
 from environment import PreferenceVector
-from mo_alns_analysis import analyze_rows
+from analysis.mo_alns_analysis import analyze_rows
 
 
 def _tiny_instance(fixed_instance):

@@ -154,14 +154,14 @@ including base return, scalar training return, and identity residual.
 The environment records both the primary failure label and the independent
 evidence fields: within-horizon event count, post-horizon event count, next
 event tick/type, horizon-overrun evidence, and structural-recoverability
-status. `deadlock_replay.py` additionally records full snapshots, schedule and
+status. `scripts/deadlock_replay.py` additionally records full snapshots, schedule and
 reconfiguration logs, per-order timing, reward-identity audit, and paired
 continuations.
 
 Example paired command:
 
 ```powershell
-python deadlock_replay.py `
+python -m scripts.deadlock_replay `
   --config result/runs/single_stage_flow_seed11_500_20260922_013711/config.json `
   --checkpoint result/runs/single_stage_flow_seed11_500_20260922_013711/best_checkpoint.pt `
   --dataset test `

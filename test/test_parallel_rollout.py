@@ -267,6 +267,38 @@ def test_parallel_training_seeds_and_cleanup(
     assert all(not process.is_alive() for process in processes)
 
 
+def test_training_collector_refills_two_lanes_for_five_episodes(config, fixed_instance):
+    effective_config = deepcopy(config)
+    agent = _agent(effective_config, fixed_instance)
+    with ParallelEpisodeRunner(
+        config=effective_config,
+        template=fixed_instance,
+        episode_count=5,
+        worker_count=3,
+    ) as runner:
+        reset_lanes = []
+        original_exchange = runner._exchange
+
+        def recording_exchange(commands):
+            reset_lanes.extend(lane for lane, (command, _) in commands.items()
+                               if command == "reset_online")
+            return original_exchange(commands)
+
+        runner._exchange = recording_exchange
+        rollout = runner.collect_training_batch(
+            agent, [0, 1, 2, 3, 4],
+            gamma=float(effective_config["ppo"]["gamma"]),
+            gae_lambda=float(effective_config["ppo"]["gae_lambda"]),
+            step_limit=2,
+            max_parallelism=2,
+        )
+    assert [episode.episode_index for episode in rollout.episodes] == list(range(5))
+    assert rollout.transition_count == 10
+    assert set(reset_lanes) == {0, 1}
+    assert all(episode.base_reward_sum == pytest.approx(episode.expected_reward)
+               for episode in rollout.episodes)
+
+
 def test_environment_failure_marks_done_and_disables_critic_bootstrap(
     config,
     fixed_instance,
@@ -695,6 +727,7 @@ def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
         "inference_time_seconds",
         "solve_time_seconds",
         "inference_time_per_decision_ms",
+        "validation_parallel_envs",
     }
 
     random.seed(314)
@@ -751,6 +784,7 @@ def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
             ]
             assert actual == expected
             assert aggregate["parallel_envs"] == parallel_envs
+            assert all(row["validation_parallel_envs"] == parallel_envs for row in parallel_rows)
             assert all(row["action_trace_sha256"] for row in parallel_rows)
 
     assert random.getstate() == python_state
@@ -759,6 +793,23 @@ def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
     assert np.array_equal(after_numpy[1], numpy_state[1])
     assert after_numpy[2:] == numpy_state[2:]
     assert torch.equal(torch.get_rng_state(), torch_state)
+
+
+def test_reference_validation_sampler_for_before_after_benchmark(config, fixed_instance):
+    effective = deepcopy(config)
+    effective["environment"]["max_decisions"] = 5
+    agent = _agent(effective, fixed_instance)
+    agent.network.execution_mode = "reference_v8"
+    records = [load_dataset_split(effective, "validation")[index] for index in range(2)]
+    with ParallelEpisodeRunner(
+        config=effective, template=fixed_instance, episode_count=2, worker_count=2,
+    ) as runner:
+        rollouts = runner.evaluate_records(
+            agent, records, max_parallelism=2, deterministic=False,
+            sampling_seed=100011,
+        )
+    assert len(rollouts) == 2
+    assert all(rollout.action_trace_sha256 for rollout in rollouts)
 
 
 def test_parallel_worker_error_is_reported_and_all_workers_exit(

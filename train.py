@@ -19,11 +19,11 @@ from agent.ppo import PPOAgent, build_actor_critic
 from agent.ppo.parallel import ParallelEpisodeRunner
 from configs import load_config, project_path
 from configs.config import public_config
+from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from data.dataset import validate_algorithm_seed
 from data.models import load_instance_yaml
 from eval import evaluate_dataset_parallel, evaluate_preference_grid_parallel
-from environment import PreferenceContext, simplex_lattice
 from result import (
     EVALUATION_SCHEMA_VERSION,
     aggregate_evaluation_rows,
@@ -100,11 +100,7 @@ def _checkpoint_metadata(
     manifest_path = _validation_manifest_path(config, validation_split)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     files = list(manifest["files"][: int(validation_instance_limit)])
-    if _is_universal(config):
-        preferences = [point.as_dict() for point in simplex_lattice(10, include=())]
-    else:
-        fixed = config["preference"]["quality"]["fixed"]
-        preferences = [PreferenceContext.from_input(fixed).preference.as_dict()]
+    preferences = [point.preference.as_dict() for point in formal_preferences(config, "validation")]
     return {
         "checkpoint_role": role,
         "checkpoint_episode": int(episode),
@@ -115,6 +111,7 @@ def _checkpoint_metadata(
         "algorithm_seed": int(config["seed"]),
         "result_schema_version": EVALUATION_SCHEMA_VERSION,
         "selection_decode_mode": "sampled",
+        "formal_evaluation_stage": "validation",
         "selection_temperature": float(formal["temperature"]),
         "validation_split": validation_split,
         "validation_instance_limit": int(validation_instance_limit),
@@ -147,6 +144,8 @@ def _aggregate_formal_rows(
     unique_instance_count: int,
     repeat_count: int,
     universal: bool,
+    stage: str = "validation",
+    strict_counts: bool = False,
 ) -> dict[str, Any]:
     aggregate = aggregate_evaluation_rows(
         rows,
@@ -164,14 +163,35 @@ def _aggregate_formal_rows(
         }
     )
     if universal:
-        keys = sorted(
-            PreferenceContext.from_input(point).key
-            for point in simplex_lattice(10, include=())
-        )
+        expected_preferences = formal_preferences(config, stage)
+        keys = [point.key for point in expected_preferences]
         observed_keys = {str(row["preference_key"]) for row in rows}
-        if not observed_keys.issubset(keys):
-            raise ValueError("evaluation rows contain an unknown preference key")
+        if observed_keys != set(keys):
+            raise ValueError("evaluation rows do not cover the configured preference set")
         denominator = unique_instance_count * repeat_count
+        if strict_counts and any(
+            sum(str(row["preference_key"]) == key for row in rows) != denominator
+            for key in keys
+        ):
+            raise ValueError("evaluation rows have incomplete preference cells")
+        if strict_counts:
+            instance_ids = {str(row["instance_id"]) for row in rows}
+            units = {
+                (str(row["instance_id"]), str(row["preference_key"]), int(row["sampling_repeat"]))
+                for row in rows
+            }
+            expected_units = {
+                (instance_id, key, repeat)
+                for instance_id in instance_ids
+                for key in keys
+                for repeat in range(repeat_count)
+            }
+            if (
+                len(instance_ids) != unique_instance_count
+                or len(units) != len(rows)
+                or units != expected_units
+            ):
+                raise ValueError("evaluation rows have incomplete or duplicate instance/preference/repeat cells")
         completion_by_preference = {
             key: sum(
                 bool(row["terminated"]) and not bool(row["truncated"])
@@ -184,7 +204,17 @@ def _aggregate_formal_rows(
         aggregate["cell_count"] = int(aggregate["instance_count"])
         aggregate["completed_cell_count"] = int(aggregate["completed_count"])
         aggregate["instance_count"] = int(unique_instance_count)
+        aggregate["completed_count"] = sum(
+            all(
+                bool(row["terminated"]) and not bool(row["truncated"])
+                for row in rows
+                if str(row["instance_id"]) == instance_id
+            )
+            for instance_id in {str(row["instance_id"]) for row in rows}
+        )
         aggregate["preference_count"] = len(keys)
+        aggregate["ordered_preference_set"] = [point.preference.as_dict() for point in expected_preferences]
+        aggregate["formal_evaluation_stage"] = stage
         aggregate["completion_rate_by_preference"] = completion_by_preference
         quality_by_preference = {
             key: float(
@@ -214,18 +244,16 @@ def _evaluate_policy(
     ppo_agent: PPOAgent,
     runner: ParallelEpisodeRunner,
     instance_limit: int,
-    decode_mode: str,
-    sampling_seeds: list[int] | None = None,
+    sampling_seeds: list[int],
+    stage: str = "validation",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    evaluation_started = time.perf_counter()
     universal = _is_universal(config)
-    seeds: list[int | None] = (
-        [None] if decode_mode == "greedy" else list(sampling_seeds or [])
-    )
-    if not seeds:
+    if not sampling_seeds:
         raise ValueError("sampled evaluation requires at least one seed")
     rows: list[dict[str, Any]] = []
     reference: dict[str, Any] | None = None
-    for repeat_index, seed in enumerate(seeds):
+    for repeat_index, seed in enumerate(sampling_seeds):
         if universal:
             current_rows, current = evaluate_preference_grid_parallel(
                 config,
@@ -233,8 +261,9 @@ def _evaluate_policy(
                 ppo_agent=ppo_agent,
                 runner=runner,
                 instance_limit=instance_limit,
-                decode_mode=decode_mode,
+                decode_mode="sampled",
                 sampling_seed=seed,
+                preferences=formal_preferences(config, stage),
             )
         else:
             current_rows, current = evaluate_dataset_parallel(
@@ -243,7 +272,7 @@ def _evaluate_policy(
                 ppo_agent=ppo_agent,
                 runner=runner,
                 instance_limit=instance_limit,
-                decode_mode=decode_mode,
+                decode_mode="sampled",
                 sampling_seed=seed,
             )
         for row in current_rows:
@@ -252,21 +281,19 @@ def _evaluate_policy(
         reference = current
     if reference is None:
         raise RuntimeError("evaluation produced no aggregate")
-    if decode_mode == "sampled":
-        aggregate = _aggregate_formal_rows(
-            config,
-            rows=rows,
-            dataset_name=dataset_name,
-            manifest=str(reference["manifest"]),
-            unique_instance_count=instance_limit,
-            repeat_count=len(seeds),
-            universal=universal,
-        )
-        aggregate["sampling_seeds"] = [int(seed) for seed in seeds if seed is not None]
-    else:
-        aggregate = reference
-        aggregate["repeat_count"] = 1
-        aggregate["unique_instance_count"] = instance_limit
+    aggregate = _aggregate_formal_rows(
+        config,
+        rows=rows,
+        dataset_name=dataset_name,
+        manifest=str(reference["manifest"]),
+        unique_instance_count=instance_limit,
+        repeat_count=len(sampling_seeds),
+        universal=universal,
+        stage=stage,
+        strict_counts=True,
+    )
+    aggregate["sampling_seeds"] = [int(seed) for seed in sampling_seeds]
+    aggregate["wall_time_seconds"] = time.perf_counter() - evaluation_started
     aggregate["physical_safety_pass"] = _rows_are_physically_safe(rows)
     return rows, aggregate
 
@@ -281,6 +308,7 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
     all_metrics = aggregate["all_instance_metrics"]
     return {
         "episode": int(episode),
+        "validation_wall_time_seconds": float(aggregate.get("wall_time_seconds", 0.0)),
         "instance_count": int(aggregate["instance_count"]),
         "cell_count": aggregate.get("cell_count", aggregate["instance_count"]),
         "repeat_count": int(aggregate.get("repeat_count", 1)),
@@ -314,43 +342,6 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
             all_metrics, "unfinished_orders"
         ),
     }
-
-
-def _attach_greedy_diagnostic(
-    row: dict[str, Any], greedy: dict[str, Any]
-) -> None:
-    completed = greedy["completed_metrics"]
-    all_metrics = greedy["all_instance_metrics"]
-    row.update(
-        {
-            "greedy_completion_rate": float(greedy["completion_rate"]),
-            "greedy_truncated_count": int(greedy["truncated_count"]),
-            "greedy_schedule_violation_count": int(
-                greedy["schedule_violation_count"]
-            ),
-            "greedy_physical_safety_pass": bool(
-                greedy["physical_safety_pass"]
-            ),
-            "greedy_preference_balanced_quality_score": float(
-                greedy["preference_balanced_quality_score"]
-            ),
-            "greedy_mean_flow_time_objective": _summary_value(
-                completed, "flow_time_objective"
-            ),
-            "greedy_mean_reconfiguration_cost": _summary_value(
-                completed, "reconfiguration_cost"
-            ),
-            "greedy_mean_worker_load_variance": _summary_value(
-                completed, "worker_load_variance"
-            ),
-            "greedy_mean_operation_progress": _summary_value(
-                all_metrics, "operation_progress"
-            ),
-            "greedy_mean_single_stage_proxy_return": _summary_value(
-                all_metrics, "single_stage_proxy_return"
-            ),
-        }
-    )
 
 
 @dataclass
@@ -494,6 +485,8 @@ class TrainingEngine:
         run_name: str | None = None,
         algorithm_seed: int | None = None,
         worker_count: int | None = None,
+        episodes_per_update: int | None = None,
+        validation_parallel_envs: int | None = None,
         visdom_enabled: bool | None = None,
         initial_checkpoint: str | Path | None = None,
     ) -> None:
@@ -502,6 +495,8 @@ class TrainingEngine:
         self.run_name = run_name
         self.algorithm_seed = algorithm_seed
         self.worker_count = worker_count
+        self.episodes_per_update = episodes_per_update
+        self.validation_parallel_envs = validation_parallel_envs
         self.visdom_enabled = visdom_enabled
         self.initial_checkpoint = initial_checkpoint
 
@@ -516,6 +511,9 @@ class TrainingEngine:
         )
         config["seed"] = seed
         set_seed(seed)
+        torch.set_num_threads(int(config["training"].get("torch_num_threads", 4)))
+        config["training"]["policy_execution_version"] = "phase_batched_v1"
+        config["training"]["policy_precision"] = "float32"
         if not math.isclose(float(config["ppo"]["gamma"]), 1.0):
             raise ValueError("single-stage training requires ppo.gamma = 1.0")
         episodes = int(
@@ -534,6 +532,18 @@ class TrainingEngine:
         config["training"][
             "smoke_parallel_envs" if self.smoke else "parallel_envs"
         ] = workers
+        update_size = int(
+            self.episodes_per_update
+            if self.episodes_per_update is not None
+            else config["training"].get("episodes_per_update", workers)
+        )
+        if update_size < 1:
+            raise ValueError("episodes_per_update must be positive")
+        config["training"]["episodes_per_update"] = update_size
+        if self.validation_parallel_envs is not None:
+            config["training"]["validation_parallel_envs"] = int(self.validation_parallel_envs)
+        if int(config["training"]["validation_parallel_envs"]) < 1:
+            raise ValueError("validation_parallel_envs must be positive")
         if self.initial_checkpoint is not None:
             config["training"]["initial_checkpoint"] = str(
                 Path(self.initial_checkpoint).resolve()
@@ -544,6 +554,7 @@ class TrainingEngine:
             run_name=self.run_name,
             episodes=episodes,
             parallel_envs=min(workers, episodes),
+            episodes_per_update=update_size,
             initial_checkpoint=self.initial_checkpoint,
         )
 
@@ -556,6 +567,8 @@ def train(
     online_instances: bool | None = None,
     algorithm_seed: int | None = None,
     parallel_envs: int | None = None,
+    episodes_per_update: int | None = None,
+    validation_parallel_envs: int | None = None,
     visdom_enabled: bool | None = None,
     initial_checkpoint: str | Path | None = None,
 ) -> Path:
@@ -567,6 +580,8 @@ def train(
         run_name=run_name,
         algorithm_seed=algorithm_seed,
         worker_count=parallel_envs,
+        episodes_per_update=episodes_per_update,
+        validation_parallel_envs=validation_parallel_envs,
         visdom_enabled=visdom_enabled,
         initial_checkpoint=initial_checkpoint,
     ).run()
@@ -579,6 +594,7 @@ def _train_single_stage(
     run_name: str | None,
     episodes: int,
     parallel_envs: int,
+    episodes_per_update: int,
     initial_checkpoint: str | Path | None,
 ) -> Path:
     started_at = time.perf_counter()
@@ -638,7 +654,6 @@ def _train_single_stage(
     update_rows: list[dict[str, Any]] = []
     validation_rows: list[dict[str, Any]] = []
     sampled_validation_rows: list[dict[str, Any]] = []
-    greedy_validation_rows: list[dict[str, Any]] = []
     best_checkpoint_metadata: dict[str, Any] | None = None
     best_validation_row: dict[str, Any] | None = None
 
@@ -649,22 +664,26 @@ def _train_single_stage(
         worker_count=worker_count,
     ) as runner:
         for update_id, batch_start in enumerate(
-            range(0, episodes, parallel_envs), start=1
+            range(0, episodes, episodes_per_update), start=1
         ):
-            indices = list(range(batch_start, min(batch_start + parallel_envs, episodes)))
+            indices = list(range(batch_start, min(batch_start + episodes_per_update, episodes)))
             rollout = runner.collect_training_batch(
                 agent,
                 indices,
                 gamma=float(config["ppo"]["gamma"]),
                 gae_lambda=float(config["ppo"]["gae_lambda"]),
                 step_limit=step_limit,
+                max_parallelism=parallel_envs,
             )
             if rollout.transition_count == 0:
                 raise RuntimeError("training batch contains no policy transitions")
+            update_started = time.perf_counter()
             losses = agent.update(rollout.buffer)
+            ppo_update_seconds = time.perf_counter() - update_started
             batch_rows = [_episode_log_row(episode) for episode in rollout.episodes]
             episode_rows.extend(batch_rows)
             completed_episodes = indices[-1] + 1
+            training_seconds = rollout.sampling_wall_time_seconds + ppo_update_seconds
             update_row = {
                 "update_id": update_id,
                 "episode_start": indices[0],
@@ -674,15 +693,27 @@ def _train_single_stage(
                 "environment_step_count": rollout.environment_step_count,
                 "forced_action_count": rollout.forced_action_count,
                 "forced_action_ratio": rollout.forced_action_ratio,
+                "sampling_wall_time_seconds": rollout.sampling_wall_time_seconds,
+                "policy_inference_time_seconds": rollout.policy_inference_time_seconds,
+                "ppo_update_time_seconds": ppo_update_seconds,
+                "generation_time_seconds": sum(
+                    episode.generation_time_seconds for episode in rollout.episodes
+                ),
+                "environment_step_time_seconds": sum(
+                    episode.environment_step_time_seconds for episode in rollout.episodes
+                ),
+                "transitions_per_second": rollout.transition_count / training_seconds,
                 "learning_rate": plateau.learning_rate,
                 **losses,
             }
             update_rows.append(update_row)
+            write_csv(run_directory / "train_log.csv", episode_rows)
+            write_csv(run_directory / "update_log.csv", update_rows)
             dashboard.log_update(update_row, batch_rows, selector.as_dict())
             reporter.training_update(update_row, batch_rows)
 
             validation_due = (
-                completed_episodes % validation_interval == 0
+                batch_start // validation_interval < completed_episodes // validation_interval
                 or completed_episodes == episodes
             )
             if not validation_due:
@@ -693,29 +724,15 @@ def _train_single_stage(
                 ppo_agent=agent,
                 runner=runner,
                 instance_limit=validation_limit,
-                decode_mode="sampled",
                 sampling_seeds=validation_seeds,
-            )
-            greedy_rows, greedy = _evaluate_policy(
-                config,
-                dataset_name=validation_split,
-                ppo_agent=agent,
-                runner=runner,
-                instance_limit=validation_limit,
-                decode_mode="greedy",
             )
             sampled_validation_rows.extend(
                 {"validation_episode": completed_episodes, **row}
                 for row in formal_rows
             )
-            greedy_validation_rows.extend(
-                {"validation_episode": completed_episodes, **row}
-                for row in greedy_rows
-            )
             validation_row = _validation_log_row(
                 formal, episode=completed_episodes
             )
-            _attach_greedy_diagnostic(validation_row, greedy)
             event = selector.observe(
                 formal,
                 completed_episodes=completed_episodes,
@@ -741,6 +758,11 @@ def _train_single_stage(
                 agent.set_learning_rate(plateau.learning_rate)
             validation_row.update(plateau.as_dict())
             validation_rows.append(validation_row)
+            write_csv(run_directory / "validation_log.csv", validation_rows)
+            write_csv(
+                run_directory / "sampled_validation_instance_metrics.csv",
+                sampled_validation_rows,
+            )
             dashboard.log_validation(
                 validation_row,
                 best_validation=best_validation_row,
@@ -764,9 +786,7 @@ def _train_single_stage(
         )
 
         final_sampled: dict[str, Any] | None = None
-        final_greedy: dict[str, Any] | None = None
         final_sampled_rows: list[dict[str, Any]] = []
-        final_greedy_rows: list[dict[str, Any]] = []
         if selector.has_best:
             agent.load(best_checkpoint, load_optimizer=False)
             final_split = validation_split if smoke else "test"
@@ -781,18 +801,10 @@ def _train_single_stage(
                 ppo_agent=agent,
                 runner=runner,
                 instance_limit=final_limit,
-                decode_mode="sampled",
                 sampling_seeds=configured_formal_evaluation_sampling_seeds(
                     config, "final_test"
                 ),
-            )
-            final_greedy_rows, final_greedy = _evaluate_policy(
-                config,
-                dataset_name=final_split,
-                ppo_agent=agent,
-                runner=runner,
-                instance_limit=final_limit,
-                decode_mode="greedy",
+                stage="final_test",
             )
 
     write_csv(run_directory / "train_log.csv", episode_rows)
@@ -802,19 +814,10 @@ def _train_single_stage(
         run_directory / "sampled_validation_instance_metrics.csv",
         sampled_validation_rows,
     )
-    write_csv(
-        run_directory / "greedy_validation_instance_metrics.csv",
-        greedy_validation_rows,
-    )
     if final_sampled_rows:
         write_csv(
             run_directory / "final_sampled_instance_metrics.csv",
             final_sampled_rows,
-        )
-    if final_greedy_rows:
-        write_csv(
-            run_directory / "final_greedy_instance_metrics.csv",
-            final_greedy_rows,
         )
     checkpoint = best_checkpoint if selector.has_best else None
     provenance = build_provenance(
@@ -824,7 +827,16 @@ def _train_single_stage(
         ),
         checkpoint_path=checkpoint,
         checkpoint_metadata=best_checkpoint_metadata,
+        formal_evaluation_stage="validation",
     )
+    if final_sampled is not None:
+        final_sampled["provenance"] = build_provenance(
+            config,
+            dataset_manifest_path=_validation_manifest_path(config, final_split),
+            checkpoint_path=best_checkpoint,
+            checkpoint_metadata=best_checkpoint_metadata,
+            formal_evaluation_stage="final_test",
+        )
     summary = {
         "experiment_name": config["experiment_name"],
         "seed": int(config["seed"]),
@@ -839,12 +851,8 @@ def _train_single_stage(
         "best_checkpoint": str(best_checkpoint) if selector.has_best else None,
         "last_checkpoint": str(last_checkpoint),
         "final_sampled": final_sampled,
-        "final_greedy": final_greedy,
         "final_sampled_failure_progress": _failure_progress_summary(
             final_sampled_rows
-        ),
-        "final_greedy_failure_progress": _failure_progress_summary(
-            final_greedy_rows
         ),
         "elapsed_seconds": time.perf_counter() - started_at,
         "provenance": provenance,
@@ -870,6 +878,8 @@ def main() -> int:
     parser.add_argument("--run-name")
     parser.add_argument("--algorithm-seed", type=int)
     parser.add_argument("--parallel-envs", type=int)
+    parser.add_argument("--episodes-per-update", type=int)
+    parser.add_argument("--validation-parallel-envs", type=int)
     parser.add_argument(
         "--visdom-enabled",
         action=argparse.BooleanOptionalAction,
@@ -903,6 +913,8 @@ def main() -> int:
                     online_instances=args.online_instances,
                     algorithm_seed=args.algorithm_seed,
                     parallel_envs=args.parallel_envs,
+                    episodes_per_update=args.episodes_per_update,
+                    validation_parallel_envs=args.validation_parallel_envs,
                     visdom_enabled=args.visdom_enabled,
                     initial_checkpoint=args.initial_checkpoint,
                 )

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from agent.baselines import HeuristicPolicy
-from deadlock_replay import _unfinished_order_timing
+from scripts.deadlock_replay import _unfinished_order_timing
 from environment import AssemblySchedulingEnv, DecisionType
 from environment.types import EventType, OperationState
 

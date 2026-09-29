@@ -128,11 +128,12 @@ def normalize_preference(value: PreferenceInput) -> PreferenceVector:
     if not math.isfinite(total) or total <= 0.0:
         raise ValueError("preference weights must have a finite positive sum")
     normalized = tuple(item / total for item in values)
-    # Pin the final coordinate to the simplex after floating-point division.
+    # Preserve simplex boundaries when float32 observations are normalized again.
+    # Summing first avoids the negative roundoff from two sequential subtractions.
     normalized = (
         normalized[0],
         normalized[1],
-        1.0 - normalized[0] - normalized[1],
+        max(0.0, 1.0 - math.fsum(normalized[:2])),
     )
     return PreferenceVector(*normalized)
 

@@ -1027,11 +1027,13 @@ class ParallelEpisodeRunner:
         gae_lambda: float,
         step_limit: int | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
+        max_parallelism: int | None = None,
     ) -> TrainingRolloutBatch:
         if not episode_indices:
             raise ValueError("episode_indices cannot be empty")
-        if len(episode_indices) > self.worker_count:
-            raise ValueError("episode batch exceeds worker count")
+        parallelism = self.worker_count if max_parallelism is None else int(max_parallelism)
+        if parallelism < 1 or parallelism > self.worker_count:
+            raise ValueError("max_parallelism must be within the worker pool size")
         if len(set(episode_indices)) != len(episode_indices):
             raise ValueError("episode indices must be unique")
         forced_action_compression = bool(
@@ -1067,29 +1069,13 @@ class ParallelEpisodeRunner:
                 for index in episode_indices
             ]
         sampling_start = time.perf_counter()
-        reset_responses = self._exchange(
-            {
-                lane_id: (
-                    "reset_online",
-                    _WorkerResetRequest(
-                        value=int(episode_index),
-                        drain_physical_forced_actions=(
-                            worker_local_physical_forced_actions
-                        ),
-                        max_environment_steps=step_limit,
-                        preference=preferences[lane_id],
-                    ),
-                )
-                for lane_id, episode_index in enumerate(episode_indices)
-            }
-        )
-        states: dict[int, WorkerResponse] = dict(reset_responses)
+        states: dict[int, WorkerResponse] = {}
         contexts: dict[int, dict[str, Any]] = {}
         active: set[int] = set()
         completed: list[EpisodeRollout] = []
         reset_cutoff_lanes: list[int] = []
-        for lane_id, episode_index in enumerate(episode_indices):
-            response = reset_responses[lane_id]
+
+        def initialize_lane(lane_id: int, episode_index: int, response: WorkerResponse) -> None:
             if (
                 response.instance_id is None
                 or response.metadata is None
@@ -1186,7 +1172,7 @@ class ParallelEpisodeRunner:
                 completed.append(
                     self._episode_result(context, response.metrics)
                 )
-                continue
+                return
             if response.observation is None or response.action_mask is None:
                 raise ParallelWorkerError(
                     f"worker {lane_id} returned no active reset state"
@@ -1198,26 +1184,61 @@ class ParallelEpisodeRunner:
                 reset_cutoff_lanes.append(lane_id)
             else:
                 active.add(lane_id)
-        if reset_cutoff_lanes:
-            snapshots = self._exchange(
-                {
-                    lane: ("snapshot", None)
-                    for lane in reset_cutoff_lanes
-                }
-            )
-            for lane in reset_cutoff_lanes:
-                context = contexts[lane]
-                context["buffer"].compute_gae(
-                    last_value=0.0,
-                    gamma=gamma,
-                    gae_lambda=gae_lambda,
+
+        def finish_reset_cutoffs() -> None:
+            if reset_cutoff_lanes:
+                snapshots = self._exchange(
+                    {
+                        lane: ("snapshot", None)
+                        for lane in reset_cutoff_lanes
+                    }
                 )
-                metrics = snapshots[lane].metrics
-                if metrics is None:
-                    raise ParallelWorkerError(
-                        "reset cutoff worker returned no snapshot metrics"
+                for lane in reset_cutoff_lanes:
+                    context = contexts[lane]
+                    context["buffer"].compute_gae(
+                        last_value=0.0,
+                        gamma=gamma,
+                        gae_lambda=gae_lambda,
                     )
-                completed.append(self._episode_result(context, metrics))
+                    metrics = snapshots[lane].metrics
+                    if metrics is None:
+                        raise ParallelWorkerError(
+                            "reset cutoff worker returned no snapshot metrics"
+                        )
+                    completed.append(self._episode_result(context, metrics))
+            reset_cutoff_lanes.clear()
+
+        next_position = 0
+
+        def fill_available(lanes: Sequence[int]) -> None:
+            nonlocal next_position
+            available = sorted(lanes)
+            while available and next_position < len(episode_indices):
+                assignments = []
+                for lane in available:
+                    if next_position >= len(episode_indices):
+                        break
+                    assignments.append((lane, next_position))
+                    next_position += 1
+                responses = self._exchange({
+                    lane: (
+                        "reset_online",
+                        _WorkerResetRequest(
+                            value=int(episode_indices[position]),
+                            drain_physical_forced_actions=worker_local_physical_forced_actions,
+                            max_environment_steps=step_limit,
+                            preference=preferences[position],
+                        ),
+                    )
+                    for lane, position in assignments
+                })
+                states.update(responses)
+                for lane, position in assignments:
+                    initialize_lane(lane, episode_indices[position], responses[lane])
+                finish_reset_cutoffs()
+                available = [lane for lane, _ in assignments if lane not in active]
+
+        fill_available(range(min(parallelism, len(episode_indices))))
         inference_time = 0.0
         while active:
             lanes = sorted(active)
@@ -1430,6 +1451,7 @@ class ParallelEpisodeRunner:
                         self._episode_result(context, metrics)
                     )
                     active.remove(lane)
+            fill_available([lane for lane in lanes if lane not in active])
         completed.sort(key=lambda value: value.episode_index)
         combined = RolloutBuffer(
             preserve_graph=agent.requires_graph_observation
@@ -1645,33 +1667,32 @@ class ParallelEpisodeRunner:
                         )
                         policy_diagnostics[lane].append(diagnostic)
                 else:
-                    actions = []
-                    for lane, observation, mask in zip(
-                        lanes, observations, masks
-                    ):
-                        inference_start = time.perf_counter()
-                        action, _, _ = agent.act(
-                            observation,
-                            mask,
-                            deterministic=False,
-                            generator=generators[lane],
+                    inference_start = time.perf_counter()
+                    if getattr(agent.network, "execution_mode", "") == "reference_v8":
+                        actions = []
+                        diagnostic_rows = []
+                        for lane, observation, mask in zip(lanes, observations, masks):
+                            actions.append(agent.act(
+                                observation, mask, generator=generators[lane]
+                            )[0])
+                            diagnostic_rows.extend(agent.consume_policy_decision_diagnostics())
+                    else:
+                        actions, _, _ = agent.act_batch(
+                            observations, masks,
+                            generators=[generators[lane] for lane in lanes],
                         )
-                        inference_times[lane] += (
-                            time.perf_counter() - inference_start
+                        diagnostic_rows = agent.consume_policy_decision_diagnostics()
+                    elapsed = time.perf_counter() - inference_start
+                    for lane in lanes:
+                        inference_times[lane] += elapsed / len(lanes)
+                    if diagnostic_rows and len(diagnostic_rows) != len(lanes):
+                        raise RuntimeError("batched policy diagnostics do not match lanes")
+                    for lane, action, diagnostic in zip(lanes, actions, diagnostic_rows):
+                        diagnostic["selected_action"] = int(action)
+                        diagnostic["ranker_top_selected"] = bool(
+                            int(action) == int(diagnostic.get("relative_top_action", -1))
                         )
-                        actions.append(action)
-                        diagnostic_rows = (
-                            agent.consume_policy_decision_diagnostics()
-                        )
-                        for diagnostic in diagnostic_rows:
-                            diagnostic["selected_action"] = int(action)
-                            diagnostic["ranker_top_selected"] = bool(
-                                int(action)
-                                == int(
-                                    diagnostic.get("relative_top_action", -1)
-                                )
-                            )
-                            policy_diagnostics[lane].append(diagnostic)
+                        policy_diagnostics[lane].append(diagnostic)
                 for lane, action in zip(lanes, actions):
                     action_traces[lane].append(int(action))
                 step_responses = self._exchange(

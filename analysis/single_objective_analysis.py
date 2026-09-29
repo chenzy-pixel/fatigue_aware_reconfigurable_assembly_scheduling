@@ -80,16 +80,13 @@ def _validation_summary(rows: list[dict[str, str]]) -> dict[str, Any]:
         return {"count": 0, "best_episode": None}
     completion = [float(row["completion_rate"]) for row in rows]
     quality = [_number(row.get("preference_balanced_quality_score")) for row in rows]
-    greedy = [_number(row.get("greedy_completion_rate")) for row in rows]
     return {
         "count": len(rows),
         "episodes": [int(row["episode"]) for row in rows],
         "sampled_completion_rates": completion,
-        "greedy_completion_rates": greedy,
         "preference_balanced_quality_scores": quality,
         "maximum_sampled_completion_rate": max(completion),
         "last_sampled_completion_rate": completion[-1],
-        "last_greedy_completion_rate": greedy[-1],
     }
 
 
@@ -139,7 +136,6 @@ def analyze_run(run_directory: str | Path) -> dict[str, Any]:
         "best_checkpoint": summary.get("best_checkpoint"),
         "last_checkpoint": summary.get("last_checkpoint"),
         "final_sampled": summary.get("final_sampled"),
-        "final_greedy": summary.get("final_greedy"),
     }
 
 
@@ -184,12 +180,6 @@ def plot_run(run_directory: str | Path, output: str | Path | None = None) -> Pat
             marker="o",
             label="sampled",
         )
-        axes[1, 1].plot(
-            validation_episodes,
-            [_number(row.get("greedy_completion_rate")) for row in validations],
-            marker="x",
-            label="greedy",
-        )
         axes[1, 1].legend()
     axes[1, 1].set(title="Validation completion", xlabel="Episode", ylim=(-0.02, 1.02))
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -201,11 +191,13 @@ def plot_run(run_directory: str | Path, output: str | Path | None = None) -> Pat
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Analyze single-stage one-hot PPO runs")
     parser.add_argument("runs", nargs="+")
-    parser.add_argument("--output", default="single_objective_analysis.json")
+    parser.add_argument("--output", default="result/analysis/single_objective_analysis.json")
     parser.add_argument("--plots", action="store_true")
     args = parser.parse_args(argv)
     analyses = [analyze_run(path) for path in args.runs]
-    Path(args.output).write_text(
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
         json.dumps(analyses, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )

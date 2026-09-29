@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from configs.formal_preferences import formal_preferences
+
 
 SEPARATOR = "-" * 72
 
@@ -67,7 +69,7 @@ class TrainingConsoleReporter:
 
     @property
     def preference_count(self) -> int:
-        return 1 if self.objective_name is not None else 66
+        return len(formal_preferences(self.config, "validation"))
 
     def _block(self, *lines: str) -> None:
         for line in lines:
@@ -117,8 +119,7 @@ class TrainingConsoleReporter:
             f"{_percent(row.get('completion_rate'))} | quality "
             f"{_metric(row.get('preference_balanced_quality_score'), 6)} "
             f"| progress {_metric(row.get('mean_operation_progress'))}",
-            f"      greedy complete {_percent(row.get('greedy_completion_rate'))} "
-            f"| safety={'PASS' if row.get('physical_safety_pass') else 'FAIL'} "
+            f"      safety={'PASS' if row.get('physical_safety_pass') else 'FAIL'} "
             f"| event={row.get('checkpoint_event', 'n/a')} "
             f"| best_ep={selector_state.get('best_episode')}",
         )

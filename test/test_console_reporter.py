@@ -30,6 +30,10 @@ def test_single_stage_run_and_training_update_are_compact():
             "entropy": 1.421,
             "approx_kl": 0.0061,
             "learning_rate": 1e-4,
+            "sampling_wall_time_seconds": 12.0,
+            "policy_inference_time_seconds": 3.0,
+            "ppo_update_time_seconds": 2.0,
+            "transitions_per_second": 100.0,
         },
         [
             {
@@ -55,22 +59,29 @@ def test_single_stage_run_and_training_update_are_compact():
     assert "audit" not in text.lower()
 
 
-def test_validation_reports_sampled_rank_and_greedy_diagnostic():
+def test_validation_reports_sampled_rank():
     reporter, output = _reporter(None)
     row = {
         "episode": 100,
         "completion_rate": 0.95,
         "preference_balanced_quality_score": 0.31,
         "mean_operation_progress": 0.98,
-        "greedy_completion_rate": 0.90,
         "physical_safety_pass": True,
         "checkpoint_event": "best_improved",
     }
     reporter.validation(row, selector_state={"best_episode": 100})
     text = "\n".join(output)
     assert "sampled complete 95.0% | quality 0.310000" in text
-    assert "greedy complete 90.0%" in text
+    assert "safety=PASS" in text
+    assert "greedy" not in text.lower()
     assert "event=best_improved | best_ep=100" in text
+
+
+def test_universal_run_header_uses_validation_preference_count():
+    reporter, output = _reporter(None)
+    reporter.config = load_config("configs/v8/universal.json")
+    reporter.start_run()
+    assert "prefs=13" in "\n".join(output)
 
 
 def test_done_never_substitutes_last_when_no_safe_best():

@@ -17,6 +17,7 @@ from agent.ppo import (
 from agent.ppo.parallel import ParallelEpisodeRunner
 from agent.baselines import HeuristicPolicy, RandomPolicy
 from configs import load_config, project_path
+from configs.formal_preferences import formal_preferences
 from data import (
     AssemblyInstance,
     load_dataset_split,
@@ -31,7 +32,6 @@ from environment import (
     PreferenceContextInput,
     bounded_quality_score,
     proxy_return_from_metrics,
-    simplex_lattice,
     terminal_quality_score,
 )
 from result import (
@@ -585,6 +585,9 @@ def _evaluation_row(
             "sampling_evaluation_key"
         ),
         "sampling_rng_version": metrics.get("sampling_rng_version"),
+        "policy_execution_version": config["training"].get("policy_execution_version", "legacy_v8"),
+        "policy_precision": config["training"].get("policy_precision", "float32"),
+        "validation_parallel_envs": int(config["training"].get("validation_parallel_envs", 1)),
         "inference_time_seconds": metrics[
             "inference_time_seconds"
         ],
@@ -966,15 +969,15 @@ def evaluate_preference_grid_parallel(
     decode_mode: str = "sampled",
     sampling_seed: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Evaluate each fixed instance at all 66 V8 simplex preferences."""
+    """Evaluate each fixed instance at an ordered formal preference set."""
 
     dataset = load_dataset_split(config, dataset_name)
     offset = int(instance_offset)
     if instance_limit < 1 or offset < 0 or offset + instance_limit > len(dataset):
         raise ValueError("invalid preference-grid instance offset/limit")
-    grid = tuple(simplex_lattice(10, include=())) if preferences is None else tuple(preferences)
-    if len(grid) != 66:
-        raise ValueError("V8 validation requires exactly 66 simplex preferences")
+    grid = formal_preferences(config, "validation") if preferences is None else tuple(preferences)
+    if not grid or len({PreferenceContext.from_input(point).key for point in grid}) != len(grid):
+        raise ValueError("preference grid must be nonempty and contain unique points")
     if decode_mode not in {"greedy", "sampled"}:
         raise ValueError("decode_mode must be 'greedy' or 'sampled'")
     if decode_mode == "sampled" and sampling_seed is None:
@@ -990,7 +993,11 @@ def evaluate_preference_grid_parallel(
         rollouts = runner.evaluate_records(
             ppo_agent,
             records,
-            max_parallelism=min(runner.worker_count, len(records)),
+            max_parallelism=min(
+                int(config["training"]["validation_parallel_envs"]),
+                runner.worker_count,
+                len(records),
+            ),
             deterministic=decode_mode == "greedy",
             sampling_seed=sampling_seed,
             preferences=repeated_preferences,
@@ -1041,11 +1048,17 @@ def evaluate_preference_grid_parallel(
                 records[rollout.record_index], metrics, config, quality_metric
             )
         )
-    preference_keys = {str(row["preference_key"]) for row in rows}
+    preference_keys = [PreferenceContext.from_input(point).key for point in grid]
+    observed_keys = {str(row["preference_key"]) for row in rows}
+    if observed_keys != set(preference_keys) or any(
+        sum(str(row["preference_key"]) == key for row in rows) != instance_limit
+        for key in preference_keys
+    ):
+        raise ValueError("preference grid evaluation produced incomplete cells")
     completion_by_preference = {
         key: sum(bool(row["terminated"]) and not bool(row["truncated"]) for row in rows if row["preference_key"] == key)
         / instance_limit
-        for key in sorted(preference_keys)
+        for key in preference_keys
     }
     summary = aggregate_evaluation_rows(
         rows,
@@ -1060,6 +1073,7 @@ def evaluate_preference_grid_parallel(
         "instance_offset": offset,
         "instance_count": instance_limit,
         "preference_count": len(grid),
+        "ordered_preference_set": [PreferenceContext.from_input(point).preference.as_dict() for point in grid],
         "cell_count": cell_count,
         "completed_cell_count": int(summary["completed_count"]),
         "cell_completion_rate": float(summary["completion_rate"]),
@@ -1095,6 +1109,112 @@ def evaluate_preference_grid_parallel(
     return rows, summary
 
 
+def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) -> None:
+    """Evaluate the configured Universal grid with the same parallel path as training."""
+    if args.policy != "ppo" or not args.checkpoint:
+        raise ValueError("--preference-set requires PPO and --checkpoint")
+    if decode_mode != "sampled":
+        raise ValueError("formal preference-set evaluation requires sampled decoding")
+    if config["preference"]["quality"]["mode"] != "universal_sobol_v1":
+        raise ValueError("--preference-set requires a Universal config")
+    required_split = (
+        str(config["training"]["validation_split"])
+        if args.preference_set == "validation"
+        else "test"
+    )
+    if args.dataset != required_split:
+        raise ValueError(
+            f"{args.preference_set} preference evaluation requires dataset {required_split}"
+        )
+    preferences = formal_preferences(config, args.preference_set)
+    dataset = load_dataset_split(config, args.dataset)
+    default_count = (
+        int(config["training"]["validation_instance_limit"])
+        if args.preference_set == "validation"
+        else len(dataset)
+    )
+    instance_count = (
+        default_count if args.instance_limit is None else int(args.instance_limit)
+    )
+    if instance_count < 1 or instance_count > len(dataset):
+        raise ValueError("--instance-limit is outside the dataset")
+    bootstrap = AssemblySchedulingEnv(config).reset(dataset[0].instance)
+    set_seed(int(config["seed"]))
+    agent = PPOAgent(
+        build_actor_critic(bootstrap, config["network"]),
+        config["ppo"],
+        device=config["device"],
+    )
+    checkpoint_path = project_path(args.checkpoint)
+    metadata = agent.load(checkpoint_path, load_optimizer=False)
+    seeds = (
+        [int(args.sampling_seed)]
+        if args.sampling_seed is not None
+        else configured_formal_evaluation_sampling_seeds(config, args.preference_set)
+    )
+    rows: list[dict[str, Any]] = []
+    with ParallelEpisodeRunner(
+        config=config,
+        template=load_instance_yaml(project_path(config["paths"]["fixed_instance"])),
+        episode_count=instance_count,
+        worker_count=min(
+            int(config["training"]["validation_parallel_envs"]),
+            instance_count * len(preferences),
+        ),
+    ) as runner:
+        for repeat_index, seed in enumerate(seeds):
+            current, _ = evaluate_preference_grid_parallel(
+                config,
+                dataset_name=args.dataset,
+                ppo_agent=agent,
+                runner=runner,
+                instance_limit=instance_count,
+                preferences=preferences,
+                decode_mode=decode_mode,
+                sampling_seed=seed,
+            )
+            for row in current:
+                row["sampling_repeat"] = repeat_index
+            rows.extend(current)
+    from train import _aggregate_formal_rows
+
+    metrics = _aggregate_formal_rows(
+        config,
+        rows=rows,
+        dataset_name=args.dataset,
+        manifest=str(dataset.manifest_path),
+        unique_instance_count=instance_count,
+        repeat_count=len(seeds),
+        universal=True,
+        stage=args.preference_set,
+        strict_counts=True,
+    )
+    metrics["sampling_seeds"] = [int(seed) for seed in seeds]
+    metrics["dataset_manifest_sha256"] = dataset_manifest_snapshot(
+        dataset.manifest_path
+    )["sha256"]
+    metrics["normalization_manifest_sha256"] = config["objective_scalarizer"].get(
+        "normalization_manifest_sha256"
+    )
+    metrics["provenance"] = build_provenance(
+        config,
+        dataset_manifest_path=dataset.manifest_path,
+        checkpoint_path=checkpoint_path,
+        checkpoint_metadata=metadata,
+        formal_evaluation_stage=args.preference_set,
+    )
+    run_directory = create_run_directory(
+        project_path(config["paths"]["result_root"]),
+        label=f"eval_ppo_{decode_mode}_{args.dataset}_{args.preference_set}",
+        run_name=args.run_name,
+    )
+    write_config(run_directory, config)
+    write_json(run_directory / "metrics.json", metrics)
+    write_csv(run_directory / "instance_metrics.csv", rows)
+    print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    print(f"results: {run_directory}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a scheduling policy")
     parser.add_argument("--config", default="configs/default.json")
@@ -1115,6 +1235,8 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--run-name")
+    parser.add_argument("--preference-set", choices=("validation", "final_test"))
+    parser.add_argument("--instance-limit", type=int)
     args = parser.parse_args()
 
     config = deepcopy(load_config(args.config))
@@ -1125,6 +1247,9 @@ def main() -> None:
         else args.algorithm_seed,
     )
     decode_mode = _resolve_decode_mode(args.policy, args.decode_mode)
+    if args.preference_set is not None:
+        _run_formal_grid_cli(config, args, decode_mode)
+        return
     sampling_seeds: list[int | None]
     if decode_mode == "sampled":
         sampling_seeds = (
@@ -1149,6 +1274,7 @@ def main() -> None:
                 dataset_name=args.dataset,
                 policy_name=args.policy,
                 checkpoint=args.checkpoint,
+                instance_limit=args.instance_limit,
                 decode_mode=decode_mode,
                 sampling_seed=sampling_seed,
             )

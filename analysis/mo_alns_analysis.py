@@ -14,7 +14,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from scipy.stats import spearmanr, wilcoxon
 
 from configs import project_path
-from pareto_analysis import hypervolume_3d, nondominated_indices, normalize_objectives
+from analysis.pareto_analysis import hypervolume_3d, nondominated_indices, normalize_objectives
 from result.io import write_csv, write_json
 
 

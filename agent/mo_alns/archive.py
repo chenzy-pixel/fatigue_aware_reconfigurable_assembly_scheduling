@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from environment import PreferenceVector
-from pareto_analysis import dominates, normalize_objectives, vectors_equal
+from analysis.pareto_analysis import dominates, normalize_objectives, vectors_equal
 
 from .types import CandidateEvaluation, OBJECTIVE_SCALES
 
