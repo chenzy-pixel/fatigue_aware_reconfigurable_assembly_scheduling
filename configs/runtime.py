@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any, Mapping
 
 
@@ -42,10 +43,15 @@ _REMOVED_NETWORK_FIELDS = frozenset(
 )
 
 
-def runtime_manifest() -> dict[str, Any]:
-    """Return the immutable implementation identity persisted with each run."""
+def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Return implementation identity and the run's configured failure penalty."""
 
-    return deepcopy(_RUNTIME_MANIFEST)
+    manifest = deepcopy(_RUNTIME_MANIFEST)
+    if config is not None:
+        manifest["terminal_failure_penalty"] = float(
+            config.get("reward", {}).get("terminal_failure_penalty", 1.0)
+        )
+    return manifest
 
 
 def validate_latest_only_config(config: Mapping[str, Any]) -> None:
@@ -83,10 +89,15 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
             "latest-only runtime requires "
             "single_stage_progress_quality_failure_v2"
         )
-    if float(reward.get("terminal_failure_penalty", -1.0)) != 1.0:
+    try:
+        failure_penalty = float(reward.get("terminal_failure_penalty", -1.0))
+    except (TypeError, ValueError, OverflowError) as error:
         raise ValueError(
-            "single-stage failure-v2 requires "
-            "reward.terminal_failure_penalty = 1.0"
+            "reward.terminal_failure_penalty must be finite and non-negative"
+        ) from error
+    if not math.isfinite(failure_penalty) or failure_penalty < 0.0:
+        raise ValueError(
+            "reward.terminal_failure_penalty must be finite and non-negative"
         )
     shaping = reward.get("feasibility_shaping", {})
     if not isinstance(shaping, Mapping):
@@ -120,5 +131,5 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
 
 def attach_runtime_manifest(config: dict[str, Any]) -> dict[str, Any]:
     validate_latest_only_config(config)
-    config["runtime_manifest"] = runtime_manifest()
+    config["runtime_manifest"] = runtime_manifest(config)
     return config

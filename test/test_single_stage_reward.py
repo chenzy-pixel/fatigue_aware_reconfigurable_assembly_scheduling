@@ -149,10 +149,12 @@ def test_standard_reset_and_successful_trajectory_satisfy_general_identity(
 
 
 @pytest.mark.parametrize("reason", ("decision_limit", "horizon"))
+@pytest.mark.parametrize("penalty", (1.0, 2.0, 5.0))
 def test_environment_failures_keep_actual_quality_and_apply_one_penalty(
-    config, fixed_instance, reason
+    config, fixed_instance, reason, penalty
 ):
     effective = deepcopy(config)
+    effective["reward"]["terminal_failure_penalty"] = penalty
     if reason == "decision_limit":
         effective["environment"]["max_decisions"] = 3
     else:
@@ -172,14 +174,16 @@ def test_environment_failures_keep_actual_quality_and_apply_one_penalty(
     assert metrics["task_failed"] is True
     assert metrics["preference_quality_score"] == 1.0
     assert metrics["actual_preference_quality_score"] < 1.0
-    assert metrics["terminal_failure_penalty_applied"] == pytest.approx(1.0)
-    assert failure_sum == pytest.approx(-1.0)
+    assert metrics["terminal_failure_penalty_configured"] == pytest.approx(penalty)
+    assert metrics["terminal_failure_penalty_applied"] == pytest.approx(penalty)
+    assert failure_sum == pytest.approx(-penalty)
+    assert sum(item["reward"]["failure"] != 0.0 for item in transitions) == 1
     assert 0.0 <= metrics["operation_progress"] < 1.0
     assert reward_sum == pytest.approx(
         proxy_return_from_metrics(metrics, effective), abs=1e-8
     )
     audit = _reward_audit(environment, transitions)
-    assert audit["component_sums"]["failure"] == pytest.approx(-1.0)
+    assert audit["component_sums"]["failure"] == pytest.approx(-penalty)
     assert audit["base_cumulative_reward"] == pytest.approx(
         metrics["base_cumulative_reward"], abs=1e-8
     )

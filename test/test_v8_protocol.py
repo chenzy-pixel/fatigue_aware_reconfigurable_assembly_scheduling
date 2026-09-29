@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import math
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from configs import load_config, validate_latest_only_config
+from configs import load_config, runtime_manifest, validate_latest_only_config
 from configs.formal_preferences import formal_preferences
 from configs.normalization import (
     NORMALIZATION_MANIFEST_SCHEMA,
@@ -46,6 +47,8 @@ def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
 
 def test_universal_uses_13_validation_and_66_final_preferences_with_training_sequence():
     config = load_config("configs/v8/universal.json")
+    assert config["reward"]["terminal_failure_penalty"] == 5.0
+    assert config["runtime_manifest"]["terminal_failure_penalty"] == 5.0
     assert len(formal_preferences(config, "validation")) == 13
     assert len(formal_preferences(config, "final_test")) == 66
     expected_validation = [
@@ -109,12 +112,30 @@ def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     with pytest.raises(ValueError, match="reward.quality_weights"):
         validate_latest_only_config(config)
     config["reward"].pop("quality_weights")
-    config["reward"]["terminal_failure_penalty"] = 0.5
-    with pytest.raises(ValueError, match="terminal_failure_penalty"):
-        validate_latest_only_config(config)
-    config["reward"]["terminal_failure_penalty"] = 1.0
     config["ppo"]["gamma"] = 0.99
     with pytest.raises(ValueError, match="gamma"):
+        validate_latest_only_config(config)
+
+
+@pytest.mark.parametrize("penalty", (0.0, 0.5, 1.0, 2.0, 5.0))
+def test_failure_penalty_override_loads_and_is_persisted(tmp_path: Path, penalty: float):
+    path = tmp_path / "penalty.json"
+    path.write_text(json.dumps({
+        "extends": str(Path(__file__).resolve().parents[1] / "configs/default.json"),
+        "reward": {"terminal_failure_penalty": penalty},
+    }), encoding="utf-8")
+    config = load_config(path)
+    assert config["reward"]["terminal_failure_penalty"] == penalty
+    assert config["runtime_manifest"]["terminal_failure_penalty"] == penalty
+    assert runtime_manifest()["terminal_failure_penalty"] == 1.0
+
+
+@pytest.mark.parametrize("penalty", (-1.0, math.inf, -math.inf, math.nan, None, "invalid"))
+def test_failure_penalty_rejects_invalid_values(penalty):
+    config = deepcopy(load_config("configs/default.json"))
+    config.pop("runtime_manifest")
+    config["reward"]["terminal_failure_penalty"] = penalty
+    with pytest.raises(ValueError, match="terminal_failure_penalty"):
         validate_latest_only_config(config)
 
 

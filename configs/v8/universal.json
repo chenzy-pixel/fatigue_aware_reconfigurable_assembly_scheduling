@@ -1,6 +1,9 @@
 {
   "extends": "../default.json",
   "experiment_name": "v8_universal",
+  "reward": {
+    "terminal_failure_penalty": 5.0
+  },
   "objective_scalarizer": {
     "scale_source": "frozen_manifest",
     "normalization_manifest": "configs/manifests/e1_tail5_scales_20260928.json",
