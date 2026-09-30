@@ -13,7 +13,6 @@ from environment import AssemblySchedulingEnv
 from utils import action_trace_sha256
 
 
-ARCHIVE_BASELINE = Path("test/baselines/latest_only_golden.json")
 V8_BASELINE = Path("test/baselines/v8_golden.json")
 
 
@@ -57,10 +56,10 @@ def test_committed_validation_instances_match_manifest_bytes():
     assert failures == []
 
 
-def test_fixed_instance_golden_observation_mask_and_trajectory():
+def test_fixed_instance_golden_observation_mask_and_trajectory(fixed_instance):
     expected = json.loads(V8_BASELINE.read_text(encoding="utf-8"))["fixed_instance"]
     config = load_config("configs/e1/single_flow.json")
-    instance = load_instance_pickle(project_path(config["paths"]["instance_cache"]))
+    instance = fixed_instance
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(instance)
     mask = environment.get_action_mask()
@@ -119,15 +118,6 @@ def test_active_tree_contains_no_removed_experiment_control_strings():
     assert offenders == []
 
 
-def test_pre_refactor_expanded_configs_match_archived_fingerprints():
-    baseline = json.loads(ARCHIVE_BASELINE.read_text(encoding="utf-8"))
-    for objective, expected in baseline["pre_refactor_expanded_config_sha256"].items():
-        path = Path("test/baselines/pre_refactor_expanded") / f"{objective}.json"
-        expanded = json.loads(path.read_text(encoding="utf-8"))
-        payload = json.dumps(
-            expanded, sort_keys=True, separators=(",", ":")
-        ).encode()
-        assert hashlib.sha256(payload).hexdigest() == expected
 
 
 def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
@@ -140,10 +130,8 @@ def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
         "configs/e1/single_flow.json",
         "configs/e1/single_cost.json",
         "configs/e1/single_variance.json",
-        "configs/e1/single_flow_relative_time.json",
         "configs/baselines/mo_alns.json",
         "configs/baselines/mo_alns_smoke.json",
         "configs/baselines/mo_alns_manifest.json",
-        "configs/baselines/mo_alns_manifest.example.json",
         "configs/v8/universal.json",
     }

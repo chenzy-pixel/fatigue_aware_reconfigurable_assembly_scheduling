@@ -41,7 +41,8 @@ def config():
 
 @pytest.fixture(scope="session")
 def fixed_instance(config):
-    return load_instance_pickle(project_path(config["paths"]["instance_cache"]))
+    from eval import load_configured_instance
+    return load_configured_instance(config)
 
 
 @pytest.fixture(scope="session")

@@ -151,12 +151,8 @@ def default_preference(config: Mapping[str, object]) -> PreferenceVector:
         return normalize_preference(
             quality.get("fixed", CANONICAL_PREFERENCE)
         )
-    # Historical result/config readers may still construct an environment from
-    # an archived V7 mapping. New V8 configs are validated separately.
-    reward = config.get("reward", {})
-    if not isinstance(reward, Mapping):
-        raise TypeError("config.reward must be an object")
-    return normalize_preference(reward.get("quality_weights", CANONICAL_PREFERENCE))
+    return normalize_preference(CANONICAL_PREFERENCE)
+
 
 
 def default_preference_context(

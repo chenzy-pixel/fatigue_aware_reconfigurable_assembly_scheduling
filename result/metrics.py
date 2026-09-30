@@ -62,7 +62,7 @@ def _canonical_json_bytes(value: Any) -> bytes:
 
 
 def evaluation_quality_metric(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the immutable paper-quality metric, with a legacy fallback."""
+    """Return the immutable paper-quality metric, with canonical reference defaults."""
 
     evaluation = config.get("evaluation")
     if evaluation is None:

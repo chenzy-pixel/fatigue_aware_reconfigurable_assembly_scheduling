@@ -26,6 +26,8 @@ from environment import (
 from environment.types import OperationState, ReconfigurationStage
 from utils import action_trace_sha256
 
+from configs.formal_preferences import formal_preferences
+
 from .archive import ParetoArchive, augmented_tchebycheff, candidate_better, normalized_objectives
 from .types import (
     CandidateEvaluation,
@@ -383,8 +385,8 @@ def decode_solution(
         preference=effective_preference,
         metrics=metrics,
         objectives=objectives,
-        normalized_objectives=normalized_objectives(objectives),
-        tchebycheff=augmented_tchebycheff(objectives, effective_preference),
+        normalized_objectives=normalized_objectives(objectives, config),
+        tchebycheff=augmented_tchebycheff(objectives, effective_preference, config),
         feasible=feasible,
         action_trace_sha256=str(metrics["action_trace_sha256"]),
         realized=realized,
@@ -1094,7 +1096,7 @@ class MOALNSSolver:
         )
         maximum = int(self.settings["max_evaluations_per_preference"])
         evaluator = _CandidateEvaluator(self.config, instance, effective_preference, maximum)
-        archive = ParetoArchive()
+        archive = ParetoArchive(dict(self.config))
         search_log: list[dict[str, Any]] = []
         initial: list[CandidateEvaluation] = []
         for solution in self._initial_solutions(instance, effective_preference, rng):
@@ -1301,12 +1303,12 @@ class MOALNSSolver:
         preferences: Sequence[PreferenceInput] | None = None,
     ) -> GridSearchResult:
         points = (
-            tuple(simplex_lattice(5, include=(CANONICAL_PREFERENCE,)))
+            tuple(point.preference for point in formal_preferences(self.config, "final_test"))
             if preferences is None
             else tuple(normalize_preference(value) for value in preferences)
         )
         searches = tuple(self.solve(instance, point) for point in points)
-        archive = ParetoArchive()
+        archive = ParetoArchive(dict(self.config))
         for search in searches:
             archive.extend(search.archive)
         endpoints: dict[str, CandidateEvaluation] = {}

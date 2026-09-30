@@ -23,8 +23,8 @@ def run_manifest(
 ) -> dict[str, Any]:
     path = project_path(manifest_path)
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    if str(manifest.get("protocol")) != "e1_mo_alns_solver_budget_v1":
-        raise ValueError("manifest does not declare e1_mo_alns_solver_budget_v1")
+    if str(manifest.get("protocol")) != "ppo_mo_alns_solver_budget_v2":
+        raise ValueError("manifest does not declare ppo_mo_alns_solver_budget_v2")
     config = load_config(manifest["config"])
     datasets = tuple(str(value) for value in manifest["datasets"])
     seeds = tuple(int(value) for value in manifest["algorithm_seeds"])
@@ -68,7 +68,7 @@ def run_manifest(
             "run_count": len(artifacts),
             "artifacts": artifacts,
             "provenance": build_provenance(config),
-            "e1_candidates": manifest.get("e1_candidates"),
+            "ppo_candidates": manifest.get("ppo_candidates"),
         },
     )
     write_csv(output / "candidates.csv", rows)

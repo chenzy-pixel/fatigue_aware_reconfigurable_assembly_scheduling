@@ -70,6 +70,11 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
         )
     if int(network.get("policy_head_version", 8)) != 8:
         raise ValueError("latest-only runtime accepts only policy_head_version=8")
+    scalarizer = config.get("objective_scalarizer", {})
+    if scalarizer.get("type") != "normalized_augmented_tchebycheff_v1":
+        raise ValueError("objective_scalarizer.type must be normalized_augmented_tchebycheff_v1")
+    if scalarizer.get("scale_source") != "frozen_manifest":
+        raise ValueError("objective_scalarizer.scale_source must be frozen_manifest")
     reward = config.get("reward", {})
     if not isinstance(reward, Mapping):
         raise TypeError("reward config must be a mapping")

@@ -13,7 +13,7 @@ from data.dataset import load_dataset_split
 from environment import (
     AssemblySchedulingEnv,
     DecisionType,
-    PolicyObservation,
+    HeterogeneousGraphObservation,
 )
 
 
@@ -92,8 +92,10 @@ def test_mixed_variable_size_batch_matches_individual_forward(
     )
     assert all(not masks[index][action] for index, action in enumerate(actions))
     assert all(math.isfinite(value) for value in values)
-    compact = PolicyObservation.from_observation(first_observation)
-    assert not hasattr(compact, "relations")
+    buffer = RolloutBuffer()
+    buffer.add(first_observation, masks[0], 0, 0.0, 0.0, 0.0, False)
+    assert isinstance(buffer.transitions[0].observation, HeterogeneousGraphObservation)
+    assert buffer.transitions[0].observation is not first_observation
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
@@ -268,10 +270,8 @@ def test_ppo_update_uses_one_batched_forward_per_minibatch(
 def test_gae_is_computed_before_parallel_buffers_are_merged():
     first = RolloutBuffer()
     second = RolloutBuffer()
-    observation = PolicyObservation(
-        operations=np.zeros((1, 1), dtype=np.float32),
-        machines=np.zeros((1, 1), dtype=np.float32),
-        workers=np.zeros((1, 1), dtype=np.float32),
+    observation = HeterogeneousGraphObservation(
+        node_features={name: np.zeros((1, 1), dtype=np.float32) for name in ("operation", "machine", "worker")},
         global_features=np.zeros(1, dtype=np.float32),
         decision_type=DecisionType.PRODUCTION,
     )

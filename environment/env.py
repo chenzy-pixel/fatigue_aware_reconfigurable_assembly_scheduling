@@ -69,15 +69,8 @@ ACTIVE_RECONFIGURATION_STAGES = (
 )
 
 
-def quantize_to_ticks(minutes: float, resolution: float) -> int:
-    """Ceil a duration to the event grid with floating point protection."""
-    if minutes < 0 or not math.isfinite(minutes):
-        raise ValueError("duration must be finite and non-negative")
-    return int(math.ceil((minutes - EPSILON) / resolution))
 
 
-def ticks_to_minutes(ticks: int, resolution: float) -> float:
-    return float(ticks) * resolution
 
 
 def _as_edge_index(pairs: list[tuple[int, int]]) -> np.ndarray:
@@ -115,7 +108,6 @@ class AssemblySchedulingEnv:
     def __init__(self, config: dict[str, Any]):
         self.config = config
         self.preference_context = default_preference_context(config)
-        # Compatibility alias retained for archived analysis code.
         self.preference: PreferenceVector = self.preference_context.preference
         self.instance: AssemblyInstance | None = None
         self.current_tick = 0
@@ -1999,16 +1991,7 @@ class AssemblySchedulingEnv:
             self.config,
             preference=self.preference,
         )
-        quality_after = (
-            actual_quality_after
-            if reward_mode == FAILURE_PENALTY_REWARD
-            else terminal_quality_score(
-                *after,
-                self.config,
-                preference=self.preference,
-                terminal_failure=self.task_failed,
-            )
-        )
+        quality_after = actual_quality_after
         failure_reward = 0.0
         if (
             reward_mode == FAILURE_PENALTY_REWARD
@@ -2480,11 +2463,7 @@ class AssemblySchedulingEnv:
         )
         reward_mode = str(self.config["reward"]["mode"])
         configured_failure_penalty = terminal_failure_penalty(self.config)
-        training_preference_quality_score = (
-            raw_preference_quality_score
-            if reward_mode == FAILURE_PENALTY_REWARD
-            else preference_quality_score
-        )
+        training_preference_quality_score = raw_preference_quality_score
         operation_progress = self.operation_progress()
         return {
             "instance_id": self.instance.instance_id,

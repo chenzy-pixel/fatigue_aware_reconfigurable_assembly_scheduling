@@ -120,7 +120,7 @@ observation 调用 `value_batch` 自举。
 `agent/ppo/network.py` 的 V8 网络包含：
 
 ```text
-PolicyObservation
+HeterogeneousGraphObservation
   → node-type encoders
   → 2 层 heterogeneous message passing
   → Flow / Cost / Variance action experts

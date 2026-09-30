@@ -1,14 +1,16 @@
 {
   "extends": "../default.json",
   "experiment_name": "mo_alns_fatigue_aware_baseline",
-  "experiment_suite_version": "mo_alns_solver_budget_v1",
   "evaluation": {
     "result_schema_version": "7.0.0"
   },
   "mo_alns": {
     "max_evaluations_per_preference": 300,
     "max_proposals_multiplier": 10,
-    "destroy_fraction": [0.1, 0.3],
+    "destroy_fraction": [
+      0.1,
+      0.3
+    ],
     "minimum_removed_operations": 2,
     "regret_position_candidates": 6,
     "regret_resource_variants": 3,
@@ -29,6 +31,7 @@
     "reheat_fraction": 0.25,
     "maximum_reheats": 2,
     "matching_repair": true,
-    "parallel_workers": 20
+    "parallel_workers": 20,
+    "protocol": "mo_alns_solver_budget_v2"
   }
 }

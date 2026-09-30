@@ -408,7 +408,10 @@ def test_graph_copy_buffer_and_terminal_observation(config, fixed_instance):
     original_feature = buffer.transitions[0].observation.operations[0, 0]
     observation.operations[0, 0] = -456.0
     assert buffer.transitions[0].observation.operations[0, 0] == original_feature
-    assert not hasattr(buffer.transitions[0].observation, "relations")
+    saved_relation = buffer.transitions[0].observation.relations[CAPABLE_EDGE]
+    original_edge = saved_relation.edge_features[0, 0]
+    observation.relations[CAPABLE_EDGE].edge_features[0, 0] = -789.0
+    assert saved_relation.edge_features[0, 0] == original_edge
 
     while not (environment.terminated or environment.truncated):
         environment.step(HeuristicPolicy().select_action(environment))

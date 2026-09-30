@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from agent.mo_alns import MOALNSSolver, decode_solution
 from agent.mo_alns.types import preference_key
 from configs import load_config, project_path
+from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
 from environment import CANONICAL_PREFERENCE, PreferenceVector, simplex_lattice
@@ -27,15 +28,12 @@ from result import (
 from result.io import write_config, write_csv, write_json
 
 
-PROTOCOL_VERSION = "mo_alns_solver_budget_v1"
-RESULT_SCHEMA_VERSION = "5.1.0"
+PROTOCOL_VERSION = "mo_alns_solver_budget_v2"
 
 
-def mo_alns_preference_grid() -> tuple[PreferenceVector, ...]:
-    points = tuple(simplex_lattice(5, include=(CANONICAL_PREFERENCE,)))
-    if len(points) != 22:
-        raise RuntimeError("MO-ALNS full grid must contain 22 preferences")
-    return points
+def mo_alns_preference_grid(config=None, stage="final_test") -> tuple[PreferenceVector, ...]:
+    effective = load_config("configs/default.json") if config is None else config
+    return tuple(point.preference for point in formal_preferences(effective, stage))
 
 
 def _candidate_id(preference: PreferenceVector) -> str:
@@ -100,13 +98,13 @@ def _run_record(
         metrics["mo_alns_archive_size"] = len(grid.archive)
         metrics["mo_alns_initial_best_tchebycheff"] = search.initial_best_tchebycheff
         metrics["mo_alns_tchebycheff"] = replay.tchebycheff
-        metrics["feasibility_proxy_return"] = proxy_return_from_metrics(
-            metrics,
-            worker_config["reward"],
-            "feasibility",
-            preference=preference,
+        metrics["single_stage_proxy_return"] = proxy_return_from_metrics(
+            metrics, worker_config, preference=preference
         )
-        row = build_evaluation_row(record, metrics, worker_config["reward"], quality_metric)
+        metrics["arm"] = "mo_alns"
+        metrics["decode_mode"] = "solver"
+        metrics["policy_execution_version"] = PROTOCOL_VERSION
+        row = build_evaluation_row(record, metrics, worker_config, quality_metric)
         candidate_id = _candidate_id(preference)
         rows.append(
             {
@@ -217,7 +215,7 @@ def run_mo_alns_dataset(
     if count < 1 or count > len(dataset):
         raise ValueError(f"instance_limit must be in [1, {len(dataset)}]")
     records = [dataset[index] for index in range(count)]
-    points = tuple(mo_alns_preference_grid() if preferences is None else preferences)
+    points = tuple(mo_alns_preference_grid(effective_config, "validation" if dataset_name == "validation" else "final_test") if preferences is None else preferences)
     if not points:
         raise ValueError("at least one preference is required")
     configured_workers = int(effective_config.get("mo_alns", {}).get("parallel_workers", 20))
@@ -255,7 +253,6 @@ def run_mo_alns_dataset(
         policy="mo_alns",
         manifest=manifest,
         quality_metric=evaluation_quality_metric(effective_config),
-        schema_version=RESULT_SCHEMA_VERSION,
     )
     aggregate.update(
         {

@@ -1,9 +1,19 @@
 {
-  "protocol": "e1_mo_alns_solver_budget_v1",
+  "protocol": "ppo_mo_alns_solver_budget_v2",
   "config": "configs/baselines/mo_alns.json",
-  "datasets": ["test", "ood", "stress"],
-  "algorithm_seeds": [11, 23, 37, 53, 71],
+  "datasets": [
+    "test",
+    "ood",
+    "stress"
+  ],
+  "algorithm_seeds": [
+    11,
+    23,
+    37,
+    53,
+    71
+  ],
   "instance_limit": null,
   "parallel_envs": 20,
-  "e1_candidates": "result/analysis/e1_full/candidates.csv"
+  "ppo_candidates": "result/analysis/universal/candidates.csv"
 }

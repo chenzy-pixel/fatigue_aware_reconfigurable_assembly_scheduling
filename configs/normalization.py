@@ -238,9 +238,7 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     scalarizer = config.get("objective_scalarizer")
     if not isinstance(scalarizer, dict):
         raise ValueError("config requires objective_scalarizer")
-    source = str(scalarizer.get("scale_source", "bootstrap_specialist"))
-    if source == "bootstrap_specialist":
-        return
+    source = str(scalarizer.get("scale_source", "frozen_manifest"))
     if source != "frozen_manifest":
         raise ValueError(f"unknown objective scalarizer scale_source {source!r}")
     manifest_path = scalarizer.get("normalization_manifest")

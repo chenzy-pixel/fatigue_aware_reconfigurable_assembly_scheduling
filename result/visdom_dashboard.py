@@ -222,7 +222,7 @@ def _localized_event_message(message: str) -> str:
 
 
 def resolve_visdom_settings(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Resolve the nested configuration and the legacy enabled flag."""
+    """Resolve the configured dashboard settings."""
     settings = dict(DEFAULT_VISDOM_SETTINGS)
     logging_config = config.get("logging", {})
     if not isinstance(logging_config, Mapping):
@@ -232,8 +232,6 @@ def resolve_visdom_settings(config: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(nested, Mapping):
             raise TypeError("logging.visdom must be a mapping")
         settings.update(nested)
-    elif "visdom_enabled" in logging_config:
-        settings["enabled"] = bool(logging_config["visdom_enabled"])
     if int(settings["port"]) < 1:
         raise ValueError("logging.visdom.port must be positive")
     if int(settings["update_every"]) < 1:
@@ -524,7 +522,7 @@ class TrainingDashboard:
             "价值损失系数": ppo["value_coefficient"],
             "最大梯度范数": ppo["max_grad_norm"],
             "奖励模式": _localized_state_value(
-                reward.get("mode", "legacy_weighted_sum")
+                reward.get("mode", "single_stage_progress_quality_failure_v2")
             ),
             "质量偏好模式": (
                 quality_preference.get("mode")

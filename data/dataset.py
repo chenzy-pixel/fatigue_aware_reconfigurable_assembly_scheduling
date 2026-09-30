@@ -431,25 +431,8 @@ def curriculum_weights_at(
     fraction = float(progress)
     if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
         raise ValueError("curriculum progress must be in [0, 1]")
-    if isinstance(curriculum, list):
-        previous_until = 0.0
-        for stage in curriculum:
-            until = float(stage["until_fraction"])
-            if (
-                not math.isfinite(until)
-                or until <= previous_until
-                or until > 1.0
-            ):
-                raise ValueError(
-                    "legacy curriculum until_fraction values must be "
-                    "strictly increasing within (0, 1]"
-                )
-            previous_until = until
-            if fraction < until + 1e-12:
-                return _normalized_curriculum_weights(stage["weights"])
-        raise ValueError("curriculum does not cover the full training run")
     if not isinstance(curriculum, dict):
-        raise ValueError("curriculum must be a legacy list or a mapping")
+        raise ValueError("curriculum must be a mapping")
     if str(curriculum.get("mode")) != "linear":
         raise ValueError("curriculum mapping mode must be 'linear'")
     anchors = curriculum.get("anchors")

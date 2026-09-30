@@ -10,7 +10,7 @@ import torch
 from agent.baselines import HeuristicPolicy
 from agent.ppo import PPOAgent, build_actor_critic
 from agent.ppo.network import infer_checkpoint_network_spec
-from agent.ppo.network_v8 import ObjectiveExpert, SimplexMonotoneRanker
+from agent.ppo.network import ObjectiveExpert, SimplexMonotoneRanker
 from environment import (
     AssemblySchedulingEnv,
     bounded_quality_score,

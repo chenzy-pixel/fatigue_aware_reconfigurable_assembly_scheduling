@@ -73,6 +73,11 @@ def test_e1_children_keep_one_hot_preference_and_user_validation_cadence(
         "sobol_count": 14,
     }
     assert child["training"]["validation_interval_episodes"] == 40
+    assert child["training"]["episodes"] == 1000
+    assert child["training"]["parallel_envs"] == 20
+    assert child["training"]["validation_parallel_envs"] == 20
+    assert child["training"]["episodes_per_update"] == 20
+    assert child["objective_scalarizer"]["scales"] == base["objective_scalarizer"]["scales"]
     assert child["network"] == base["network"]
     assert child["ppo"] == base["ppo"]
 

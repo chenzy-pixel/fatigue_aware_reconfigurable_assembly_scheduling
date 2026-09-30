@@ -7,13 +7,12 @@ import numpy as np
 from environment import (
     HeterogeneousGraphObservation,
     Observation,
-    PolicyObservation,
 )
 
 
 @dataclass
 class Transition:
-    observation: Observation | PolicyObservation
+    observation: Observation
     action_mask: np.ndarray
     action: int
     log_probability: float
@@ -25,8 +24,10 @@ class Transition:
 
 
 class RolloutBuffer:
-    def __init__(self, *, preserve_graph: bool = False) -> None:
-        self.preserve_graph = bool(preserve_graph)
+    def __init__(self, *, preserve_graph: bool = True) -> None:
+        if not preserve_graph:
+            raise ValueError("rollout buffers require graph observations")
+        self.preserve_graph = True
         self.transitions: list[Transition] = []
 
     def __len__(self) -> int:
@@ -34,7 +35,7 @@ class RolloutBuffer:
 
     def add(
         self,
-        observation: Observation | PolicyObservation,
+        observation: Observation,
         action_mask: np.ndarray,
         action: int,
         log_probability: float,
@@ -42,17 +43,7 @@ class RolloutBuffer:
         reward: float,
         done: bool,
     ) -> None:
-        if self.preserve_graph:
-            if not isinstance(observation, HeterogeneousGraphObservation):
-                raise TypeError(
-                    "graph-preserving buffers require full heterogeneous "
-                    "graph observations"
-                )
-            stored_observation = observation.copy()
-        else:
-            stored_observation = PolicyObservation.from_observation(
-                observation
-            )
+        stored_observation = observation.copy()
         self.transitions.append(
             Transition(
                 observation=stored_observation,
@@ -66,12 +57,6 @@ class RolloutBuffer:
         )
 
     def extend(self, other: "RolloutBuffer") -> None:
-        if not self.transitions:
-            self.preserve_graph = other.preserve_graph
-        elif self.preserve_graph != other.preserve_graph:
-            raise ValueError(
-                "cannot merge compact and graph-preserving rollout buffers"
-            )
         self.transitions.extend(other.transitions)
 
     def compute_gae(

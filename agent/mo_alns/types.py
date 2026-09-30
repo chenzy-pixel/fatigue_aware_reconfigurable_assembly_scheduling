@@ -22,7 +22,6 @@ OBJECTIVE_FIELDS = (
     "reconfiguration_cost",
     "worker_load_variance",
 )
-OBJECTIVE_SCALES = (1200.0, 1000.0, 50.0)
 ENCODING_SCHEMA_VERSION = "mo_alns_encoding_v1"
 
 
