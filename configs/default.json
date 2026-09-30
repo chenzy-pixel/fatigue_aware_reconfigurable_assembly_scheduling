@@ -14,17 +14,17 @@
   "paths": {
     "fixed_instance": "data/instances/fixed_instance.yaml",
     "instance_cache": "data/instances/fixed_15x4_v1.pkl",
-    "manifests_root": "data/manifests",
-    "instances_root": "data/instances",
+    "manifests_root": "data/manifests/v2",
+    "instances_root": "data/instances/v2",
     "result_root": "result/runs",
-    "training_instances_cache": "data/instances/train_cache"
+    "training_instances_cache": "data/instances/train_cache/v2"
   },
   "dataset": {
-    "schema_version": "1.2.0",
+    "schema_version": "2.0.0",
     "template_instance": "fixed_15x4_v1",
     "profiles": {
       "dev": {
-        "validation": 20,
+        "validation": 500,
         "test": 20,
         "ood": 20,
         "stress": 20
@@ -65,7 +65,7 @@
     }
   },
   "generator": {
-    "version": "1.3.0",
+    "version": "2.0.0",
     "max_generation_attempts": 100,
     "max_counterfactual_candidates": 3,
     "wave_count": 3,
@@ -330,13 +330,6 @@
         ]
       }
     },
-    "acceptance": {
-      "machine_min_module_load": 0.35,
-      "reconfiguration_min_ready_gap": 0.5,
-      "reconfiguration_min_ratio": 0.25,
-      "arrival_min_overlap": 0.5,
-      "max_heuristic_makespan_minutes": 240.0
-    },
     "ood": {
       "factors": [
         "processing_time_heterogeneity",
@@ -347,14 +340,11 @@
         "module_demand_imbalance"
       ]
     },
-    "stress": {
-      "max_truncated_fraction": 0.2
-    },
     "curriculum": {
       "mode": "linear",
       "anchors": [
         {
-          "at_fraction": 0.0,
+          "at_fraction": 0,
           "weights": {
             "easy": 0.3,
             "balanced": 0.5,
@@ -366,7 +356,7 @@
           }
         },
         {
-          "at_fraction": 0.2,
+          "at_fraction": 0.15,
           "weights": {
             "easy": 0.3,
             "balanced": 0.5,
@@ -378,19 +368,7 @@
           }
         },
         {
-          "at_fraction": 0.55,
-          "weights": {
-            "easy": 0.1,
-            "balanced": 0.4,
-            "machine_bottleneck": 0.1,
-            "reconfiguration_bottleneck": 0.1,
-            "worker_bottleneck": 0.1,
-            "fatigue_bottleneck": 0.1,
-            "high_arrival_pressure": 0.1
-          }
-        },
-        {
-          "at_fraction": 0.8,
+          "at_fraction": 0.6,
           "weights": {
             "easy": 0.05,
             "balanced": 0.35,
@@ -402,7 +380,7 @@
           }
         },
         {
-          "at_fraction": 1.0,
+          "at_fraction": 1,
           "weights": {
             "easy": 0.05,
             "balanced": 0.35,
@@ -412,6 +390,37 @@
             "fatigue_bottleneck": 0.1,
             "high_arrival_pressure": 0.1
           }
+        }
+      ]
+    },
+    "diagnostics": {
+      "enabled_splits": [
+        "validation",
+        "test",
+        "ood",
+        "stress"
+      ],
+      "classify_reconfiguration_value": false
+    },
+    "sampling_window_episodes": 100,
+    "random_stream_version": "independent_pressure_cost_preference_v2",
+    "severity_curriculum": {
+      "anchors": [
+        {
+          "at_fraction": 0,
+          "value": 0.4
+        },
+        {
+          "at_fraction": 0.15,
+          "value": 0.4
+        },
+        {
+          "at_fraction": 0.6,
+          "value": 1
+        },
+        {
+          "at_fraction": 1,
+          "value": 1
         }
       ]
     }
@@ -453,7 +462,7 @@
     }
   },
   "evaluation": {
-    "result_schema_version": "7.0.0",
+    "result_schema_version": "8.0.0",
     "quality_metric": {
       "version": "canonical_bounded_quality_v1",
       "flow_scale": 1200.0,
@@ -590,7 +599,12 @@
     "multiprocessing_start_method": "spawn",
     "torch_num_threads": 4,
     "policy_execution_version": "phase_batched_v1",
-    "policy_precision": "float32"
+    "policy_precision": "float32",
+    "validation_selection": {
+      "mode": "stratified_v2",
+      "diagnostic_instance_limit": 49,
+      "diagnostic_interval_validations": 5
+    }
   },
   "logging": {
     "visdom": {

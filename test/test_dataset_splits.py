@@ -31,7 +31,7 @@ def test_seed_ranges_profiles_and_algorithm_seeds(config):
         6_000_000,
     )
     assert dataset_profile_counts(config, "dev") == {
-        "validation": 20,
+        "validation": 500,
         "test": 20,
         "ood": 20,
         "stress": 20,
@@ -79,7 +79,8 @@ def test_online_dataset_uses_episode_seeds_independent_of_algorithm_seed(
         split,
         pressure_type,
         ood_factor=None,
-        classify_reconfiguration_value=True,
+        classify_reconfiguration_value=False,
+        severity=1.0,
     ):
         calls.append(
             (

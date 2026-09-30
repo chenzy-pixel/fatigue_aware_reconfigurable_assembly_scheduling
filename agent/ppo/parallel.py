@@ -482,6 +482,14 @@ def _worker_main(
                         "seed",
                         "pressure_type",
                         "cost_profile",
+                        "severity",
+                        "feasibility_status",
+                        "diagnostic_status",
+                        "sampled_parameters",
+                        "generator_config_sha256",
+                        "environment_config_sha256",
+                        "distribution_contract_sha256",
+                        "training_cache_fingerprint",
                         "generation_attempt",
                     )
                 }
@@ -924,6 +932,9 @@ class ParallelEpisodeRunner:
                         "cache_hit": bool(response.cache_hit),
                         "generation_time_seconds": duration,
                         "pressure_type": metadata.get("pressure_type"),
+                        "severity": metadata.get("severity"),
+                        "diagnostic_status": metadata.get("diagnostic_status"),
+                        "feasibility_status": metadata.get("feasibility_status"),
                         "generation_attempt": metadata.get(
                             "generation_attempt"
                         ),
@@ -952,7 +963,8 @@ class ParallelEpisodeRunner:
             (response.metadata for response in responses.values()), {}
         )
         summary = {
-            "version": "training_instance_cache_manifest_v1",
+            "version": "training_instance_cache_manifest_v2",
+            **{name: (first_metadata or {}).get(name) for name in ("generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256")},
             "instance_count": requested_count,
             "total_training_episode_count": self.episode_count,
             "generator_version": (

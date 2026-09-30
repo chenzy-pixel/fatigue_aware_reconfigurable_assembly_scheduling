@@ -243,6 +243,7 @@ def test_episode_csv_row_reconstructs_failed_training_return(
     expected = proxy_return_from_metrics(metrics, effective)
     episode = SimpleNamespace(
         episode_index=0,
+        metadata={}, generation_time_seconds=0, environment_step_time_seconds=0,
         instance_id=metrics["instance_id"],
         reward_sum=reward_sum,
         base_reward_sum=components["operation_progress"] + components["quality"],

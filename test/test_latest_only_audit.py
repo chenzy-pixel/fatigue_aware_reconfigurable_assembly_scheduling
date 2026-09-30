@@ -123,7 +123,7 @@ def test_active_tree_contains_no_removed_experiment_control_strings():
 def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
     json_files = {
         path.as_posix() for path in Path("configs").rglob("*.json")
-        if "manifests" not in path.parts
+        if "manifests" not in path.parts and "archive" not in path.parts
     }
     assert json_files == {
         "configs/default.json",

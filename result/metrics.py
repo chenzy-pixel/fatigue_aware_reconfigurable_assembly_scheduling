@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 import statistics
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
@@ -9,7 +10,7 @@ import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "7.0.0"
+EVALUATION_SCHEMA_VERSION = "8.0.0"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
@@ -239,6 +240,8 @@ def aggregate_evaluation_rows(
         else {"evaluation": {"quality_metric": dict(quality_metric)}}
     )
     metric_hash = quality_metric_sha256(normalized_metric)
+    if any(row.get("result_schema_version") not in {None, EVALUATION_SCHEMA_VERSION} for row in rows):
+        raise ValueError(f"only result schema {EVALUATION_SCHEMA_VERSION} can be aggregated by this evaluator")
     row_hashes = {
         str(row["quality_metric_sha256"])
         for row in rows
@@ -250,10 +253,17 @@ def aggregate_evaluation_rows(
         raise ValueError(
             "row quality metric hash does not match the aggregate metric"
         )
+    for field in ("result_schema_version", "generator_version", "dataset_manifest_sha256", "subset_sha256",
+                  "generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256",
+                  "normalization_manifest_sha256", "experiment_suite_version", "objective_scalarizer_type",
+                  "objective_scalarizer_rho", "objective_scale_flow", "objective_scale_cost", "objective_scale_variance"):
+        values = {str(row.get(field)) for row in rows}
+        if len(values) > 1:
+            raise ValueError(f"cannot aggregate rows with different {field}")
     completed = [
         row
         for row in rows
-        if bool(row["terminated"]) and not bool(row["truncated"])
+        if successful_row(row)
     ]
     completed_metrics = {
         "quality_score": summarize_values(
@@ -437,7 +447,7 @@ def aggregate_evaluation_rows(
             relative_gap_percent(
                 row.get("quality_score"), row.get("heuristic_quality_score")
             )
-            for row in rows
+            for row in rows if row.get("heuristic_comparison_valid", True)
         ),
     }
     tail_metrics = {
@@ -509,6 +519,9 @@ def aggregate_evaluation_rows(
         "preference_quality_by_key": preference_quality_means,
         "preference_balanced_quality_score": preference_balanced_quality,
         "gap_metrics": gap_metrics,
+        "by_pressure_type": grouped_outcomes(rows, "pressure_type"),
+        "by_feasibility_status": grouped_outcomes(rows, "feasibility_status"),
+        "failure_reasons": dict(Counter(failure_reason(row) for row in rows if not successful_row(row))),
         "tail_metrics": tail_metrics,
     }
 
@@ -528,3 +541,34 @@ def evaluation_selection_key(
         0.0,
         0.0,
     )
+
+
+def successful_row(row: dict[str, Any]) -> bool:
+    return (bool(row["terminated"]) and not bool(row["truncated"])
+            and not row.get("schedule_violation_count", 0)
+            and float(row.get("maximum_worker_fatigue", 0)) <= float(row.get("safe_fatigue_limit", math.inf)) + 1e-9)
+
+
+def failure_reason(row: dict[str, Any]) -> str:
+    if row.get("schedule_violation_count", 0):
+        return "schedule_violation"
+    if float(row.get("maximum_worker_fatigue", 0)) > float(row.get("safe_fatigue_limit", math.inf)) + 1e-9:
+        return "unsafe_fatigue"
+    return str(row.get("termination_reason", row.get("terminal_reason", "unknown")))
+
+
+def grouped_outcomes(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+    groups = {}
+    for value in sorted({str(row.get(field, "unknown")) for row in rows}):
+        selected = [row for row in rows if str(row.get(field, "unknown")) == value]
+        successful = [row for row in selected if successful_row(row)]
+        failures = [row for row in selected if not successful_row(row)]
+        groups[value] = {
+            "count": len(selected), "completed_count": len(successful),
+            "completion_rate": len(successful) / len(selected),
+            "completed_metrics": {name: summarize_values(row.get(name) for row in successful)
+                                  for name in ("flow_time_objective", "reconfiguration_cost", "worker_load_variance", "preference_quality_score")},
+            "failure_reasons": dict(Counter(failure_reason(row) for row in failures)),
+            "failure_progress": summarize_values(row.get("operation_progress") for row in failures),
+        }
+    return groups

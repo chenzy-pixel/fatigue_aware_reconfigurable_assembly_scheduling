@@ -1,5 +1,6 @@
 import pytest
 from copy import deepcopy
+from data.distribution import protocol_hashes
 from configs import load_config
 from configs.formal_preferences import formal_preferences
 from environment import bounded_quality_score
@@ -45,6 +46,7 @@ def _formal_candidates(config, stage="validation", arm="ppo"):
                 "maximum_worker_fatigue": 0.5, "safe_fatigue_limit": 0.75,
                 "flow_time_objective": 1000.0, "reconfiguration_cost": 300.0, "worker_load_variance": 3.0,
                 "result_schema_version": EVALUATION_SCHEMA_VERSION,
+                **protocol_hashes(config), "dataset_manifest_sha256": "fixture_manifest", "subset_sha256": "fixture_subset",
                 "experiment_suite_version": config["experiment_suite_version"],
                 "reward_version": config["reward"]["mode"],
                 "objective_scalarizer_type": scalarizer["type"], "objective_scalarizer_rho": scalarizer["rho"],

@@ -17,7 +17,7 @@ from agent.ppo.parallel import (
     physical_forced_action_from_mask,
 )
 from configs import load_config
-from data.dataset import OnlineInstanceDataset, load_dataset_split
+from data.dataset import OnlineInstanceDataset, load_dataset_split, build_dataset_split
 from environment import AssemblySchedulingEnv, RewardVector
 from eval import (
     EvaluationPolicy,
@@ -25,6 +25,13 @@ from eval import (
     evaluate_dataset_parallel,
     evaluate_instance,
 )
+
+
+def _prepare_bounded_validation(config, template, tmp_path, count):
+    # The reduced decision budget is a distinct environment contract.
+    config["paths"]["instances_root"] = str(tmp_path / "instances")
+    config["paths"]["manifests_root"] = str(tmp_path / "manifests")
+    build_dataset_split(config=config, template=template, split="validation", count=count)
 
 
 def _agent(config, instance):
@@ -544,10 +551,12 @@ def test_worker_local_rollout_matches_round_trip_compression(
 def test_parallel_validation_matches_serial_and_preserves_rng(
     config,
     fixed_instance,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["training"]["worker_timeout_seconds"] = 120
     effective_config["environment"]["max_decisions"] = 50
+    _prepare_bounded_validation(effective_config, fixed_instance, tmp_path, 2)
     agent = _agent(effective_config, fixed_instance)
     dataset = load_dataset_split(effective_config, "validation")
     processes = []
@@ -658,11 +667,13 @@ def test_mixed_preference_quality_rollout_uses_episode_contexts(
 def test_serial_and_parallel_ppo_preserve_the_same_preference(
     config,
     fixed_instance,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["device"] = "cpu"
     effective_config["environment"]["max_decisions"] = 50
     effective_config["training"]["worker_timeout_seconds"] = 120
+    _prepare_bounded_validation(effective_config, fixed_instance, tmp_path, 1)
     agent = _agent(effective_config, fixed_instance)
     agent.network.eval()
     record = load_dataset_split(effective_config, "validation")[0]
@@ -716,10 +727,12 @@ def test_serial_and_parallel_ppo_preserve_the_same_preference(
 def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
     config,
     fixed_instance,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["training"]["worker_timeout_seconds"] = 120
     effective_config["environment"]["max_decisions"] = 30
+    _prepare_bounded_validation(effective_config, fixed_instance, tmp_path, 10)
     agent = _agent(effective_config, fixed_instance)
     sampling_seed = 100011
     instance_limit = 10
@@ -795,9 +808,10 @@ def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
     assert torch.equal(torch.get_rng_state(), torch_state)
 
 
-def test_reference_validation_sampler_for_before_after_benchmark(config, fixed_instance):
+def test_reference_validation_sampler_for_before_after_benchmark(config, fixed_instance, tmp_path):
     effective = deepcopy(config)
     effective["environment"]["max_decisions"] = 5
+    _prepare_bounded_validation(effective, fixed_instance, tmp_path, 2)
     agent = _agent(effective, fixed_instance)
     agent.network.execution_mode = "reference_v8"
     records = [load_dataset_split(effective, "validation")[index] for index in range(2)]
@@ -904,6 +918,6 @@ def test_training_indices_220_239_repeat_three_times_with_twenty_workers(
         for report in reports
     ]
     assert hashes[0] == hashes[1] == hashes[2]
-    assert all(report["generator_version"] == "1.3.0" for report in reports)
+    assert all(report["generator_version"] == "2.0.0" for report in reports)
     assert reports[1]["cache_hit_count"] == 20
     assert reports[2]["cache_hit_count"] == 20

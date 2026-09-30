@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from copy import deepcopy
 from functools import wraps
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 
@@ -26,6 +27,8 @@ from data import (
     save_instance_pickle,
 )
 from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
+from data.selection import resolve_instance_indices, subset_snapshot, select_validation_subsets
+from result.metrics import successful_row
 from environment import (
     AssemblySchedulingEnv,
     PreferenceContext,
@@ -465,7 +468,7 @@ def _evaluation_row(
     config: dict[str, Any],
     quality_metric: dict[str, Any],
 ) -> dict[str, Any]:
-    heuristic = record.metadata["heuristic_metrics"]
+    heuristic = record.metadata.get("heuristic_metrics") or {}
     pressure = record.metadata["pressure_metrics"]
     heuristic_flow_time = heuristic.get("heuristic_flow_time")
     heuristic_makespan = heuristic.get("heuristic_makespan")
@@ -475,11 +478,28 @@ def _evaluation_row(
     heuristic_variance = heuristic.get(
         "worker_workload_variance"
     )
+    reference_valid = bool(heuristic.get("heuristic_completed")) and not bool(heuristic.get("heuristic_truncated", True)) and not heuristic.get("schedule_violations", [])
+    reference_valid = reference_valid and float(heuristic.get("heuristic_makespan", math.inf)) <= record.instance.horizon + 1e-9
+    reference_valid = reference_valid and float(heuristic.get("maximum_worker_fatigue", math.inf)) <= record.instance.fatigue.maximum_safe_fatigue + 1e-9
+    comparison_valid = (reference_valid and bool(metrics["terminated"]) and not bool(metrics["truncated"])
+                        and not metrics.get("schedule_violation_count", 0)
+                        and not metrics.get("schedule_violations", [])
+                        and metrics["time"] <= record.instance.horizon + 1e-9
+                        and metrics.get("maximum_worker_fatigue", math.inf) <= record.instance.fatigue.maximum_safe_fatigue + 1e-9)
+    def comparison_gap(value, reference):
+        return relative_gap_percent(value, reference) if comparison_valid else None
     metric_hash = quality_metric_sha256(quality_metric)
     preference = metrics.get("preference") or {}
     return {
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
+        "generator_version": record.metadata.get("generator_version"),
+        "severity": record.metadata.get("severity", 1.0),
+        "feasibility_status": record.metadata.get("feasibility_status", "unknown"),
+        "diagnostic_status": record.metadata.get("diagnostic_status", "not_run"),
+        "diagnostic_terminal_reason": record.metadata.get("diagnostic_terminal_reason"),
+        "heuristic_comparison_valid": comparison_valid,
+        **{name: record.metadata.get(name) for name in ("generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256")},
         "algorithm_seed": int(config["seed"]),
         "arm": metrics.get("arm", "ppo"),
         "dataset": record.metadata.get("split", ""),
@@ -574,7 +594,7 @@ def _evaluation_row(
             heuristic_cost,
             heuristic_variance,
             quality_metric,
-        ),
+        ) if reference_valid else None,
         "reward_quality_score": terminal_quality_score(
             metrics["flow_time_objective"],
             metrics["reconfiguration_cost"],
@@ -589,7 +609,7 @@ def _evaluation_row(
             heuristic_variance,
             config,
             preference=preference,
-        ),
+        ) if reference_valid else None,
         "quality_metric_version": quality_metric["version"],
         "quality_metric_sha256": metric_hash,
         "decode_mode": metrics.get("decode_mode"),
@@ -619,22 +639,22 @@ def _evaluation_row(
         "heuristic_flow_time": heuristic_flow_time,
         "heuristic_reconfiguration_cost": heuristic_cost,
         "heuristic_worker_load_variance": heuristic_variance,
-        "relative_heuristic_gap_percent": relative_gap_percent(
+        "relative_heuristic_gap_percent": comparison_gap(
             metrics["flow_time_objective"],
             heuristic_flow_time,
         ),
-        "makespan_heuristic_gap_percent": relative_gap_percent(
+        "makespan_heuristic_gap_percent": comparison_gap(
             metrics["time"],
             heuristic_makespan,
         ),
         "reconfiguration_cost_heuristic_gap_percent": (
-            relative_gap_percent(
+            comparison_gap(
                 metrics["reconfiguration_cost"],
                 heuristic_cost,
             )
         ),
         "worker_load_variance_heuristic_gap_percent": (
-            relative_gap_percent(
+            comparison_gap(
                 metrics["worker_load_variance"],
                 heuristic_variance,
             )
@@ -725,19 +745,21 @@ def _evaluation_row(
             "total_effective_load"
         ],
         "max_module_load": pressure["max_module_load"],
-        "ready_configuration_gap_ratio": heuristic[
-            "ready_configuration_gap_ratio"
-        ],
-        "heuristic_reconfiguration_ratio": heuristic[
-            "heuristic_reconfiguration_ratio"
-        ],
-        "mean_wave_overlap_ratio": heuristic[
-            "mean_wave_overlap_ratio"
-        ],
+        "ready_configuration_gap_ratio": heuristic.get("ready_configuration_gap_ratio"),
+        "heuristic_reconfiguration_ratio": heuristic.get("heuristic_reconfiguration_ratio"),
+        "mean_wave_overlap_ratio": heuristic.get("mean_wave_overlap_ratio"),
     }
 
 
 build_evaluation_row = _evaluation_row
+
+
+def _stamp_selection(rows, dataset, indices):
+    selection = subset_snapshot(dataset, indices, role="evaluation")
+    for row in rows:
+        row["dataset_manifest_sha256"] = selection["dataset_manifest_sha256"]
+        row["subset_sha256"] = selection["subset_sha256"]
+    return selection
 
 
 @_preserve_rng_for_sampled
@@ -749,7 +771,8 @@ def evaluate_dataset(
     checkpoint: str | None = None,
     ppo_agent: PPOAgent | None = None,
     instance_limit: int | None = None,
-    instance_offset: int = 0,
+    instance_offset: int | None = None,
+    instance_indices: Sequence[int] | None = None,
     decode_mode: str | None = None,
     sampling_seed: int | None = None,
 ) -> tuple[
@@ -765,15 +788,10 @@ def evaluate_dataset(
         sampling_seed=sampling_seed,
     )
     dataset = load_dataset_split(config, dataset_name)
-    effective_count = (
-        len(dataset) if instance_limit is None else int(instance_limit)
-    )
-    offset = int(instance_offset)
-    if offset < 0 or effective_count < 1 or offset + effective_count > len(dataset):
-        raise ValueError(
-            "instance_offset/instance_limit select outside the dataset"
-        )
-    records = [dataset[index] for index in range(offset, offset + effective_count)]
+    indices = resolve_instance_indices(dataset, instance_indices=instance_indices, instance_limit=instance_limit, instance_offset=instance_offset)
+    offset = 0 if instance_offset is None else instance_offset
+    effective_count = len(indices)
+    records = [dataset[index] for index in indices]
     bootstrap_environment = AssemblySchedulingEnv(config)
     bootstrap_observation = bootstrap_environment.reset(
         records[0].instance
@@ -821,6 +839,7 @@ def evaluate_dataset(
             )
     finally:
         runner.restore_mode(was_training)
+    selection = _stamp_selection(rows, dataset, indices)
     aggregate = aggregate_evaluation_rows(
         rows,
         dataset=dataset_name,
@@ -843,6 +862,8 @@ def evaluate_dataset(
         else None
     )
     aggregate["instance_offset"] = offset
+    aggregate["instance_indices"] = indices
+    aggregate["subset_sha256"] = selection["subset_sha256"]
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
         dataset.manifest_path
     )["sha256"]
@@ -857,21 +878,17 @@ def evaluate_dataset_parallel(
     ppo_agent: PPOAgent,
     runner: ParallelEpisodeRunner,
     instance_limit: int | None = None,
-    instance_offset: int = 0,
+    instance_offset: int | None = None,
+    instance_indices: Sequence[int] | None = None,
     decode_mode: str = "sampled",
     sampling_seed: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate fixed records in parallel for periodic training validation."""
     dataset = load_dataset_split(config, dataset_name)
-    effective_count = (
-        len(dataset) if instance_limit is None else int(instance_limit)
-    )
-    offset = int(instance_offset)
-    if offset < 0 or effective_count < 1 or offset + effective_count > len(dataset):
-        raise ValueError(
-            "instance_offset/instance_limit select outside the dataset"
-        )
-    records = [dataset[index] for index in range(offset, offset + effective_count)]
+    indices = resolve_instance_indices(dataset, instance_indices=instance_indices, instance_limit=instance_limit, instance_offset=instance_offset)
+    offset = 0 if instance_offset is None else instance_offset
+    effective_count = len(indices)
+    records = [dataset[index] for index in indices]
     was_training = ppo_agent.network.training
     ppo_agent.network.eval()
     parallelism = min(
@@ -947,6 +964,7 @@ def evaluate_dataset_parallel(
                 quality_metric,
             )
         )
+    selection = _stamp_selection(rows, dataset, indices)
     aggregate = aggregate_evaluation_rows(
         rows,
         dataset=dataset_name,
@@ -967,6 +985,8 @@ def evaluate_dataset_parallel(
         else None
     )
     aggregate["instance_offset"] = offset
+    aggregate["instance_indices"] = indices
+    aggregate["subset_sha256"] = selection["subset_sha256"]
     aggregate["parallel_envs"] = parallelism
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
         dataset.manifest_path
@@ -981,8 +1001,9 @@ def evaluate_preference_grid_parallel(
     dataset_name: str,
     ppo_agent: PPOAgent,
     runner: ParallelEpisodeRunner,
-    instance_limit: int,
-    instance_offset: int = 0,
+    instance_limit: int | None = None,
+    instance_offset: int | None = None,
+    instance_indices: Sequence[int] | None = None,
     preferences: tuple[PreferenceContextInput, ...] | None = None,
     decode_mode: str = "sampled",
     sampling_seed: int | None = None,
@@ -990,9 +1011,9 @@ def evaluate_preference_grid_parallel(
     """Evaluate each fixed instance at an ordered formal preference set."""
 
     dataset = load_dataset_split(config, dataset_name)
-    offset = int(instance_offset)
-    if instance_limit < 1 or offset < 0 or offset + instance_limit > len(dataset):
-        raise ValueError("invalid preference-grid instance offset/limit")
+    indices = resolve_instance_indices(dataset, instance_indices=instance_indices, instance_limit=instance_limit, instance_offset=instance_offset)
+    offset = 0 if instance_offset is None else instance_offset
+    instance_limit = len(indices)
     grid = formal_preferences(config, "validation") if preferences is None else tuple(preferences)
     if not grid or len({PreferenceContext.from_input(point).key for point in grid}) != len(grid):
         raise ValueError("preference grid must be nonempty and contain unique points")
@@ -1001,7 +1022,7 @@ def evaluate_preference_grid_parallel(
     if decode_mode == "sampled" and sampling_seed is None:
         raise ValueError("sampled V8 evaluation requires a sampling_seed")
     source_records = [
-        dataset[index] for index in range(offset, offset + instance_limit)
+        dataset[index] for index in indices
     ]
     records = [record for record in source_records for _ in grid]
     repeated_preferences = [preference for _ in source_records for preference in grid]
@@ -1075,10 +1096,11 @@ def evaluate_preference_grid_parallel(
     ):
         raise ValueError("preference grid evaluation produced incomplete cells")
     completion_by_preference = {
-        key: sum(bool(row["terminated"]) and not bool(row["truncated"]) for row in rows if row["preference_key"] == key)
+        key: sum(successful_row(row) for row in rows if row["preference_key"] == key)
         / instance_limit
         for key in preference_keys
     }
+    selection = _stamp_selection(rows, dataset, indices)
     summary = aggregate_evaluation_rows(
         rows,
         dataset=dataset_name,
@@ -1090,6 +1112,8 @@ def evaluate_preference_grid_parallel(
     summary.update({
         "dataset": dataset_name,
         "instance_offset": offset,
+        "instance_indices": indices,
+        "subset_sha256": selection["subset_sha256"],
         "instance_count": instance_limit,
         "preference_count": len(grid),
         "ordered_preference_set": [PreferenceContext.from_input(point).preference.as_dict() for point in grid],
@@ -1098,7 +1122,7 @@ def evaluate_preference_grid_parallel(
         "cell_completion_rate": float(summary["completion_rate"]),
         "completed_count": sum(
             all(
-                bool(row["terminated"]) and not bool(row["truncated"])
+                successful_row(row)
                 for row in rows
                 if row["instance_id"] == record.instance.instance_id
             )
@@ -1152,11 +1176,15 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         if args.preference_set == "validation"
         else len(dataset)
     )
-    instance_count = (
-        default_count if args.instance_limit is None else int(args.instance_limit)
-    )
-    if instance_count < 1 or instance_count > len(dataset):
-        raise ValueError("--instance-limit is outside the dataset")
+    if args.instance_indices is not None or args.instance_offset is not None or args.instance_limit is not None:
+        indices = resolve_instance_indices(dataset, instance_indices=args.instance_indices,
+            instance_limit=args.instance_limit, instance_offset=args.instance_offset)
+    elif args.preference_set == "validation":
+        indices = select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+            target_count=default_count, diagnostic_count=0)["target"]["instance_indices"]
+    else:
+        indices = list(range(default_count))
+    instance_count = len(indices)
     bootstrap = AssemblySchedulingEnv(config).reset(dataset[0].instance)
     set_seed(int(config["seed"]))
     agent = PPOAgent(
@@ -1187,7 +1215,7 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
                 dataset_name=args.dataset,
                 ppo_agent=agent,
                 runner=runner,
-                instance_limit=instance_count,
+                instance_indices=indices,
                 preferences=preferences,
                 decode_mode=decode_mode,
                 sampling_seed=seed,
@@ -1209,6 +1237,8 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         strict_counts=True,
     )
     metrics["sampling_seeds"] = [int(seed) for seed in seeds]
+    selection = subset_snapshot(dataset, indices, role="evaluation")
+    metrics.update(instance_indices=indices, subset_sha256=selection["subset_sha256"])
     metrics["dataset_manifest_sha256"] = dataset_manifest_snapshot(
         dataset.manifest_path
     )["sha256"]
@@ -1221,6 +1251,7 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         checkpoint_path=checkpoint_path,
         checkpoint_metadata=metadata,
         formal_evaluation_stage=args.preference_set,
+        evaluation_subset_sha256=selection["subset_sha256"],
     )
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
@@ -1256,7 +1287,11 @@ def main() -> None:
     parser.add_argument("--run-name")
     parser.add_argument("--preference-set", choices=("validation", "final_test"))
     parser.add_argument("--instance-limit", type=int)
+    parser.add_argument("--instance-offset", type=int)
+    parser.add_argument("--instance-indices", type=int, nargs="+")
     args = parser.parse_args()
+    if args.instance_indices is not None and (args.instance_limit is not None or args.instance_offset is not None):
+        parser.error("--instance-indices and --instance-offset/--instance-limit are mutually exclusive")
 
     config = deepcopy(load_config(args.config))
     config["seed"] = validate_algorithm_seed(
@@ -1294,6 +1329,8 @@ def main() -> None:
                 policy_name=args.policy,
                 checkpoint=args.checkpoint,
                 instance_limit=args.instance_limit,
+                instance_offset=args.instance_offset,
+                instance_indices=args.instance_indices,
                 decode_mode=decode_mode,
                 sampling_seed=sampling_seed,
             )
@@ -1334,6 +1371,8 @@ def main() -> None:
                 "dataset_manifest_sha256": reference[
                     "dataset_manifest_sha256"
                 ],
+                "instance_indices": reference["instance_indices"],
+                "subset_sha256": reference["subset_sha256"],
             }
         )
     metrics["result_role"] = (
@@ -1355,6 +1394,7 @@ def main() -> None:
         dataset_manifest_path=metrics["manifest"],
         checkpoint_path=checkpoint_path,
         checkpoint_metadata=checkpoint_metadata,
+        evaluation_subset_sha256=metrics["subset_sha256"],
     )
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),

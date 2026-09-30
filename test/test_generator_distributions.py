@@ -22,17 +22,19 @@ def _assert_record_contract(record, config):
         instance,
         minimum_qualified_workers=1 if sparse else 3,
     )
+    assert metadata["feasibility_precheck"]["passed"]
+    assert metadata["severity"] == 1
     heuristic = metadata["heuristic_metrics"]
-    assert heuristic["schedule_violations"] == []
-    assert heuristic["ready_operation_count"] > 0
-    assert heuristic["ready_configuration_gap_count"] >= 1
-    assert heuristic["ready_configuration_gap_ratio"] > 0
-    if metadata["split"] != "stress":
-        assert heuristic["heuristic_completed"]
-        assert not heuristic["heuristic_truncated"]
-        assert heuristic["heuristic_makespan"] <= config["generator"][
-            "acceptance"
-        ]["max_heuristic_makespan_minutes"]
+    if heuristic is None:
+        assert metadata["diagnostic_status"] == "not_run"
+        assert metadata["feasibility_status"] == "unknown"
+    else:
+        completed = heuristic["heuristic_completed"] and not heuristic["heuristic_truncated"]
+        assert metadata["diagnostic_status"] == ("completed" if completed else "truncated")
+        observed = (completed and not heuristic["schedule_violations"]
+                    and heuristic["heuristic_makespan"] <= instance.horizon
+                    and heuristic["maximum_worker_fatigue"] <= instance.fatigue.maximum_safe_fatigue + 1e-9)
+        assert metadata["feasibility_status"] == ("observed_feasible" if observed else "unknown")
 
 
 def _assert_generation_ranges(record, config, template):
@@ -272,36 +274,12 @@ def test_slow_105_instance_distribution_audit(
     assert len(records) == 105
 
 
-def test_pressure_profiles_create_expected_dynamic_pressure(pressure_records):
-    def metrics(name):
-        record = pressure_records[name]
-        return {
-            **record.metadata["pressure_metrics"],
-            **record.metadata["heuristic_metrics"],
-        }
-
-    easy = metrics("easy")
-    balanced = metrics("balanced")
-    machine = metrics("machine_bottleneck")
-    reconfiguration = metrics("reconfiguration_bottleneck")
-    worker = metrics("worker_bottleneck")
-    fatigue = metrics("fatigue_bottleneck")
-    arrival = metrics("high_arrival_pressure")
-
-    assert machine["max_module_load"] > easy["max_module_load"]
-    assert (
-        reconfiguration["ready_configuration_gap_ratio"]
-        > easy["ready_configuration_gap_ratio"]
-    )
-    assert (
-        reconfiguration["heuristic_reconfiguration_ratio"]
-        > easy["heuristic_reconfiguration_ratio"]
-    )
-    assert worker["worker_competition_event_count"] >= 1
-    assert worker["machine_waiting_for_worker_time"] > 0
-    assert fatigue["fatigue_masked_action_count"] >= 1
-    assert (
-        fatigue["maximum_worker_fatigue"]
-        > balanced["maximum_worker_fatigue"]
-    )
-    assert arrival["mean_wave_overlap_ratio"] > easy["mean_wave_overlap_ratio"]
+def test_pressure_profiles_report_diagnostics_without_acceptance_thresholds(pressure_records):
+    required = {"ready_configuration_gap_ratio", "heuristic_reconfiguration_ratio",
+                "worker_competition_event_count", "fatigue_masked_action_count",
+                "mean_wave_overlap_ratio"}
+    for record in pressure_records.values():
+        metrics = record.metadata["heuristic_metrics"]
+        assert required <= metrics.keys()
+        assert all(math.isfinite(metrics[name]) and metrics[name] >= 0 for name in required)
+        assert record.metadata["generation_rejection_reasons"].get("heuristic_truncated", 0) == 0

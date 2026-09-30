@@ -51,10 +51,10 @@ def test_linear_curriculum_interpolates_and_normalizes(config):
             "high_arrival_pressure": 0.04,
         },
         0.375: {
-            "easy": 0.20,
-            "balanced": 0.45,
-            "machine_bottleneck": 0.07,
-            "reconfiguration_bottleneck": 0.07,
+            "easy": 0.175,
+            "balanced": 0.425,
+            "machine_bottleneck": 0.095,
+            "reconfiguration_bottleneck": 0.095,
             "worker_bottleneck": 0.07,
             "fatigue_bottleneck": 0.07,
             "high_arrival_pressure": 0.07,
@@ -118,7 +118,8 @@ def test_manifest_build_is_reproducible_and_loader_verifies_hash(
     assert sha256_bytes(second_payload) == sha256_bytes(first_payload)
 
     manifest = json.loads(second_manifest.read_text(encoding="utf-8"))
-    assert set(manifest) == MANIFEST_REQUIRED_KEYS
+    assert MANIFEST_REQUIRED_KEYS <= set(manifest)
+    assert manifest["generation_summary"]["pressure_counts"] == {"balanced": 1}
     assert manifest["seed_start"] == 2_000_000
     assert manifest["instance_count"] == 1
     assert manifest["template_instance"] == "fixed_15x4_v1"
@@ -441,131 +442,26 @@ def test_configured_and_published_seed_sets_are_disjoint(config):
         assert actual_seed_sets[first].isdisjoint(actual_seed_sets[second])
 
 
-def _fake_generated_record(
-    generator,
-    fixed_instance,
-    *,
-    seed,
-    split,
-    truncated,
-):
-    return GeneratedInstanceRecord(
-        instance=fixed_instance,
-        metadata={
-            "generator_version": generator.version,
-            "template_instance": generator.template_instance,
-            "template_sha256": generator.template_hash,
-            "seed": seed,
-            "split": split,
-            "distribution": split,
-            "pressure_type": "balanced",
-            "cost_profile": "balanced_cost",
-            "ood_factor": "arrival_overlap",
-            "heuristic_metrics": {
-                "heuristic_truncated": truncated,
-            },
-        },
-    )
-
-
-def test_stress_split_enforces_dataset_truncation_quota(
-    config,
-    fixed_instance,
-    tmp_path,
-    monkeypatch,
-):
+def test_stress_split_retains_all_truncated_diagnostics(config, fixed_instance, tmp_path, monkeypatch):
     from data.generate_orders import InstanceGenerator
+    from data.distribution import protocol_hashes
 
-    def too_many_truncated(self, *, seed, split, **kwargs):
-        return _fake_generated_record(
-            self,
-            fixed_instance,
-            seed=seed,
-            split=split,
-            truncated=seed < 5_000_002,
-        )
-
-    monkeypatch.setattr(
-        InstanceGenerator,
-        "generate",
-        too_many_truncated,
-    )
-    with pytest.raises(RuntimeError, match="stress truncated fraction"):
-        build_dataset_split(
-            config=config,
-            template=fixed_instance,
-            split="stress",
-            count=5,
-            instances_root=tmp_path / "instances",
-            manifests_root=tmp_path / "manifests",
-        )
-
-    def within_quota(self, *, seed, split, **kwargs):
-        return _fake_generated_record(
-            self,
-            fixed_instance,
-            seed=seed,
-            split=split,
-            truncated=seed == 5_000_000,
-        )
-
-    monkeypatch.setattr(InstanceGenerator, "generate", within_quota)
+    def truncated_record(self, *, seed, split, pressure_type, ood_factor, **kwargs):
+        return GeneratedInstanceRecord(fixed_instance, {
+            "generator_version": self.version, "template_instance": self.template_instance,
+            "template_sha256": self.template_hash, "seed": seed, "split": split,
+            "distribution": split, "pressure_type": pressure_type,
+            "cost_profile": "balanced_cost", "ood_factor": ood_factor,
+            "severity": 1.0, "diagnostic_status": "truncated",
+            "diagnostic_terminal_reason": "horizon", "feasibility_status": "unknown",
+            "generation_rejection_reasons": {}, **protocol_hashes(config),
+            "heuristic_metrics": {"heuristic_truncated": True},
+        })
+    monkeypatch.setattr(InstanceGenerator, "generate", truncated_record)
     manifest_path = build_dataset_split(
-        config=config,
-        template=fixed_instance,
-        split="stress",
-        count=5,
-        instances_root=tmp_path / "instances_allowed",
-        manifests_root=tmp_path / "manifests_allowed",
-    )
-    dataset = InstanceDataset(
-        manifest_path,
-        instances_root=tmp_path / "instances_allowed",
-        expected_split="stress",
-        expected_seed_range=split_seed_range(config, "stress"),
-    )
+        config=config, template=fixed_instance, split="stress", count=5,
+        instances_root=tmp_path / "instances", manifests_root=tmp_path / "manifests")
+    dataset = InstanceDataset(manifest_path, instances_root=tmp_path / "instances")
     assert len(dataset) == 5
-    assert sum(
-        record.metadata["heuristic_metrics"]["heuristic_truncated"]
-        for record in dataset
-    ) == 1
-
-
-def test_strict_ood_rejects_truncation_but_stress_still_rejects_violations(
-    instance_generator,
-    pressure_records,
-):
-    instance = pressure_records["balanced"].instance
-    metrics = deepcopy(
-        pressure_records["balanced"].metadata["heuristic_metrics"]
-    )
-    metrics.update(
-        {
-            "heuristic_completed": False,
-            "heuristic_truncated": True,
-            "heuristic_makespan": instance.horizon,
-        }
-    )
-    ood_reasons = instance_generator._dynamic_rejection_reasons(
-        instance=instance,
-        pressure_type="balanced",
-        split="ood",
-        metrics=metrics,
-    )
-    assert "heuristic_truncated" in ood_reasons
-
-    stress_reasons = instance_generator._dynamic_rejection_reasons(
-        instance=instance,
-        pressure_type="balanced",
-        split="stress",
-        metrics=metrics,
-    )
-    assert "heuristic_truncated" not in stress_reasons
-    metrics["schedule_violations"] = ["simulated violation"]
-    stress_reasons = instance_generator._dynamic_rejection_reasons(
-        instance=instance,
-        pressure_type="balanced",
-        split="stress",
-        metrics=metrics,
-    )
-    assert "schedule_infeasible" in stress_reasons
+    assert dataset.manifest["generation_summary"]["diagnostic_counts"] == {"truncated": 5}
+    assert dataset.manifest["generation_summary"]["feasibility_counts"] == {"unknown": 5}

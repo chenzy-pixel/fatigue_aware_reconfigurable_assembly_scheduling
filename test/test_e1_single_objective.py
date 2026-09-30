@@ -164,10 +164,12 @@ def test_checkpoint_metadata_freezes_selection_inputs_and_seed_rule():
     assert metadata["validation_repeat_count"] == 3
     assert metadata["validation_sampling_seeds"] == [100011, 100012, 100013]
     assert metadata["final_test_sampling_seeds"] == [300011, 300012, 300013]
-    assert metadata["validation_instance_order"] == [
-        "instance_2000000.json",
-        "instance_2000001.json",
-    ]
+    from data.dataset import load_dataset_split
+    from data.selection import select_validation_subsets
+    selected = select_validation_subsets(load_dataset_split(config, "validation"),
+        config["generator"]["dataset_pressure_weights"], target_count=2, diagnostic_count=0)["target"]
+    assert metadata["validation_instance_order"] == [entry["path"] for entry in selected["files"]]
+    assert metadata["validation_subset_sha256"] == selected["subset_sha256"]
     assert metadata["preference_count"] == 1
     assert len(metadata["validation_dataset_manifest"]["sha256"]) == 64
     assert "sha256" in metadata["derived_sampling_seed_rule"]
