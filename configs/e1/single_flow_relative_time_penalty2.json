@@ -1,0 +1,7 @@
+{
+  "extends": "single_flow_relative_time.json",
+  "experiment_name": "e1_single_flow_relative_worker_time_penalty2",
+  "reward": {
+    "terminal_failure_penalty": 2.0
+  }
+}

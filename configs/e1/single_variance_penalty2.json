@@ -1,0 +1,7 @@
+{
+  "extends": "single_variance.json",
+  "experiment_name": "e1_single_variance_penalty2",
+  "reward": {
+    "terminal_failure_penalty": 2.0
+  }
+}

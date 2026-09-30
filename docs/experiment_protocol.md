@@ -79,7 +79,9 @@ Cost 的 completion-first 规则使第 200 轮的 100% 完成率优先于后期�
 尺度用于统一目标量级，不解释为最优值或真实下界。历史 best checkpoint 仍按完成率优先规则
 选择，原始结果记录保持原样。
 
-主实验和全部结构消融共用冻结尺度，训练期间保持固定。尺度 manifest 应记录确定值、指定日期、
+当前配置中的单目标、Universal、结构消融和无疲劳实验共用冻结尺度，训练期间保持固定。
+此前已完成的单目标运行保留各自配置快照及当时的尺度，不改写历史结果。
+尺度 manifest 应记录确定值、指定日期、
 来源 run、验证轮次、五个原始均值、验证日志文件哈希、验证集哈希，并记录各尺度的取值方式。
 该固定尺度协议独立于跨训练种子的性能统计；跨种子预测上界在本校准协议中不作估计。
 
@@ -162,12 +164,12 @@ completion-first：先最大化 13 个偏好成功率的最小值；完成率平
 目标专家的单调先验，因此结论应表述为“专家分解及单调先验的整体贡献”。
 
 疲劳建模实验为 Flow、Cost、Variance 三个单目标的完整模型与无疲劳代价模型配对。
-完整模型固定使用 `rerun_20260928_223621` 的三个 seed11 best checkpoint；
-无疲劳模型分别由 `neutral_flow.json`、`neutral_cost.json`、`neutral_variance.json`
-从随机初始化训练 1000 episode。每组匹配其完整模型保存的网络输入、PPO 更新预算、
-验证间隔与目标归一化。Flow 为 40/40/40 并行训练／验证／每次更新；
-Cost 和 Variance 为 20/20/20。三组单目标使用历史 `bootstrap_specialist`
-尺度，不套用 Universal 的冻结尺度。
+`rerun_20260928_223621` 的三个 seed11 best checkpoint 保存了历史 `bootstrap_specialist`
+尺度；其历史比较须读取对应运行目录中的有效配置。
+当前 `neutral_flow.json`、`neutral_cost.json`、`neutral_variance.json` 从随机初始化
+训练 1000 episode，使用冻结尺度。正式配对比较须选择同一目标、相同输入、惩罚系数、
+PPO 更新预算、验证间隔及目标归一化的完整模型 checkpoint。
+Flow 为 40/40/40 并行训练／验证／每次更新；Cost 和 Variance 为 20/20/20。
 
 `environment.fatigue_mode=neutral` 在内部执行副本中将初始疲劳、疲劳累积／恢复率、
 疲劳工期系数置零。因此疲劳不会影响工期、成本、负荷预测、动作掩码和恢复等待。

@@ -7,9 +7,10 @@ pooling; shared preference-conditioned actor head) and three fatigue-neutral
 single-objective variants (Flow, Cost, Variance). The fatigue-neutral simulator
 uses base reconfiguration durations and does not restrict actions by fatigue;
 an independent audit reconstructs fatigue exposure from executed worker tasks.
-The three matched full-fatigue single-objective checkpoints are the completed
-`rerun_20260928_223621` runs. See
-[the experiment protocol](docs/experiment_protocol.md) for the exact comparison.
+The completed `rerun_20260928_223621` full-fatigue checkpoints retain their
+historical normalization. Match future fatigue-neutral runs against full-fatigue
+checkpoints with the same normalization and failure penalty. See
+[the experiment protocol](docs/experiment_protocol.md) for the comparison rules.
 
 ```powershell
 python scripts/run_10_ablation_smoke.py
@@ -35,7 +36,8 @@ Each scale is the median of the corresponding objective's successful-trajectory
 means at the final five validations (episodes 840, 880, 920, 960, and 1000).
 Flow uses the latest relative-worker-time run; Cost and variance use their
 respective 1000-episode single-objective runs. All main-method and structural ablation
-runs share these frozen scales.
+runs share these frozen scales. Current E1 single-objective configurations also
+load the same checked manifest; historical run snapshots retain their original scales.
 
 Universal training validation runs **every 100 episodes** on **50 fixed
 instances × 3 sampled repeats × 13 fixed preferences = 1950 trajectories**.
@@ -68,7 +70,8 @@ in the denominator, and order release does not change progress. `Q_t` is the
 existing bounded preference quality score computed from the actual objectives.
 `I_t=1` only on a task-failure terminal step and is zero otherwise.
 `lambda` is the finite, non-negative `reward.terminal_failure_penalty`:
-the default template uses `1.0`; all E1 configs and Universal use `5.0`. Evaluation
+the default template uses `1.0`; the primary E1 configs and Universal use `5.0`,
+and the E1 penalty-2 variants use `2.0`. Evaluation
 continues to expose the formal failure quality bound separately; it is not used
 by the failure-v2 training reward.
 

@@ -47,6 +47,62 @@ def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
     assert "two_stage" not in config["training"]
 
 
+@pytest.mark.parametrize(
+    "path",
+    (
+        "configs/default.json",
+        "configs/e1/single_flow.json",
+        "configs/e1/single_flow_relative_time.json",
+        "configs/e1/single_cost.json",
+        "configs/e1/single_variance.json",
+        "configs/e1/single_flow_relative_time_penalty2.json",
+        "configs/e1/single_cost_penalty2.json",
+        "configs/e1/single_variance_penalty2.json",
+        "configs/v8/universal.json",
+        "configs/ablations/no_graph.json",
+        "configs/ablations/shared_head.json",
+        "configs/ablations/neutral_flow.json",
+        "configs/ablations/neutral_cost.json",
+        "configs/ablations/neutral_variance.json",
+    ),
+)
+def test_current_training_configs_share_frozen_objective_scales(path: str):
+    config = load_config(path)
+    scalarizer = config["objective_scalarizer"]
+    assert scalarizer["scale_source"] == "frozen_manifest"
+    assert scalarizer["scales"] == {
+        "flow": 1152.2093959731544,
+        "cost": 386.674652792805,
+        "variance": 4.937746913580247,
+    }
+    assert scalarizer["normalization_manifest_sha256"] == (
+        "23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b"
+    )
+    assert config["network"]["normalization_manifest_sha256"] == (
+        scalarizer["normalization_manifest_sha256"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "preference"),
+    (
+        ("configs/e1/single_flow_relative_time_penalty2.json", [1.0, 0.0, 0.0]),
+        ("configs/e1/single_cost_penalty2.json", [0.0, 1.0, 0.0]),
+        ("configs/e1/single_variance_penalty2.json", [0.0, 0.0, 1.0]),
+    ),
+)
+def test_penalty2_single_objective_variants_keep_parent_training_settings(
+    path: str, preference: list[float]
+):
+    config = load_config(path)
+    assert config["reward"]["terminal_failure_penalty"] == 2.0
+    assert config["runtime_manifest"]["terminal_failure_penalty"] == 2.0
+    assert config["preference"]["quality"]["fixed"] == preference
+    if preference[0] == 1.0:
+        assert config["training"]["parallel_envs"] == 40
+        assert config["network"]["worker_flow_time_normalization"] == "candidate_zscore_v1"
+
+
 def test_universal_uses_13_validation_and_66_final_preferences_with_training_sequence():
     config = load_config("configs/v8/universal.json")
     assert config["reward"]["terminal_failure_penalty"] == 5.0

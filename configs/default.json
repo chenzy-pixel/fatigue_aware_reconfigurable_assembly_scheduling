@@ -236,14 +236,14 @@
   "objective_scalarizer": {
     "type": "normalized_augmented_tchebycheff_v1",
     "rho": 0.05,
-    "scale_source": "bootstrap_specialist",
+    "scale_source": "frozen_manifest",
     "scales": {
-      "flow": 1200.0,
-      "cost": 1000.0,
-      "variance": 50.0
+      "flow": 1152.2093959731544,
+      "cost": 386.674652792805,
+      "variance": 4.937746913580247
     },
-    "normalization_manifest": null,
-    "normalization_manifest_sha256": null
+    "normalization_manifest": "configs/manifests/e1_tail5_scales_20260928.json",
+    "normalization_manifest_sha256": "23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b"
   },
   "reward": {
     "mode": "single_stage_progress_quality_failure_v2",

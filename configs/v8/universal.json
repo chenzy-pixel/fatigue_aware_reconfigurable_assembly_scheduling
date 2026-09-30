@@ -4,11 +4,6 @@
   "reward": {
     "terminal_failure_penalty": 5.0
   },
-  "objective_scalarizer": {
-    "scale_source": "frozen_manifest",
-    "normalization_manifest": "configs/manifests/e1_tail5_scales_20260928.json",
-    "normalization_manifest_sha256": "23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b"
-  },
   "network": {
     "worker_flow_time_normalization": "candidate_zscore_v1",
     "worker_flow_time_std_floor": 0.001
