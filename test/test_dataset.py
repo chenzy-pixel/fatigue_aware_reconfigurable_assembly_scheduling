@@ -80,23 +80,6 @@ def test_linear_curriculum_interpolates_and_normalizes(config):
         assert final[name] == pytest.approx(value)
 
 
-def test_legacy_step_curriculum_remains_supported():
-    legacy = [
-        {
-            "until_fraction": 0.5,
-            "weights": {"easy": 3.0, "balanced": 1.0},
-        },
-        {
-            "until_fraction": 1.0,
-            "weights": {"easy": 1.0, "balanced": 3.0},
-        },
-    ]
-    first = curriculum_weights_at(legacy, 0.5)
-    second = curriculum_weights_at(legacy, 0.5001)
-    assert first["easy"] == pytest.approx(0.75)
-    assert first["balanced"] == pytest.approx(0.25)
-    assert second["easy"] == pytest.approx(0.25)
-    assert second["balanced"] == pytest.approx(0.75)
 
 
 def test_manifest_build_is_reproducible_and_loader_verifies_hash(

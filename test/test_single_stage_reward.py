@@ -12,7 +12,6 @@ from scripts.deadlock_replay import _reward_audit
 from environment import (
     AssemblySchedulingEnv,
     FAILURE_PENALTY_REWARD,
-    LEGACY_PROGRESS_QUALITY_REWARD,
     proxy_return_from_metrics,
 )
 from environment.types import OperationState
@@ -213,40 +212,6 @@ def test_failure_v2_distinguishes_equal_progress_by_actual_quality(config):
     assert better_return - worse_return == pytest.approx(0.15)
 
 
-def test_successful_action_trace_and_step_rewards_match_legacy_v1(
-    config, fixed_instance
-):
-    current = AssemblySchedulingEnv(config)
-    observation = current.reset(fixed_instance)
-    del observation
-    policy = HeuristicPolicy()
-    actions: list[int] = []
-    current_rewards: list[float] = []
-    while not current.task_done:
-        action = policy.select_action(current)
-        actions.append(action)
-        _, reward, _, _, _ = current.step(action)
-        current_rewards.append(reward.scalarize(config["reward"]))
-    assert current.task_succeeded
-
-    legacy_config = deepcopy(config)
-    legacy_config["reward"]["mode"] = LEGACY_PROGRESS_QUALITY_REWARD
-    legacy = AssemblySchedulingEnv(legacy_config)
-    legacy.reset(fixed_instance)
-    legacy_rewards: list[float] = []
-    for action in actions:
-        _, reward, _, _, _ = legacy.step(action)
-        legacy_rewards.append(reward.scalarize(legacy_config["reward"]))
-    assert legacy.task_succeeded
-    assert legacy_rewards == pytest.approx(current_rewards, abs=1e-12)
-    for field in (
-        "operation_progress",
-        "flow_time_objective",
-        "reconfiguration_cost",
-        "worker_load_variance",
-        "terminal_reason",
-    ):
-        assert legacy.metrics()[field] == current.metrics()[field]
 
 
 def test_episode_csv_row_reconstructs_failed_training_return(

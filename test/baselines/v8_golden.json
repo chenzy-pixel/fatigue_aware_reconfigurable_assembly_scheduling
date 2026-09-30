@@ -1,10 +1,10 @@
 {
-  "schema_version": "v8_golden_v1",
+  "schema_version": "v8_frozen_scales_golden_v2",
   "fixed_instance": {
-    "initial_observation_sha256": "53265738ffd524f2158326b1d465f0d3aed8c19b05326af724d41d70d2c677d1",
+    "initial_observation_sha256": "680bd8a4cd167f3e051a1cc4a348bfd2bd2c44ca0ebd47d35113cd5bbabdaaec",
     "initial_mask_sha256": "69551f5bdc109858744d1e2777801dfdc4cabfd64a2574547c5a76e1b9bfad75",
     "heuristic_action_trace_sha256": "9be87e63d93a3740976526c280811061c9ba9f4c8adff4f02e5172ebe3adda19",
-    "heuristic_reward_trace_sha256": "776124c017404d9fa16316424090c40bb101c23c3763dbf8a2f0c2e31c5c0487",
+    "heuristic_reward_trace_sha256": "b605cfe08a96e2ba873b6f52830330d91829f006723a01351645ea9a6fb97df3",
     "heuristic_action_count": 211,
     "terminal_reason": "completed",
     "metrics": {
@@ -22,5 +22,6 @@
       "wave": 8,
       "global": 11
     }
-  }
+  },
+  "normalization_manifest_sha256": "23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b"
 }

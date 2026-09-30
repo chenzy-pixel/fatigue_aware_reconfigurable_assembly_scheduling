@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from copy import deepcopy
 from pathlib import Path
 
@@ -11,7 +12,6 @@ from configs.formal_preferences import formal_preferences
 from configs.normalization import (
     NORMALIZATION_MANIFEST_SCHEMA,
     apply_normalization_manifest,
-    build_normalization_manifest,
     canonical_json_sha256,
     load_normalization_manifest,
     write_immutable_manifest,
@@ -28,7 +28,6 @@ from utils import configured_formal_evaluation_sampling_seeds
         ("configs/e1/single_flow.json", [1.0, 0.0, 0.0]),
         ("configs/e1/single_cost.json", [0.0, 1.0, 0.0]),
         ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
-        ("configs/e1/single_flow_relative_time.json", [1.0, 0.0, 0.0]),
     ),
 )
 def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
@@ -147,22 +146,16 @@ def test_normalization_manifest_round_trip_stays_outside_training_protocol(tmp_p
         load_normalization_manifest(destination, expected_sha256=digest)
 
 
-def test_completed_single_objective_runs_recompute_frozen_scales():
-    root = Path(__file__).resolve().parents[1]
-    names = {"flow": "e1_flow_relative_time_seed11_ep1000", "cost": "e1_cost_seed11_ep1000", "variance": "e1_variance_seed11_ep1000"}
-    runs = {name: root / "result" / "runs" / value for name, value in names.items()}
-    if any(not (run / "validation_log.csv").is_file() for run in runs.values()):
-        pytest.skip("ignored historical runs are unavailable")
-    manifest = build_normalization_manifest(
-        runs, validation_dataset_path=root / "data/manifests/validation/manifest.json", project_root=root,
-    )
-    assert manifest["scales"] == {"flow": 1152.2093959731544, "cost": 386.674652792805, "variance": 4.937746913580247}
+def test_frozen_scales_match_committed_tail_means_and_config():
     config = load_config("configs/v8/universal.json")
-    published = load_normalization_manifest(
+    manifest = load_normalization_manifest(
         config["objective_scalarizer"]["normalization_manifest"],
         expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
     )
-    assert published == manifest
+    assert config["objective_scalarizer"]["scales"] == manifest["scales"]
+    for objective, source in manifest["sources"].items():
+        assert source["validation_episodes"] == [840, 880, 920, 960, 1000]
+        assert statistics.median(source["successful_trajectory_means"]) == manifest["scales"][objective]
 
 
 def _row(
@@ -202,7 +195,7 @@ def _row(
 
 def test_universal_quality_averages_within_preference_then_equally_across_grid():
     config = load_config("configs/default.json")
-    keys = [PreferenceContext.from_input(point).key for point in simplex_lattice(10, include=())]
+    keys = [point.key for point in formal_preferences(config, "validation")]
     rows = [_row(key, 0.5, index=index) for index, key in enumerate(keys)]
     rows.extend([_row(keys[0], 0.2, index=100), _row(keys[0], 0.4, index=101)])
     aggregate = _aggregate_formal_rows(
@@ -217,13 +210,13 @@ def test_universal_quality_averages_within_preference_then_equally_across_grid()
     assert aggregate["preference_quality_by_key"][keys[0]] == pytest.approx(
         (0.5 + 0.2 + 0.4) / 3
     )
-    expected = ((0.5 + 0.2 + 0.4) / 3 + 65 * 0.5) / 66
+    expected = ((0.5 + 0.2 + 0.4) / 3 + (len(keys) - 1) * 0.5) / len(keys)
     assert aggregate["preference_balanced_quality_score"] == pytest.approx(expected)
 
 
 def test_universal_any_preference_without_success_has_infinite_quality():
     config = load_config("configs/default.json")
-    keys = [PreferenceContext.from_input(point).key for point in simplex_lattice(10, include=())]
+    keys = [point.key for point in formal_preferences(config, "validation")]
     rows = [
         _row(key, 0.5, succeeded=index != 7, index=index)
         for index, key in enumerate(keys)

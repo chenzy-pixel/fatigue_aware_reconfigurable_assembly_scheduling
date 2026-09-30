@@ -7,7 +7,7 @@ import torch
 
 from agent.baselines import HeuristicPolicy
 from agent.ppo import build_actor_critic
-from agent.ppo.network_v8 import assert_network_config_matches_spec, normalize_network_config
+from agent.ppo.network import assert_network_config_matches_spec, normalize_network_config
 from configs import load_config
 from environment import AssemblySchedulingEnv, DecisionType
 
@@ -15,7 +15,7 @@ from environment import AssemblySchedulingEnv, DecisionType
 def networks(config, fixed_instance):
     env = AssemblySchedulingEnv(config)
     observation = env.reset(fixed_instance, preference=(1, 0, 0))
-    baseline = build_actor_critic(observation, config["network"])
+    baseline = build_actor_critic(observation, dict(config["network"], worker_flow_time_normalization="absolute_v1"))
     settings = dict(config["network"], worker_flow_time_normalization="candidate_zscore_v1")
     experiment = build_actor_critic(observation, settings)
     experiment.load_state_dict(baseline.state_dict(), strict=True)
@@ -98,7 +98,8 @@ def test_checkpoint_compatibility_is_explicit(config, fixed_instance):
     legacy = deepcopy(baseline.network_spec())
     for name in ("worker_flow_time_normalization", "worker_flow_time_std_floor"):
         legacy.pop(name)
-    assert_network_config_matches_spec(baseline.network_spec(), legacy)
+    with pytest.raises(ValueError, match="missing worker_flow_time"):
+        assert_network_config_matches_spec(baseline.network_spec(), legacy)
     assert_network_config_matches_spec(experiment.network_spec(), experiment.network_spec())
     with pytest.raises(ValueError, match="worker_flow_time_normalization"):
         assert_network_config_matches_spec(experiment.network_spec(), legacy)
@@ -114,7 +115,7 @@ def test_invalid_scale_floor_is_rejected(floor):
 
 
 def test_experiment_config():
-    cfg = load_config("configs/e1/single_flow_relative_time.json")
+    cfg = load_config("configs/e1/single_flow.json")
     assert cfg["network"]["worker_flow_time_normalization"] == "candidate_zscore_v1"
     assert cfg["training"]["episodes"] == 1000
     assert cfg["preference"]["quality"]["fixed"] == [1,0,0]

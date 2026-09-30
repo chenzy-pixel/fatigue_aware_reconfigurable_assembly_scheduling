@@ -20,7 +20,6 @@ from agent.mo_alns.solver import (
     repair_solution,
 )
 from environment import PreferenceVector
-from analysis.mo_alns_analysis import analyze_rows
 
 
 def _tiny_instance(fixed_instance):
@@ -57,6 +56,22 @@ def _settings(config, *, budget=10):
     return result
 
 
+def test_baseline_record_pipeline_uses_current_config_and_schema(config, fixed_instance):
+    from data import load_dataset_split
+    from scripts.mo_alns import _run_record
+    from result.metrics import EVALUATION_SCHEMA_VERSION
+    record = load_dataset_split(config, "test")[0]
+    tiny_record = replace(record, instance=_tiny_instance(fixed_instance))
+    result = _run_record(_settings(config, budget=8), tiny_record, "test", 11, (PreferenceVector(1.0, 0.0, 0.0),))
+    row = result["rows"][0]
+    assert row["result_schema_version"] == EVALUATION_SCHEMA_VERSION
+    assert row["objective_scale_flow"] == config["objective_scalarizer"]["scales"]["flow"]
+    assert row["normalization_manifest_sha256"] == config["objective_scalarizer"]["normalization_manifest_sha256"]
+    assert row["arm"] == "mo_alns"
+    assert row["replay_verified"]
+    assert row["single_stage_proxy_return"] == pytest.approx(row["training_cumulative_reward"])
+
+
 def test_encoding_decoder_and_destroy_rules_keep_environment_semantics(config, fixed_instance):
     instance = _tiny_instance(fixed_instance)
     solution = _rule_solution(instance, "earliest_finish", random.Random(3))
@@ -86,7 +101,7 @@ def test_solver_budget_grid_archive_and_replay_are_deterministic(config, fixed_i
     assert first.selected.action_trace_sha256 == second.selected.action_trace_sha256
     assert first.selected.objectives == pytest.approx(second.selected.objectives)
     grid = MOALNSSolver(_settings(config, budget=8), algorithm_seed=11).solve_grid(instance)
-    assert len(grid.endpoints) == 22
+    assert len(grid.endpoints) == 66
     assert all(value.feasible for value in grid.endpoints.values())
     for target, endpoint in ((PreferenceVector(1.0, 0.0, 0.0), grid.endpoints["1_0_0"]), (preference, grid.endpoints["0.5_0.3_0.2"])):
         replay = decode_solution(settings, instance, endpoint.solution, target)
@@ -99,12 +114,12 @@ def test_tchebycheff_and_archive_deduplicate_decoded_trace(config, fixed_instanc
     preference = PreferenceVector(0.5, 0.3, 0.2)
     solution = _rule_solution(instance, "short_flow", random.Random(9))
     candidate = decode_solution(config, instance, solution, preference)
-    archive = ParetoArchive()
+    archive = ParetoArchive(config)
     assert archive.update(candidate)
     assert not archive.update(candidate)
     assert archive.best(preference).action_trace_sha256 == candidate.action_trace_sha256
-    assert augmented_tchebycheff(candidate.objectives, preference) == pytest.approx(candidate.tchebycheff)
-    assert candidate.normalized_objectives == pytest.approx(normalized_objectives(candidate.objectives))
+    assert augmented_tchebycheff(candidate.objectives, preference, config) == pytest.approx(candidate.tchebycheff)
+    assert candidate.normalized_objectives == pytest.approx(normalized_objectives(candidate.objectives, config))
 
 
 def test_operator_probability_floor_and_dataset_seed_are_stable():
@@ -151,44 +166,3 @@ def test_all_repairs_preserve_topology_for_adjacent_removed_operations(config, f
         outcome.solution.validate(instance)
         repaired = decode_solution(config, instance, outcome.solution, preference)
         assert repaired.feasible
-
-
-def test_e1_mo_alns_analysis_accepts_22_endpoint_cells():
-    preferences = [
-        (first / 5.0, second / 5.0, (5 - first - second) / 5.0)
-        for first in range(6)
-        for second in range(6 - first)
-    ] + [(0.5, 0.3, 0.2)]
-    rows = []
-    for arm_index, arm in enumerate(("e1", "mo_alns")):
-        for index, (flow_weight, cost_weight, variance_weight) in enumerate(preferences):
-            rows.append(
-                {
-                    "arm": arm,
-                    "dataset": "test",
-                    "algorithm_seed": 11,
-                    "instance_id": "synthetic",
-                    "candidate_id": f"{arm}_{index}",
-                    "candidate_source": "greedy" if arm == "e1" and index == 21 else "sampled",
-                    "terminated": True,
-                    "truncated": False,
-                    "schedule_violation_count": 0,
-                    "maximum_worker_fatigue": 0.2,
-                    "safe_fatigue_limit": 0.75,
-                    "flow_time_objective": 100.0 + index + arm_index,
-                    "reconfiguration_cost": 50.0 + 2 * index + arm_index,
-                    "worker_load_variance": 1.0 + index / 20.0 + arm_index / 100.0,
-                    "quality_score": 0.2 + arm_index / 100.0,
-                    "w_flow": flow_weight,
-                    "w_cost": cost_weight,
-                    "w_variance": variance_weight,
-                    "action_trace_sha256": f"{arm}-{index}",
-                    "environment_evaluation_count": 8 if arm == "mo_alns" else 1,
-                    "solve_time_seconds": 1.0,
-                }
-            )
-    annotated, instances, seeds, summary = analyze_rows(rows)
-    assert len(annotated) == 44
-    assert len(instances) == 1
-    assert len(seeds) == 1
-    assert summary["analysis_protocol"] == "e1_mo_alns_solver_budget_v1"

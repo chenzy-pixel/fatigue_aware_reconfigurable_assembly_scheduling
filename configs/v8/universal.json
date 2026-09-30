@@ -1,34 +1,3 @@
 {
-  "extends": "../default.json",
-  "experiment_name": "v8_universal",
-  "objective_scalarizer": {
-    "scale_source": "frozen_manifest",
-    "normalization_manifest": "configs/manifests/e1_tail5_scales_20260928.json",
-    "normalization_manifest_sha256": "23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b"
-  },
-  "network": {
-    "worker_flow_time_normalization": "candidate_zscore_v1",
-    "worker_flow_time_std_floor": 0.001
-  },
-  "training": {
-    "validation_interval_episodes": 100,
-    "formal_evaluation": {
-      "validation_preferences": [
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [0.5, 0.5, 0.0],
-        [0.5, 0.0, 0.5],
-        [0.0, 0.5, 0.5],
-        [0.3333333333333333, 0.3333333333333333, 0.3333333333333333],
-        [0.6, 0.3, 0.1],
-        [0.6, 0.1, 0.3],
-        [0.3, 0.6, 0.1],
-        [0.3, 0.1, 0.6],
-        [0.1, 0.6, 0.3],
-        [0.1, 0.3, 0.6]
-      ],
-      "final_test_lattice_denominator": 10
-    }
-  }
+  "extends": "../default.json"
 }

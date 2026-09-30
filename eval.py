@@ -44,6 +44,7 @@ from result import (
     relative_gap_percent,
 )
 from result.io import write_config, write_csv, write_json
+from result.metrics import EVALUATION_SCHEMA_VERSION
 from utils import (
     SAMPLED_EVALUATION_RNG_VERSION,
     action_trace_sha256,
@@ -351,6 +352,11 @@ def evaluate_instance(
     solve_time = time.perf_counter() - solve_start
     metrics = env.metrics()
     metrics["policy"] = policy_name
+    metrics["arm"] = policy_name
+    metrics["policy_execution_version"] = (
+        runner.ppo_agent.network.execution_mode
+        if runner.ppo_agent is not None else policy_name
+    )
     metrics["decode_mode"] = decode_mode
     metrics["result_role"] = (
         "formal_sampled"
@@ -474,6 +480,17 @@ def _evaluation_row(
     return {
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
+        "algorithm_seed": int(config["seed"]),
+        "arm": metrics.get("arm", "ppo"),
+        "dataset": record.metadata.get("split", ""),
+        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "experiment_suite_version": config["experiment_suite_version"],
+        "normalization_manifest_sha256": config["objective_scalarizer"]["normalization_manifest_sha256"],
+        "objective_scalarizer_type": config["objective_scalarizer"]["type"],
+        "objective_scalarizer_rho": config["objective_scalarizer"]["rho"],
+        **{f"objective_scale_{name}": config["objective_scalarizer"]["scales"][name] for name in ("flow", "cost", "variance")},
+        "candidate_id": f"{metrics.get('preference_key', '')}:{metrics.get('sampling_repeat', metrics.get('sampling_seed', 0))}",
+        "candidate_source": metrics.get("decode_mode", "sampled"),
         "pressure_type": record.metadata["pressure_type"],
         "cost_profile": record.metadata["cost_profile"],
         "ood_factor": record.metadata.get("ood_factor"),
@@ -585,7 +602,7 @@ def _evaluation_row(
             "sampling_evaluation_key"
         ),
         "sampling_rng_version": metrics.get("sampling_rng_version"),
-        "policy_execution_version": config["training"].get("policy_execution_version", "legacy_v8"),
+        "policy_execution_version": metrics.get("policy_execution_version", config["training"].get("policy_execution_version", "phase_batched_v1")),
         "policy_precision": config["training"].get("policy_precision", "float32"),
         "validation_parallel_envs": int(config["training"].get("validation_parallel_envs", 1)),
         "inference_time_seconds": metrics[
@@ -887,6 +904,7 @@ def evaluate_dataset_parallel(
     quality_metric = evaluation_quality_metric(config)
     for rollout in rollouts:
         metrics = dict(rollout.metrics)
+        metrics["policy_execution_version"] = ppo_agent.network.execution_mode
         metrics["decisions"] = rollout.decisions
         metrics["inference_time_seconds"] = (
             rollout.inference_time_seconds
@@ -1008,6 +1026,7 @@ def evaluate_preference_grid_parallel(
     rows: list[dict[str, Any]] = []
     for rollout in rollouts:
         metrics = dict(rollout.metrics)
+        metrics["policy_execution_version"] = ppo_agent.network.execution_mode
         metrics.update(
             {
                 "decisions": rollout.decisions,

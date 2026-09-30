@@ -16,7 +16,7 @@ from agent.ppo.network import (
     assert_network_config_matches_spec,
     infer_checkpoint_network_spec,
 )
-from environment import Observation, PolicyObservation
+from environment import Observation
 from result.provenance import (
     network_weights_sha256,
     provenance_with_network_weights,
@@ -143,7 +143,7 @@ class PPOAgent:
     @torch.no_grad()
     def act(
         self,
-        observation: Observation | PolicyObservation,
+        observation: Observation,
         action_mask: np.ndarray,
         *,
         deterministic: bool = False,
@@ -160,7 +160,7 @@ class PPOAgent:
     @torch.no_grad()
     def act_batch(
         self,
-        observations: Sequence[Observation | PolicyObservation],
+        observations: Sequence[Observation],
         action_masks: Sequence[np.ndarray],
         *,
         deterministic: bool = False,
@@ -212,7 +212,7 @@ class PPOAgent:
     @torch.no_grad()
     def value(
         self,
-        observation: Observation | PolicyObservation,
+        observation: Observation,
         action_mask: np.ndarray,
     ) -> float:
         return self.value_batch([observation], [action_mask])[0]
@@ -220,7 +220,7 @@ class PPOAgent:
     @torch.no_grad()
     def value_batch(
         self,
-        observations: Sequence[Observation | PolicyObservation],
+        observations: Sequence[Observation],
         action_masks: Sequence[np.ndarray],
     ) -> list[float]:
         _, values = self.network.forward_batch(

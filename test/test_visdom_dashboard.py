@@ -197,7 +197,7 @@ def test_disabled_dashboard_is_a_noop(config, tmp_path):
     dashboard.close()
 
 
-def test_environment_names_are_isolated_and_legacy_flag_is_supported(
+def test_environment_names_are_isolated(
     config,
     tmp_path,
 ):
@@ -206,9 +206,6 @@ def test_environment_names_are_isolated_and_legacy_flag_is_supported(
     assert visdom_environment_name(config, first) != (
         visdom_environment_name(config, second)
     )
-    legacy = deepcopy(config)
-    legacy["logging"] = {"visdom_enabled": True}
-    assert resolve_visdom_settings(legacy)["enabled"] is True
 
 
 def test_dashboard_creates_then_appends_stable_windows(config, tmp_path):

@@ -22,7 +22,8 @@ center, and all six permutations of `(0.6, 0.3, 0.1)`.
 Final evaluation reloads the selected best checkpoint and uses the **66-point
 step-0.1 simplex grid** on the test set with three repeats per instance/preference.
 
-The full ordered preference list and scale provenance are in
+`configs/default.json` defines this protocol; `configs/v8/universal.json` is its
+public alias. The full ordered preference list and scale provenance are in
 [the experiment protocol](docs/experiment_protocol.md). The Universal model uses
 `candidate_zscore_v1` for worker Flow time with a standard-deviation floor of
 `0.001`; its scales are loaded from the checked manifest in `configs/manifests/`.
@@ -121,12 +122,12 @@ All worker counts use the same `TrainingEngine`; `--parallel-envs 1` selects a
 serial collector.
 Use `--episodes-per-update` to keep the PPO episode count fixed while changing
 training workers, and `--validation-parallel-envs` to tune validation separately.
-The relative-worker-time Flow configuration uses 40 training workers, 40
-validation workers, and 40 episodes per PPO update.
+All three single-objective configurations use 20 training workers, 20
+validation workers, and 20 episodes per PPO update.
 
 ```powershell
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --smoke --parallel-envs 1 --run-name flow_smoke
-.\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --algorithm-seed 11 --parallel-envs 20 --run-name flow_seed11
+.\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --algorithm-seed 11 --run-name flow_seed11
 .\.venv\Scripts\python.exe -m scripts.run_00_smoke
 ```
 
@@ -136,8 +137,9 @@ An explicit compatible checkpoint can initialize network weights:
 .\.venv\Scripts\python.exe train.py --config configs\e1\single_flow.json --initial-checkpoint result\runs\source\best_checkpoint.pt --run-name flow_initialized
 ```
 
-E1 Flow, Cost, and Variance validate every 40 episodes. The default formal run
-contains 2,000 training episodes.
+E1 Flow, Cost, and Variance train for 1,000 episodes and validate every 40
+episodes. Each uses 20 training/validation workers and 20 episodes per update.
+The default Universal run contains 2,000 training episodes.
 Universal validates every 100 episodes on the ordered 13-point set and runs
 the 66-point final test after reloading its selected best checkpoint.
 Its training and validation worker counts are both 20 in the effective config.
@@ -162,12 +164,13 @@ preference receives its own SHA256-derived Torch generator seed.
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pytest -q --runslow -m slow
 .\.venv\Scripts\python.exe -m analysis.single_objective_analysis result\runs\flow_seed11 --plots
+.\.venv\Scripts\python.exe -m scripts.mo_alns --config configs\baselines\mo_alns.json --dataset test --algorithm-seed 11
+.\.venv\Scripts\python.exe -m analysis.pareto_analysis --candidate-csv result\runs\v8_universal_seed11\final_sampled_instance_metrics.csv --output-dir result\analysis\universal
 ```
 
 For a hash-verified sampled trajectory replay with per-decision environment
 snapshots and optional bounded branch continuations, use
-`python -m scripts.deadlock_replay`. The investigated Flow failure and the evidence standard
-for branch results are documented in [DEADLOCK_REPLAY_FINDINGS.md](docs/DEADLOCK_REPLAY_FINDINGS.md).
+`python -m scripts.deadlock_replay --help`.
 
 The test suite covers reward telescoping, fixed progress denominators,
 termination/bootstrap semantics, horizon-boundary completion, deterministic

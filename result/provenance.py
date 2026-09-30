@@ -211,9 +211,7 @@ def build_provenance(
     checkpoint_protocol = None
     weights_hash = None
     if checkpoint_metadata is not None:
-        checkpoint_protocol = checkpoint_metadata.get(
-            "experiment_suite_version", "legacy"
-        )
+        checkpoint_protocol = checkpoint_metadata.get("experiment_suite_version")
         weights_hash = checkpoint_metadata.get("network_weights_sha256")
     if checkpoint_path is not None:
         computed_weights_hash = _checkpoint_network_weights_sha256(
@@ -240,9 +238,7 @@ def build_provenance(
         "checkpoint_sha256": checkpoint_hash,
         "network_weights_sha256": weights_hash,
         "checkpoint_protocol_version": checkpoint_protocol,
-        "evaluator_protocol_version": config.get(
-            "experiment_suite_version", "legacy"
-        ),
+        "evaluator_protocol_version": config["experiment_suite_version"],
         "result_schema_version": result_schema_version(config),
         "quality_metric_version": quality_metric["version"],
         "quality_metric_sha256": quality_metric_sha256(quality_metric),

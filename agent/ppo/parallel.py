@@ -24,7 +24,6 @@ from data.models import AssemblyInstance
 from environment import (
     AssemblySchedulingEnv,
     Observation,
-    PolicyObservation,
     PreferenceContext,
     PreferenceContextInput,
     RewardVector,
@@ -40,7 +39,7 @@ if TYPE_CHECKING:
 @dataclass
 class WorkerResponse:
     lane_id: int
-    observation: Observation | PolicyObservation | None = None
+    observation: Observation | None = None
     action_mask: np.ndarray | None = None
     reward_vector: RewardVector | None = None
     terminated: bool = False
@@ -198,7 +197,7 @@ class TrainingRolloutBatch:
 
 @dataclass
 class _PendingTransition:
-    observation: Observation | PolicyObservation
+    observation: Observation
     action_mask: np.ndarray
     action: int
     log_probability: float
@@ -403,11 +402,9 @@ def _worker_state(
     preserve_graph: bool,
     **kwargs,
 ) -> WorkerResponse:
-    policy_observation = (
-        observation.copy()
-        if preserve_graph
-        else PolicyObservation.from_observation(observation)
-    )
+    if not preserve_graph:
+        raise ValueError("workers require graph observations")
+    policy_observation = observation.copy()
     return WorkerResponse(
         lane_id=lane_id,
         observation=policy_observation,

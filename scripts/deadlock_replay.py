@@ -16,7 +16,6 @@ from environment import (
     AssemblySchedulingEnv,
     DecisionType,
     FAILURE_PENALTY_REWARD,
-    LEGACY_PROGRESS_QUALITY_REWARD,
     proxy_return_from_metrics,
     terminal_failure_penalty,
 )
@@ -574,12 +573,6 @@ def _reward_audit(
     actual_final_quality = float(metrics["raw_preference_quality_score"])
     task_failed = bool(metrics["task_failed"])
     penalty = terminal_failure_penalty(environment.config) if task_failed else 0.0
-    legacy_identity = (
-        final_progress
-        - initial_progress
-        - formal_final_quality
-        + initial_quality
-    )
     failure_v2_base_identity = (
         final_progress
         - initial_progress
@@ -609,12 +602,6 @@ def _reward_audit(
             )
         ),
         "recomputed_versions": {
-            LEGACY_PROGRESS_QUALITY_REWARD: {
-                "terminal_quality": formal_final_quality,
-                "failure_penalty": 0.0,
-                "base_cumulative_reward": legacy_identity,
-                "training_cumulative_reward": legacy_identity,
-            },
             FAILURE_PENALTY_REWARD: {
                 "terminal_quality": actual_final_quality,
                 "failure_penalty": penalty,
@@ -630,9 +617,6 @@ def _reward_audit(
         "flow_objective": float(metrics["flow_time_objective"]),
         "unfinished_order_penalty_component": float(environment._flow_penalty),
         "flow_integral_component": float(environment._flow_integral),
-        "failed_trajectory_quality_overwrite": bool(
-            task_failed and configured_mode == LEGACY_PROGRESS_QUALITY_REWARD
-        ),
     }
 
 

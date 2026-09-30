@@ -7,31 +7,24 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from environment import PreferenceVector
+from environment.types import bounded_quality_score
+from configs.formal_preferences import objective_scales
 from analysis.pareto_analysis import dominates, normalize_objectives, vectors_equal
 
-from .types import CandidateEvaluation, OBJECTIVE_SCALES
+from .types import CandidateEvaluation
 
 
-def normalized_objectives(objectives: tuple[float, float, float]) -> tuple[float, float, float]:
-    return normalize_objectives(objectives, OBJECTIVE_SCALES)
+def normalized_objectives(objectives: tuple[float, float, float], config: dict) -> tuple[float, float, float]:
+    return normalize_objectives(objectives, objective_scales(config))
 
 
 def augmented_tchebycheff(
     objectives: tuple[float, float, float],
     preference: PreferenceVector,
-    *,
-    epsilon: float = 1e-6,
-    augmentation: float = 1e-4,
+    config: dict,
 ) -> float:
-    """Scalarise a minimisation vector against the theoretical zero ideal point."""
-
-    normalized = normalized_objectives(objectives)
-    weights = tuple(max(float(weight), epsilon) for weight in preference.as_tuple())
-    return float(
-        max(weight * value for weight, value in zip(weights, normalized, strict=True))
-        + augmentation
-        * sum(weight * value for weight, value in zip(weights, normalized, strict=True))
-    )
+    """Use the experiment's preference quality objective for search ranking."""
+    return bounded_quality_score(*objectives, config, preference=preference)
 
 
 def candidate_better(first: CandidateEvaluation, second: CandidateEvaluation) -> bool:
@@ -48,6 +41,7 @@ def candidate_better(first: CandidateEvaluation, second: CandidateEvaluation) ->
 class ParetoArchive:
     """Feasible non-dominated candidates, deduplicated by decoded action trace."""
 
+    config: dict
     entries: list[CandidateEvaluation] = field(default_factory=list)
 
     def update(self, candidate: CandidateEvaluation) -> bool:
@@ -80,7 +74,7 @@ class ParetoArchive:
         return min(
             self.entries,
             key=lambda candidate: (
-                augmented_tchebycheff(candidate.objectives, preference),
+                augmented_tchebycheff(candidate.objectives, preference, self.config),
                 candidate.action_trace_sha256,
             ),
         )

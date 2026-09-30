@@ -15,10 +15,9 @@ from .preference import (
 
 EdgeType = tuple[str, str, str]
 
-LEGACY_PROGRESS_QUALITY_REWARD = "single_stage_progress_quality_v1"
 FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v2"
 SUPPORTED_REWARD_MODES = frozenset(
-    {LEGACY_PROGRESS_QUALITY_REWARD, FAILURE_PENALTY_REWARD}
+    {FAILURE_PENALTY_REWARD}
 )
 
 PRECEDES_EDGE: EdgeType = ("operation", "precedes", "operation")
@@ -137,13 +136,10 @@ class RewardVector:
     def base_scalarize(self, config: dict) -> float:
         """Return progress increment plus preference-conditioned quality delta."""
 
-        mode = str(config.get("mode", LEGACY_PROGRESS_QUALITY_REWARD))
+        mode = str(config.get("mode", FAILURE_PENALTY_REWARD))
         if mode not in SUPPORTED_REWARD_MODES:
             raise ValueError(f"unknown reward mode {mode!r}")
-        reward = self.operation_progress + self.quality
-        if mode == FAILURE_PENALTY_REWARD:
-            reward += self.failure
-        return reward
+        return self.operation_progress + self.quality + self.failure
 
     def as_dict(self) -> dict[str, float | str]:
         result = {
@@ -185,15 +181,16 @@ def objective_scalarizer_config(config: dict) -> dict:
     if any(not np.isfinite(value) or value <= 0.0 for value in scales.values()):
         raise ValueError("objective scalarizer scales must be finite and positive")
     default_kind = (
-        "normalized_augmented_tchebycheff_v1"
-        if str(raw.get("mode", "")) in SUPPORTED_REWARD_MODES
-        else "legacy_bounded_weighted_sum_v1"
+        "canonical_bounded_weighted_sum_v1"
+        if raw.get("version") == "canonical_bounded_quality_v1"
+        else "normalized_augmented_tchebycheff_v1"
     )
     kind = str(raw.get("type", default_kind))
+    if kind not in {"normalized_augmented_tchebycheff_v1", "canonical_bounded_weighted_sum_v1"}:
+        raise ValueError(f"unknown objective scalarizer {kind!r}")
     rho = float(raw.get("rho", 0.05))
-    if kind == "normalized_augmented_tchebycheff_v1":
-        if not np.isfinite(rho) or rho < 0.0:
-            raise ValueError("objective_scalarizer.rho must be finite and non-negative")
+    if not np.isfinite(rho) or rho < 0.0:
+        raise ValueError("objective_scalarizer.rho must be finite and non-negative")
     return {"type": kind, "scales": scales, "rho": rho}
 
 
@@ -260,18 +257,12 @@ def bounded_quality_score(
         if scale <= 0.0:
             raise ValueError(f"{name} quality scale must be positive")
         normalized[name] = value / (scale + value)
-    if scalarizer["type"] == "normalized_augmented_tchebycheff_v1":
-        rho = float(scalarizer["rho"])
-        weighted = [
-            float(weights[name]) * normalized[name]
-            for name in PREFERENCE_NAMES
-        ]
-        return (max(weighted) + rho * sum(weighted)) / (1.0 + rho)
-    if scalarizer["type"] != "legacy_bounded_weighted_sum_v1":
-        raise ValueError(f"unknown objective scalarizer {scalarizer['type']!r}")
-    return sum(
-        float(weights[name]) * normalized[name] for name in PREFERENCE_NAMES
-    ) / weight_sum
+    if scalarizer["type"] == "canonical_bounded_weighted_sum_v1":
+        return sum(float(weights[name]) * normalized[name] for name in PREFERENCE_NAMES) / weight_sum
+    rho = float(scalarizer["rho"])
+    weighted = [float(weights[name]) * normalized[name] for name in PREFERENCE_NAMES]
+    return (max(weighted) + rho * sum(weighted)) / (1.0 + rho)
+
 
 
 def terminal_quality_score(
@@ -305,7 +296,7 @@ def proxy_return_from_metrics(
     """Rebuild the versioned undiscounted training return from metrics."""
 
     reward = reward_config(config)
-    mode = str(reward.get("mode", LEGACY_PROGRESS_QUALITY_REWARD))
+    mode = str(reward.get("mode", FAILURE_PENALTY_REWARD))
     if mode not in SUPPORTED_REWARD_MODES:
         raise ValueError(f"unknown reward mode {mode!r}")
     initial_progress = float(metrics.get("initial_progress", 0.0))
@@ -327,34 +318,18 @@ def proxy_return_from_metrics(
         )
     else:
         initial_score = float(initial_score_value)
-    if mode == FAILURE_PENALTY_REWARD:
-        terminal_score_value = metrics.get(
-            "actual_preference_quality_score",
-            metrics.get("raw_preference_quality_score"),
-        )
-        terminal_score = (
-            bounded_quality_score(
-                float(metrics["flow_time_objective"]),
-                float(metrics["reconfiguration_cost"]),
-                float(metrics["worker_load_variance"]),
-                config,
-                preference=preference,
-            )
-            if terminal_score_value is None
-            else float(terminal_score_value)
-        )
-    else:
-        terminal_score_value = metrics.get("preference_quality_score")
-        terminal_score = terminal_quality_score(
+    terminal_score_value = metrics.get(
+        "actual_preference_quality_score", metrics.get("raw_preference_quality_score")
+    )
+    terminal_score = (
+        bounded_quality_score(
             float(metrics["flow_time_objective"]),
             float(metrics["reconfiguration_cost"]),
             float(metrics["worker_load_variance"]),
             config,
             preference=preference,
-            terminal_failure=bool(
-                metrics.get("task_failed", metrics.get("truncated", False))
-            ),
         ) if terminal_score_value is None else float(terminal_score_value)
+    )
     task_failed = bool(metrics.get("task_failed", metrics.get("truncated", False)))
     failure_penalty = (
         terminal_failure_penalty(config)
@@ -608,81 +583,7 @@ class HeterogeneousGraphObservation:
                 raise ValueError(f"edge relation {edge_type} is not stably sorted")
 
 
-@dataclass(frozen=True)
-class PolicyObservation:
-    """Compact MLP policy input without graph metadata unused by the network."""
-
-    operations: np.ndarray
-    machines: np.ndarray
-    workers: np.ndarray
-    global_features: np.ndarray
-    decision_type: DecisionType
-    preference: np.ndarray = field(
-        default_factory=lambda: np.asarray(CANONICAL_PREFERENCE, dtype=np.float32)
-    )
-    global_feature_names: tuple[str, ...] = field(default_factory=tuple)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "operations", np.asarray(self.operations, dtype=np.float32)
-        )
-        object.__setattr__(
-            self, "machines", np.asarray(self.machines, dtype=np.float32)
-        )
-        object.__setattr__(
-            self, "workers", np.asarray(self.workers, dtype=np.float32)
-        )
-        object.__setattr__(
-            self,
-            "global_features",
-            np.asarray(self.global_features, dtype=np.float32),
-        )
-        object.__setattr__(
-            self,
-            "preference",
-            normalize_preference(self.preference).as_array(),
-        )
-        object.__setattr__(
-            self, "global_feature_names", tuple(self.global_feature_names)
-        )
-
-    @classmethod
-    def from_observation(
-        cls,
-        observation: "HeterogeneousGraphObservation | PolicyObservation",
-    ) -> "PolicyObservation":
-        if isinstance(observation, cls):
-            return observation.copy()
-        return cls(
-            operations=observation.operations.copy(),
-            machines=observation.machines.copy(),
-            workers=observation.workers.copy(),
-            global_features=observation.global_features.copy(),
-            decision_type=observation.decision_type,
-            preference=observation.preference.copy(),
-            global_feature_names=tuple(observation.global_feature_names),
-        )
-
-    def copy(self) -> "PolicyObservation":
-        return PolicyObservation(
-            operations=self.operations.copy(),
-            machines=self.machines.copy(),
-            workers=self.workers.copy(),
-            global_features=self.global_features.copy(),
-            decision_type=self.decision_type,
-            preference=self.preference.copy(),
-            global_feature_names=tuple(self.global_feature_names),
-        )
-
-    @property
-    def feature_dimensions(self) -> dict[str, int]:
-        return {
-            "operation": int(self.operations.shape[-1]),
-            "machine": int(self.machines.shape[-1]),
-            "worker": int(self.workers.shape[-1]),
-            "global": int(self.global_features.shape[-1]),
-        }
 
 
-# Backward-compatible public name used by the existing MLP/PPO path.
+# Public observation type shared by the environment and policy.
 Observation = HeterogeneousGraphObservation

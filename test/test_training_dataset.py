@@ -61,7 +61,7 @@ def test_unspecified_update_budget_keeps_previous_worker_cadence(config, monkeyp
 
 
 def test_update_budget_and_validation_thresholds_with_refilled_workers(tmp_path):
-    effective = load_config("configs/e1/single_flow_relative_time.json")
+    effective = load_config("configs/e1/single_flow.json")
     effective["device"] = "cpu"
     effective["paths"]["result_root"] = str(tmp_path)
     effective["training"].update({

@@ -4,10 +4,18 @@
   "preference": {
     "quality": {
       "mode": "fixed",
-      "fixed": [1.0, 0.0, 0.0]
+      "fixed": [
+        1.0,
+        0.0,
+        0.0
+      ]
     }
   },
   "training": {
-    "validation_interval_episodes": 40
+    "validation_interval_episodes": 40,
+    "episodes": 1000,
+    "parallel_envs": 20,
+    "validation_parallel_envs": 20,
+    "episodes_per_update": 20
   }
 }
