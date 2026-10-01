@@ -43,15 +43,9 @@ from data.models import (
 )
 
 
-PRESSURE_TYPES = (
-    "easy",
-    "balanced",
-    "machine_bottleneck",
-    "reconfiguration_bottleneck",
-    "worker_bottleneck",
-    "fatigue_bottleneck",
-    "high_arrival_pressure",
-)
+from data.distribution import PRESSURE_TYPES, protocol_hashes, severity_bounds
+
+
 OOD_LIKE_SPLITS = frozenset({"ood", "stress"})
 
 
@@ -274,162 +268,118 @@ class InstanceGenerator:
         split: str,
         pressure_type: str,
         ood_factor: str | None = None,
-        classify_reconfiguration_value: bool = True,
+        classify_reconfiguration_value: bool = False,
+        severity: float = 1.0,
+        run_diagnostics: bool | None = None,
     ) -> GeneratedInstanceRecord:
-        if pressure_type not in PRESSURE_TYPES:
-            raise ValueError(f"unknown pressure_type {pressure_type}")
-        if split not in ALL_SPLITS:
-            raise ValueError(f"unknown split {split}")
+        if pressure_type not in PRESSURE_TYPES or split not in ALL_SPLITS:
+            raise ValueError("unknown pressure type or split")
+        if not math.isfinite(severity) or not 0 < severity <= 1:
+            raise ValueError("severity must be in (0, 1]")
         validate_instance_seed(self.config, split, seed)
+        if split != "train" and severity != 1.0:
+            raise ValueError("fixed evaluation instances require severity=1.0")
         if split not in OOD_LIKE_SPLITS and ood_factor is not None:
-            raise ValueError(
-                "ood_factor is only valid for the ood and stress splits"
-            )
+            raise ValueError("ood_factor is only valid for the ood and stress splits")
         if split in OOD_LIKE_SPLITS:
             allowed = set(self.settings["ood"]["factors"])
             if ood_factor is None:
-                chooser = random.Random(
-                    _stable_seed(self.version, split, seed, "ood-factor")
-                )
+                chooser = random.Random(_stable_seed(self.version, split, seed, "ood-factor"))
                 ood_factor = chooser.choice(sorted(allowed))
             if ood_factor not in allowed:
                 raise ValueError(f"unknown ood_factor {ood_factor}")
-        cost_rng = random.Random(
-            _stable_seed(self.version, split, seed, pressure_type, "cost")
-        )
-        cost_profile = _weighted_choice(
-            cost_rng, self.settings["cost_profile_weights"]
-        )
+        diagnostics = self.settings.get("diagnostics", {})
+        if run_diagnostics is None:
+            run_diagnostics = split in diagnostics.get("enabled_splits", PERSISTED_SPLITS)
+        cost_rng = random.Random(_stable_seed(self.version, split, seed, "cost-v2"))
+        cost_profile = _weighted_choice(cost_rng, self.settings["cost_profile_weights"])
+        hashes = protocol_hashes(self.config, self.settings)
         failure_reasons: Counter[str] = Counter()
         last_metrics: dict[str, Any] | None = None
         maximum_attempts = int(self.settings["max_generation_attempts"])
+        if not 1 <= maximum_attempts <= 100:
+            raise ValueError("max_generation_attempts must be in [1, 100]")
         for attempt in range(maximum_attempts):
-            self._emit_progress(
-                phase="candidate_build",
-                seed=seed,
-                generation_attempt=attempt,
-                pressure_type=pressure_type,
-            )
-            attempt_seed = _stable_seed(
-                self.version,
-                self.template_hash,
-                split,
-                seed,
-                pressure_type,
-                cost_profile,
-                ood_factor or "",
-                attempt,
-            )
-            rng = random.Random(attempt_seed)
+            self._emit_progress(phase="candidate_build", seed=seed,
+                                generation_attempt=attempt, pressure_type=pressure_type)
+            attempt_seed = _stable_seed(self.version, self.template_hash, split, seed,
+                                       pressure_type, cost_profile, ood_factor or "", severity, attempt)
             try:
                 instance = self._build_candidate(
-                    rng=rng,
-                    seed=seed,
-                    split=split,
-                    pressure_type=pressure_type,
-                    cost_profile=cost_profile,
-                    ood_factor=ood_factor,
-                    attempt=attempt,
+                    rng=random.Random(attempt_seed), seed=seed, split=split,
+                    pressure_type=pressure_type, cost_profile=cost_profile,
+                    ood_factor=ood_factor, attempt=attempt, severity=severity,
                 )
-                minimum_workers = (
-                    1
-                    if split in OOD_LIKE_SPLITS
-                    and ood_factor == "worker_qualification_sparsity"
-                    else 3
-                )
-                validate_instance(
-                    instance,
-                    minimum_qualified_workers=minimum_workers,
-                )
+                minimum_workers = 1 if split in OOD_LIKE_SPLITS and ood_factor == "worker_qualification_sparsity" else 3
+                validate_instance(instance, minimum_qualified_workers=minimum_workers)
                 static_analysis = analyze_static_feasibility(instance)
                 static_metrics = _load_metrics(instance, static_analysis)
-                static_reasons = self._static_rejection_reasons(
-                    instance, static_metrics
-                )
+                static_reasons = self._static_rejection_reasons(instance, static_metrics)
                 if static_reasons:
                     failure_reasons.update(static_reasons)
                     last_metrics = static_metrics
                     continue
-                precheck = cheap_feasibility_precheck(
-                    instance, static_analysis
-                )
+                precheck = cheap_feasibility_precheck(instance, static_analysis)
                 if not precheck.passed:
                     failure_reasons.update(precheck.reason_codes)
-                    last_metrics = {
-                        **static_metrics,
-                        "feasibility_precheck": precheck.to_dict(),
-                    }
+                    last_metrics = {**static_metrics, "feasibility_precheck": precheck.to_dict()}
                     continue
-                self._emit_progress(
-                    phase="heuristic_rollout",
-                    seed=seed,
-                    generation_attempt=attempt,
-                    pressure_type=pressure_type,
-                )
-                heuristic_metrics, environment = _rollout_metrics(
-                    instance,
-                    self.config,
-                    progress_callback=self.progress_callback,
-                )
-                metrics = {**static_metrics, **heuristic_metrics}
-                dynamic_reasons = self._dynamic_rejection_reasons(
-                    instance=instance,
-                    pressure_type=pressure_type,
-                    split=split,
-                    metrics=metrics,
-                )
-                if dynamic_reasons:
-                    failure_reasons.update(dynamic_reasons)
-                    last_metrics = metrics
-                    continue
-                if classify_reconfiguration_value:
-                    value_class, counterfactual_count = (
-                        self._classify_reconfiguration_value(instance)
-                    )
-                else:
-                    value_class, counterfactual_count = None, 0
-                metadata = {
-                    "generator_version": self.version,
-                    "template_instance": self.template_instance,
-                    "template_sha256": self.template_hash,
-                    "seed": seed,
-                    "split": split,
-                    "distribution": (
-                        split if split in OOD_LIKE_SPLITS else "id"
-                    ),
-                    "pressure_type": pressure_type,
-                    "cost_profile": cost_profile,
-                    "ood_factor": ood_factor,
-                    "generation_attempt": attempt,
-                    "attempt_seed": attempt_seed,
-                    "pressure_metrics": static_metrics,
-                    "feasibility_precheck": precheck.to_dict(),
-                    "heuristic_metrics": heuristic_metrics,
-                    "reconfiguration_value_class": value_class,
-                    "counterfactual_candidate_count": counterfactual_count,
-                    "generation_rejection_reasons": dict(
-                        sorted(failure_reasons.items())
-                    ),
-                }
-                self._emit_progress(
-                    phase="generation_complete",
-                    seed=seed,
-                    generation_attempt=attempt,
-                    pressure_type=pressure_type,
-                )
-                return GeneratedInstanceRecord(instance, metadata)
-            except (RuntimeError, ValueError) as error:
-                failure_reasons[f"candidate_error:{type(error).__name__}"] += 1
+            except ValueError as error:
+                failure_reasons["candidate_error:ValueError"] += 1
                 last_metrics = {"error": str(error)}
-        raise GenerationError(
-            seed=seed,
-            split=split,
-            pressure_type=pressure_type,
-            generator_version=self.version,
-            attempts=maximum_attempts,
-            failure_reasons=failure_reasons,
-            last_metrics=last_metrics,
-        )
+                continue
+
+            # Diagnostics occur only after acceptance and cannot trigger resampling.
+            heuristic_metrics = None
+            diagnostic_status = "not_run"
+            terminal_reason = None
+            feasibility_status = "unknown"
+            value_class, counterfactual_count = None, 0
+            if run_diagnostics:
+                self._emit_progress(phase="heuristic_rollout", seed=seed,
+                                    generation_attempt=attempt, pressure_type=pressure_type)
+                try:
+                    heuristic_metrics, _ = _rollout_metrics(instance, self.config, self.progress_callback)
+                except Exception as error:
+                    error.add_note(f"diagnostic failed: split={split}, seed={seed}, attempt={attempt}")
+                    raise
+                completed = bool(heuristic_metrics["heuristic_completed"]) and not heuristic_metrics["heuristic_truncated"]
+                diagnostic_status = "completed" if completed else "truncated"
+                terminal_reason = heuristic_metrics["heuristic_terminal_reason"]
+                if (completed and not heuristic_metrics["schedule_violations"]
+                        and heuristic_metrics["heuristic_makespan"] <= instance.horizon + 1e-9
+                        and heuristic_metrics["maximum_worker_fatigue"] <= instance.fatigue.maximum_safe_fatigue + 1e-9):
+                    feasibility_status = "observed_feasible"
+                if classify_reconfiguration_value or diagnostics.get("classify_reconfiguration_value", False):
+                    value_class, counterfactual_count = self._classify_reconfiguration_value(instance)
+            metadata = {
+                "generator_version": self.version, "template_instance": self.template_instance,
+                "template_sha256": self.template_hash, "seed": seed, "split": split,
+                "distribution": split if split in OOD_LIKE_SPLITS else "id",
+                "pressure_type": pressure_type, "cost_profile": cost_profile, "ood_factor": ood_factor,
+                "generation_attempt": attempt, "attempt_seed": attempt_seed,
+                "severity": severity, "feasibility_status": feasibility_status,
+                "sampled_parameters": {
+                    "order_count": len(instance.orders),
+                    "operations_per_order_min": min(len(order.operations) for order in instance.orders),
+                    "operations_per_order_max": max(len(order.operations) for order in instance.orders),
+                    "initial_fatigue_min": min(worker.initial_fatigue for worker in instance.workers),
+                    "initial_fatigue_max": max(worker.initial_fatigue for worker in instance.workers),
+                    "installation_time_min": min(value.installation_base_time for machine in instance.machines for value in machine.module_parameters.values()),
+                    "installation_time_max": max(value.installation_base_time for machine in instance.machines for value in machine.module_parameters.values()),
+                },
+                "diagnostic_status": diagnostic_status, "diagnostic_terminal_reason": terminal_reason,
+                "pressure_metrics": static_metrics, "feasibility_precheck": precheck.to_dict(),
+                "heuristic_metrics": heuristic_metrics, "reconfiguration_value_class": value_class,
+                "counterfactual_candidate_count": counterfactual_count,
+                "generation_rejection_reasons": dict(sorted(failure_reasons.items())), **hashes,
+            }
+            self._emit_progress(phase="generation_complete", seed=seed,
+                                generation_attempt=attempt, pressure_type=pressure_type)
+            return GeneratedInstanceRecord(instance, metadata)
+        raise GenerationError(seed=seed, split=split, pressure_type=pressure_type,
+                              generator_version=self.version, attempts=maximum_attempts,
+                              failure_reasons=failure_reasons, last_metrics=last_metrics)
 
     def _build_candidate(
         self,
@@ -441,10 +391,11 @@ class InstanceGenerator:
         cost_profile: str,
         ood_factor: str | None,
         attempt: int,
+        severity: float = 1.0,
     ) -> AssemblyInstance:
         profile = self.settings["pressure_profiles"][pressure_type]
-        order_low, order_high = profile["order_count"]
-        operation_low, operation_high = profile["operations_per_order"]
+        order_low, order_high = severity_bounds(profile["order_count"], severity, integer=True)
+        operation_low, operation_high = severity_bounds(profile["operations_per_order"], severity, integer=True)
         order_count = rng.randint(int(order_low), int(order_high))
         wave_ids = tuple(self.template.waves)
         if len(wave_ids) != int(self.settings["wave_count"]):
@@ -535,7 +486,7 @@ class InstanceGenerator:
                 "dominant_module": dominants[wave_index],
             }
         reconfiguration_scale = rng.uniform(
-            *profile["reconfiguration_scale"]
+            *severity_bounds(profile["reconfiguration_scale"], severity)
         )
         if ood_factor == "reconfiguration_time_scale":
             reconfiguration_scale = rng.uniform(1.5, 2.0)
@@ -555,6 +506,7 @@ class InstanceGenerator:
             bottleneck_module=bottleneck_module,
             sparse_ood=ood_factor == "worker_qualification_sparsity",
             fatigue_ood=ood_factor == "initial_fatigue",
+            severity=severity,
         )
         module_costs = self._module_costs(rng, cost_profile)
         instance_id = (
@@ -768,6 +720,7 @@ class InstanceGenerator:
         bottleneck_module: str,
         sparse_ood: bool,
         fatigue_ood: bool,
+        severity: float = 1.0,
     ) -> tuple[WorkerSpec, ...]:
         labor_scale = 1.5 if cost_profile == "labor_dominant" else (
             0.75 if cost_profile != "balanced_cost" else 1.0
@@ -794,11 +747,11 @@ class InstanceGenerator:
             if fatigue_ood:
                 initial_fatigue = rng.uniform(0.25, 0.40)
             elif pressure_type == "fatigue_bottleneck":
-                initial_fatigue = rng.uniform(0.10, 0.25)
+                initial_fatigue = rng.uniform(*severity_bounds((0.10, 0.25), severity))
             elif pressure_type == "easy":
-                initial_fatigue = rng.uniform(0.05, 0.10)
+                initial_fatigue = rng.uniform(*severity_bounds((0.05, 0.10), severity))
             else:
-                initial_fatigue = rng.uniform(*self.settings["initial_fatigue"])
+                initial_fatigue = rng.uniform(*severity_bounds(self.settings["initial_fatigue"], severity))
             result.append(
                 WorkerSpec(
                     id=worker.id,
@@ -869,70 +822,6 @@ class InstanceGenerator:
             previous = dominant
         if not math.isfinite(float(metrics["total_effective_load"])):
             reasons.append("invalid_load")
-        return reasons
-
-    def _dynamic_rejection_reasons(
-        self,
-        *,
-        instance: AssemblyInstance,
-        pressure_type: str,
-        split: str,
-        metrics: dict[str, Any],
-    ) -> list[str]:
-        reasons: list[str] = []
-        if metrics["schedule_violations"]:
-            reasons.append("schedule_infeasible")
-        if int(metrics["ready_configuration_gap_count"]) < 1:
-            reasons.append("no_ready_configuration_gap")
-        if split != "stress" and not metrics["heuristic_completed"]:
-            reasons.append("heuristic_truncated")
-            return reasons
-        if (
-            split != "stress"
-            and float(metrics["heuristic_makespan"])
-            > float(
-                self.settings["acceptance"][
-                    "max_heuristic_makespan_minutes"
-                ]
-            )
-        ):
-            reasons.append("heuristic_makespan")
-        if pressure_type == "easy":
-            if metrics["heuristic_makespan"] > 0.85 * instance.horizon:
-                reasons.append("easy_makespan")
-            if metrics["fatigue_masked_action_count"] > 0:
-                reasons.append("easy_fatigue")
-            if metrics["worker_competition_event_count"] > 0:
-                reasons.append("easy_worker_competition")
-            if metrics["heuristic_reconfiguration_ratio"] > 0.20:
-                reasons.append("easy_reconfiguration")
-        elif pressure_type == "machine_bottleneck":
-            if metrics["max_module_load"] < float(
-                self.settings["acceptance"]["machine_min_module_load"]
-            ):
-                reasons.append("machine_load")
-        elif pressure_type == "reconfiguration_bottleneck":
-            if metrics["ready_configuration_gap_ratio"] < float(
-                self.settings["acceptance"]["reconfiguration_min_ready_gap"]
-            ):
-                reasons.append("configuration_gap")
-            if metrics["heuristic_reconfiguration_ratio"] < float(
-                self.settings["acceptance"]["reconfiguration_min_ratio"]
-            ):
-                reasons.append("reconfiguration_ratio")
-        elif pressure_type == "worker_bottleneck":
-            if metrics["worker_competition_event_count"] < 1:
-                reasons.append("worker_competition")
-            if metrics["machine_waiting_for_worker_time"] <= 0:
-                reasons.append("worker_wait")
-        elif pressure_type == "fatigue_bottleneck":
-            if metrics["fatigue_masked_action_count"] < 1:
-                reasons.append("fatigue_mask")
-        elif pressure_type == "high_arrival_pressure":
-            if metrics["mean_wave_overlap_ratio"] < float(
-                self.settings["acceptance"]["arrival_min_overlap"]
-            ):
-                reasons.append("arrival_overlap")
         return reasons
 
     def _classify_reconfiguration_value(

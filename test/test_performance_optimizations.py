@@ -156,9 +156,9 @@ def test_online_generation_skips_counterfactual_without_changing_instance(
         "split": "train",
         "pressure_type": "balanced",
     }
-    complete = generator.generate(**arguments)
+    complete = generator.generate(**arguments, run_diagnostics=True, classify_reconfiguration_value=True)
     fast = generator.generate(
-        **arguments, classify_reconfiguration_value=False
+        **arguments, run_diagnostics=True, classify_reconfiguration_value=False
     )
 
     assert complete.instance == fast.instance
@@ -181,7 +181,7 @@ def test_online_generation_skips_counterfactual_without_changing_instance(
     assert online.metadata["counterfactual_candidate_count"] == 0
 
 
-def test_persisted_dataset_generation_keeps_counterfactual_classification(
+def test_persisted_dataset_generation_disables_counterfactual_by_default(
     config,
     fixed_instance,
     tmp_path,
@@ -204,7 +204,7 @@ def test_persisted_dataset_generation_keeps_counterfactual_classification(
         instances_root=tmp_path / "instances",
         manifests_root=tmp_path / "manifests",
     )
-    assert len(calls) == 1
+    assert calls == []
 
 
 def test_build_observation_false_preserves_environment_trajectory(

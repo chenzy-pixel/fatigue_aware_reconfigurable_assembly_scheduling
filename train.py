@@ -22,6 +22,9 @@ from configs.config import public_config
 from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from data.dataset import validate_algorithm_seed
+from data.selection import select_validation_subsets, subset_snapshot
+from collections import Counter
+from result.metrics import grouped_outcomes, successful_row
 from data.models import load_instance_yaml
 from eval import evaluate_dataset_parallel, evaluate_preference_grid_parallel
 from result import (
@@ -95,11 +98,22 @@ def _checkpoint_metadata(
     validation_split: str,
     validation_instance_limit: int,
     validation: dict[str, Any] | None = None,
+    validation_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     formal = config["training"]["formal_evaluation"]
     manifest_path = _validation_manifest_path(config, validation_split)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    files = list(manifest["files"][: int(validation_instance_limit)])
+    if validation_selection is None:
+        dataset = load_dataset_split(config, validation_split)
+        validation_selection = select_validation_subsets(
+            dataset, config["generator"]["dataset_pressure_weights"],
+            target_count=validation_instance_limit, diagnostic_count=0,
+        )["target"]
+    files = list(validation_selection["files"])
+    if len(files) != validation_instance_limit:
+        raise ValueError("validation selection count does not match checkpoint metadata")
+    if validation is not None and validation.get("subset_sha256") not in {None, validation_selection["subset_sha256"]}:
+        raise ValueError("checkpoint selection hash differs from the evaluated subset")
     preferences = [point.preference.as_dict() for point in formal_preferences(config, "validation")]
     return {
         "checkpoint_role": role,
@@ -115,6 +129,8 @@ def _checkpoint_metadata(
         "selection_temperature": float(formal["temperature"]),
         "validation_split": validation_split,
         "validation_instance_limit": int(validation_instance_limit),
+        "validation_subset": validation_selection,
+        "validation_subset_sha256": validation_selection["subset_sha256"],
         "validation_dataset_manifest": dataset_manifest_snapshot(manifest_path),
         "validation_instance_order": [str(item["path"]) for item in files],
         "validation_instance_seeds": [int(item["seed"]) for item in files],
@@ -194,7 +210,7 @@ def _aggregate_formal_rows(
                 raise ValueError("evaluation rows have incomplete or duplicate instance/preference/repeat cells")
         completion_by_preference = {
             key: sum(
-                bool(row["terminated"]) and not bool(row["truncated"])
+                successful_row(row)
                 for row in rows
                 if str(row["preference_key"]) == key
             )
@@ -206,7 +222,7 @@ def _aggregate_formal_rows(
         aggregate["instance_count"] = int(unique_instance_count)
         aggregate["completed_count"] = sum(
             all(
-                bool(row["terminated"]) and not bool(row["truncated"])
+                successful_row(row)
                 for row in rows
                 if str(row["instance_id"]) == instance_id
             )
@@ -246,6 +262,7 @@ def _evaluate_policy(
     instance_limit: int,
     sampling_seeds: list[int],
     stage: str = "validation",
+    instance_indices: list[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     evaluation_started = time.perf_counter()
     universal = _is_universal(config)
@@ -260,7 +277,8 @@ def _evaluate_policy(
                 dataset_name=dataset_name,
                 ppo_agent=ppo_agent,
                 runner=runner,
-                instance_limit=instance_limit,
+                instance_limit=None if instance_indices is not None else instance_limit,
+                instance_indices=instance_indices,
                 decode_mode="sampled",
                 sampling_seed=seed,
                 preferences=formal_preferences(config, stage),
@@ -271,7 +289,8 @@ def _evaluate_policy(
                 dataset_name=dataset_name,
                 ppo_agent=ppo_agent,
                 runner=runner,
-                instance_limit=instance_limit,
+                instance_limit=None if instance_indices is not None else instance_limit,
+                instance_indices=instance_indices,
                 decode_mode="sampled",
                 sampling_seed=seed,
             )
@@ -292,6 +311,9 @@ def _evaluate_policy(
         stage=stage,
         strict_counts=True,
     )
+    aggregate["instance_indices"] = reference["instance_indices"]
+    aggregate["subset_sha256"] = reference["subset_sha256"]
+    aggregate["dataset_manifest_sha256"] = reference["dataset_manifest_sha256"]
     aggregate["sampling_seeds"] = [int(seed) for seed in sampling_seeds]
     aggregate["wall_time_seconds"] = time.perf_counter() - evaluation_started
     aggregate["physical_safety_pass"] = _rows_are_physically_safe(rows)
@@ -308,6 +330,9 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
     all_metrics = aggregate["all_instance_metrics"]
     return {
         "episode": int(episode),
+        "subset_sha256": aggregate.get("subset_sha256"),
+        "dataset_manifest_sha256": aggregate.get("dataset_manifest_sha256"),
+        "instance_indices": aggregate.get("instance_indices"),
         "validation_wall_time_seconds": float(aggregate.get("wall_time_seconds", 0.0)),
         "instance_count": int(aggregate["instance_count"]),
         "cell_count": aggregate.get("cell_count", aggregate["instance_count"]),
@@ -386,6 +411,29 @@ class LearningRatePlateauController:
         }
 
 
+def preference_group(preference):
+    for name in ("flow", "cost", "variance"):
+        if float(preference.get(name, 0)) >= 1 - 1e-9:
+            return name
+    return "mixed"
+
+
+def training_distribution_summary(rows):
+    parameters = sorted({key for row in rows for key in row if key.startswith("instance_") and key != "instance_id"})
+    return {
+        "episode_count": len(rows),
+        "pressure_counts": dict(Counter(row.get("pressure_type", "unknown") for row in rows)),
+        "pressure_preference_counts": dict(Counter(str(row.get("pressure_type")) + ":" + str(row.get("preference_group")) for row in rows)),
+        "parameter_ranges": {key: {"min": min(row[key] for row in rows if row.get(key) is not None),
+                                  "max": max(row[key] for row in rows if row.get(key) is not None)}
+                             for key in parameters if any(row.get(key) is not None for row in rows)},
+        "by_pressure_type": grouped_outcomes(rows, "pressure_type"),
+        "failure_reasons": dict(Counter(row.get("terminal_reason", "unknown") for row in rows if row.get("truncated") or not row.get("terminated"))),
+        "generation_time_seconds": sum(row.get("generation_time_seconds", 0) for row in rows),
+        "environment_step_time_seconds": sum(row.get("environment_step_time_seconds", 0) for row in rows),
+    }
+
+
 def _episode_log_row(episode) -> dict[str, Any]:
     metrics = episode.metrics
     total_orders = max(1, int(metrics["total_orders"]))
@@ -393,6 +441,13 @@ def _episode_log_row(episode) -> dict[str, Any]:
     row = {
         "episode": int(episode.episode_index) + 1,
         "instance_id": episode.instance_id,
+        **{name: episode.metadata.get(name) for name in ("seed", "pressure_type", "cost_profile", "severity", "feasibility_status", "diagnostic_status")},
+        **{name: episode.metadata.get(name) for name in ("generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256", "training_cache_fingerprint")},
+        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        **{"instance_" + name: value for name, value in (episode.metadata.get("sampled_parameters") or {}).items()},
+        "generation_time_seconds": episode.generation_time_seconds,
+        "environment_step_time_seconds": episode.environment_step_time_seconds,
+        "preference_group": preference_group(metrics.get("preference", {})),
         "reward_version": metrics["reward_version"],
         "reward": float(episode.reward_sum),
         "base_reward": float(episode.base_reward_sum),
@@ -427,6 +482,9 @@ def _episode_log_row(episode) -> dict[str, Any]:
         "flow_time_objective": float(metrics["flow_time_objective"]),
         "reconfiguration_cost": float(metrics["reconfiguration_cost"]),
         "worker_load_variance": float(metrics["worker_load_variance"]),
+        "maximum_worker_fatigue": float(metrics["maximum_worker_fatigue"]),
+        "safe_fatigue_limit": float(metrics["safe_fatigue_limit"]),
+        "makespan": float(metrics["time"]),
         "preference_key": metrics.get("preference_key"),
         "step_count": int(episode.step_count),
         "policy_step_count": int(episode.policy_step_count),
@@ -640,6 +698,16 @@ def _train_single_stage(
         if smoke
         else config["training"]["validation_instance_limit"]
     )
+    validation_pool = load_dataset_split(config, validation_split)
+    selection_config = config["training"].get("validation_selection", {})
+    diagnostic_limit = 0 if smoke else int(selection_config.get("diagnostic_instance_limit", 49))
+    subsets = select_validation_subsets(validation_pool, config["generator"]["dataset_pressure_weights"],
+                                       target_count=validation_limit, diagnostic_count=diagnostic_limit)
+    target_selection = subsets["target"]
+    diagnostic_selection = subsets.get("diagnostic")
+    write_json(run_directory / "validation_subsets.json", subsets)
+    diagnostic_rows = []
+    diagnostic_log = []
     validation_interval = int(config["training"]["validation_interval_episodes"])
     validation_seeds = configured_formal_evaluation_sampling_seeds(
         config, "validation"
@@ -662,6 +730,7 @@ def _train_single_stage(
         template=template,
         episode_count=episodes,
         worker_count=worker_count,
+        diagnostic_directory=run_directory,
     ) as runner:
         for update_id, batch_start in enumerate(
             range(0, episodes, episodes_per_update), start=1
@@ -708,6 +777,7 @@ def _train_single_stage(
             }
             update_rows.append(update_row)
             write_csv(run_directory / "train_log.csv", episode_rows)
+            write_json(run_directory / "training_distribution.json", training_distribution_summary(episode_rows))
             write_csv(run_directory / "update_log.csv", update_rows)
             dashboard.log_update(update_row, batch_rows, selector.as_dict())
             reporter.training_update(update_row, batch_rows)
@@ -724,6 +794,7 @@ def _train_single_stage(
                 ppo_agent=agent,
                 runner=runner,
                 instance_limit=validation_limit,
+                instance_indices=target_selection["instance_indices"],
                 sampling_seeds=validation_seeds,
             )
             sampled_validation_rows.extend(
@@ -748,6 +819,7 @@ def _train_single_stage(
                     episode=completed_episodes,
                     validation_split=validation_split,
                     validation_instance_limit=validation_limit,
+                    validation_selection=target_selection,
                     validation=best_validation_row,
                 )
                 agent.save(
@@ -773,6 +845,21 @@ def _train_single_stage(
                 selector_state=selector.as_dict(),
             )
 
+            diagnostic_due = (len(validation_rows) % int(selection_config.get("diagnostic_interval_validations", 5)) == 0
+                              or completed_episodes == episodes)
+            if diagnostic_selection is not None and diagnostic_due:
+                current_rows, current = _evaluate_policy(
+                    config, dataset_name=validation_split, ppo_agent=agent, runner=runner,
+                    instance_limit=len(diagnostic_selection["instance_indices"]),
+                    instance_indices=diagnostic_selection["instance_indices"], sampling_seeds=validation_seeds,
+                )
+                diagnostic_rows.extend({"validation_episode": completed_episodes, **row} for row in current_rows)
+                diagnostic_log.append(_validation_log_row(current, episode=completed_episodes))
+                current.update(validation_episode=completed_episodes, evaluated_model_role="current")
+                write_csv(run_directory / "sampled_diagnostic_instance_metrics.csv", diagnostic_rows)
+                write_csv(run_directory / "diagnostic_log.csv", diagnostic_log)
+                write_json(run_directory / "diagnostic_summary.json", current)
+
         agent.save(
             last_checkpoint,
             metadata=_checkpoint_metadata(
@@ -781,6 +868,7 @@ def _train_single_stage(
                 episode=episodes,
                 validation_split=validation_split,
                 validation_instance_limit=validation_limit,
+                validation_selection=target_selection,
                 validation=(validation_rows[-1] if validation_rows else None),
             ),
         )
@@ -801,6 +889,7 @@ def _train_single_stage(
                 ppo_agent=agent,
                 runner=runner,
                 instance_limit=final_limit,
+                instance_indices=target_selection["instance_indices"] if smoke else None,
                 sampling_seeds=configured_formal_evaluation_sampling_seeds(
                     config, "final_test"
                 ),
@@ -828,6 +917,7 @@ def _train_single_stage(
         checkpoint_path=checkpoint,
         checkpoint_metadata=best_checkpoint_metadata,
         formal_evaluation_stage="validation",
+        evaluation_subset_sha256=target_selection["subset_sha256"],
     )
     if final_sampled is not None:
         final_sampled["provenance"] = build_provenance(
@@ -836,11 +926,15 @@ def _train_single_stage(
             checkpoint_path=best_checkpoint,
             checkpoint_metadata=best_checkpoint_metadata,
             formal_evaluation_stage="final_test",
+            evaluation_subset_sha256=final_sampled["subset_sha256"],
         )
     summary = {
         "experiment_name": config["experiment_name"],
         "seed": int(config["seed"]),
         "episodes": episodes,
+        "training_distribution": training_distribution_summary(episode_rows),
+        "validation_subsets": subsets,
+        "diagnostic_validation_count": len(diagnostic_log),
         "objective_name": _objective_name(config),
         "reward_mode": config["reward"]["mode"],
         "terminal_failure_penalty": config["reward"].get(

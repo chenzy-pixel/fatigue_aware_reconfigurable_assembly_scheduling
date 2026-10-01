@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 import time
 from copy import deepcopy
@@ -8,16 +9,20 @@ import numpy as np
 import pytest
 import torch
 
+import agent.ppo.parallel as parallel_module
 from agent.ppo import PPOAgent, build_actor_critic
 from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.parallel import (
     ParallelEpisodeRunner,
     ParallelWorkerError,
+    ParallelWorkerTimeout,
+    WorkerProgress,
+    WorkerResponse,
     _worker_roll_forward,
     physical_forced_action_from_mask,
 )
 from configs import load_config
-from data.dataset import OnlineInstanceDataset, load_dataset_split
+from data.dataset import OnlineInstanceDataset, load_dataset_split, build_dataset_split
 from environment import AssemblySchedulingEnv, RewardVector
 from eval import (
     EvaluationPolicy,
@@ -25,6 +30,13 @@ from eval import (
     evaluate_dataset_parallel,
     evaluate_instance,
 )
+
+
+def _prepare_bounded_validation(config, template, tmp_path, count):
+    # The reduced decision budget is a distinct environment contract.
+    config["paths"]["instances_root"] = str(tmp_path / "instances")
+    config["paths"]["manifests_root"] = str(tmp_path / "manifests")
+    build_dataset_split(config=config, template=template, split="validation", count=count)
 
 
 def _agent(config, instance):
@@ -209,6 +221,7 @@ def test_parallel_training_seeds_and_cleanup(
     config,
     fixed_instance,
     monkeypatch,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["training"]["worker_timeout_seconds"] = 120
@@ -224,6 +237,7 @@ def test_parallel_training_seeds_and_cleanup(
         template=fixed_instance,
         episode_count=2,
         worker_count=2,
+        diagnostic_directory=tmp_path,
     ) as runner:
         processes = list(runner._processes)
         rollout = runner.collect_training_batch(
@@ -265,6 +279,13 @@ def test_parallel_training_seeds_and_cleanup(
         )
     assert processes
     assert all(not process.is_alive() for process in processes)
+    events = _worker_events(tmp_path)
+    assert len(events) == 4
+    assert {event["event"] for event in events} == {"instance_start", "instance_end"}
+    endings = [event for event in events if event["event"] == "instance_end"]
+    assert all(event["terminal_reason"] == "step_limit" for event in endings)
+    assert all(event["environment_step_count"] == 1 for event in endings)
+    assert {event["seed"] for event in endings} == {1_000_000, 1_000_001}
 
 
 def test_training_collector_refills_two_lanes_for_five_episodes(config, fixed_instance):
@@ -544,10 +565,12 @@ def test_worker_local_rollout_matches_round_trip_compression(
 def test_parallel_validation_matches_serial_and_preserves_rng(
     config,
     fixed_instance,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["training"]["worker_timeout_seconds"] = 120
     effective_config["environment"]["max_decisions"] = 50
+    _prepare_bounded_validation(effective_config, fixed_instance, tmp_path, 2)
     agent = _agent(effective_config, fixed_instance)
     dataset = load_dataset_split(effective_config, "validation")
     processes = []
@@ -658,11 +681,13 @@ def test_mixed_preference_quality_rollout_uses_episode_contexts(
 def test_serial_and_parallel_ppo_preserve_the_same_preference(
     config,
     fixed_instance,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["device"] = "cpu"
     effective_config["environment"]["max_decisions"] = 50
     effective_config["training"]["worker_timeout_seconds"] = 120
+    _prepare_bounded_validation(effective_config, fixed_instance, tmp_path, 1)
     agent = _agent(effective_config, fixed_instance)
     agent.network.eval()
     record = load_dataset_split(effective_config, "validation")[0]
@@ -716,10 +741,12 @@ def test_serial_and_parallel_ppo_preserve_the_same_preference(
 def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
     config,
     fixed_instance,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["training"]["worker_timeout_seconds"] = 120
     effective_config["environment"]["max_decisions"] = 30
+    _prepare_bounded_validation(effective_config, fixed_instance, tmp_path, 10)
     agent = _agent(effective_config, fixed_instance)
     sampling_seed = 100011
     instance_limit = 10
@@ -795,9 +822,10 @@ def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
     assert torch.equal(torch.get_rng_state(), torch_state)
 
 
-def test_reference_validation_sampler_for_before_after_benchmark(config, fixed_instance):
+def test_reference_validation_sampler_for_before_after_benchmark(config, fixed_instance, tmp_path):
     effective = deepcopy(config)
     effective["environment"]["max_decisions"] = 5
+    _prepare_bounded_validation(effective, fixed_instance, tmp_path, 2)
     agent = _agent(effective, fixed_instance)
     agent.network.execution_mode = "reference_v8"
     records = [load_dataset_split(effective, "validation")[index] for index in range(2)]
@@ -815,6 +843,7 @@ def test_reference_validation_sampler_for_before_after_benchmark(config, fixed_i
 def test_parallel_worker_error_is_reported_and_all_workers_exit(
     config,
     fixed_instance,
+    tmp_path,
 ):
     effective_config = deepcopy(config)
     effective_config["training"]["worker_timeout_seconds"] = 30
@@ -824,14 +853,28 @@ def test_parallel_worker_error_is_reported_and_all_workers_exit(
         template=fixed_instance,
         episode_count=2,
         worker_count=2,
+        diagnostic_directory=tmp_path,
     ) as runner:
         processes = list(runner._processes)
+        runner._exchange({0: ("reset_instance", fixed_instance)})
         with pytest.raises(
             ParallelWorkerError,
             match="unknown worker command",
         ):
             runner._exchange({0: ("invalid-command", None)})
+        runner._exchange({1: ("reset_instance", fixed_instance)})
     assert all(not process.is_alive() for process in processes)
+    events = _worker_events(tmp_path)
+    assert [event["event"] for event in events] == [
+        "instance_start", "error", "instance_end", "instance_start", "instance_end",
+    ]
+    assert "unknown worker command" in events[1]["message"]
+    assert events[1]["traceback"]
+    assert events[1]["instance_id"] == fixed_instance.instance_id
+    assert events[2]["terminal_reason"] == "error"
+    assert events[0]["instance_task_id"] == events[2]["instance_task_id"]
+    assert events[-1]["terminal_reason"] == "runner_closed"
+    assert events[-1]["instance_task_id"] == events[-2]["instance_task_id"]
 
 
 def test_training_cache_manifest_and_worker_progress_are_persistent(
@@ -860,6 +903,16 @@ def test_training_cache_manifest_and_worker_progress_are_persistent(
     assert (run_directory / "training_instance_manifest.json").exists()
     assert (run_directory / "training_instance_manifest.sha256").exists()
     assert (run_directory / "worker_progress.jsonl").exists()
+    events = _worker_events(run_directory)
+    assert len(events) == 4
+    assert {event["event"] for event in events} == {"instance_start", "instance_end"}
+    for ending in (event for event in events if event["event"] == "instance_end"):
+        assert ending["terminal_reason"] == "generated"
+        assert ending["instance_id"]
+        assert ending["record_sha256"]
+        assert sum(event["event"] == "instance_start" and
+                   event["instance_task_id"] == ending["instance_task_id"]
+                   for event in events) == 1
 
     second_run = tmp_path / "second_run"
     with ParallelEpisodeRunner(
@@ -874,6 +927,156 @@ def test_training_cache_manifest_and_worker_progress_are_persistent(
     assert [entry["sha256"] for entry in first["files"]] == [
         entry["sha256"] for entry in second["files"]
     ]
+    assert all(event["cache_hit"] for event in _worker_events(second_run)
+               if event["event"] == "instance_end")
+
+
+def _worker_events(directory):
+    return [json.loads(line) for line in
+            (directory / "worker_progress.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_worker_step_debug_logging_preserves_sampled_trajectory(config, fixed_instance, tmp_path):
+    effective = deepcopy(config)
+    effective["environment"]["max_decisions"] = 5
+    effective["training"]["slow_instance_seconds"] = 120
+    _prepare_bounded_validation(effective, fixed_instance, tmp_path, 1)
+    record = load_dataset_split(effective, "validation")[0]
+    agent = _agent(effective, fixed_instance)
+    agent.network.eval()
+    rollouts = []
+    for debug in (False, True):
+        effective["logging"]["worker_progress"]["debug_steps"] = debug
+        directory = tmp_path / str(debug)
+        with ParallelEpisodeRunner(
+            config=effective, template=fixed_instance, episode_count=1,
+            worker_count=1, diagnostic_directory=directory,
+        ) as runner:
+            rollout = runner.evaluate_records(
+                agent, [record], max_parallelism=1, deterministic=False,
+                sampling_seed=100011,
+            )[0]
+        rollouts.append(rollout)
+        events = _worker_events(directory)
+        assert events[0]["event"] == "instance_start"
+        assert events[-1]["event"] == "instance_end"
+        assert events[0]["instance_task_id"] == events[-1]["instance_task_id"]
+        assert events[-1]["instance_id"] == record.instance.instance_id
+        assert events[-1]["environment_step_count"] == rollout.decisions
+        assert events[-1]["truncated"] == rollout.metrics["truncated"]
+        assert not any(event["event"] == "heartbeat" for event in events)
+        assert len([event for event in events if event["event"] == "response"]) == (
+            rollout.decisions if debug else 0
+        )
+    assert rollouts[0].action_trace_sha256 == rollouts[1].action_trace_sha256
+    assert rollouts[0].metrics == rollouts[1].metrics
+
+
+@pytest.mark.parametrize("debug", [False, True])
+@pytest.mark.parametrize("outcome,slow_seconds", [
+    ("completed", 100), ("completed", 0.1),
+    ("stall_timeout", 100), ("hard_timeout", 100),
+])
+def test_worker_heartbeats_stay_in_memory_and_preserve_timeouts(
+    config, tmp_path, monkeypatch, debug, outcome, slow_seconds,
+):
+    clock = {"seconds": 0.0, "waits": 0}
+    monkeypatch.setattr(parallel_module.time, "monotonic", lambda: clock["seconds"])
+
+    class FakeConnection:
+        def recv(self):
+            if outcome == "completed" and clock["waits"] == 4:
+                return WorkerResponse(lane_id=0, instance_id="generated")
+            return WorkerProgress(
+                lane_id=0, command="generate_online", timestamp=time.time(),
+                payload={"generation_attempt": clock["waits"]},
+            )
+
+    connection = FakeConnection()
+
+    def fake_wait(connections, *, timeout):
+        assert connections == [connection]
+        clock["waits"] += 1
+        if outcome == "stall_timeout" and clock["waits"] > 1:
+            clock["seconds"] += 1.1
+            return []
+        clock["seconds"] += 0.6
+        return [connection]
+
+    monkeypatch.setattr(parallel_module, "wait", fake_wait)
+    runner = object.__new__(ParallelEpisodeRunner)
+    runner.config = config
+    runner.diagnostic_directory = tmp_path
+    runner.debug_worker_steps = debug
+    runner.timeout_seconds = 3.0
+    runner.stall_timeout_seconds = 1.0
+    runner.slow_instance_seconds = slow_seconds
+    runner._connections = [connection]
+    runner._lane_command_started = {0: 0.0}
+    runner._lane_command_serial = {0: 1}
+    runner._lane_command_name = {0: "generate_online"}
+    runner._latest_progress = {}
+    runner._slow_command_serial = {}
+    runner._lane_instances = {}
+    runner._last_logged_error = None
+    runner._start_instance(0, ("generate_online", 0), 0.0)
+    if outcome == "completed":
+        assert runner._receive_responses([0])[0].instance_id == "generated"
+    else:
+        with pytest.raises(ParallelWorkerTimeout, match=outcome):
+            runner._receive_responses([0])
+    assert runner._latest_progress[0]["event"] == "heartbeat"
+    assert runner._latest_progress[0]["generation_attempt"] >= 1
+    assert runner._lane_instances == {}
+    assert len(runner._slow_command_serial) <= 1
+    events = _worker_events(tmp_path)
+    assert events[0]["event"] == "instance_start"
+    assert events[-1]["event"] == "instance_end"
+    assert not any(event["event"] == "heartbeat" for event in events)
+    if outcome != "completed":
+        error = next(event for event in events if event["event"] == "error")
+        assert error["error_type"] == "ParallelWorkerTimeout"
+        assert outcome in error["message"]
+        assert error["latest_progress"] == runner._latest_progress[0]
+        assert events[-1]["terminal_reason"] == "error"
+    slow_events = [event for event in events if event["event"] == "slow_task"]
+    assert len(slow_events) == (1 if slow_seconds == 0.1 else 0)
+    if slow_events:
+        assert len((tmp_path / "slow_instances.jsonl").read_text().splitlines()) == 1
+
+
+def test_worker_debug_steps_requires_boolean(config, fixed_instance):
+    effective = deepcopy(config)
+    effective["logging"]["worker_progress"]["debug_steps"] = "false"
+    with pytest.raises(ValueError, match="debug_steps must be boolean"):
+        ParallelEpisodeRunner(
+            config=effective, template=fixed_instance, episode_count=1, worker_count=1,
+        )
+
+
+@pytest.mark.parametrize("already_recorded", [False, True])
+def test_runner_logs_parent_exception_once_even_without_an_active_instance(tmp_path, already_recorded):
+    runner = object.__new__(ParallelEpisodeRunner)
+    runner.diagnostic_directory = tmp_path
+    runner._lane_instances = {}
+    runner._lane_command_name = {}
+    runner._lane_command_serial = {}
+    runner._latest_progress = {}
+    runner._last_logged_error = None
+    closed = []
+    runner.close = lambda *, force: closed.append(force)
+    try:
+        raise ParallelWorkerError("incomplete rollout")
+    except ParallelWorkerError as error:
+        if already_recorded:
+            runner._record_worker_error(None, error)
+        runner.__exit__(type(error), error, error.__traceback__)
+    events = _worker_events(tmp_path)
+    assert len(events) == 1
+    assert events[0]["event"] == "error"
+    assert events[0]["lane"] is None
+    assert "incomplete rollout" in events[0]["traceback"]
+    assert closed == [True]
 
 
 @pytest.mark.slow
@@ -904,6 +1107,6 @@ def test_training_indices_220_239_repeat_three_times_with_twenty_workers(
         for report in reports
     ]
     assert hashes[0] == hashes[1] == hashes[2]
-    assert all(report["generator_version"] == "1.3.0" for report in reports)
+    assert all(report["generator_version"] == "2.0.0" for report in reports)
     assert reports[1]["cache_hit_count"] == 20
     assert reports[2]["cache_hit_count"] == 20

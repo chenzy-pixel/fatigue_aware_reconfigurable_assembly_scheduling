@@ -13,6 +13,7 @@ def test_generated_record_is_reproducible_and_template_is_unchanged(
     first = pressure_records["balanced"]
     second = instance_generator.generate(
         seed=1000001,
+        run_diagnostics=True,
         split="train",
         pressure_type="balanced",
     )

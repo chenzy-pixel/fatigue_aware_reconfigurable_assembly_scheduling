@@ -2,3 +2,9 @@
 data/instances/**/*.json -text
 # Preserve byte hashes in frozen normalization manifests.
 configs/manifests/*.json -text
+# Match the preserved v1 byte hashes on every platform.
+data/instances/fixed_instance.yaml text eol=crlf
+data/manifests/*/manifest.json text eol=crlf
+# Preserve v2 manifests, selections and original configuration snapshot bytes.
+data/manifests/v2/** -text whitespace=cr-at-eol
+configs/archive/*.json -text whitespace=cr-at-eol

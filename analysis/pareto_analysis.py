@@ -159,8 +159,10 @@ def valid_candidate(row: Mapping[str, Any]) -> bool:
 
 
 def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    from data.distribution import protocol_hashes
     scalarizer = config["objective_scalarizer"]
     required = {
+        **protocol_hashes(config),
         "result_schema_version": EVALUATION_SCHEMA_VERSION,
         "experiment_suite_version": config["experiment_suite_version"],
         "reward_version": config["reward"]["mode"],
@@ -178,7 +180,7 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
         value = float(row[field])
         if not math.isfinite(value) or not math.isclose(value, expected, rel_tol=1e-12, abs_tol=1e-12):
             raise ValueError(f"candidate {field} does not match the current experiment")
-    for field in ("dataset", "algorithm_seed", "instance_id", "schedule_violation_count", "maximum_worker_fatigue", "safe_fatigue_limit"):
+    for field in ("dataset", "algorithm_seed", "instance_id", "schedule_violation_count", "maximum_worker_fatigue", "safe_fatigue_limit", "dataset_manifest_sha256", "subset_sha256"):
         if row.get(field) in {None, ""}:
             raise ValueError(f"candidate is missing {field}")
     if row["arm"] == "ppo":
@@ -217,6 +219,11 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
         groups[(str(row["dataset"]), int(row["algorithm_seed"]), str(row["instance_id"]))].append(row)
     if not groups:
         raise ValueError("no candidate rows were supplied")
+    for dataset_name in {key[0] for key in groups}:
+        selected = [row for key, group in groups.items() if key[0] == dataset_name for row in group]
+        for field in ("dataset_manifest_sha256", "subset_sha256"):
+            if len({row[field] for row in selected}) != 1:
+                raise ValueError(f"cannot analyze different {field} within {dataset_name}")
     required_arms = tuple(arms) if arms is not None else tuple(sorted({row["arm"] for group in groups.values() for row in group}))
     annotated, instance_summary = [], []
     formal = config["training"]["formal_evaluation"]

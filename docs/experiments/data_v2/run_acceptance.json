@@ -1,0 +1,65 @@
+{
+  "legacy_files_verified": 565,
+  "runs": {
+    "original_course": {
+      "best_episode": 400,
+      "evaluation_checks": {
+        "final_sampled_instance_metrics.csv": {
+          "cell_count": 1320,
+          "feasibility_counts": {
+            "observed_feasible": 1254,
+            "unknown": 66
+          },
+          "instance_count": 20
+        },
+        "sampled_diagnostic_instance_metrics.csv": {
+          "cell_count": 91,
+          "feasibility_counts": {
+            "observed_feasible": 91
+          },
+          "instance_count": 7
+        },
+        "sampled_validation_instance_metrics.csv": {
+          "cell_count": 520,
+          "feasibility_counts": {
+            "observed_feasible": 520
+          },
+          "instance_count": 20
+        }
+      },
+      "passed": true,
+      "subset_sha256": "a1003e2c5e5acc57bd164849b807e8c2d0d823633ce85685703c14dfbf8a81c6",
+      "training_episode_count": 400
+    },
+    "progressive_course": {
+      "best_episode": 400,
+      "evaluation_checks": {
+        "final_sampled_instance_metrics.csv": {
+          "cell_count": 1320,
+          "feasibility_counts": {
+            "observed_feasible": 1254,
+            "unknown": 66
+          },
+          "instance_count": 20
+        },
+        "sampled_diagnostic_instance_metrics.csv": {
+          "cell_count": 91,
+          "feasibility_counts": {
+            "observed_feasible": 91
+          },
+          "instance_count": 7
+        },
+        "sampled_validation_instance_metrics.csv": {
+          "cell_count": 520,
+          "feasibility_counts": {
+            "observed_feasible": 520
+          },
+          "instance_count": 20
+        }
+      },
+      "passed": true,
+      "subset_sha256": "a1003e2c5e5acc57bd164849b807e8c2d0d823633ce85685703c14dfbf8a81c6",
+      "training_episode_count": 400
+    }
+  }
+}

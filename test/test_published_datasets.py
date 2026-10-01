@@ -16,6 +16,6 @@ def test_published_development_split_contract(config, split):
         range(start, start + expected_count)
     )
     assert len({record.instance.instance_id for record in records}) == expected_count
-    assert dataset.manifest["schema_version"] == "1.2.0"
-    assert dataset.manifest["generator_version"] == "1.3.0"
+    assert dataset.manifest["schema_version"] == "2.0.0"
+    assert dataset.manifest["generator_version"] == "2.0.0"
     assert dataset.manifest["template_instance"] == "fixed_15x4_v1"

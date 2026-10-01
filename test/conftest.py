@@ -61,6 +61,7 @@ def pressure_records(instance_generator):
             seed=1000000 + index,
             split="train",
             pressure_type=pressure_type,
+            run_diagnostics=True,
         )
         for index, pressure_type in enumerate(PRESSURE_TYPES)
     }

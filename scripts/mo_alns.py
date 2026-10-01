@@ -15,6 +15,7 @@ from configs import load_config, project_path
 from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
+from data.selection import resolve_instance_indices, subset_snapshot
 from environment import CANONICAL_PREFERENCE, PreferenceVector, simplex_lattice
 from environment.types import proxy_return_from_metrics
 from eval import build_evaluation_row
@@ -201,6 +202,8 @@ def run_mo_alns_dataset(
     dataset_name: str,
     algorithm_seed: int,
     instance_limit: int | None = None,
+    instance_offset: int | None = None,
+    instance_indices: Sequence[int] | None = None,
     preferences: Sequence[PreferenceVector] | None = None,
     parallel_envs: int | None = None,
 ) -> dict[str, Any]:
@@ -211,10 +214,10 @@ def run_mo_alns_dataset(
     effective_config = deepcopy(dict(config))
     effective_config["seed"] = validate_algorithm_seed(effective_config, int(algorithm_seed))
     dataset = load_dataset_split(effective_config, dataset_name)
-    count = len(dataset) if instance_limit is None else int(instance_limit)
-    if count < 1 or count > len(dataset):
-        raise ValueError(f"instance_limit must be in [1, {len(dataset)}]")
-    records = [dataset[index] for index in range(count)]
+    indices = resolve_instance_indices(dataset, instance_indices=instance_indices,
+        instance_offset=instance_offset, instance_limit=instance_limit)
+    count = len(indices)
+    records = [dataset[index] for index in indices]
     points = tuple(mo_alns_preference_grid(effective_config, "validation" if dataset_name == "validation" else "final_test") if preferences is None else preferences)
     if not points:
         raise ValueError("at least one preference is required")
@@ -247,6 +250,9 @@ def run_mo_alns_dataset(
         key=lambda value: (str(value["instance_id"]), str(value["candidate_id"])),
     )
     manifest = str(dataset.manifest_path)
+    selection = subset_snapshot(dataset, indices, role="evaluation")
+    for row in rows:
+        row.update(subset_sha256=selection["subset_sha256"], dataset_manifest_sha256=selection["dataset_manifest_sha256"])
     aggregate = aggregate_evaluation_rows(
         rows,
         dataset=dataset_name,
@@ -264,6 +270,8 @@ def run_mo_alns_dataset(
             * int(effective_config.get("mo_alns", {}).get("max_evaluations_per_preference", 300)),
             "dataset_manifest_sha256": dataset_manifest_snapshot(dataset.manifest_path)["sha256"],
             "parallel_envs": workers,
+            "instance_indices": indices,
+            "subset_sha256": selection["subset_sha256"],
             "archive_entry_count": sum(len(result["archive"]) for result in results),
         }
     )

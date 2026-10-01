@@ -14,6 +14,7 @@ import torch
 from configs.config import PROJECT_ROOT, project_path, public_config
 from configs.formal_preferences import formal_preferences
 from data.dataset import canonical_json_bytes, sha256_file, template_sha256
+from data.distribution import protocol_hashes
 from data.models import load_instance_yaml
 from result.metrics import (
     evaluation_quality_metric,
@@ -198,6 +199,7 @@ def build_provenance(
     checkpoint_path: str | Path | None = None,
     checkpoint_metadata: Mapping[str, Any] | None = None,
     formal_evaluation_stage: str | None = None,
+    evaluation_subset_sha256: str | None = None,
     root: str | Path = PROJECT_ROOT,
 ) -> dict[str, Any]:
     source = source_state_snapshot(root)
@@ -226,6 +228,9 @@ def build_provenance(
             )
     provenance: dict[str, Any] = {
         "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
+        **protocol_hashes(config),
+        "evaluation_subset_sha256": evaluation_subset_sha256,
+        "checkpoint_validation_subset_sha256": None if checkpoint_metadata is None else checkpoint_metadata.get("validation_subset_sha256"),
         "source_state_sha256": source["sha256"],
         "source_file_count": source["file_count"],
         "effective_config_sha256": effective["sha256"],

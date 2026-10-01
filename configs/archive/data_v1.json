@@ -1,0 +1,611 @@
+{
+  "experiment_name": "v8_universal",
+  "experiment_suite_version": "single_stage_progress_quality_failure_v2",
+  "method_version": "M1_hgnn_objective_experts_v8",
+  "seed": 11,
+  "algorithm_seeds": [
+    11,
+    23,
+    37,
+    53,
+    71
+  ],
+  "device": "cuda",
+  "paths": {
+    "fixed_instance": "data/instances/fixed_instance.yaml",
+    "instance_cache": "data/instances/fixed_15x4_v1.pkl",
+    "manifests_root": "data/manifests",
+    "instances_root": "data/instances",
+    "result_root": "result/runs",
+    "training_instances_cache": "data/instances/train_cache"
+  },
+  "dataset": {
+    "schema_version": "1.2.0",
+    "template_instance": "fixed_15x4_v1",
+    "profiles": {
+      "dev": {
+        "validation": 20,
+        "test": 20,
+        "ood": 20,
+        "stress": 20
+      },
+      "publication": {
+        "validation": 500,
+        "test": 1000,
+        "ood": 500,
+        "stress": 500
+      }
+    },
+    "splits": {
+      "train": {
+        "seed_start": 1000000,
+        "seed_end": 2000000,
+        "persist": false
+      },
+      "validation": {
+        "seed_start": 2000000,
+        "seed_end": 3000000,
+        "persist": true
+      },
+      "test": {
+        "seed_start": 3000000,
+        "seed_end": 4000000,
+        "persist": true
+      },
+      "ood": {
+        "seed_start": 4000000,
+        "seed_end": 5000000,
+        "persist": true
+      },
+      "stress": {
+        "seed_start": 5000000,
+        "seed_end": 6000000,
+        "persist": true
+      }
+    }
+  },
+  "generator": {
+    "version": "1.3.0",
+    "max_generation_attempts": 100,
+    "max_counterfactual_candidates": 3,
+    "wave_count": 3,
+    "processing_time": [
+      8,
+      14
+    ],
+    "initial_fatigue": [
+      0.05,
+      0.15
+    ],
+    "processing_factor_local": [
+      0.95,
+      1.05
+    ],
+    "reconfiguration_factor_local": [
+      0.9,
+      1.1
+    ],
+    "cost_factor_local": [
+      0.9,
+      1.1
+    ],
+    "cost_profile_weights": {
+      "balanced_cost": 0.4,
+      "downtime_dominant": 0.2,
+      "labor_dominant": 0.2,
+      "fixed_cost_dominant": 0.2
+    },
+    "dataset_pressure_weights": {
+      "balanced": 0.35,
+      "machine_bottleneck": 0.15,
+      "reconfiguration_bottleneck": 0.15,
+      "worker_bottleneck": 0.1,
+      "fatigue_bottleneck": 0.1,
+      "high_arrival_pressure": 0.1,
+      "easy": 0.05
+    },
+    "pressure_profiles": {
+      "easy": {
+        "order_count": [
+          12,
+          14
+        ],
+        "operations_per_order": [
+          3,
+          4
+        ],
+        "dominant_module_share": [
+          0.6,
+          0.68
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.08
+          ],
+          [
+            0.25,
+            0.32
+          ],
+          [
+            0.5,
+            0.57
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.85,
+          1.0
+        ]
+      },
+      "balanced": {
+        "order_count": [
+          12,
+          18
+        ],
+        "operations_per_order": [
+          3,
+          5
+        ],
+        "dominant_module_share": [
+          0.62,
+          0.72
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.2
+          ],
+          [
+            0.2,
+            0.45
+          ],
+          [
+            0.45,
+            0.7
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ]
+      },
+      "machine_bottleneck": {
+        "order_count": [
+          16,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.7,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.12
+          ],
+          [
+            0.15,
+            0.3
+          ],
+          [
+            0.32,
+            0.48
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ]
+      },
+      "reconfiguration_bottleneck": {
+        "order_count": [
+          15,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.12
+          ],
+          [
+            0.18,
+            0.3
+          ],
+          [
+            0.35,
+            0.48
+          ]
+        ],
+        "reconfiguration_scale": [
+          1.2,
+          1.6
+        ]
+      },
+      "worker_bottleneck": {
+        "order_count": [
+          15,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.04
+          ],
+          [
+            0.08,
+            0.12
+          ],
+          [
+            0.16,
+            0.22
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.95,
+          1.1
+        ]
+      },
+      "fatigue_bottleneck": {
+        "order_count": [
+          15,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.65,
+          0.75
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.04
+          ],
+          [
+            0.08,
+            0.12
+          ],
+          [
+            0.16,
+            0.22
+          ]
+        ],
+        "reconfiguration_scale": [
+          1.1,
+          1.3
+        ]
+      },
+      "high_arrival_pressure": {
+        "order_count": [
+          16,
+          18
+        ],
+        "operations_per_order": [
+          4,
+          5
+        ],
+        "dominant_module_share": [
+          0.6,
+          0.7
+        ],
+        "release_windows": [
+          [
+            0.0,
+            0.04
+          ],
+          [
+            0.07,
+            0.11
+          ],
+          [
+            0.14,
+            0.18
+          ]
+        ],
+        "reconfiguration_scale": [
+          0.9,
+          1.1
+        ]
+      }
+    },
+    "acceptance": {
+      "machine_min_module_load": 0.35,
+      "reconfiguration_min_ready_gap": 0.5,
+      "reconfiguration_min_ratio": 0.25,
+      "arrival_min_overlap": 0.5,
+      "max_heuristic_makespan_minutes": 240.0
+    },
+    "ood": {
+      "factors": [
+        "processing_time_heterogeneity",
+        "reconfiguration_time_scale",
+        "arrival_overlap",
+        "worker_qualification_sparsity",
+        "initial_fatigue",
+        "module_demand_imbalance"
+      ]
+    },
+    "stress": {
+      "max_truncated_fraction": 0.2
+    },
+    "curriculum": {
+      "mode": "linear",
+      "anchors": [
+        {
+          "at_fraction": 0.0,
+          "weights": {
+            "easy": 0.3,
+            "balanced": 0.5,
+            "machine_bottleneck": 0.04,
+            "reconfiguration_bottleneck": 0.04,
+            "worker_bottleneck": 0.04,
+            "fatigue_bottleneck": 0.04,
+            "high_arrival_pressure": 0.04
+          }
+        },
+        {
+          "at_fraction": 0.2,
+          "weights": {
+            "easy": 0.3,
+            "balanced": 0.5,
+            "machine_bottleneck": 0.04,
+            "reconfiguration_bottleneck": 0.04,
+            "worker_bottleneck": 0.04,
+            "fatigue_bottleneck": 0.04,
+            "high_arrival_pressure": 0.04
+          }
+        },
+        {
+          "at_fraction": 0.55,
+          "weights": {
+            "easy": 0.1,
+            "balanced": 0.4,
+            "machine_bottleneck": 0.1,
+            "reconfiguration_bottleneck": 0.1,
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
+          }
+        },
+        {
+          "at_fraction": 0.8,
+          "weights": {
+            "easy": 0.05,
+            "balanced": 0.35,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
+          }
+        },
+        {
+          "at_fraction": 1.0,
+          "weights": {
+            "easy": 0.05,
+            "balanced": 0.35,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
+          }
+        }
+      ]
+    }
+  },
+  "environment": {
+    "max_decisions": 5000,
+    "max_zero_time_actions": 1000
+  },
+  "preference": {
+    "quality": {
+      "mode": "universal_sobol_v1",
+      "fixed": [
+        0.3333333333333333,
+        0.3333333333333333,
+        0.3333333333333334
+      ],
+      "block_size": 20,
+      "endpoint_repeats": 2,
+      "sobol_count": 14
+    }
+  },
+  "objective_scalarizer": {
+    "type": "normalized_augmented_tchebycheff_v1",
+    "rho": 0.05,
+    "scale_source": "frozen_manifest",
+    "scales": {
+      "cost": 386.674652792805,
+      "flow": 1152.2093959731544,
+      "variance": 4.937746913580247
+    },
+    "normalization_manifest": "configs/manifests/e1_tail5_scales_20260928.json",
+    "normalization_manifest_sha256": "23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b"
+  },
+  "reward": {
+    "mode": "single_stage_progress_quality_failure_v2",
+    "terminal_failure_penalty": 1.0,
+    "feasibility_shaping": {
+      "enabled": false
+    }
+  },
+  "evaluation": {
+    "result_schema_version": "7.0.0",
+    "quality_metric": {
+      "version": "canonical_bounded_quality_v1",
+      "flow_scale": 1200.0,
+      "cost_scale": 1000.0,
+      "variance_scale": 50.0,
+      "quality_weights": {
+        "flow": 0.5,
+        "cost": 0.3,
+        "variance": 0.2
+      }
+    }
+  },
+  "network": {
+    "hidden_dim": 128,
+    "message_passing_layers": 2,
+    "dropout": 0.0,
+    "policy_head_version": 8,
+    "residual_gate_initial_logit": 0.0,
+    "residual_std_floor": 0.001,
+    "worker_flow_time_normalization": "candidate_zscore_v1",
+    "worker_flow_time_std_floor": 0.001
+  },
+  "ppo": {
+    "learning_rate": 0.0001,
+    "gamma": 1.0,
+    "gae_lambda": 0.95,
+    "clip_epsilon": 0.2,
+    "epochs": 2,
+    "batch_size": 64,
+    "value_coefficient": 0.5,
+    "entropy_coefficient": 0.01,
+    "max_grad_norm": 0.5
+  },
+  "training": {
+    "online_instances": true,
+    "episodes": 2000,
+    "smoke_episodes": 2,
+    "smoke_rollout_steps": 64,
+    "validation_split": "validation",
+    "validation_interval_episodes": 100,
+    "validation_instance_limit": 50,
+    "smoke_validation_instance_limit": 2,
+    "parallel_envs": 20,
+    "smoke_parallel_envs": 2,
+    "validation_parallel_envs": 20,
+    "forced_action_compression": false,
+    "worker_local_physical_forced_actions": true,
+    "formal_evaluation": {
+      "decode_mode": "sampled",
+      "temperature": 1.0,
+      "validation_seed_offset": 100000,
+      "validation_repeats": 3,
+      "final_test_seed_offset": 300000,
+      "final_test_repeats": 3,
+      "validation_preferences": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.5,
+          0.5,
+          0.0
+        ],
+        [
+          0.5,
+          0.0,
+          0.5
+        ],
+        [
+          0.0,
+          0.5,
+          0.5
+        ],
+        [
+          0.3333333333333333,
+          0.3333333333333333,
+          0.3333333333333333
+        ],
+        [
+          0.6,
+          0.3,
+          0.1
+        ],
+        [
+          0.6,
+          0.1,
+          0.3
+        ],
+        [
+          0.3,
+          0.6,
+          0.1
+        ],
+        [
+          0.3,
+          0.1,
+          0.6
+        ],
+        [
+          0.1,
+          0.6,
+          0.3
+        ],
+        [
+          0.1,
+          0.3,
+          0.6
+        ]
+      ],
+      "final_test_lattice_denominator": 10
+    },
+    "validation_control": {
+      "learning_rate_plateau": {
+        "patience_validations": 15,
+        "factor": 0.5,
+        "minimum": 2.5e-05
+      }
+    },
+    "worker_timeout_seconds": 600,
+    "worker_stall_timeout_seconds": 60,
+    "slow_instance_seconds": 30,
+    "multiprocessing_start_method": "spawn",
+    "torch_num_threads": 4,
+    "policy_execution_version": "phase_batched_v1",
+    "policy_precision": "float32"
+  },
+  "logging": {
+    "visdom": {
+      "enabled": false,
+      "server": "http://localhost",
+      "port": 8097,
+      "base_url": "/",
+      "env_prefix": "fatigue_assembly",
+      "connection_timeout_seconds": 2.0,
+      "fail_fast": false,
+      "update_every": 1,
+      "rolling_window_updates": 20,
+      "diagnostic_every_validations": 5,
+      "representative_instance_index": 0,
+      "save_environment": true
+    }
+  }
+}

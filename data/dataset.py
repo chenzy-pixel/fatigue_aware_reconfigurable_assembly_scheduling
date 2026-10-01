@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 import math
 import os
 import random
 import re
 import shutil
 import uuid
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -18,6 +20,7 @@ from data.models import (
     load_instance_yaml,
     parse_instance_dict,
 )
+from data.distribution import PRESSURE_TYPES, protocol_hashes, training_sampling_plan, weighted_labels
 from data.feasibility import PRECHECK_VERSION
 
 
@@ -300,12 +303,15 @@ class InstanceDataset(Sequence[GeneratedInstanceRecord]):
         expected_template_instance: str | None = None,
         expected_template_sha256: str | None = None,
         expected_seed_range: tuple[int, int] | None = None,
+        expected_protocol_hashes: dict[str, str] | None = None,
     ):
         self.manifest_path = Path(manifest_path)
         self.instances_root = Path(instances_root)
         with self.manifest_path.open("r", encoding="utf-8") as handle:
             self.manifest: dict[str, Any] = json.load(handle)
         missing = MANIFEST_REQUIRED_KEYS - set(self.manifest)
+        if self.manifest.get("schema_version") == "2.0.0":
+            missing |= (set(protocol_hashes_keys()) | {"generation_summary"}) - set(self.manifest)
         if missing:
             raise ValueError(f"manifest is missing fields: {sorted(missing)}")
         split = str(self.manifest["split"])
@@ -316,6 +322,13 @@ class InstanceDataset(Sequence[GeneratedInstanceRecord]):
                 f"manifest split mismatch: expected {expected_split}, got {split}"
             )
         self.split = split
+        self.protocol_hashes = {key: self.manifest.get(key) for key in protocol_hashes_keys()}
+        if self.manifest["schema_version"] == "2.0.0":
+            for key, digest in self.protocol_hashes.items():
+                _validate_sha256(digest, f"manifest.{key}")
+        for key, expected in (expected_protocol_hashes or {}).items():
+            if self.manifest.get(key) != expected:
+                raise ValueError(f"manifest {key} mismatch")
         checks = (
             ("schema_version", expected_schema_version),
             ("generator_version", expected_generator_version),
@@ -402,6 +415,16 @@ class InstanceDataset(Sequence[GeneratedInstanceRecord]):
                     f"instance metadata {field} mismatch for {source}: "
                     f"expected {expected}, got {record.metadata.get(field)}"
                 )
+        for key, expected in self.protocol_hashes.items():
+            if expected is not None and record.metadata.get(key) != expected:
+                raise ValueError(f"record {key} mismatch")
+        if self.manifest["schema_version"] == "2.0.0":
+            metadata = record.metadata
+            if (metadata.get("severity") != 1.0
+                    or metadata.get("feasibility_status") not in {"observed_feasible", "unknown"}
+                    or metadata.get("diagnostic_status") not in {"not_run", "completed", "truncated"}
+                    or "diagnostic_terminal_reason" not in metadata):
+                raise ValueError("record has invalid v2 metadata")
         return record
 
     def __iter__(self) -> Iterator[GeneratedInstanceRecord]:
@@ -503,6 +526,8 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
         if self.episode_count > end - start:
             raise ValueError("episode_count exceeds the train seed range")
         self.seed_start = start
+        self.sampling_plan = training_sampling_plan(config, self.episode_count)
+        self.protocol_hashes = protocol_hashes(config)
         self.generator = InstanceGenerator(
             template,
             config["generator"],
@@ -547,7 +572,7 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
 
     def _generation_spec(
         self, index: int
-    ) -> tuple[int, str, Path]:
+    ) -> tuple[int, str, Path, float]:
         if isinstance(index, slice):
             raise TypeError("OnlineInstanceDataset does not support slicing")
         if index < 0:
@@ -555,21 +580,10 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
         if index < 0 or index >= self.episode_count:
             raise IndexError(index)
         seed = self.seed_start + index
-        progress = index / max(1, self.episode_count)
-        weights = curriculum_weights_at(
-            self.config["generator"]["curriculum"],
-            progress,
-        )
-        chooser = random.Random(seed)
-        pressure_type = chooser.choices(
-            list(weights),
-            weights=[float(weights[name]) for name in weights],
-            k=1,
-        )[0]
+        pressure_type, severity = self.sampling_plan[index]
         return (
-            seed,
-            pressure_type,
-            self.cache_directory / f"instance_{seed}.json",
+            seed, pressure_type,
+            self.cache_directory / f"instance_{seed}.json", severity,
         )
 
     def _training_cache_record_matches(
@@ -578,6 +592,7 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
         *,
         seed: int,
         pressure_type: str,
+        severity: float,
     ) -> bool:
         metadata = record.metadata
         precheck = metadata.get("feasibility_precheck")
@@ -589,6 +604,8 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             "split": "train",
             "seed": seed,
             "pressure_type": pressure_type,
+            "severity": round(severity, 10),
+            **self.protocol_hashes,
             "training_cache_fingerprint": self.config_fingerprint,
             "generator_environment_precheck_config_hash": (
                 self.generator_environment_precheck_config_hash
@@ -599,15 +616,15 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             and isinstance(precheck, dict)
             and precheck.get("version") == PRECHECK_VERSION
             and precheck.get("passed") is True
-            and isinstance(heuristic, dict)
-            and "wait_action_count" in heuristic
-            and "wait_reason_counts" in heuristic
+            and metadata.get("diagnostic_status") in {"not_run", "completed", "truncated"}
+            and metadata.get("feasibility_status") in {"unknown", "observed_feasible"}
+            and (heuristic is None or isinstance(heuristic, dict))
         )
 
     def get_with_cache_info(
         self, index: int
     ) -> tuple[GeneratedInstanceRecord, bool, str, Path]:
-        seed, pressure_type, destination = self._generation_spec(index)
+        seed, pressure_type, destination, severity = self._generation_spec(index)
         if destination.exists():
             try:
                 cached = load_generated_record(destination)
@@ -615,6 +632,7 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
                     cached,
                     seed=seed,
                     pressure_type=pressure_type,
+                    severity=severity,
                 ):
                     return cached, True, sha256_file(destination), destination
             except (OSError, UnicodeError, TypeError, ValueError):
@@ -625,6 +643,7 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             split="train",
             pressure_type=pressure_type,
             classify_reconfiguration_value=False,
+            severity=severity,
         )
         metadata = {
             **generated.metadata,
@@ -635,40 +654,11 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
         }
         record = GeneratedInstanceRecord(generated.instance, metadata)
         digest = save_generated_record_atomic(record, destination)
-        return record, False, digest, destination
+        return load_generated_record(destination), False, digest, destination
 
 
-def _weighted_labels(
-    count: int,
-    weights: dict[str, float],
-) -> list[str]:
-    if count < 1:
-        raise ValueError("count must be positive")
-    if not weights or any(float(value) < 0 for value in weights.values()):
-        raise ValueError("weights must be non-empty and non-negative")
-    total = sum(float(value) for value in weights.values())
-    if total <= 0:
-        raise ValueError("weights must have positive total")
-    names = list(weights)
-    exact = {
-        name: count * float(weights[name]) / total
-        for name in names
-    }
-    quotas = {name: int(math.floor(exact[name])) for name in names}
-    remaining = count - sum(quotas.values())
-    ranked = sorted(
-        names,
-        key=lambda name: (-(exact[name] - quotas[name]), names.index(name)),
-    )
-    for name in ranked[:remaining]:
-        quotas[name] += 1
-    labels: list[str] = []
-    while len(labels) < count:
-        for name in names:
-            if quotas[name] > 0:
-                labels.append(name)
-                quotas[name] -= 1
-    return labels
+def _weighted_labels(count: int, weights: dict[str, float]) -> list[str]:
+    return weighted_labels(count, weights)
 
 
 def _record_matches_build(
@@ -688,6 +678,8 @@ def _record_matches_build(
         "seed": seed,
         "pressure_type": pressure_type,
         "ood_factor": ood_factor,
+        "severity": 1.0,
+        **protocol_hashes(generator.config, generator.settings),
     }
     return all(record.metadata.get(key) == value for key, value in expected.items())
 
@@ -737,6 +729,18 @@ def _publish_split(
         shutil.rmtree(instance_backup)
 
 
+def _generate_dataset_record(config, template, split, seed, pressure_type, ood_factor, destination):
+    from data.generate_orders import InstanceGenerator
+    import torch
+    torch.set_num_threads(1)
+    try:
+        record = InstanceGenerator(template, config["generator"], config=config).generate(
+            seed=seed, split=split, pressure_type=pressure_type, ood_factor=ood_factor)
+        save_generated_record_atomic(record, destination)
+    except Exception as error:
+        raise RuntimeError(f"dataset generation failed: split={split}, seed={seed}: {error}") from error
+
+
 def build_dataset_split(
     *,
     config: dict[str, Any],
@@ -748,6 +752,7 @@ def build_dataset_split(
     manifests_root: str | Path | None = None,
     overwrite: bool = False,
     resume: bool = True,
+    generation_workers: int = 1,
 ) -> Path:
     from configs import project_path
     from data.generate_orders import InstanceGenerator
@@ -758,6 +763,8 @@ def build_dataset_split(
         profile=profile,
         count=count,
     )
+    if generation_workers < 1:
+        raise ValueError("generation_workers must be positive")
     instance_root = (
         project_path(config["paths"]["instances_root"])
         if instances_root is None
@@ -783,7 +790,7 @@ def build_dataset_split(
     seed_start, _ = split_seed_range(config, split)
     build_key = (
         f"{split}_{generator.version}_{generator.template_hash[:12]}_"
-        f"{seed_start}_{effective_count}"
+        f"{seed_start}_{effective_count}_{protocol_hashes(config)['distribution_contract_sha256'][:12]}"
     )
     build_instances = instance_root / ".build" / build_key
     if build_instances.exists() and not resume:
@@ -806,8 +813,33 @@ def build_dataset_split(
         )
         factors = [None] * effective_count
 
+    if generation_workers > 1:
+        with ProcessPoolExecutor(max_workers=min(generation_workers, effective_count)) as pool:
+            futures = []
+            for index, (pressure_type, ood_factor) in enumerate(zip(profiles, factors, strict=True)):
+                seed = seed_start + index
+                destination = build_instances / f"instance_{seed}.json"
+                if destination.exists() and resume:
+                    try:
+                        if _record_matches_build(load_generated_record(destination), generator=generator,
+                                split=split, seed=seed, pressure_type=pressure_type, ood_factor=ood_factor):
+                            continue
+                    except (OSError, UnicodeError, TypeError, ValueError):
+                        pass
+                futures.append(pool.submit(_generate_dataset_record, config, template, split, seed,
+                    pressure_type, ood_factor, destination))
+            for completed, future in enumerate(as_completed(futures), start=1):
+                try:
+                    future.result()  # Diagnostic errors abort; they never resample.
+                except Exception:
+                    for pending in futures:
+                        pending.cancel()
+                    raise
+                if completed % 50 == 0 or completed == len(futures):
+                    print(f"[{split}] generated {completed}/{len(futures)} pending records", flush=True)
+
     entries: list[dict[str, Any]] = []
-    truncated_count = 0
+    summaries = {name: Counter() for name in ("pressure_counts", "diagnostic_counts", "feasibility_counts", "static_rejection_reasons")}
     for index, (pressure_type, ood_factor) in enumerate(
         zip(profiles, factors)
     ):
@@ -816,7 +848,7 @@ def build_dataset_split(
         filename = f"instance_{seed}.json"
         destination = build_instances / filename
         record: GeneratedInstanceRecord | None = None
-        if destination.exists() and resume:
+        if destination.exists() and (resume or generation_workers > 1):
             try:
                 candidate = load_generated_record(destination)
                 if _record_matches_build(
@@ -829,8 +861,12 @@ def build_dataset_split(
                 ):
                     record = candidate
                 else:
+                    if generation_workers > 1:
+                        raise RuntimeError("parallel build produced a mismatching instance")
                     destination.unlink()
             except (OSError, UnicodeError, TypeError, ValueError):
+                if generation_workers > 1:
+                    raise
                 destination.unlink()
         if record is None:
             record = generator.generate(
@@ -842,22 +878,13 @@ def build_dataset_split(
             digest = save_generated_record_atomic(record, destination)
         else:
             digest = sha256_file(destination)
-        truncated_count += int(
-            bool(record.metadata["heuristic_metrics"]["heuristic_truncated"])
-        )
+        summaries["pressure_counts"][record.metadata["pressure_type"]] += 1
+        summaries["diagnostic_counts"][record.metadata["diagnostic_status"]] += 1
+        summaries["feasibility_counts"][record.metadata["feasibility_status"]] += 1
+        summaries["static_rejection_reasons"].update(record.metadata["generation_rejection_reasons"])
         entries.append(
             {"seed": seed, "path": filename, "sha256": digest}
         )
-
-    if split == "stress":
-        maximum = float(
-            generator_config["stress"]["max_truncated_fraction"]
-        )
-        if truncated_count / effective_count > maximum:
-            raise RuntimeError(
-                "stress truncated fraction exceeds configured maximum: "
-                f"{truncated_count}/{effective_count} > {maximum:.3f}"
-            )
 
     manifest = {
         "schema_version": str(config["dataset"]["schema_version"]),
@@ -868,6 +895,8 @@ def build_dataset_split(
         "seed_start": seed_start,
         "instance_count": effective_count,
         "files": entries,
+        **protocol_hashes(config),
+        "generation_summary": {name: dict(sorted(counts.items())) for name, counts in summaries.items()},
     }
     build_manifest = manifest_root / ".build" / build_key
     if build_manifest.exists():
@@ -922,6 +951,10 @@ def build_all_dataset_splits(
     }
 
 
+def protocol_hashes_keys() -> tuple[str, ...]:
+    return ("generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256")
+
+
 def load_dataset_split(
     config: dict[str, Any],
     split: str,
@@ -949,4 +982,5 @@ def load_dataset_split(
         ),
         expected_template_sha256=template_sha256(template),
         expected_seed_range=split_seed_range(config, split),
+        expected_protocol_hashes=protocol_hashes(config) if str(config["dataset"]["schema_version"]) == "2.0.0" else None,
     )
