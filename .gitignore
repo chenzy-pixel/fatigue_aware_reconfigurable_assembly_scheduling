@@ -6,6 +6,8 @@ result/runs/
 result/run_logs/
 result/analysis/
 result/audits/
+result/continuation/
+result/cc/
 result/*.log
 result/**/*.log
 result/*_report.html

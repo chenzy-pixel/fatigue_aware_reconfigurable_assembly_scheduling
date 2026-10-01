@@ -11,7 +11,7 @@ from typing import Any
 
 
 EVALUATION_SCHEMA_VERSION = "8.0.0"
-QUALITY_METRIC_VERSION = "canonical_bounded_quality_v1"
+QUALITY_METRIC_VERSION = "canonical_bounded_quality_v2"
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
     "maximum_worker_matching_deficit",
@@ -38,14 +38,21 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
     return EVALUATION_SCHEMA_VERSION
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,
-    "flow_scale": 1200.0,
-    "cost_scale": 1000.0,
-    "variance_scale": 50.0,
+    "flow_scale": 1089.15,
+    "cost_scale": 353.27,
+    "variance_scale": 2.2629,
     "quality_weights": {
         "flow": 0.5,
         "cost": 0.3,
         "variance": 0.2,
     },
+}
+LEGACY_QUALITY_METRIC: dict[str, Any] = {
+    **CANONICAL_QUALITY_METRIC,
+    "version": "canonical_bounded_quality_v1",
+    "flow_scale": 1200.0,
+    "cost_scale": 1000.0,
+    "variance_scale": 50.0,
 }
 
 
@@ -113,10 +120,13 @@ def evaluation_quality_metric(config: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("evaluation quality weights must be finite and nonnegative")
     if sum(weight_values) <= 0.0:
         raise ValueError("evaluation quality weights must have a positive sum")
-    if normalized != CANONICAL_QUALITY_METRIC:
+    reference = (LEGACY_QUALITY_METRIC if normalized["version"] == LEGACY_QUALITY_METRIC["version"]
+                 else CANONICAL_QUALITY_METRIC)
+    if normalized != reference:
         raise ValueError(
-            f"{QUALITY_METRIC_VERSION} is immutable and must use "
-            "flow/cost/variance scales 1200/1000/50 and weights 0.5/0.3/0.2"
+            f"{reference['version']} is immutable and must use "
+            f"flow/cost/variance scales {reference['flow_scale']}/{reference['cost_scale']}/{reference['variance_scale']} "
+            "and weights 0.5/0.3/0.2"
         )
     return normalized
 

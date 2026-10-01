@@ -447,12 +447,12 @@
     "rho": 0.05,
     "scale_source": "frozen_manifest",
     "scales": {
-      "cost": 386.674652792805,
-      "flow": 1152.2093959731544,
-      "variance": 4.937746913580247
+      "cost": 353.27,
+      "flow": 1089.15,
+      "variance": 2.2629
     },
-    "normalization_manifest": "configs/manifests/e1_tail5_scales_20260928.json",
-    "normalization_manifest_sha256": "23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b"
+    "normalization_manifest": "configs/manifests/v2_selected_scales_20261002.json",
+    "normalization_manifest_sha256": "9d4829c467f592d9a319251f0f779e7354cce70e1511d3bc90ab19b78fa4cce3"
   },
   "reward": {
     "mode": "single_stage_progress_quality_failure_v2",
@@ -464,10 +464,10 @@
   "evaluation": {
     "result_schema_version": "8.0.0",
     "quality_metric": {
-      "version": "canonical_bounded_quality_v1",
-      "flow_scale": 1200.0,
-      "cost_scale": 1000.0,
-      "variance_scale": 50.0,
+      "version": "canonical_bounded_quality_v2",
+      "flow_scale": 1089.15,
+      "cost_scale": 353.27,
+      "variance_scale": 2.2629,
       "quality_weights": {
         "flow": 0.5,
         "cost": 0.3,

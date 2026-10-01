@@ -1,4 +1,4 @@
-"""Immutable objective scales derived from completed E1 validation runs."""
+"""Versioned immutable objective scales with recorded validation provenance."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 NORMALIZATION_MANIFEST_SCHEMA = "e1_tail_validation_scales_v1"
+SELECTED_VALIDATION_MANIFEST_SCHEMA = "v2_selected_validation_scales_v1"
 OBJECTIVE_FIELDS = {
     "flow": "flow_time_objective",
     "cost": "reconfiguration_cost",
@@ -207,7 +208,8 @@ def load_normalization_manifest(
     if file_sha256(source) != expected:
         raise ValueError("normalization manifest SHA256 mismatch")
     payload = json.loads(source.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != NORMALIZATION_MANIFEST_SCHEMA:
+    schema = payload.get("schema_version")
+    if schema not in {NORMALIZATION_MANIFEST_SCHEMA, SELECTED_VALIDATION_MANIFEST_SCHEMA}:
         raise ValueError("unsupported normalization manifest schema")
     content_sha = payload.pop("content_sha256", None)
     if content_sha != canonical_json_sha256(payload):
@@ -219,6 +221,26 @@ def load_normalization_manifest(
     ):
         raise ValueError("normalization manifest sources or scales are incomplete")
     for objective, row in payload["sources"].items():
+        scale = float(payload["scales"][objective])
+        if not math.isfinite(scale) or scale <= 0:
+            raise ValueError("normalization scales must be finite and positive")
+        if schema == SELECTED_VALIDATION_MANIFEST_SCHEMA:
+            mean = float(row.get("successful_trajectory_mean", math.nan))
+            digits = row.get("rounding_digits")
+            episode = row.get("validation_episode")
+            successes, count = row.get("successful_count"), row.get("trajectory_count")
+            if (type(digits) is not int or not 0 <= digits <= 10
+                    or type(episode) is not int or episode <= 0
+                    or type(successes) is not int or type(count) is not int
+                    or not 0 < successes <= count
+                    or not math.isfinite(mean) or mean <= 0
+                    or not math.isclose(scale, round(mean, digits), rel_tol=0, abs_tol=1e-12)):
+                raise ValueError("selected normalization scale disagrees with validation reference")
+            for key in ("config_sha256", "validation_log_sha256", "sampled_validation_rows_sha256"):
+                digest = str(row.get(key, ""))
+                if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                    raise ValueError("selected normalization source requires recorded SHA256 digests")
+            continue
         means = row.get("successful_trajectory_means")
         if (
             row.get("validation_episodes") != list(TAIL_EPISODES)
@@ -226,7 +248,6 @@ def load_normalization_manifest(
             or len(means) != 5
         ):
             raise ValueError("normalization source has incomplete validation records")
-        scale = float(payload["scales"][objective])
         if not math.isfinite(scale) or scale <= 0 or not math.isclose(
             scale, statistics.median(float(v) for v in means), rel_tol=0, abs_tol=1e-12
         ):

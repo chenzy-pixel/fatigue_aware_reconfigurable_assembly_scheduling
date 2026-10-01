@@ -182,7 +182,7 @@ def objective_scalarizer_config(config: dict) -> dict:
         raise ValueError("objective scalarizer scales must be finite and positive")
     default_kind = (
         "canonical_bounded_weighted_sum_v1"
-        if raw.get("version") == "canonical_bounded_quality_v1"
+        if raw.get("version") in {"canonical_bounded_quality_v1", "canonical_bounded_quality_v2"}
         else "normalized_augmented_tchebycheff_v1"
     )
     kind = str(raw.get("type", default_kind))
