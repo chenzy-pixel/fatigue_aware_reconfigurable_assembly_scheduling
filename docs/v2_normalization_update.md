@@ -36,7 +36,7 @@ python -c "from configs import load_config; c=load_config('configs/default.json'
 
 ## 验证
 
-- 71 项相关测试通过，覆盖清单完整性、配置继承、偏好奖励、参考质量、评估、Pareto、MO-ALNS 和 checkpoint 哈希。
+- 最新 V2 主线的全量测试：243 项通过、2 项慢速审计按默认设置跳过，覆盖清单完整性、配置继承、偏好奖励、参考质量、评估、Pareto、MO-ALNS 和 checkpoint 哈希。
 - 三个目标在原始目标等于对应尺度时，单目标归一化代价均为 0.5。
 - 固定算例的新旧尺度比较：动作掩码、211 步启发式动作序列、原始三目标和完成状态一致；归一化观测和奖励哈希按新尺度更新。
 - V2 生成器仍为 2.0.0、结果 schema 仍为 8.0.0、固定数据分布协议哈希不变。
