@@ -11,6 +11,7 @@ from configs import load_config, validate_latest_only_config
 from configs.formal_preferences import formal_preferences
 from configs.normalization import (
     NORMALIZATION_MANIFEST_SCHEMA,
+    SELECTED_VALIDATION_MANIFEST_SCHEMA,
     apply_normalization_manifest,
     canonical_json_sha256,
     load_normalization_manifest,
@@ -153,9 +154,61 @@ def test_frozen_scales_match_committed_tail_means_and_config():
         expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
     )
     assert config["objective_scalarizer"]["scales"] == manifest["scales"]
+    assert manifest["schema_version"] == SELECTED_VALIDATION_MANIFEST_SCHEMA
+    assert manifest["scales"] == {"flow": 1089.15, "cost": 353.27, "variance": 2.2629}
+    for objective, source in manifest["sources"].items():
+        assert round(source["successful_trajectory_mean"], source["rounding_digits"]) == manifest["scales"][objective]
+
+
+def test_legacy_e1_scales_remain_verifiable():
+    from configs.normalization import file_sha256
+    path = Path("configs/manifests/e1_tail5_scales_20260928.json")
+    manifest = load_normalization_manifest(path, expected_sha256=file_sha256(path))
+    assert manifest["schema_version"] == NORMALIZATION_MANIFEST_SCHEMA
     for objective, source in manifest["sources"].items():
         assert source["validation_episodes"] == [840, 880, 920, 960, 1000]
         assert statistics.median(source["successful_trajectory_means"]) == manifest["scales"][objective]
+
+
+@pytest.mark.parametrize("invalid", ["scale", "rounding", "source_hash"])
+def test_selected_scales_reject_inconsistent_signed_payload(tmp_path, invalid):
+    config = load_config("configs/default.json")
+    manifest = load_normalization_manifest(
+        config["objective_scalarizer"]["normalization_manifest"],
+        expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
+    )
+    manifest.pop("content_sha256")
+    if invalid == "scale":
+        manifest["scales"]["variance"] *= 2
+    elif invalid == "rounding":
+        manifest["sources"]["flow"]["rounding_digits"] = 4
+    else:
+        manifest["sources"]["cost"]["validation_log_sha256"] = "unknown"
+    manifest["content_sha256"] = canonical_json_sha256(manifest)
+    path = tmp_path/"invalid.json"
+    digest = write_immutable_manifest(path, manifest)
+    with pytest.raises(ValueError, match="normalization"):
+        load_normalization_manifest(path, expected_sha256=digest)
+
+
+def test_current_scales_align_training_reference_quality_and_pareto():
+    from analysis.pareto_analysis import normalize_objectives
+    from environment.types import bounded_quality_score
+    from result.metrics import evaluation_quality_metric, LEGACY_QUALITY_METRIC, quality_metric_sha256
+    expected = {"flow":1089.15, "cost":353.27, "variance":2.2629}
+    for path in ("configs/default.json", "configs/v8/universal.json",
+                 "configs/e1/single_flow.json", "configs/e1/single_cost.json", "configs/e1/single_variance.json",
+                 "configs/baselines/mo_alns.json"):
+        config = load_config(path)
+        assert config["objective_scalarizer"]["scales"] == expected
+        reference = evaluation_quality_metric(config)
+        assert {name:reference[f"{name}_scale"] for name in expected} == expected
+        assert normalize_objectives(list(expected.values()), list(expected.values())) == pytest.approx([.5,.5,.5])
+        for preference in ((1,0,0),(0,1,0),(0,0,1)):
+            assert bounded_quality_score(*expected.values(), config, preference=preference) == pytest.approx(.5)
+        assert bounded_quality_score(1089.15, 2*353.27, 4*2.2629, reference) == pytest.approx(.61)
+    assert evaluation_quality_metric({"evaluation":{"quality_metric":LEGACY_QUALITY_METRIC}}) == LEGACY_QUALITY_METRIC
+    assert quality_metric_sha256(reference) != quality_metric_sha256(LEGACY_QUALITY_METRIC)
 
 
 def _row(

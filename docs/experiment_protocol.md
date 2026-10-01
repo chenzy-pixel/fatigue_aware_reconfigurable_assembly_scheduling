@@ -1,22 +1,31 @@
 # 当前实验协议
 
-更新日期：2026-09-30。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
+更新日期：2026-10-02。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
+
+2026-10-02 实验变更：按用户指定，全部目标归一化统一为 Flow=1089.15、Cost=353.27、Variance=2.2629。
+新增 V2 验证参考尺度清单，偏好奖励、图中的目标相关特征、固定评估质量和 Pareto/HV 分析使用该组尺度。
+固定评估质量升级为 `canonical_bounded_quality_v2`，权重保持 `(0.5,0.3,0.2)`。
+原 E1 清单、已完成运行的配置、日志和 checkpoint 保留原版本；尺度变更后的训练单独记录。
+
+2026-10-01 增加 V2 单目标独立微调阶段，具体变更、参数和执行入口见 [V2 追加训练](v2_continuation.md)。该入口要求 V2 项目代码及原运行结果。
 
 ## 固定尺度和质量
 
 | 目标 | 冻结尺度 |
 |---|---:|
-| Flow | 1152.2093959731544 |
-| Cost | 386.674652792805 |
-| 工人负荷方差 | 4.937746913580247 |
+| Flow | 1089.15 |
+| Cost | 353.27 |
+| 工人负荷方差 | 2.2629 |
 
-清单为 `configs/manifests/e1_tail5_scales_20260928.json`，文件 SHA256 为 `23d85a70311feed66d679dd7e5a51b055a76984584350dd9fbbf0fc29554557b`。加载配置时校验清单及其哈希，训练期间保持固定。
+清单为 `configs/manifests/v2_selected_scales_20261002.json`，文件 SHA256 为 `9d4829c467f592d9a319251f0f779e7354cce70e1511d3bc90ab19b78fa4cce3`。加载配置时校验清单及其哈希，训练期间保持固定。
 
-每个尺度来自对应最近单目标实验第 840、880、920、960、1000 轮验证中成功轨迹目标均值的中位数。Flow 来源为相对工人时间实验；Cost 和 Variance 来源为各自 1000 轮实验。清单保留来源 run、五个均值与日志哈希；来源运行内容可由 Git 历史查阅。
+尺度由用户指定，来源为 V2 追加训练中的成功轨迹验证均值：Flow 第 500 轮的 1089.1547297297298 保留两位小数，Cost 第 500 轮的 353.2652386890254 保留两位小数，Variance 第 360 轮的 2.262897640791476 保留四位小数。对应完成数为 148/150、145/150、146/150。清单记录实际均值、取值轮次、舍入精度和日志哈希；这些参考值不表示三个目标来自同一完成率或同一 best checkpoint。
+
+旧 E1 尺度清单 `configs/manifests/e1_tail5_scales_20260928.json` 保留，用于读取原实验有效配置和核验历史结果。
 
 偏好质量采用 `q_i = J_i/(s_i+J_i)`，再计算 `(max_i(w_i*q_i) + rho*sum_i(w_i*q_i))/(1+rho)`，其中 `rho=0.05`。该公式同时用于 PPO 偏好奖励、MO-ALNS 选解和结果分析。
 
-`quality_score` 保留固定参考指标 `canonical_bounded_quality_v1`：尺度 `(1200,1000,50)`、权重 `(0.5,0.3,0.2)` 的有界加权和。`preference_quality_score` 使用本次冻结尺度和每条轨迹自身偏好；主实验解释使用原始三目标及偏好质量。
+`quality_score` 使用固定参考指标 `canonical_bounded_quality_v2`：尺度 `(1089.15,353.27,2.2629)`、权重 `(0.5,0.3,0.2)` 的有界加权和。`preference_quality_score` 使用同一组冻结尺度和每条轨迹自身偏好的增强切比雪夫质量；两个指标的聚合公式仍不同。旧 `canonical_bounded_quality_v1` 仅用于按历史有效配置复核原结果。
 
 ## 网络、奖励和预算
 
@@ -75,7 +84,11 @@ python -m analysis.mo_alns_analysis --ppo-candidate-csv result/analysis/universa
 
 训练、评估和分析从配置读取偏好集合、重复次数及尺度。固定数据和尺度清单的原始字节保持不变。
 
-重新建立尺度清单时，`scripts.build_normalization_manifest` 要求显式传入 `--flow-run`、`--cost-run`、`--variance-run` 和新 `--output` 路径，以来源记录生成不可覆盖的清单。
+V2 参考清单由 `python -m scripts.build_v2_normalization_manifest --output 新路径` 从已转移的续训日志重建，输出不可覆盖。历史 E1 中位数清单仍可由 `scripts.build_normalization_manifest` 重建。
+
+新尺度的 checkpoint 使用新的归一化哈希。旧 checkpoint 默认加载至新配置会拒绝哈希不匹配；从旧模型转入新尺度属于单独的权重迁移实验，需记录来源并重新验证。`continue_v2.py` 记录的原始追加阶段继承源 run 的旧尺度，属于历史协议。
+
+训练电脑的 Git 同步方式和尺度版本说明见 [V2 归一化更新](v2_normalization_update.md)。
 
 ## 算例协议 v2
 

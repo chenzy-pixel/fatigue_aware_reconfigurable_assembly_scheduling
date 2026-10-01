@@ -1,0 +1,52 @@
+{
+  "bounded_objective": "q_i=J_i/(s_i+J_i)",
+  "content_sha256": "793ef0a904e2e69f34a3b18f20b277b52b2e8366506e6b6266b58e8f656b056e",
+  "scales": {
+    "cost": 353.27,
+    "flow": 1089.15,
+    "variance": 2.2629
+  },
+  "schema_version": "v2_selected_validation_scales_v1",
+  "selected_date": "2026-10-02",
+  "selection": "user_selected_rounded_validation_means",
+  "sources": {
+    "cost": {
+      "algorithm_seed": 11,
+      "config_sha256": "02831605f7e7ed446c7bfe5e7451e370eb8c05eececd7f22f9ff64948dae9d2a",
+      "rounding_digits": 2,
+      "run": "result/continuation/v2_seed11_best_plus500/runs/cost_v2_seed11_best_plus500",
+      "sampled_validation_rows_sha256": "3fed9e439fc376ebb6fa218308de8515adab4e8e02352ef64e405c35fb031657",
+      "successful_count": 145,
+      "successful_trajectory_mean": 353.2652386890254,
+      "trajectory_count": 150,
+      "validation_episode": 500,
+      "validation_log_sha256": "e1608e301e5cf29f12fd3af219ab7bad663245af25b5e17336161d53c0e52665"
+    },
+    "flow": {
+      "algorithm_seed": 11,
+      "config_sha256": "b262bdfdcd9f879162805d952d48f804a03f696b00a39c3c305766b4e5aa1e92",
+      "rounding_digits": 2,
+      "run": "result/continuation/v2_seed11_best_plus500/runs/flow_v2_seed11_best_plus500",
+      "sampled_validation_rows_sha256": "1b3a5642472397ef776430cdf0d9fd336026020ff6dff3fa835988f524e5e7e3",
+      "successful_count": 148,
+      "successful_trajectory_mean": 1089.1547297297298,
+      "trajectory_count": 150,
+      "validation_episode": 500,
+      "validation_log_sha256": "503535b33bad33ff1d30cddd193f015c10b746c160878d23c34bf4d85eb77029"
+    },
+    "variance": {
+      "algorithm_seed": 11,
+      "config_sha256": "05a29c05d2a1966583305c5b7158516fca614b99d457910645754ecfbdfd9a60",
+      "rounding_digits": 4,
+      "run": "result/continuation/v2_seed11_best_plus500/runs/variance_v2_seed11_best_plus500",
+      "sampled_validation_rows_sha256": "c391200d123709a4f588c7bfa5360bc66fcb86abaa703002df528377e64ab07d",
+      "successful_count": 146,
+      "successful_trajectory_mean": 2.262897640791476,
+      "trajectory_count": 150,
+      "validation_episode": 360,
+      "validation_log_sha256": "94963343ddadc478529721f6aee11c3293baf427da5897af7a0271b7f6425ba6"
+    }
+  },
+  "validation_dataset_manifest_sha256": "5e973c436d14f079fdf8992c8ac772dc4e9efebf1e0477a38e13e7240f457c35",
+  "validation_subset_sha256": "b54cbf99baa94debc48ec245a163da8269dd2dc2d0fab8094c051b5eb65d57f5"
+}

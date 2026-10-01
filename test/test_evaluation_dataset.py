@@ -107,7 +107,7 @@ def test_aggregate_uses_completed_and_all_instance_populations():
     )
     assert aggregate["evaluation_schema_version"] == "8.0.0"
     assert aggregate["quality_metric_version"] == (
-        "canonical_bounded_quality_v1"
+        "canonical_bounded_quality_v2"
     )
     assert aggregate["completed_count"] == 1
     assert aggregate["completion_rate"] == 0.5
