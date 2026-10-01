@@ -65,6 +65,8 @@ def test_fixed_instance_golden_observation_mask_and_trajectory(fixed_instance):
     mask = environment.get_action_mask()
 
     assert _observation_sha256(observation) == expected["initial_observation_sha256"]
+    from test.test_order_time_context import _schema5_observation
+    assert _observation_sha256(_schema5_observation(observation)) == expected["schema5_observation_sha256"]
     assert hashlib.sha256(np.ascontiguousarray(mask).tobytes()).hexdigest() == (
         expected["initial_mask_sha256"]
     )

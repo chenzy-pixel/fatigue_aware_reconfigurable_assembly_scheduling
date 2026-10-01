@@ -120,8 +120,13 @@ def prepare(args, objective):
     for key in ("environment", "reward", "preference", "network"):
         if effective[key] != original[key]:
             raise ValueError(f"Continuation changed {key}.")
-    if effective["runtime_manifest"] != original["runtime_manifest"]:
-        raise ValueError("Runtime contract changed since the source experiment.")
+    source_runtime = original["runtime_manifest"]
+    target_runtime = effective["runtime_manifest"]
+    permitted_runtime = dict(source_runtime)
+    if source_runtime.get("observation_schema") == 5:
+        permitted_runtime.update(observation_schema=6, time_context="order_chain_action_context_v1")
+    if target_runtime not in (source_runtime, permitted_runtime):
+        raise ValueError("Runtime contract changed beyond the supported time-context migration.")
     if effective["objective_scalarizer"]["scales"] != original["objective_scalarizer"]["scales"]:
         raise ValueError("Frozen normalization scales changed.")
     validation = load_dataset_split(effective, "validation")
@@ -131,10 +136,24 @@ def prepare(args, objective):
         raise ValueError("Validation subset no longer matches the source checkpoint.")
     observation = AssemblySchedulingEnv(effective).reset(validation[0].instance)
     agent = PPOAgent(build_actor_critic(observation, effective["network"]), effective["ppo"], device="cpu")
-    agent.load(checkpoint, load_optimizer=False)
+    loaded_metadata = agent.load(checkpoint, load_optimizer=False)
+    migration = loaded_metadata.get("checkpoint_load_migration")
+    if target_runtime != source_runtime and not migration:
+        raise ValueError("Observation schema changed without a recorded checkpoint migration.")
+    exact_load = True
     for key, tensor in agent.network.state_dict().items():
-        if not torch.equal(tensor.cpu(), saved["network"][key].cpu()):
-            raise ValueError(f"Loaded network weights differ: {key}")
+        source_tensor = saved["network"][key].cpu()
+        tensor = tensor.cpu()
+        if torch.equal(tensor, source_tensor):
+            continue
+        if (migration and tensor.ndim == source_tensor.ndim == 2
+                and tensor.shape[0] == source_tensor.shape[0]
+                and tensor.shape[1] > source_tensor.shape[1]
+                and torch.equal(tensor[:, :source_tensor.shape[1]], source_tensor)
+                and torch.count_nonzero(tensor[:, source_tensor.shape[1]:]).item() == 0):
+            exact_load = False
+            continue
+        raise ValueError(f"Loaded network weights differ beyond zero-padded time inputs: {key}")
     plan = training_sampling_plan(effective, offset + args.episodes)[offset:]
     if len(plan) != args.episodes or any(severity != 1.0 for _, severity in plan):
         raise ValueError("Continuation sampling plan is not fixed at severity 1.")
@@ -143,8 +162,10 @@ def prepare(args, objective):
         raise ValueError("Training instances reuse the original run's seeds.")
     lineage.update(config_path=str(path), validation_subset_sha256=selection["subset_sha256"],
                    pressure_counts=dict(Counter(label for label, _ in plan)),
-                   exact_network_load=True, fixed_dataset_protocol_verified=True,
+                   exact_network_load=exact_load, source_input_weights_preserved=True,
+                   observation_migration=migration, fixed_dataset_protocol_verified=True,
                    training_seeds_disjoint=True)
+    effective["training"]["continuation"] = dict(lineage)
     print(json.dumps({"objective": objective, "source_episode": lineage["source_checkpoint_episode"],
                       "stage_episodes": args.episodes, "learning_rate": args.learning_rate,
                       "training_seeds": [min(planned_seeds), max(planned_seeds)],

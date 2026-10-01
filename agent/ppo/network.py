@@ -8,6 +8,10 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from environment.time_context import (
+    ORDER_TIME_FEATURE, TIME_CONTEXT_FEATURE_SCHEMA, TIME_CONTEXT_VERSION,
+    WAIT_TIME_FEATURES, WORKER_WAIT_FEATURE,
+)
 
 from environment import (
     ASSEMBLY_EDGE_TYPES,
@@ -30,7 +34,7 @@ from environment import (
 NODE_TYPES = ASSEMBLY_NODE_TYPES
 OBJECTIVES = ("flow", "cost", "variance")
 POLICY_HEAD_VERSION = 8
-OBSERVATION_SCHEMA_VERSION = 5
+OBSERVATION_SCHEMA_VERSION = 6
 EXPERT_WEIGHT_PARAMETERIZATION = "simplex_softplus_v8"
 PREFERENCE_ENCODER_DIM = 32
 RESIDUAL_STD_FLOOR = 1e-3
@@ -155,8 +159,13 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     spec = dict(raw)
     if int(spec.get("policy_head_version", 0)) != POLICY_HEAD_VERSION:
         raise ValueError("V7 and earlier checkpoints are rejected by V8 runtime")
-    if int(spec.get("observation_schema_version", 0)) != OBSERVATION_SCHEMA_VERSION:
-        raise ValueError("checkpoint observation schema is not V8 schema 5")
+    schema_version = int(spec.get("observation_schema_version", 0))
+    if schema_version not in {5, OBSERVATION_SCHEMA_VERSION}:
+        raise ValueError("checkpoint observation schema must be V8 schema 5 or 6")
+    if schema_version == OBSERVATION_SCHEMA_VERSION and spec.get("time_context_version") != TIME_CONTEXT_VERSION:
+        raise ValueError("checkpoint time context version is incompatible")
+    if schema_version == OBSERVATION_SCHEMA_VERSION and spec.get("time_context_feature_schema") != TIME_CONTEXT_FEATURE_SCHEMA:
+        raise ValueError("checkpoint time context feature schema is incompatible")
     if spec.get("expert_weight_parameterization") != EXPERT_WEIGHT_PARAMETERIZATION:
         raise ValueError("checkpoint does not use simplex_softplus_v8 experts")
     if int(spec.get("preference_embedding_dim", 0)) != PREFERENCE_ENCODER_DIM:
@@ -182,6 +191,8 @@ def assert_network_config_matches_spec(
 ) -> None:
     configured = normalize_network_config(config)
     saved = infer_checkpoint_network_spec({"network_spec": checkpoint_spec})
+    if saved["observation_schema_version"] != config.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION):
+        raise ValueError("checkpoint observation schema requires time-context migration")
     for name in (
         "hidden_dim",
         "message_passing_layers",
@@ -506,6 +517,10 @@ class HeteroGraphActorCritic(nn.Module):
             "dropout": self.dropout_probability,
             "policy_head_version": POLICY_HEAD_VERSION,
             "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
+            "time_context_version": TIME_CONTEXT_VERSION,
+            "time_context_feature_schema": {
+                name: list(fields) for name, fields in TIME_CONTEXT_FEATURE_SCHEMA.items()
+            },
             "preference_embedding_dim": PREFERENCE_ENCODER_DIM,
             "expert_weight_parameterization": EXPERT_WEIGHT_PARAMETERIZATION,
             "direct_output_range": [-1.0, 1.0],
@@ -570,13 +585,17 @@ class HeteroGraphActorCritic(nn.Module):
         *,
         device: torch.device | str,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not observations or len(observations) != len(action_masks):
-            raise ValueError("observation/action-mask batches must be non-empty and aligned")
-        if any(not isinstance(item, HeterogeneousGraphObservation) for item in observations):
-            raise TypeError("V8 requires heterogeneous graph observations")
-        if any(item.decision_type not in (DecisionType.PRODUCTION, DecisionType.WORKER)
-               for item in observations):
-            raise ValueError("actor cannot evaluate a terminal observation")
+        self._validate_observation_batch(observations, action_masks)
+        # Observations are packed on the host. Use the original host masks to
+        # select candidates rather than reading the transferred GPU masks back.
+        mask_arrays = [
+            np.asarray(mask, dtype=np.bool_) if isinstance(mask, np.ndarray)
+            else mask.detach().to(device="cpu", dtype=torch.bool).numpy()
+            for mask in action_masks
+        ]
+        mask_device = device if self.execution_mode == "reference_v8" else "cpu"
+        masks = [self._validate_action_mask(mask, device=mask_device) for mask in mask_arrays]
+        self._validate_mask_widths(observations, masks)
         self._latest_policy_decision_diagnostics.clear()
         batch, embeddings, global_embeddings, graph_context = self.encode_graph(
             observations, device=device
@@ -587,8 +606,7 @@ class HeteroGraphActorCritic(nn.Module):
             device=device,
         )
         preference_embedding = self.preference_encoder(preference)
-        values = self.critic(torch.cat((graph_context, preference_embedding), dim=-1)).squeeze(-1)
-        masks = [self._validate_action_mask(mask, device=device) for mask in action_masks]
+        values = self._critic_values(graph_context, preference_embedding)
         result = values.new_full(
             (len(observations), max(mask.numel() for mask in masks)),
             torch.finfo(values.dtype).min,
@@ -612,14 +630,12 @@ class HeteroGraphActorCritic(nn.Module):
             indices = [i for i, item in enumerate(observations) if item.decision_type == phase]
             if not indices:
                 continue
-            logits_by_index = self._phase_logits_grouped(
+            action_positions, logits = self._phase_logits_grouped(
                 phase, indices, observations, batch, embeddings, global_embeddings,
-                graph_hidden, preference, preference_embedding, masks, device=device,
+                graph_hidden, preference, preference_embedding, masks, mask_arrays,
+                output_width=result.shape[1], device=device,
             )
-            for index, logits in logits_by_index.items():
-                result[index, : masks[index].numel()] = logits.masked_fill(
-                    masks[index], torch.finfo(values.dtype).min
-                )
+            result = result.flatten().index_copy(0, action_positions, logits).view_as(result)
         if not torch.is_grad_enabled():
             # Grouped phases are computed separately; diagnostics follow input order.
             phase_rows = list(self._latest_policy_decision_diagnostics)
@@ -628,6 +644,73 @@ class HeteroGraphActorCritic(nn.Module):
                 del row["_batch_index"]
             self._latest_policy_decision_diagnostics = phase_rows
         return result, values
+
+    def value_batch(
+        self,
+        observations: Sequence[HeterogeneousGraphObservation],
+        action_masks: Sequence[np.ndarray | torch.Tensor],
+        *,
+        device: torch.device | str,
+    ) -> torch.Tensor:
+        """Evaluate the shared graph encoder and critic for bootstrap states."""
+        self._validate_observation_batch(observations, action_masks)
+        masks = [
+            self._validate_action_mask(
+                mask, device="cpu" if isinstance(mask, np.ndarray) else mask.device
+            )
+            for mask in action_masks
+        ]
+        self._validate_mask_widths(observations, masks)
+        self._latest_policy_decision_diagnostics.clear()
+        _, _, _, graph_context = self.encode_graph(observations, device=device)
+        preference = torch.as_tensor(
+            np.stack([item.preference for item in observations]),
+            dtype=torch.float32,
+            device=device,
+        )
+        return self._critic_values(graph_context, self.preference_encoder(preference))
+
+    def _critic_values(
+        self, graph_context: torch.Tensor, preference_embedding: torch.Tensor
+    ) -> torch.Tensor:
+        return self.critic(torch.cat((graph_context, preference_embedding), dim=-1)).squeeze(-1)
+
+    @staticmethod
+    def _validate_observation_batch(
+        observations: Sequence[HeterogeneousGraphObservation],
+        action_masks: Sequence[np.ndarray | torch.Tensor],
+    ) -> None:
+        if not observations or len(observations) != len(action_masks):
+            raise ValueError("observation/action-mask batches must be non-empty and aligned")
+        if any(not isinstance(item, HeterogeneousGraphObservation) for item in observations):
+            raise TypeError("V8 requires heterogeneous graph observations")
+        if any(item.decision_type not in (DecisionType.PRODUCTION, DecisionType.WORKER)
+               for item in observations):
+            raise ValueError("actor cannot evaluate a terminal observation")
+
+    @staticmethod
+    def _validate_mask_widths(
+        observations: Sequence[HeterogeneousGraphObservation], masks: Sequence[torch.Tensor]
+    ) -> None:
+        for observation, mask in zip(observations, masks, strict=True):
+            first, second = (
+                ("operation", "machine") if observation.decision_type == DecisionType.PRODUCTION
+                else ("machine", "worker")
+            )
+            count = observation.node_features[first].shape[0] * observation.node_features[second].shape[0]
+            if mask.numel() != count + 1:
+                raise ValueError(f"{observation.decision_type.value} mask width does not match candidates")
+
+    def _score_head(
+        self, action_embedding: torch.Tensor, direct: Mapping[str, torch.Tensor],
+        preference: torch.Tensor, preference_embedding: torch.Tensor,
+        phase: DecisionType, *, wait: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        prefix = "production" if phase == DecisionType.PRODUCTION else "worker"
+        if wait:
+            prefix += "_wait"
+        d, c, z = getattr(self, prefix + "_experts")(action_embedding, direct)
+        return d, c, z, (z * preference).sum(dim=-1)
 
     def _phase_logits_grouped(
         self,
@@ -641,10 +724,12 @@ class HeteroGraphActorCritic(nn.Module):
         preference: torch.Tensor,
         preference_embedding: torch.Tensor,
         masks: Sequence[torch.Tensor],
+        mask_arrays: Sequence[np.ndarray],
         *,
+        output_width: int,
         device: torch.device | str,
-    ) -> dict[int, torch.Tensor]:
-        """Run each phase's candidate and residual networks once per graph batch."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Score legal pairs and WAIT, then restore the original action indices."""
         edge_type = CAPABLE_EDGE if phase == DecisionType.PRODUCTION else SERVICE_CANDIDATE_EDGE
         edge_width = self.edge_feature_dimensions[edge_type]
         pair_features: list[np.ndarray] = []
@@ -654,6 +739,9 @@ class HeteroGraphActorCritic(nn.Module):
         locked_machine_indices: list[np.ndarray] = []
         locked_operation_indices: list[np.ndarray] = []
         offsets: dict[int, tuple[int, int]] = {}
+        sparse_actions: list[np.ndarray] = []
+        sparse_graph_ids: list[np.ndarray] = []
+        sparse_masks: list[np.ndarray] = []
         offset = 0
         for index in indices:
             item = observations[index]
@@ -675,24 +763,37 @@ class HeteroGraphActorCritic(nn.Module):
                     locked_operation_indices.append(
                         locked[0].astype(np.int64) + batch.node_slices["operation"][index][0]
                     )
-            count = first_count * second_count
-            if masks[index].numel() != count + 1:
-                raise ValueError(f"{phase.value} mask width does not match candidates")
+            actions = np.flatnonzero(~mask_arrays[index][:-1])
+            count = len(actions)
+            sparse_actions.append(np.append(actions, masks[index].numel() - 1))
+            sparse_graph_ids.append(np.full(count + 1, index, dtype=np.int64))
+            sparse_mask = np.zeros(count + 1, dtype=np.bool_)
+            sparse_mask[-1] = mask_arrays[index][-1]
+            sparse_masks.append(sparse_mask)
             offsets[index] = (offset, offset + count)
             offset += count
-            first_indices.append(np.repeat(np.arange(first_count), second_count) + first_offset)
-            second_indices.append(np.tile(np.arange(second_count), first_count) + second_offset)
+            first_indices.append(actions // second_count + first_offset)
+            second_indices.append(actions % second_count + second_offset)
             pair_graph_ids.append(np.full(count, index, dtype=np.int64))
             dense = np.zeros((count, edge_width), dtype=np.float32)
             store = item.relations[edge_type]
-            if store.num_edges:
-                actions = store.edge_index[0] * second_count + store.edge_index[1]
-                dense[actions] = store.edge_features
+            if store.num_edges and count:
+                edge_actions = store.edge_index[0] * second_count + store.edge_index[1]
+                positions = np.searchsorted(actions, edge_actions)
+                matches = positions < count
+                matches[matches] &= actions[positions[matches]] == edge_actions[matches]
+                dense[positions[matches]] = store.edge_features[matches]
             pair_features.append(dense)
         dense = torch.as_tensor(np.concatenate(pair_features), dtype=torch.float32, device=device)
         first = torch.as_tensor(np.concatenate(first_indices), dtype=torch.long, device=device)
         second = torch.as_tensor(np.concatenate(second_indices), dtype=torch.long, device=device)
         graph_ids = torch.as_tensor(np.concatenate(pair_graph_ids), dtype=torch.long, device=device)
+        # Transfer sparse metadata once per phase; uploading indices inside the
+        # diagnostic loop would synchronize outstanding GPU work for every graph.
+        action_indices = torch.as_tensor(np.concatenate(sparse_actions), dtype=torch.long, device=device)
+        merged_graph_ids = torch.as_tensor(np.concatenate(sparse_graph_ids), dtype=torch.long, device=device)
+        merged_mask = torch.as_tensor(np.concatenate(sparse_masks), dtype=torch.bool, device=device)
+        phase_indices = torch.as_tensor(indices, dtype=torch.long, device=device)
         global_part = global_embeddings.index_select(0, graph_ids)
         if phase == DecisionType.PRODUCTION:
             action_input = torch.cat((
@@ -702,7 +803,6 @@ class HeteroGraphActorCritic(nn.Module):
             ), dim=-1)
             action_embedding = self.production_action_encoder(action_input)
             schema = PRODUCTION_DIRECT_SCHEMA
-            experts, wait_experts = self.production_experts, self.production_wait_experts
             residual_mlp, gate = self.production_residual, self.production_residual_gate
         else:
             locked = torch.zeros_like(embeddings["machine"])
@@ -722,7 +822,6 @@ class HeteroGraphActorCritic(nn.Module):
             ), dim=-1)
             action_embedding = self.worker_action_encoder(action_input)
             schema = WORKER_DIRECT_SCHEMA
-            experts, wait_experts = self.worker_experts, self.worker_wait_experts
             residual_mlp, gate = self.worker_residual, self.worker_residual_gate
         names = observations[indices[0]].relations[edge_type].feature_names
         columns = {name: dense[:, names.index(name)] for name in names}
@@ -733,8 +832,7 @@ class HeteroGraphActorCritic(nn.Module):
         direct = self._direct_from_columns(schema, columns)
         if phase == DecisionType.WORKER and self.worker_flow_time_normalization == "candidate_zscore_v1":
             durations = columns["stage_duration_norm"]
-            legal_pairs = torch.cat([~masks[index][:-1] for index in indices])
-            legal_float = legal_pairs.to(durations.dtype)
+            legal_float = torch.ones_like(durations)
             counts = durations.new_zeros(len(observations)).index_add(0, graph_ids, legal_float)
             means = durations.new_zeros(len(observations)).index_add(
                 0, graph_ids, durations * legal_float
@@ -745,41 +843,41 @@ class HeteroGraphActorCritic(nn.Module):
             ) / counts.clamp_min(1)
             scales = variances.clamp_min(self.worker_flow_time_std_floor ** 2).sqrt()
             relative = torch.where(
-                legal_pairs & (counts.index_select(0, graph_ids) >= 2),
+                counts.index_select(0, graph_ids) >= 2,
                 (durations - means.index_select(0, graph_ids))
                 / scales.index_select(0, graph_ids),
                 torch.zeros_like(durations),
             )
             direct["flow"] = relative.unsqueeze(-1)
-        pair_d, pair_c, pair_z = experts(action_embedding, direct)
+        pair_d, pair_c, pair_z, pair_base = self._score_head(
+            action_embedding, direct, preference.index_select(0, graph_ids),
+            preference_embedding.index_select(0, graph_ids), phase)
         wait_raw = torch.as_tensor(
             np.stack([observations[index].action_set_features for index in indices]),
             dtype=torch.float32, device=device,
         )
         wait_embedding = self.wait_action_encoder(torch.cat((
-            self.wait_feature_encoder(wait_raw), graph_hidden[indices],
+            self.wait_feature_encoder(wait_raw), graph_hidden.index_select(0, phase_indices),
         ), dim=-1))
         wait_columns = {
             name: wait_raw[:, observations[indices[0]].action_set_feature_names.index(name)]
             for name in observations[indices[0]].action_set_feature_names
         }
         wait_direct = self._direct_from_columns(WAIT_DIRECT_SCHEMA, wait_columns)
-        wait_d, wait_c, wait_z = wait_experts(wait_embedding, wait_direct)
-        all_embeddings, all_d, all_c, all_z = [], [], [], []
-        all_graph_ids, all_masks = [], []
+        wait_d, wait_c, wait_z, wait_base = self._score_head(
+            wait_embedding, wait_direct, preference.index_select(0, phase_indices),
+            preference_embedding.index_select(0, phase_indices), phase, wait=True)
+        all_embeddings, all_d, all_c, all_z, all_base = [], [], [], [], []
         for position, index in enumerate(indices):
             start, end = offsets[index]
             all_embeddings.extend((action_embedding[start:end], wait_embedding[position:position + 1]))
             all_d.extend((pair_d[start:end], wait_d[position:position + 1]))
             all_c.extend((pair_c[start:end], wait_c[position:position + 1]))
             all_z.extend((pair_z[start:end], wait_z[position:position + 1]))
-            all_graph_ids.append(torch.full((end - start + 1,), index, dtype=torch.long, device=device))
-            all_masks.append(masks[index])
+            all_base.extend((pair_base[start:end], wait_base[position:position + 1]))
         merged_embeddings = torch.cat(all_embeddings)
         merged_d, merged_c, merged_z = map(torch.cat, (all_d, all_c, all_z))
-        merged_graph_ids = torch.cat(all_graph_ids)
-        merged_mask = torch.cat(all_masks)
-        base = (merged_z * preference.index_select(0, merged_graph_ids)).sum(dim=-1)
+        base = torch.cat(all_base)
         legal = (~merged_mask).to(base.dtype)
         legal_count = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, legal)
         mean = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, base * legal) / legal_count.clamp_min(1)
@@ -792,20 +890,23 @@ class HeteroGraphActorCritic(nn.Module):
         residual_input = torch.cat((merged_embeddings, hidden, pref_embed, interaction), dim=-1)
         residual = 2.0 * torch.sigmoid(gate) * scale * torch.tanh(residual_mlp(residual_input).squeeze(-1))
         final = base + residual
-        output: dict[int, torch.Tensor] = {}
-        cursor = 0
-        for index in indices:
-            width = masks[index].numel()
-            segment = slice(cursor, cursor + width)
-            output[index] = final[segment]
-            self._record_components(
-                phase, masks[index], merged_d[segment], merged_c[segment], merged_z[segment],
-                base[segment], residual[segment], final[segment], preference[index],
-            )
-            if not torch.is_grad_enabled():
+        if not torch.is_grad_enabled():
+            cursor = 0
+            for index in indices:
+                pair_start, pair_end = offsets[index]
+                width = pair_end - pair_start + 1
+                segment = slice(cursor, cursor + width)
+                # Diagnostics retain original pair action numbers and legal counts.
+                self._record_components(
+                    phase, merged_mask[segment], merged_d[segment], merged_c[segment],
+                    merged_z[segment], base[segment], residual[segment], final[segment],
+                    preference[index], pair_action_indices=action_indices[segment][:-1],
+                )
                 self._latest_policy_decision_diagnostics[-1]["_batch_index"] = index
-            cursor += width
-        return output
+                cursor += width
+        # Restore the phase in one scatter, including the masked WAIT entries.
+        positions = merged_graph_ids * output_width + action_indices
+        return positions, final.masked_fill(merged_mask, torch.finfo(final.dtype).min)
 
     def _phase_logits(
         self,
@@ -1106,6 +1207,8 @@ class HeteroGraphActorCritic(nn.Module):
         residual: torch.Tensor,
         final: torch.Tensor,
         preference: torch.Tensor,
+        *,
+        pair_action_indices: torch.Tensor | None = None,
     ) -> None:
         # PPO updates do not consume action diagnostics. Avoid retaining their
         # computation graph and transferring dozens of scalars per action.
@@ -1118,7 +1221,8 @@ class HeteroGraphActorCritic(nn.Module):
             "legal_pair_count": pair_legal.sum(),
             "terminal_legal": legal[-1],
         }
-        for name, values in (("direct", direct), ("context", context), ("expert", experts)):
+        diagnostic_parts = (("direct", direct), ("context", context), ("expert", experts))
+        for name, values in diagnostic_parts:
             for index, objective in enumerate(OBJECTIVES):
                 selected = values[legal, index]
                 row[f"{name}_{objective}_mean"] = selected.mean()
@@ -1132,12 +1236,14 @@ class HeteroGraphActorCritic(nn.Module):
         row["residual_base_rms_ratio"] = residual_rms / base_rms.clamp_min(1e-12)
         minimum = torch.finfo(base.dtype).min
         has_pair = pair_legal.any()
-        row["relative_top_action"] = torch.where(
-            has_pair, base[:-1].masked_fill(~pair_legal, minimum).argmax(), -1
-        )
-        row["final_pair_top_action"] = torch.where(
-            has_pair, final[:-1].masked_fill(~pair_legal, minimum).argmax(), -1
-        )
+        for name, values in (("relative_top_action", base), ("final_pair_top_action", final)):
+            if pair_legal.numel():
+                top = values[:-1].masked_fill(~pair_legal, minimum).argmax()
+                if pair_action_indices is not None:
+                    top = pair_action_indices[top]
+                row[name] = torch.where(has_pair, top, -1)
+            else:
+                row[name] = values.new_full((), -1, dtype=torch.long)
         row["context_overrode_top"] = (
             row["relative_top_action"] != row["final_pair_top_action"]
         )
@@ -1258,6 +1364,16 @@ def build_actor_critic(
     if not isinstance(observation, HeterogeneousGraphObservation):
         raise TypeError("V8 network construction requires a graph observation")
     observation.validate()
+    expected = {
+        "order": (set(observation.node_feature_names.get("order", ())), {ORDER_TIME_FEATURE}),
+        "production": (set(observation.relations[CAPABLE_EDGE].feature_names), {ORDER_TIME_FEATURE}),
+        "worker": (set(observation.relations[SERVICE_CANDIDATE_EDGE].feature_names),
+                   {ORDER_TIME_FEATURE, WORKER_WAIT_FEATURE}),
+        "wait": (set(observation.action_set_feature_names), set(WAIT_TIME_FEATURES)),
+    }
+    for kind, (present, required) in expected.items():
+        if not required <= present:
+            raise ValueError(f"schema-6 {kind} time context features are missing")
     config = normalize_network_config(network_config)
     return HeteroGraphActorCritic(
         observation.feature_dimensions,

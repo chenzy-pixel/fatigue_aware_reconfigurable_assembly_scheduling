@@ -3,17 +3,19 @@
 This repository trains a preference-conditioned HGNN policy with PPO for
 fatigue-aware reconfigurable assembly scheduling. Production and worker
 decisions use pair-plus-WAIT actions, exact action masks, deterministic event
-simulation, and schema-5 heterogeneous graph observations.
+simulation, and schema-6 heterogeneous graph observations. Order-chain slack,
+worker-candidate urgency, and projected WAIT risk feed each objective expert's
+context scorer. Actor scoring uses legal pairs; value queries use the shared
+encoder and critic directly.
 
-## Confirmed main-experiment protocol (2026-09-28)
+## Confirmed main-experiment protocol (2026-10-02)
 
-The agreed objective scales are **Flow=1152.2093959731544,
-Cost=386.674652792805, worker-load variance=4.937746913580247**.
-Each scale is the median of the corresponding objective's successful-trajectory
-means at the final five validations (episodes 840, 880, 920, 960, and 1000).
-Flow uses the latest relative-worker-time run; Cost and variance use their
-respective 1000-episode single-objective runs. All main-method and structural ablation
-runs share these frozen scales.
+The agreed objective scales are **Flow=1089.15, Cost=353.27,
+worker-load variance=2.2629**. They are the user-selected rounded V2 continuation
+validation references at stage episodes 500, 500, and 360. Current configurations
+share the versioned manifest in `configs/manifests/`. See the
+[time-context contract](docs/order_time_context.md) for soft-estimate semantics
+and schema-5 checkpoint migration under a matching normalization hash.
 
 Universal training validation runs **every 100 episodes** on **50 fixed
 instances × 3 sampled repeats × 13 fixed preferences = 1950 trajectories**.

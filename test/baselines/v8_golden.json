@@ -1,7 +1,7 @@
 {
-  "schema_version": "v8_v2_reference_scales_golden_v1",
+  "schema_version": "v8_schema6_reference_scales_golden_v1",
   "fixed_instance": {
-    "initial_observation_sha256": "7d4934e1d7cde095d4d85c134f01a94f7b7c0107b3566895bf37f709470da61e",
+    "initial_observation_sha256": "1163e2fa1c42010f133601780795bbbb916b4c75d0be8c0bce150ffe9706861b",
     "initial_mask_sha256": "69551f5bdc109858744d1e2777801dfdc4cabfd64a2574547c5a76e1b9bfad75",
     "heuristic_action_trace_sha256": "9be87e63d93a3740976526c280811061c9ba9f4c8adff4f02e5172ebe3adda19",
     "heuristic_reward_trace_sha256": "7d63e32d352c475e2f30e0a6798cadafd481c4e41f7dc93beb3182bef7c3dc23",
@@ -17,11 +17,12 @@
       "operation": 13,
       "machine": 19,
       "worker": 10,
-      "order": 6,
+      "order": 7,
       "module": 9,
       "wave": 8,
       "global": 11
-    }
+    },
+    "schema5_observation_sha256": "7d4934e1d7cde095d4d85c134f01a94f7b7c0107b3566895bf37f709470da61e"
   },
   "normalization_manifest_sha256": "9d4829c467f592d9a319251f0f779e7354cce70e1511d3bc90ab19b78fa4cce3"
 }
