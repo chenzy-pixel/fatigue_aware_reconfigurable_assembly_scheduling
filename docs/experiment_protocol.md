@@ -84,3 +84,11 @@ python -m analysis.mo_alns_analysis --ppo-candidate-csv result/analysis/universa
 候选只依据合法性、场景结构和必要可行性预检查接受。启发式诊断不筛选实例；截断实例标记 `unknown` 并保留，训练默认关闭诊断。主验证子集按目标场景比例分配为 3/18/7/7/5/5/5；49 个诊断实例每场景 7 个，与主验证互不重叠。诊断每五次主验证及训练结束运行，不参与选模。所有子集保存实际索引和实例、子集哈希。
 
 训练采用 100-episode 窗口配额和固定线性课程，压力上限从 0.4 逐步增到 1.0。完成能力评测包含全部选中实例及未知实例；heuristic gap 仅在策略和参考均完整、安全完成时有效。成功质量、失败进度及原因分别报告；结果聚合校验数据协议、子集和尺度哈希。
+
+## Worker 运行日志
+
+默认 `logging.worker_progress.debug_steps=false`。运行目录中的 `worker_progress.jsonl` 只记录算例任务开始（`instance_start`）、结束（`instance_end`）、异常（`error`）和慢任务（`slow_task`）。生成与调度分别记录任务，任务编号关联起止事件；结束记录保存算例标识、在线种子、总步数、耗时和结束原因，包含 rollout 步数截断、异常及提前关闭。
+
+将 `logging.worker_progress.debug_steps` 设为 `true` 可额外记录每个 worker step 的响应（`response`），用于逐步调试。心跳始终保存在内存中，继续刷新 `training.worker_stall_timeout_seconds` 检测；`training.worker_timeout_seconds` 仍限制单次命令总耗时。异常记录包含最后一次心跳及 traceback。
+
+慢任务阈值沿用 `training.slow_instance_seconds`，作用于单次 worker 命令耗时和整个算例任务耗时。每个算例任务最多记录一次慢任务提示，同时写入 `slow_instances.jsonl`；算例结束记录保留最终耗时。

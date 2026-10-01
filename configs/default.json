@@ -607,6 +607,9 @@
     }
   },
   "logging": {
+    "worker_progress": {
+      "debug_steps": false
+    },
     "visdom": {
       "enabled": false,
       "server": "http://localhost",

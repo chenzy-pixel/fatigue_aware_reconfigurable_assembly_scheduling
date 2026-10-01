@@ -659,6 +659,11 @@ class ParallelEpisodeRunner:
         self.slow_instance_seconds = float(
             training.get("slow_instance_seconds", 30.0)
         )
+        self.debug_worker_steps = config.get("logging", {}).get(
+            "worker_progress", {}
+        ).get("debug_steps", False)
+        if not isinstance(self.debug_worker_steps, bool):
+            raise ValueError("logging.worker_progress.debug_steps must be boolean")
         self.diagnostic_directory = (
             None
             if diagnostic_directory is None
@@ -671,7 +676,9 @@ class ParallelEpisodeRunner:
         self._lane_command_serial: dict[int, int] = {}
         self._lane_command_name: dict[int, str] = {}
         self._latest_progress: dict[int, dict[str, Any]] = {}
-        self._slow_command_keys: set[tuple[int, int]] = set()
+        self._slow_command_serial: dict[int, int] = {}
+        self._lane_instances: dict[int, dict[str, Any]] = {}
+        self._last_logged_error: BaseException | None = None
         context = multiprocessing.get_context(start_method)
         self._connections: list[Connection] = []
         self._processes: list[Any] = []
@@ -707,6 +714,9 @@ class ParallelEpisodeRunner:
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback) -> None:
+        if exc_value is not None and exc_value is not self._last_logged_error:
+            for lane_id in list(self._lane_instances) or [None]:
+                self._record_worker_error(lane_id, exc_value)
         self.close(force=exc_type is not None)
 
     def _exchange(
@@ -717,17 +727,28 @@ class ParallelEpisodeRunner:
             raise RuntimeError("parallel runner is closed")
         command_started = time.monotonic()
         for lane_id, message in commands.items():
-            process = self._processes[lane_id]
-            if not process.is_alive():
-                raise ParallelWorkerError(
-                    f"worker {lane_id} exited with code "
-                    f"{process.exitcode}"
-                )
+            starts_instance = message[0] in {"reset_online", "reset_instance", "generate_online"}
+            if starts_instance and lane_id in self._lane_instances:
+                self._finish_instance(lane_id, reason="replaced")
             self._command_serial += 1
             self._lane_command_started[lane_id] = command_started
             self._lane_command_serial[lane_id] = self._command_serial
             self._lane_command_name[lane_id] = str(message[0])
-            self._connections[lane_id].send(message)
+            self._latest_progress.pop(lane_id, None)
+            self._slow_command_serial.pop(lane_id, None)
+            if starts_instance:
+                self._start_instance(lane_id, message, command_started)
+            try:
+                process = self._processes[lane_id]
+                if not process.is_alive():
+                    raise ParallelWorkerError(
+                        f"worker {lane_id} exited with code "
+                        f"{process.exitcode}"
+                    )
+                self._connections[lane_id].send(message)
+            except (ParallelWorkerError, OSError) as error:
+                self._record_worker_error(lane_id, error)
+                raise
         return self._receive_responses(commands)
 
     def _append_diagnostic_jsonl(
@@ -741,6 +762,104 @@ class ParallelEpisodeRunner:
                 json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
             )
             handle.flush()
+
+    def _instance_log_context(self, lane_id: int | None) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in self._lane_instances.get(lane_id, {}).items()
+            if not key.startswith("_")
+        }
+
+    def _start_instance(
+        self, lane_id: int, message: tuple[str, Any], started: float
+    ) -> None:
+        if lane_id in self._lane_instances:
+            self._finish_instance(lane_id, reason="replaced")
+        command, payload = message
+        value = payload.value if isinstance(payload, _WorkerResetRequest) else payload
+        online = command != "reset_instance"
+        self._lane_instances[lane_id] = {
+            "instance_task_id": self._lane_command_serial[lane_id],
+            "task_kind": "generation" if command == "generate_online" else "rollout",
+            "instance_id": None if online else value.instance_id,
+            "episode_index": int(value) if online else None,
+            "seed": (
+                int(self.config["dataset"]["splits"]["train"]["seed_start"])
+                + int(value) if online else None
+            ),
+            "environment_step_count": 0,
+            "_started_at": started,
+            "_slow_recorded": False,
+        }
+        self._append_diagnostic_jsonl("worker_progress.jsonl", {
+            **self._instance_log_context(lane_id),
+            "event": "instance_start",
+            "timestamp": time.time(),
+            "lane": lane_id,
+            "command": command,
+            "command_serial": self._lane_command_serial[lane_id],
+        })
+
+    def _record_slow_task(self, lane_id: int, record: dict[str, Any], classification: str) -> None:
+        serial = self._lane_command_serial.get(lane_id, -1)
+        context = self._lane_instances.get(lane_id)
+        if self._slow_command_serial.get(lane_id) == serial or (
+            context is not None and context["_slow_recorded"]
+        ):
+            return
+        self._slow_command_serial[lane_id] = serial
+        if context is not None:
+            context["_slow_recorded"] = True
+        payload = {
+            **self._instance_log_context(lane_id),
+            **record,
+            "event": "slow_task",
+            "classification": classification,
+        }
+        self._append_diagnostic_jsonl("worker_progress.jsonl", payload)
+        self._append_diagnostic_jsonl("slow_instances.jsonl", payload)
+
+    def _finish_instance(
+        self, lane_id: int, *, reason: str, response: WorkerResponse | None = None
+    ) -> None:
+        context = self._lane_instances.get(lane_id)
+        if context is None:
+            return
+        record = {
+            **self._instance_log_context(lane_id),
+            "event": "instance_end",
+            "timestamp": time.time(),
+            "lane": lane_id,
+            "command": self._lane_command_name.get(lane_id),
+            "command_serial": self._lane_command_serial.get(lane_id),
+            "elapsed_seconds": time.monotonic() - context["_started_at"],
+            "terminal_reason": reason,
+            "terminated": bool(response and response.terminated),
+            "truncated": bool(response and response.truncated),
+        }
+        if response is not None and response.metrics is not None:
+            record["task_failed"] = response.metrics.get("task_failed")
+        if record["elapsed_seconds"] >= self.slow_instance_seconds:
+            self._record_slow_task(lane_id, record, "completed_slow_instance")
+        self._append_diagnostic_jsonl("worker_progress.jsonl", record)
+        del self._lane_instances[lane_id]
+
+    def _record_worker_error(self, lane_id: int | None, error: BaseException) -> None:
+        self._last_logged_error = error
+        self._append_diagnostic_jsonl("worker_progress.jsonl", {
+            **self._instance_log_context(lane_id),
+            "event": "error",
+            "timestamp": time.time(),
+            "lane": lane_id,
+            "command": self._lane_command_name.get(lane_id),
+            "command_serial": self._lane_command_serial.get(lane_id),
+            "error_type": type(error).__name__,
+            "message": str(error),
+            "traceback": traceback.format_exc(),
+            "latest_progress": self._latest_progress.get(lane_id),
+        })
+        if lane_id is not None:
+            self._finish_instance(lane_id, reason="error")
 
     def _record_worker_progress(self, progress: WorkerProgress) -> None:
         lane_id = int(progress.lane_id)
@@ -757,50 +876,59 @@ class ParallelEpisodeRunner:
             **progress.payload,
         }
         self._latest_progress[lane_id] = record
-        self._append_diagnostic_jsonl("worker_progress.jsonl", record)
-        slow_key = (lane_id, self._lane_command_serial.get(lane_id, -1))
-        if (
-            elapsed >= self.slow_instance_seconds
-            and slow_key not in self._slow_command_keys
-        ):
-            self._slow_command_keys.add(slow_key)
-            self._append_diagnostic_jsonl(
-                "slow_instances.jsonl",
-                {**record, "classification": "active_slow_search"},
-            )
+        if elapsed >= self.slow_instance_seconds:
+            self._record_slow_task(lane_id, record, "active_slow_search")
 
     def _record_completed_response(self, response: WorkerResponse) -> None:
         lane_id = int(response.lane_id)
         elapsed = time.monotonic() - self._lane_command_started.get(
             lane_id, time.monotonic()
         )
-        record = {
-            "event": "response",
-            "timestamp": time.time(),
-            "lane": lane_id,
-            "command": self._lane_command_name.get(lane_id),
-            "command_serial": self._lane_command_serial.get(lane_id),
-            "elapsed_seconds": elapsed,
-            "instance_id": response.instance_id,
-            "seed": (response.metadata or {}).get("seed"),
-            "generation_attempt": (response.metadata or {}).get(
-                "generation_attempt"
-            ),
-            "generation_time_seconds": response.generation_time_seconds,
-            "environment_step_count": response.environment_step_count,
-            "cache_hit": response.cache_hit,
-        }
-        self._append_diagnostic_jsonl("worker_progress.jsonl", record)
-        slow_key = (lane_id, self._lane_command_serial.get(lane_id, -1))
-        if (
-            max(elapsed, float(response.generation_time_seconds))
-            >= self.slow_instance_seconds
-            and slow_key not in self._slow_command_keys
-        ):
-            self._slow_command_keys.add(slow_key)
-            self._append_diagnostic_jsonl(
-                "slow_instances.jsonl",
-                {**record, "classification": "completed_slow_search"},
+        command = self._lane_command_name.get(lane_id)
+        context = self._lane_instances.get(lane_id)
+        if context is not None:
+            context["environment_step_count"] += response.environment_step_count
+            if response.instance_id is not None:
+                context["instance_id"] = response.instance_id
+            if response.metadata is not None:
+                for key in ("seed", "generation_attempt", "pressure_type", "cost_profile"):
+                    context[key] = response.metadata.get(key)
+            if command in {"reset_online", "reset_instance", "generate_online"}:
+                context["generation_time_seconds"] = response.generation_time_seconds
+                context["cache_hit"] = response.cache_hit
+                context["record_sha256"] = response.record_sha256
+        debug_step = self.debug_worker_steps and command == "step"
+        slow_command = (
+            max(elapsed, float(response.generation_time_seconds)) >= self.slow_instance_seconds
+        )
+        if debug_step or slow_command:
+            record = {
+                **self._instance_log_context(lane_id),
+                "event": "response",
+                "timestamp": time.time(),
+                "lane": lane_id,
+                "command": command,
+                "command_serial": self._lane_command_serial.get(lane_id),
+                "elapsed_seconds": elapsed,
+                "generation_time_seconds": response.generation_time_seconds,
+                "environment_step_count": response.environment_step_count,
+                "cache_hit": response.cache_hit,
+            }
+            if debug_step:
+                self._append_diagnostic_jsonl("worker_progress.jsonl", record)
+            if slow_command:
+                self._record_slow_task(lane_id, record, "completed_slow_search")
+        if command == "generate_online":
+            self._finish_instance(lane_id, reason="generated", response=response)
+        elif command == "snapshot":
+            self._finish_instance(lane_id, reason="step_limit", response=response)
+        elif response.terminated or response.truncated:
+            self._finish_instance(
+                lane_id,
+                reason=str((response.metrics or {}).get("terminal_reason") or (
+                    "terminated" if response.terminated else "truncated"
+                )),
+                response=response,
             )
 
     def _receive_responses(
@@ -811,6 +939,16 @@ class ParallelEpisodeRunner:
             self._connections[lane_id]: lane_id
             for lane_id in lane_ids
         }
+        try:
+            return self._wait_for_responses(pending)
+        except (ParallelWorkerError, ParallelWorkerTimeout, OSError) as error:
+            for lane_id in pending.values():
+                self._record_worker_error(lane_id, error)
+            raise
+
+    def _wait_for_responses(
+        self, pending: dict[Connection, int]
+    ) -> dict[int, WorkerResponse]:
         responses: dict[int, WorkerResponse] = {}
         started = time.monotonic()
         hard_deadline = started + self.timeout_seconds
@@ -864,7 +1002,6 @@ class ParallelEpisodeRunner:
                     last_heartbeat[lane_id] = time.monotonic()
                     self._record_worker_progress(response)
                     continue
-                pending.pop(connection)
                 if isinstance(response, WorkerFailure):
                     raise ParallelWorkerError(
                         f"worker {lane_id} failed during "
@@ -875,6 +1012,7 @@ class ParallelEpisodeRunner:
                     raise ParallelWorkerError(
                         f"worker {lane_id} returned an invalid response"
                     )
+                pending.pop(connection)
                 responses[lane_id] = response
                 self._record_completed_response(response)
         return responses
@@ -1758,6 +1896,8 @@ class ParallelEpisodeRunner:
         if self._closed:
             return
         self._closed = True
+        for lane_id in list(self._lane_instances):
+            self._finish_instance(lane_id, reason="aborted" if force else "runner_closed")
         if not force:
             for lane_id, process in enumerate(self._processes):
                 if process.is_alive():
@@ -1780,3 +1920,4 @@ class ParallelEpisodeRunner:
                 process.join(5.0)
         for connection in self._connections:
             connection.close()
+        self._last_logged_error = None
