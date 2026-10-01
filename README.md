@@ -26,7 +26,9 @@ The full training commands are long-running and can be launched separately.
 This repository trains a preference-conditioned HGNN policy with PPO for
 fatigue-aware reconfigurable assembly scheduling. Production and worker
 decisions use pair-plus-WAIT actions, exact action masks, deterministic event
-simulation, and schema-5 heterogeneous graph observations.
+simulation, and schema-6 heterogeneous graph observations. Order slack, worker-task
+waiting age, and event-projected WAIT slack enter each objective expert's context
+score through the action encoder. See [the time-context definition](docs/order_time_context.md).
 
 ## Confirmed main-experiment protocol (2026-09-28)
 

@@ -97,13 +97,18 @@ def test_mixed_variable_size_batch_matches_individual_forward(
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("variant", ["hetero_gnn", "node_mlp_pool", "shared_preference"])
 def test_phase_batched_head_matches_reference_values_and_gradients(
-    config, fixed_instance, device
+    config, fixed_instance, device, variant
 ):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
     effective_config = deepcopy(config)
     effective_config["network"]["worker_flow_time_normalization"] = "candidate_zscore_v1"
+    if variant == "node_mlp_pool":
+        effective_config["network"]["encoder_variant"] = variant
+    elif variant == "shared_preference":
+        effective_config["network"]["actor_head_variant"] = variant
     validation_instance = load_dataset_split(effective_config, "validation")[0].instance
     observations, masks = [], []
     for instance in (fixed_instance, validation_instance):
@@ -117,8 +122,24 @@ def test_phase_batched_head_matches_reference_values_and_gradients(
     wait_only[-1] = False
     observations.append(worker_observation)
     masks.append(wait_only)
+    production_wait_only = np.ones_like(masks[0], dtype=bool)
+    production_wait_only[-1] = False
+    observations.append(observations[0])
+    masks.append(production_wait_only)
+    pair_only = np.ones_like(worker_mask, dtype=bool)
+    pair_only[np.flatnonzero(~worker_mask[:-1])[0]] = False
+    observations.append(worker_observation)
+    masks.append(pair_only)
     network = build_actor_critic(observations[0], effective_config["network"]).to(device)
     network.eval()
+    # Exercise learned context contributions rather than only their zero initialization.
+    if variant != "shared_preference":
+        with torch.no_grad():
+            for prefix in ("production_experts", "worker_experts",
+                           "production_wait_experts", "worker_wait_experts"):
+                for expert in getattr(network, prefix).experts.values():
+                    expert.context[-1].weight.uniform_(-0.05, 0.05)
+                    expert.context[-1].bias.uniform_(-0.05, 0.05)
 
     def evaluate(mode):
         network.zero_grad(set_to_none=True)
@@ -154,6 +175,115 @@ def test_phase_batched_head_matches_reference_values_and_gradients(
             torch.testing.assert_close(batched, reference, atol=1e-5, rtol=1e-4)
 
 
+@pytest.mark.parametrize("wait_only", [False, True])
+def test_candidate_heads_receive_only_legal_pair_rows(config, fixed_instance, wait_only):
+    env = AssemblySchedulingEnv(config)
+    production = env.reset(fixed_instance)
+    worker, worker_mask = _find_worker_observation(config, fixed_instance)
+    observations = [production, worker, production, worker]
+    masks = [env.get_action_mask(), worker_mask, env.get_action_mask(), worker_mask]
+    if wait_only:
+        masks = [np.ones_like(mask, dtype=bool) for mask in masks]
+        for mask in masks:
+            mask[-1] = False
+    network = build_actor_critic(production, config["network"])
+    sizes = {}
+    handles = []
+    for name in ("production_edge_encoder", "worker_edge_encoder",
+                 "production_action_encoder", "worker_action_encoder",
+                 "production_residual", "worker_residual"):
+        handles.append(getattr(network, name).register_forward_pre_hook(
+            lambda module, args, name=name: sizes.__setitem__(name, args[0].shape[0])
+        ))
+    try:
+        with torch.no_grad():
+            # Tensor masks use the same candidate selection as NumPy masks.
+            logits, _ = network.forward_batch(
+                observations, [torch.as_tensor(mask) for mask in masks], device="cpu"
+            )
+        for phase, graph_indices in (("production", [0, 2]), ("worker", [1, 3])):
+            expected = sum(int((~masks[i][:-1]).sum()) for i in graph_indices)
+            assert sizes[phase + "_edge_encoder"] == expected
+            assert sizes[phase + "_action_encoder"] == expected
+            assert sizes[phase + "_residual"] == expected + len(graph_indices)
+        for i, mask in enumerate(masks):
+            assert torch.isfinite(logits[i, :len(mask)][~torch.as_tensor(mask)]).all()
+            assert (logits[i, :len(mask)][torch.as_tensor(mask)] == torch.finfo(logits.dtype).min).all()
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+@pytest.mark.parametrize("variant", ["hetero_gnn", "node_mlp_pool", "shared_preference"])
+def test_value_path_matches_actor_critic_and_skips_actor(
+    config, fixed_instance, monkeypatch, variant
+):
+    settings = deepcopy(config["network"])
+    if variant == "node_mlp_pool":
+        settings["encoder_variant"] = variant
+    elif variant == "shared_preference":
+        settings["actor_head_variant"] = variant
+    env = AssemblySchedulingEnv(config)
+    production = env.reset(fixed_instance)
+    worker, worker_mask = _find_worker_observation(config, fixed_instance)
+    validation = AssemblySchedulingEnv(config)
+    other = validation.reset(load_dataset_split(config, "validation")[0].instance)
+    observations = [production, worker, other]
+    masks = [env.get_action_mask(), worker_mask, validation.get_action_mask()]
+    network = build_actor_critic(production, settings)
+    network.eval()
+    network.zero_grad(set_to_none=True)
+    _, expected = network.forward_batch(observations, masks, device="cpu")
+    expected.square().sum().backward()
+    expected_gradients = {
+        name: parameter.grad.detach().clone()
+        for name, parameter in network.named_parameters()
+        if parameter.grad is not None and name.startswith(
+            ("node_projectors.", "message_layers.", "node_mlp_layers.",
+             "global_encoder.", "preference_encoder.", "critic.")
+        )
+    }
+    network.zero_grad(set_to_none=True)
+
+    def actor_was_called(*args, **kwargs):
+        raise AssertionError("value-only inference must skip the actor")
+
+    monkeypatch.setattr(network, "forward_batch", actor_was_called)
+    for name in ("graph_context_projector", "production_edge_encoder", "worker_edge_encoder",
+                 "production_action_encoder", "worker_action_encoder", "wait_feature_encoder",
+                 "wait_action_encoder", "action_preference_projector",
+                 "production_residual", "worker_residual"):
+        monkeypatch.setattr(getattr(network, name), "forward", actor_was_called)
+    actual = network.value_batch(observations, masks, device="cpu")
+    torch.testing.assert_close(actual, expected)
+    actual.square().sum().backward()
+    for name, parameter in network.named_parameters():
+        if name in expected_gradients:
+            torch.testing.assert_close(parameter.grad, expected_gradients[name])
+        else:
+            assert parameter.grad is None
+    agent = PPOAgent(network, config["ppo"], device="cpu")
+    assert agent.value_batch(observations, masks) == pytest.approx(expected.detach().tolist())
+    assert network.consume_policy_decision_diagnostics() == []
+
+
+@pytest.mark.parametrize("entrypoint", ["forward_batch", "value_batch"])
+def test_inference_paths_reject_invalid_masks(config, fixed_instance, entrypoint):
+    env = AssemblySchedulingEnv(config)
+    observation = env.reset(fixed_instance)
+    mask = env.get_action_mask()
+    network = build_actor_critic(observation, config["network"])
+    evaluate = getattr(network, entrypoint)
+    with pytest.raises(ValueError, match="non-empty and aligned"):
+        evaluate([observation], [], device="cpu")
+    with pytest.raises(ValueError, match="one legal action"):
+        evaluate([observation], [np.ones_like(mask)], device="cpu")
+    with pytest.raises(ValueError, match="one-dimensional"):
+        evaluate([observation], [mask.reshape(1, -1)], device="cpu")
+    with pytest.raises(ValueError, match="mask width"):
+        evaluate([observation], [np.zeros(len(mask) + 1, dtype=bool)], device="cpu")
+
+
 def test_batched_policy_diagnostics_are_plain_values(config, fixed_instance):
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(fixed_instance)
@@ -175,6 +305,33 @@ def test_batched_policy_diagnostics_are_plain_values(config, fixed_instance):
         for value in row.values()
     )
     assert network.consume_policy_decision_diagnostics() == []
+
+
+def test_sparse_diagnostics_preserve_original_action_indices(config, fixed_instance):
+    worker, mask = _find_worker_observation(config, fixed_instance)
+    selected = np.flatnonzero(~mask[:-1])[-1]
+    pair_only = np.ones_like(mask)
+    pair_only[selected] = False
+    wait_only = np.ones_like(mask)
+    wait_only[-1] = False
+    masks = [mask, pair_only, wait_only]
+    network = build_actor_critic(worker, config["network"])
+    network.eval()
+    rows = {}
+    with torch.no_grad():
+        for mode in ("reference_v8", "phase_batched_v1"):
+            network.execution_mode = mode
+            network.forward_batch([worker] * len(masks), masks, device="cpu")
+            rows[mode] = network.consume_policy_decision_diagnostics()
+    for actual, expected in zip(rows["phase_batched_v1"], rows["reference_v8"], strict=True):
+        assert actual.keys() == expected.keys()
+        for name, value in expected.items():
+            if isinstance(value, float):
+                assert actual[name] == pytest.approx(value, abs=1e-6)
+            else:
+                assert actual[name] == value
+    assert rows["phase_batched_v1"][1]["relative_top_action"] == selected
+    assert rows["phase_batched_v1"][1]["final_pair_top_action"] == selected
 
 
 def test_sampled_batch_uses_independent_reproducible_generator(

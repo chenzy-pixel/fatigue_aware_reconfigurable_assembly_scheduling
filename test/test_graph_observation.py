@@ -165,6 +165,7 @@ def test_graph_observation_static_contract(config, fixed_instance):
         "estimated_labor_cost_norm",
         "estimated_downtime_cost_norm",
         "estimated_worker_load_variance_delta_norm",
+        "estimated_order_slack_norm",
     )
     assert np.all(capability.edge_features[:, [0, 2, 3, 4]] >= 0.0)
     assert np.all(capability.edge_features[:, [0, 2, 3, 4]] <= 2.0)

@@ -129,6 +129,7 @@ def _scalar_capability_features(environment):
                     machine_index, operation.spec.required_module
                 )
                 / variance_scale,
+                environment.estimated_order_slack_norm(operation.spec.order_id),
             ]
         )
     return np.asarray(values, dtype=np.float32)

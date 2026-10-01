@@ -35,7 +35,7 @@ configs → data → environment → agent/ppo → training + train.py → resul
 | 策略头 | V8 objective experts |
 | Pair 可行性 | `instant_physical_pair_mask_v1` |
 | WAIT mask | `progress_certified_wait_v2` |
-| Observation | schema 5 |
+| Observation | schema 6，order_chain_action_context_v1 |
 | Reward | `single_stage_progress_quality_failure_v2` |
 | 训练协议 | `single_stage_lexicographic_failure_v2` |
 
@@ -46,7 +46,7 @@ configs → data → environment → agent/ppo → training + train.py → resul
 | 接口 | 契约 |
 |---|---|
 | `reset(instance, preference=...)` | 固定订单/工序进度分母，初始化事件、状态和 `P_0,Q_0` |
-| `observe()` | 生成 schema-5 异质图与三目标偏好字段 |
+| `observe()` | 生成 schema-6 异质图与三目标偏好字段 |
 | `get_action_mask()` | 返回当前生产或工人阶段的精确合法动作 mask |
 | `step(action)` | 执行动作、推进事件并返回 `RewardVector` 与真实任务终止状态 |
 | `metrics()` | 返回目标、进度、质量、终止、安全和资源诊断 |
@@ -136,6 +136,22 @@ value loss、entropy、GAE 和梯度裁剪。正式配置强制 `gamma=1`。
 `softplus(theta)` 权重，偏好残差以合法动作基础 logit 的标准差缩放。
 Universal 的工人 Flow 专家将合法候选工期标准化为 `candidate_zscore_v1`，
 标准差下限 `0.001`；动作与上下文编码仍保留绝对工期。
+
+订单节点和生产候选边携带完整剩余工序链的预计裕量，工人候选边携带关联订单裕量
+与当前重构阶段等待时间；WAIT 编码携带已知事件推进后的最小活跃订单裕量和变化。
+这些信息经各动作编码进入三个专家各自的 context 网络，直接评分契约保持一致。
+估计使用实例 horizon 归一化，不参与动作 mask。定义、投影和 checkpoint 迁移见
+[订单时间上下文](order_time_context.md)。
+
+动作头按阶段打包合法 pair 与 WAIT，再把 logits 写回原始动作编号；非法动作和
+batch padding 保持 mask 填充值。工人候选时长标准化与偏好残差尺度继续只使用
+合法动作。稀疏候选的动作索引、graph ID 和 mask 按阶段统一传输，动作诊断仍
+报告原始编号。图编码仍使用完整异质图。
+
+`PPOAgent.value_batch()` 调用网络的独立价值路径，仅执行共享图编码、偏好编码和
+critic，用于 rollout cutoff 自举。两条路径共享 critic 实现；网络参数、规格与
+checkpoint 格式保持一致。数值/梯度对照及测量记录见
+[合法候选与价值路径优化](graph_network_performance.md)。
 
 `agent/ppo/parallel.py` 对任意 worker 数使用同一进程协议：
 

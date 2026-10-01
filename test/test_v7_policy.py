@@ -40,7 +40,7 @@ def test_previous_action_semantics_checkpoint_is_rejected():
     )
     with pytest.raises(ValueError, match="V7|network_spec"):
         agent.load(project_path(ACCEPTED), load_optimizer=False)
-    assert agent.network.network_spec()["observation_schema_version"] == 5
+    assert agent.network.network_spec()["observation_schema_version"] == 6
 
 
 def test_checkpoint_round_trip_and_incompatible_spec_rejected(tmp_path):
