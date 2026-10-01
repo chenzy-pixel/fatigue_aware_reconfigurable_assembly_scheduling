@@ -12,6 +12,10 @@ from data.models import (
     AssemblyInstance,
 )
 from environment.actions import ActionCodec
+from environment.time_context import (
+    ORDER_TIME_FEATURE, WAIT_TIME_FEATURES, WORKER_WAIT_FEATURE,
+    OrderTimeEstimator, project_wait_state,
+)
 from environment.dynamics import EPSILON, quantize_to_ticks, ticks_to_minutes
 from environment.state import (
     MachineRuntime,
@@ -188,6 +192,7 @@ class AssemblySchedulingEnv:
         self._action_mask_cache: np.ndarray | None = None
         self._observation_cache_version = -1
         self._observation_cache: Observation | None = None
+        self._order_finish_tick_cache: dict[str, int] | None = None
         self._cumulative_reward = np.zeros(3, dtype=np.float64)
         self._cumulative_base_training_reward = 0.0
         self._cumulative_training_reward = 0.0
@@ -259,6 +264,7 @@ class AssemblySchedulingEnv:
         self._action_mask_cache = None
         self._observation_cache_version = -1
         self._observation_cache = None
+        self._order_finish_tick_cache = None
 
     def reset(
         self,
@@ -527,6 +533,7 @@ class AssemblySchedulingEnv:
             "completion_ratio",
             "remaining_operation_ratio",
             "remaining_workload_norm",
+            ORDER_TIME_FEATURE,
         )
         order_features = []
         for order in self.instance.orders:
@@ -558,6 +565,7 @@ class AssemblySchedulingEnv:
                         for operation in remaining_operations
                     )
                     / horizon,
+                    self.estimated_order_slack_norm(order.id),
                 ]
             )
 
@@ -822,6 +830,24 @@ class AssemblySchedulingEnv:
         self._observation_cache_version = self._state_version
         return observation
 
+    def estimated_order_finish_ticks(self) -> dict[str, int]:
+        """Soft full-chain estimates, cached for the current physical state."""
+        if self._order_finish_tick_cache is None:
+            self._order_finish_tick_cache = OrderTimeEstimator(self).finish_ticks()
+        return dict(self._order_finish_tick_cache)
+
+    def estimated_order_slack_norm(self, order_id: str) -> float:
+        if self._order_finish_tick_cache is None:
+            self._order_finish_tick_cache = OrderTimeEstimator(self).finish_ticks()
+        return (self.horizon_tick - self._order_finish_tick_cache[order_id]) / max(1, self.horizon_tick)
+
+    def minimum_active_order_slack_norm(self) -> float:
+        return min(
+            (self.estimated_order_slack_norm(order.id) for order in self.instance.orders
+             if self._order_released[order.id] and order.id not in self._order_completion_tick),
+            default=(self.horizon_tick - self.current_tick) / max(1, self.horizon_tick),
+        )
+
     def _build_static_edge_indices(self) -> dict[EdgeType, np.ndarray]:
         self._require_instance()
         operation_index = self.instance.operation_index
@@ -1039,6 +1065,7 @@ class AssemblySchedulingEnv:
             "estimated_labor_cost_norm",
             "estimated_downtime_cost_norm",
             "estimated_worker_load_variance_delta_norm",
+            ORDER_TIME_FEATURE,
         )
         if edge_count == 0:
             return EdgeStore(
@@ -1185,6 +1212,10 @@ class AssemblySchedulingEnv:
             objective_scalarizer_config(self.config)["scales"]["variance"]
         )
         features[:, 14] = load_variance_delta[group_ids] / variance_scale
+        features[:, 15] = [
+            self.estimated_order_slack_norm(self.operations[int(index)].spec.order_id)
+            for index in operation_indices
+        ]
         return EdgeStore(
             edge_index=edge_index.copy(),
             edge_features=features,
@@ -1387,6 +1418,11 @@ class AssemblySchedulingEnv:
                     downtime_cost / cost_scale,
                     (projected_variance - current_load_variance)
                     / variance_scale,
+                    self.estimated_order_slack_norm(
+                        self._operation_by_id(reconfiguration.operation_id).spec.order_id
+                    ),
+                    (self.current_tick - self._reconfiguration_stage_start_tick(reconfiguration))
+                    / max(1, self.horizon_tick),
                 ]
                 service_pairs.append((machine_index, worker_index))
                 service_features.append(values)
@@ -1399,6 +1435,8 @@ class AssemblySchedulingEnv:
             "incremental_labor_cost_norm",
             "incremental_downtime_cost_norm",
             "incremental_load_variance_norm",
+            ORDER_TIME_FEATURE,
+            WORKER_WAIT_FEATURE,
         )
         service_candidate = EdgeStore(
             edge_index=_as_edge_index(service_pairs),
@@ -1429,7 +1467,8 @@ class AssemblySchedulingEnv:
         relations: dict[EdgeType, EdgeStore],
     ) -> tuple[np.ndarray, tuple[str, ...]]:
         del relations
-        certificate = self._wait_certificate()
+        # Terminal committed tasks have been settled and cannot advance again.
+        certificate = {} if self.task_done else self._wait_certificate()
         wait_ticks = int(certificate.get("wait_ticks", 0))
         wait_minutes = ticks_to_minutes(wait_ticks, self.resolution)
         scalarizer = objective_scalarizer_config(self.config)
@@ -1520,6 +1559,11 @@ class AssemblySchedulingEnv:
             "worker_recovery_gain",
             "future_wave_release_delta_norm",
             "configuration_reuse_gain",
+        ) + WAIT_TIME_FEATURES
+        current_slack = self.minimum_active_order_slack_norm()
+        after_slack = (
+            project_wait_state(self, wait_ticks).minimum_active_order_slack_norm()
+            if wait_ticks > 0 else current_slack
         )
         values = np.asarray(
             [
@@ -1536,6 +1580,8 @@ class AssemblySchedulingEnv:
                 recovery_gain,
                 future_release_delta,
                 reusable / max(1, len(self.operations)),
+                after_slack,
+                after_slack - current_slack,
             ],
             dtype=np.float32,
         )

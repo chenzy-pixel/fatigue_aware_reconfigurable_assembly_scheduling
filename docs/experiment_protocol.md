@@ -2,6 +2,10 @@
 
 更新日期：2026-10-02。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
 
+2026-10-02 时间上下文与执行路径变更：从桌面提交 `06218ef` 移植完整订单裕量、工人候选裕量/阶段等待、WAIT 后最小裕量及变化，观测升级至 schema 6，三项目标专家通过各自上下文评分使用新增信息。
+动作评分按合法 pair 稀疏计算，价值自举使用独立共享 critic 路径；沿用 V2 数据、单阶段奖励、当前冻结尺度及评测矩阵。
+同一归一化版本的 schema-5 checkpoint 新增输入列补零，保留已有权重，并记录迁移；归一化哈希校验仍执行。
+
 2026-10-02 实验变更：按用户指定，全部目标归一化统一为 Flow=1089.15、Cost=353.27、Variance=2.2629。
 新增 V2 验证参考尺度清单，偏好奖励、图中的目标相关特征、固定评估质量和 Pareto/HV 分析使用该组尺度。
 固定评估质量升级为 `canonical_bounded_quality_v2`，权重保持 `(0.5,0.3,0.2)`。
@@ -29,7 +33,7 @@
 
 ## 网络、奖励和预算
 
-网络为 V8 HGNN actor-critic，schema-5 图包含六类节点和十二类关系。生产与工人采用 pair-plus-WAIT；WAIT 由精确进展证书控制。工人 Flow 专家采用 `candidate_zscore_v1`，标准差下限 `0.001`。正式执行模式为 `phase_batched_v1`，精度为 `float32`。
+网络为 V8 HGNN actor-critic，schema-6 图包含六类节点和十二类关系。生产与工人采用 pair-plus-WAIT；WAIT 由精确进展证书控制。工人 Flow 专家采用 `candidate_zscore_v1`，标准差下限 `0.001`。正式执行模式为 `phase_batched_v1`，精度为 `float32`。
 
 所有训练入口使用 `single_stage_progress_quality_failure_v2`：`r_t = delta_progress + Q_t - Q_(t+1) - failure_penalty`。任务失败仅在终止步扣 1，实际质量保持可重建；`gamma=1`、feasibility shaping 关闭。rollout cutoff 使用 critic 自举。
 

@@ -35,7 +35,7 @@ configs → data → environment → agent/ppo → training + train.py → resul
 | 策略头 | V8 objective experts |
 | Pair 可行性 | `instant_physical_pair_mask_v1` |
 | WAIT mask | `progress_certified_wait_v2` |
-| Observation | schema 5 |
+| Observation | schema 6, `order_chain_action_context_v1` |
 | Reward | `single_stage_progress_quality_failure_v2` |
 | 训练协议 | `single_stage_lexicographic_failure_v2` |
 
@@ -46,7 +46,7 @@ configs → data → environment → agent/ppo → training + train.py → resul
 | 接口 | 契约 |
 |---|---|
 | `reset(instance, preference=...)` | 固定订单/工序进度分母，初始化事件、状态和 `P_0,Q_0` |
-| `observe()` | 生成 schema-5 异质图与三目标偏好字段 |
+| `observe()` | 生成 schema-6 异质图、订单时间上下文与三目标偏好字段 |
 | `get_action_mask()` | 返回当前生产或工人阶段的精确合法动作 mask |
 | `step(action)` | 执行动作、推进事件并返回 `RewardVector` 与真实任务终止状态 |
 | `metrics()` | 返回目标、进度、质量、终止、安全和资源诊断 |
@@ -135,6 +135,18 @@ value loss、entropy、GAE 和梯度裁剪。正式配置强制 `gamma=1`。
 `softplus(theta)` 权重，偏好残差以合法动作基础 logit 的标准差缩放。
 Universal 的工人 Flow 专家将合法候选工期标准化为 `candidate_zscore_v1`，
 标准差下限 `0.001`；动作与上下文编码仍保留绝对工期。
+
+schema-6 将整个订单预计裕量放入订单节点和生产候选边，工人候选另带当前待拆/待装阶段的等待年龄，
+WAIT 向量记录下一已知事件后的最小裕量及其变化。它们经动作 embedding 进入各目标专家独立的 context MLP。
+估计纳入已知资源占用和疲劳恢复，未来未确定的跨订单竞争仍可能使其偏乐观；字段定义见
+[订单时间上下文](order_time_context.md)。
+
+默认阶段批处理只编码和评分合法 pair，再按原动作编号恢复完整 logits；HGNN 编码完整图。
+`value_batch()` 仅运行图编码、偏好编码和共享 critic，用于采集 cutoff 自举。
+执行对照和本机计时见 [推理优化](graph_network_performance.md)。
+
+同尺度 schema-5 checkpoint 的新增输入列补零，Adam 状态同步扩展，加载时记录迁移来源。
+网络结构及归一化哈希仍严格检查；新时间特征经后续训练才产生作用。
 
 `agent/ppo/parallel.py` 对任意 worker 数使用同一进程协议：
 

@@ -11,6 +11,7 @@ from torch.distributions import Categorical
 from torch.nn import functional as functional
 
 from agent.ppo.buffer import RolloutBuffer
+from agent.ppo.checkpoint import migrate_time_context_checkpoint
 from agent.ppo.network import (
     ActorCriticNetwork,
     assert_network_config_matches_spec,
@@ -223,7 +224,7 @@ class PPOAgent:
         observations: Sequence[Observation],
         action_masks: Sequence[np.ndarray],
     ) -> list[float]:
-        _, values = self.network.forward_batch(
+        values = self.network.value_batch(
             observations,
             action_masks,
             device=self.device,
@@ -465,6 +466,11 @@ class PPOAgent:
         checkpoint = torch.load(
             Path(path), map_location=self.device, weights_only=False
         )
+        source_schema = infer_checkpoint_network_spec(checkpoint)["observation_schema_version"]
+        checkpoint = migrate_time_context_checkpoint(
+            checkpoint, self.network.network_spec(),
+            [name for name, _ in self.network.named_parameters()],
+        )
         checkpoint_spec = infer_checkpoint_network_spec(checkpoint)
         assert_network_config_matches_spec(
             self.network.network_spec(),
@@ -473,4 +479,12 @@ class PPOAgent:
         self.network.load_state_dict(checkpoint["network"])
         if load_optimizer and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
-        return dict(checkpoint.get("metadata", {}))
+        metadata = dict(checkpoint.get("metadata", {}))
+        if source_schema == 5:
+            metadata["source_network_weights_sha256"] = metadata.get("network_weights_sha256")
+            metadata["network_weights_sha256"] = network_weights_sha256(self.network.state_dict())
+            if isinstance(metadata.get("provenance"), dict):
+                metadata["provenance"] = provenance_with_network_weights(
+                    metadata["provenance"], metadata["network_weights_sha256"]
+                )
+        return metadata
