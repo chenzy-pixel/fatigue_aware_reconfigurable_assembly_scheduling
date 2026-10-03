@@ -247,6 +247,9 @@ class InstanceGenerator:
         self.template = template
         self.settings = generator_config
         self.config = config or load_config("configs/default.json")
+        # Benchmark diagnostics use the source instance's physical fatigue model.
+        self.precheck_config = copy.deepcopy(self.config)
+        self.precheck_config.setdefault("environment", {})["fatigue_mode"] = "full"
         self.version = str(generator_config["version"])
         self.template_instance = str(
             self.config.get("dataset", {}).get(
@@ -339,7 +342,7 @@ class InstanceGenerator:
                 self._emit_progress(phase="heuristic_rollout", seed=seed,
                                     generation_attempt=attempt, pressure_type=pressure_type)
                 try:
-                    heuristic_metrics, _ = _rollout_metrics(instance, self.config, self.progress_callback)
+                    heuristic_metrics, _ = _rollout_metrics(instance, self.precheck_config, self.progress_callback)
                 except Exception as error:
                     error.add_note(f"diagnostic failed: split={split}, seed={seed}, attempt={attempt}")
                     raise
@@ -831,7 +834,7 @@ class InstanceGenerator:
         from agent.baselines import HeuristicPolicy
         from environment import AssemblySchedulingEnv, DecisionType
 
-        environment = AssemblySchedulingEnv(self.config)
+        environment = AssemblySchedulingEnv(self.precheck_config)
         environment.reset(instance, build_observation=False)
         policy = HeuristicPolicy()
         values: list[float] = []

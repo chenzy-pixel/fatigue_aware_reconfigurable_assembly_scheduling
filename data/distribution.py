@@ -18,6 +18,13 @@ def stable_seed(*parts: Any) -> int:
     return int.from_bytes(hashlib.sha256("\x1f".join(map(str, parts)).encode()).digest()[:8], "big")
 
 
+def benchmark_environment_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the physical benchmark settings shared by fatigue ablations."""
+    environment = dict(config["environment"])
+    environment.pop("fatigue_mode", None)
+    return environment
+
+
 def protocol_hashes(config: Mapping[str, Any], settings: Mapping[str, Any] | None = None) -> dict[str, str]:
     # A fixed evaluation pool is shared across curriculum ablations. The online
     # cache fingerprints the full generator separately, including the course.
@@ -25,7 +32,7 @@ def protocol_hashes(config: Mapping[str, Any], settings: Mapping[str, Any] | Non
                  if key not in {"curriculum", "severity_curriculum", "sampling_window_episodes"}}
     payloads = {
         "generator_config_sha256": generator,
-        "environment_config_sha256": config["environment"],
+        "environment_config_sha256": benchmark_environment_config(config),
         "distribution_contract_sha256": {
             "version": "2.0.0", "pressure_types": PRESSURE_TYPES,
             "dataset": config["dataset"], "generator": generator,

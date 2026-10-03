@@ -49,6 +49,14 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
 
     manifest = deepcopy(_RUNTIME_MANIFEST)
     if config is not None:
+        network = config.get("network", {})
+        manifest["encoder_variant"] = network.get("encoder_variant", "hetero_gnn")
+        manifest["actor_head_variant"] = network.get("actor_head_variant", "objective_experts")
+        manifest["fatigue_mode"] = config.get("environment", {}).get("fatigue_mode", "full")
+        if manifest["actor_head_variant"] == "shared_preference":
+            manifest["candidate_ranker"] = "shared_preference_mlp_v1"
+        if manifest["fatigue_mode"] == "neutral":
+            manifest["worker_feasibility"] = "qualification_and_availability_no_fatigue_v1"
         manifest["terminal_failure_penalty"] = float(
             config.get("reward", {}).get(
                 "terminal_failure_penalty", manifest["terminal_failure_penalty"]
@@ -79,6 +87,10 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
         )
     if int(network.get("policy_head_version", 8)) != 8:
         raise ValueError("latest-only runtime accepts only policy_head_version=8")
+    if network.get("encoder_variant", "hetero_gnn") not in {"hetero_gnn", "node_mlp_pool"}:
+        raise ValueError("unknown network.encoder_variant")
+    if network.get("actor_head_variant", "objective_experts") not in {"objective_experts", "shared_preference"}:
+        raise ValueError("unknown network.actor_head_variant")
     scalarizer = config.get("objective_scalarizer", {})
     if scalarizer.get("type") != "normalized_augmented_tchebycheff_v1":
         raise ValueError("objective_scalarizer.type must be normalized_augmented_tchebycheff_v1")
@@ -125,6 +137,8 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
     environment = config.get("environment", {})
     if not isinstance(environment, Mapping):
         raise TypeError("environment config must be a mapping")
+    if environment.get("fatigue_mode", "full") not in {"full", "neutral"}:
+        raise ValueError("unknown environment.fatigue_mode")
     removed_environment = sorted(
         {"worker_resource_control", "production_defer"}.intersection(
             environment
@@ -141,3 +155,12 @@ def attach_runtime_manifest(config: dict[str, Any]) -> dict[str, Any]:
     validate_latest_only_config(config)
     config["runtime_manifest"] = runtime_manifest(config)
     return config
+
+
+def assert_checkpoint_fatigue_mode(metadata: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    """Reject cross-physics checkpoint reuse before evaluation or initialization."""
+    saved = metadata.get("runtime_manifest", {})
+    saved_mode = saved.get("fatigue_mode", "full") if isinstance(saved, Mapping) else "full"
+    configured_mode = config.get("environment", {}).get("fatigue_mode", "full")
+    if saved_mode != configured_mode:
+        raise ValueError(f"checkpoint fatigue mode {saved_mode!r} does not match {configured_mode!r}")
