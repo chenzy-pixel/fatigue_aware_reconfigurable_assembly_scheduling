@@ -1,6 +1,10 @@
 # 当前实验协议
 
-更新日期：2026-10-02。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
+更新日期：2026-10-03。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
+
+2026-10-03 奖励参数变更：全局失败终止惩罚设为 **2.0**，由 `configs/default.json`
+统一提供，单目标、Universal 和 MO-ALNS 入口继承。每条失败轨迹只在终止步扣除一次，
+生效值记录于运行配置、runtime manifest 和 checkpoint 元数据。
 
 2026-10-02 时间上下文与执行路径变更：从桌面提交 `06218ef` 移植完整订单裕量、工人候选裕量/阶段等待、WAIT 后最小裕量及变化，观测升级至 schema 6，三项目标专家通过各自上下文评分使用新增信息。
 动作评分按合法 pair 稀疏计算，价值自举使用独立共享 critic 路径；沿用 V2 数据、单阶段奖励、当前冻结尺度及评测矩阵。
@@ -35,7 +39,7 @@
 
 网络为 V8 HGNN actor-critic，schema-6 图包含六类节点和十二类关系。生产与工人采用 pair-plus-WAIT；WAIT 由精确进展证书控制。工人 Flow 专家采用 `candidate_zscore_v1`，标准差下限 `0.001`。正式执行模式为 `phase_batched_v1`，精度为 `float32`。
 
-所有训练入口使用 `single_stage_progress_quality_failure_v2`：`r_t = delta_progress + Q_t - Q_(t+1) - failure_penalty`。任务失败仅在终止步扣 1，实际质量保持可重建；`gamma=1`、feasibility shaping 关闭。rollout cutoff 使用 critic 自举。
+所有训练入口使用 `single_stage_progress_quality_failure_v2`：`r_t = delta_progress + Q_t - Q_(t+1) - failure_penalty`。任务失败仅在终止步扣 2，实际质量保持可重建；`gamma=1`、feasibility shaping 关闭。rollout cutoff 使用 critic 自举。
 
 | 配置 | 训练轮数 | 验证间隔 | 训练 worker | 验证 worker | 每次 PPO 更新 episode |
 |---|---:|---:|---:|---:|---:|

@@ -75,7 +75,7 @@ RewardVector
   flow, cost, variance          原始诊断差分
   operation_progress           P(t+1)-P(t)
   quality                      -(Q(t+1)-Q(t))
-  failure                      仅任务失败终止步骤为 -1
+  failure                      仅任务失败终止步骤为 -lambda（默认 -2）
   feasibility_shaping          可选势函数差分
 ```
 
@@ -85,7 +85,7 @@ RewardVector
 `proxy_return_from_metrics` 按一般形式重算：
 
 \[
-P_T-P_0+Q_0-Q_T-I.
+P_T-P_0+Q_0-Q_T-\lambda I.
 \]
 
 collector 在 episode 结束时检查累计基础奖励与代理回报在 `1e-8` 内一致。
@@ -109,7 +109,7 @@ Cost=353.27、工人负荷方差=2.2629。三项来自用户选定的 V2 续训�
   → 检查 horizon 与其他失败条件
 ```
 
-训练奖励始终使用实际 `Q_T`；环境失败另扣一次 1。正式评测仍可把失败质量标记为
+训练奖励始终使用实际 `Q_T`；环境失败另扣一次配置中的惩罚，默认值为 2.0。正式评测仍可把失败质量标记为
 1，且该字段不进入 v2 回报重建。PPO collector 只对真实任务成功或失败提交
 `done=True` 和 `last_value=0`。采集步数 cutoff 保持 `done=False`，并从实际下一
 observation 调用 `value_batch` 自举。

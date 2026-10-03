@@ -41,7 +41,7 @@ def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
     assert config["reward"]["mode"] == (
         "single_stage_progress_quality_failure_v2"
     )
-    assert config["reward"]["terminal_failure_penalty"] == 1.0
+    assert config["reward"]["terminal_failure_penalty"] == 2.0
     assert config["ppo"]["gamma"] == 1.0
     assert config["reward"]["feasibility_shaping"]["enabled"] is False
     assert "two_stage" not in config["training"]

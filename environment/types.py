@@ -207,7 +207,7 @@ def terminal_failure_penalty(config: dict) -> float:
     """Return the configured positive one-shot task-failure penalty."""
 
     reward = reward_config(config)
-    value = float(reward.get("terminal_failure_penalty", 1.0))
+    value = float(reward.get("terminal_failure_penalty", 2.0))
     if not np.isfinite(value) or value < 0.0:
         raise ValueError(
             "reward.terminal_failure_penalty must be finite and non-negative"

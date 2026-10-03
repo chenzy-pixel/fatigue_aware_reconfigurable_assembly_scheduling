@@ -35,7 +35,7 @@ public alias. The full ordered preference list and scale provenance are in
 Every PPO entry point uses one reward throughout training:
 
 \[
-r_t=(P_{t+1}-P_t)+(Q_t-Q_{t+1})-I_t.
+r_t=(P_{t+1}-P_t)+(Q_t-Q_{t+1})-\lambda I_t.
 \]
 
 For an instance with all orders fixed at reset,
@@ -47,14 +47,16 @@ P_t=\frac{1}{N}\sum_{i=1}^{N}\frac{c_i(t)}{n_i},
 where only `DONE` operations contribute to `c_i(t)`. Unreleased orders remain
 in the denominator, and order release does not change progress. `Q_t` is the
 existing bounded preference quality score computed from the actual objectives.
-`I_t=1` only on a task-failure terminal step and is zero otherwise. Evaluation
+`I_t=1` only on a task-failure terminal step and is zero otherwise. The global
+default is `lambda=2.0`, inherited by E1, Universal, and MO-ALNS configurations.
+The configured failure penalty must be finite and non-negative. Evaluation
 continues to expose the formal failure quality bound separately; it is not used
 by the failure-v2 training reward.
 
 With `gamma=1`, every trajectory is checked against the general identity
 
 \[
-G=P_T-P_0+Q_0-Q_T-I.
+G=P_T-P_0+Q_0-Q_T-\lambda I.
 \]
 
 Standard from-scratch resets assert `P_0=Q_0=0`. The feasibility potential and
@@ -66,7 +68,7 @@ the published configurations set its reward coefficient path to disabled.
 | Outcome | Training quality | Failure penalty | Transition `done` | Critic bootstrap |
 |---|---:|---:|---:|---:|
 | All operations complete | measured quality | 0 | yes | no |
-| Deadlock, task horizon, environment decision limit | measured quality | 1 once | yes | no |
+| Deadlock, task horizon, environment decision limit | measured quality | configured lambda once | yes | no |
 | Rollout collection cutoff | current quality | 0 | no | yes |
 
 At a horizon boundary, the simulator first processes every event at the target
@@ -74,7 +76,7 @@ tick and checks completion. A final operation completing exactly at the horizon
 is therefore a successful task.
 
 Runs persist `reward.mode=single_stage_progress_quality_failure_v2` and
-`reward.terminal_failure_penalty=1.0` in the effective config and runtime
+the configured `reward.terminal_failure_penalty` in the effective config and runtime
 manifest. Episode/evaluation rows record actual quality, failure penalty, base
 cumulative reward, and scalar training reward so returns can be reconstructed
 without reading the evaluation-only failure quality bound.
