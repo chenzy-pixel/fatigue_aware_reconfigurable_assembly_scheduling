@@ -791,6 +791,7 @@ class HeteroGraphActorCritic(nn.Module):
         first_indices: list[np.ndarray] = []
         second_indices: list[np.ndarray] = []
         pair_graph_ids: list[np.ndarray] = []
+        wait_positions: list[int] = []
         locked_machine_indices: list[np.ndarray] = []
         locked_operation_indices: list[np.ndarray] = []
         offsets: dict[int, tuple[int, int]] = {}
@@ -825,6 +826,7 @@ class HeteroGraphActorCritic(nn.Module):
             sparse_mask = np.zeros(count + 1, dtype=np.bool_)
             sparse_mask[-1] = mask_arrays[index][-1]
             sparse_masks.append(sparse_mask)
+            wait_positions.append(offset + count + len(wait_positions))
             offsets[index] = (offset, offset + count)
             offset += count
             first_indices.append(actions // second_count + first_offset)
@@ -946,19 +948,13 @@ class HeteroGraphActorCritic(nn.Module):
         residual = 2.0 * torch.sigmoid(gate) * scale * torch.tanh(residual_mlp(residual_input).squeeze(-1))
         final = base + residual
         if not torch.is_grad_enabled():
-            cursor = 0
-            for index in indices:
-                pair_start, pair_end = offsets[index]
-                width = pair_end - pair_start + 1
-                segment = slice(cursor, cursor + width)
-                # Diagnostics retain original pair action numbers and legal counts.
-                self._record_components(
-                    phase, merged_mask[segment], merged_d[segment], merged_c[segment],
-                    merged_z[segment], base[segment], residual[segment], final[segment],
-                    preference[index], pair_action_indices=action_indices[segment][:-1],
-                )
-                self._latest_policy_decision_diagnostics[-1]["_batch_index"] = index
-                cursor += width
+            self._record_components_grouped(
+                phase, indices, merged_graph_ids, merged_mask,
+                merged_d, merged_c, merged_z, base, residual, final, preference,
+                action_indices=action_indices,
+                wait_positions=torch.as_tensor(wait_positions, dtype=torch.long, device=device),
+                phase_indices=phase_indices,
+            )
         # Restore the phase in one scatter, including the masked WAIT entries.
         positions = merged_graph_ids * output_width + action_indices
         return positions, final.masked_fill(merged_mask, torch.finfo(final.dtype).min)
@@ -1251,6 +1247,111 @@ class HeteroGraphActorCritic(nn.Module):
             dtype=torch.float32, device=device,
         )
         return _GraphBatch(node_features, node_slices, relations, global_features)
+
+    def _record_components_grouped(
+        self,
+        phase: DecisionType,
+        indices: Sequence[int],
+        graph_ids: torch.Tensor,
+        mask: torch.Tensor,
+        direct: torch.Tensor,
+        context: torch.Tensor,
+        experts: torch.Tensor,
+        base: torch.Tensor,
+        residual: torch.Tensor,
+        final: torch.Tensor,
+        preference: torch.Tensor,
+        *,
+        action_indices: torch.Tensor,
+        wait_positions: torch.Tensor,
+        phase_indices: torch.Tensor,
+    ) -> None:
+        """Reduce diagnostic statistics for an entire phase on the device."""
+        if torch.is_grad_enabled():
+            return
+        graph_count = preference.shape[0]
+        expert_count = 3 * len(OBJECTIVES) if self.actor_head_variant == "objective_experts" else 0
+        parts = (direct, context, experts) if expert_count else ()
+        values = torch.cat(parts + (base.unsqueeze(-1), residual.unsqueeze(-1)), dim=-1)
+        legal = ~mask
+        pair_legal = legal.clone()
+        pair_legal[wait_positions] = False
+        selected = torch.where(legal.unsqueeze(-1), values, 0.0)
+        width = values.shape[1]
+        # Sum all moments and counts together rather than launching kernels per graph.
+        quantities = torch.cat((
+            selected, selected.square(),
+            ((values[:, :expert_count].abs() > 0.99) & legal.unsqueeze(-1)).to(values.dtype),
+            legal.to(values.dtype).unsqueeze(-1),
+            pair_legal.to(values.dtype).unsqueeze(-1),
+        ), dim=-1)
+        totals = values.new_zeros((graph_count, quantities.shape[1])).index_add_(0, graph_ids, quantities)
+        count = totals[:, -2].clamp_min(1).unsqueeze(-1)
+        means = totals[:, :width] / count
+        rms = (totals[:, width:2 * width] / count).sqrt()
+        columns = {
+            "legal_pair_count": totals[:, -1],
+            "terminal_legal": base.new_zeros(graph_count).index_copy_(
+                0, phase_indices, legal.index_select(0, wait_positions).to(base.dtype)
+            ),
+        }
+        if expert_count:
+            # A centered second pass avoids cancellation for nearly constant scores.
+            centered = torch.where(
+                legal.unsqueeze(-1),
+                values[:, :expert_count] - means[:, :expert_count].index_select(0, graph_ids),
+                0.0,
+            )
+            std = (values.new_zeros((graph_count, expert_count)).index_add_(
+                0, graph_ids, centered.square()
+            ) / count).sqrt()
+            saturation = totals[:, 2 * width:2 * width + expert_count] / count
+            for part_index, name in enumerate(("direct", "context", "expert")):
+                for objective_index, objective in enumerate(OBJECTIVES):
+                    column = part_index * len(OBJECTIVES) + objective_index
+                    columns[f"{name}_{objective}_mean"] = means[:, column]
+                    columns[f"{name}_{objective}_std"] = std[:, column]
+                    columns[f"{name}_{objective}_rms"] = rms[:, column]
+                    columns[f"{name}_{objective}_saturation_ratio"] = saturation[:, column]
+                    # The reference overwrites this field for each part; its final
+                    # value is the preference-weighted expert RMS.
+                    expert_column = 2 * len(OBJECTIVES) + objective_index
+                    columns[f"contribution_{objective}_rms"] = (
+                        rms[:, expert_column] * preference[:, objective_index].abs()
+                    )
+        columns["residual_base_rms_ratio"] = rms[:, -1] / rms[:, -2].clamp_min(1e-12)
+
+        # Select the smallest original pair action on ties, as argmax did on the
+        # sorted sparse candidates. WAIT is excluded from both pair rankings.
+        scores = torch.where(
+            pair_legal.unsqueeze(-1), torch.stack((base, final), dim=-1),
+            torch.finfo(base.dtype).min,
+        )
+        expanded_ids = graph_ids.unsqueeze(-1).expand(-1, 2)
+        maxima = base.new_full((graph_count, 2), torch.finfo(base.dtype).min).scatter_reduce_(
+            0, expanded_ids, scores, reduce="amax", include_self=True
+        )
+        matches = pair_legal.unsqueeze(-1) & (scores == maxima.index_select(0, graph_ids))
+        sentinel = torch.iinfo(torch.long).max
+        candidates = torch.where(matches, action_indices.unsqueeze(-1), sentinel)
+        top_actions = action_indices.new_full((graph_count, 2), sentinel).scatter_reduce_(
+            0, expanded_ids, candidates, reduce="amin", include_self=True
+        )
+        top_actions = torch.where(totals[:, -1:].gt(0), top_actions, -1)
+        columns["relative_top_action"] = top_actions[:, 0]
+        columns["final_pair_top_action"] = top_actions[:, 1]
+        columns["context_overrode_top"] = top_actions[:, 0] != top_actions[:, 1]
+
+        # Only construct host dictionaries per graph; all tensor calculations
+        # above are batched. The existing consumer performs one host transfer.
+        names = tuple(columns)
+        packed = torch.stack(tuple(columns.values()), dim=-1).index_select(0, phase_indices)
+        for index, row in zip(indices, packed.unbind(0), strict=True):
+            self._latest_policy_decision_diagnostics.append({
+                "decision_type": phase.value,
+                **dict(zip(names, row.unbind(0), strict=True)),
+                "_batch_index": index,
+            })
 
     def _record_components(
         self,

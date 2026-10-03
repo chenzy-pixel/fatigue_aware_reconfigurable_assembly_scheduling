@@ -186,6 +186,8 @@ class AssemblySchedulingEnv:
         self._wait_masked_states: set[tuple[int, str]] = set()
         self._wait_min_estimated_deadline_slack_ticks: int | None = None
         self._last_wait_certificate: dict[str, Any] | None = None
+        self._wait_certificate_cache_key: tuple[int, int, int, DecisionType] | None = None
+        self._wait_certificate_cache: dict[str, Any] | None = None
         self._first_unrecoverable_deadlock_diagnostic: dict[str, Any] | None = None
         self._reconfiguration_reuse_count = 0
         self._post_reconfiguration_process_count: dict[str, int] = {}
@@ -278,6 +280,8 @@ class AssemblySchedulingEnv:
         self._observation_cache_version = -1
         self._observation_cache = None
         self._order_finish_tick_cache = None
+        self._wait_certificate_cache_key = None
+        self._wait_certificate_cache = None
 
     def reset(
         self,
@@ -3756,39 +3760,48 @@ class AssemblySchedulingEnv:
             if value.stage
             in {ReconfigurationStage.WAIT_DIS, ReconfigurationStage.WAIT_INS}
         ]
-        if not pending:
-            return None
         recovery_rate = self.instance.fatigue.idle_recovery_rate_per_minute
-        for tick in range(self.current_tick + 1, self.horizon_tick + 1):
-            elapsed = ticks_to_minutes(tick - self.current_tick, self.resolution)
-            for reconfiguration in pending:
-                module = (
-                    reconfiguration.source_module
-                    if reconfiguration.stage == ReconfigurationStage.WAIT_DIS
-                    else reconfiguration.target_module
-                )
-                for worker in self.workers:
-                    if (
-                        worker.state != WorkerState.IDLE
-                        or module not in worker.spec.qualified_modules
-                        or self._worker_can_start(reconfiguration, worker)
-                    ):
-                        continue
-                    fatigue = max(0.0, worker.fatigue - recovery_rate * elapsed)
-                    duration_ticks = self._stage_duration_ticks(
-                        reconfiguration,
-                        worker,
-                        fatigue_override=fatigue,
-                    )
-                    predicted = fatigue + self._stage_accumulation_rate(
-                        reconfiguration
-                    ) * ticks_to_minutes(duration_ticks, self.resolution)
-                    if (
-                        predicted
-                        <= self.instance.fatigue.maximum_safe_fatigue + EPSILON
-                    ):
-                        return tick
-        return None
+        if not pending or recovery_rate <= 0.0 or self.current_tick >= self.horizon_tick:
+            return None
+        earliest_tick: int | None = None
+        for reconfiguration in pending:
+            module = (
+                reconfiguration.source_module
+                if reconfiguration.stage == ReconfigurationStage.WAIT_DIS
+                else reconfiguration.target_module
+            )
+            for worker in self.workers:
+                if (
+                    worker.state != WorkerState.IDLE
+                    or module not in worker.spec.qualified_modules
+                    or self._worker_can_start(reconfiguration, worker)
+                ):
+                    continue
+
+                def safe(tick: int) -> bool:
+                    return self._safe_stage_projection_at_tick(
+                        reconfiguration, worker,
+                        available_tick=self.current_tick,
+                        available_fatigue=worker.fatigue,
+                        recovery_rate=recovery_rate, tick=tick,
+                    )[0]
+
+                lower = self.current_tick + 1
+                upper = self.horizon_tick if earliest_tick is None else earliest_tick - 1
+                if upper < lower or not safe(upper):
+                    continue
+                # With nonnegative fatigue coefficients/accumulation, recovery
+                # only reduces predicted fatigue, including quantized durations.
+                while lower < upper:
+                    middle = (lower + upper) // 2
+                    if safe(middle):
+                        upper = middle
+                    else:
+                        lower = middle + 1
+                earliest_tick = lower
+                if earliest_tick == self.current_tick + 1:
+                    return earliest_tick
+        return earliest_tick
 
     def _has_pending_worker_task(self) -> bool:
         return any(
@@ -3857,6 +3870,16 @@ class AssemblySchedulingEnv:
     def _wait_certificate(self) -> dict[str, Any]:
         """Certify that WAIT reaches a deterministic state transition."""
 
+        key = (self._state_version, self.current_tick, self.horizon_tick, self.decision_type)
+        if self._wait_certificate_cache_key != key or self._wait_certificate_cache is None:
+            self._wait_certificate_cache = self._compute_wait_certificate()
+            self._wait_certificate_cache_key = key
+        self._last_wait_certificate = dict(self._wait_certificate_cache)
+        return dict(self._wait_certificate_cache)
+
+    def _compute_wait_certificate(self) -> dict[str, Any]:
+        """Build the certificate once for the current physical state and phase."""
+
         opportunity = self._wait_opportunity()
         estimate = self._remaining_completion_estimate_ticks()
         estimated_completion_tick = self.current_tick + estimate
@@ -3901,7 +3924,6 @@ class AssemblySchedulingEnv:
                     estimated_deadline_slack_ticks
                 ),
             }
-        self._last_wait_certificate = dict(certificate)
         return certificate
 
     def _record_wait_mask_certificate(

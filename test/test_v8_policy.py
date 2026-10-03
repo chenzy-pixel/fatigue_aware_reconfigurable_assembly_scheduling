@@ -159,13 +159,14 @@ def test_terminal_failure_uses_actual_quality_plus_one_penalty(
     assert truncated is True
     assert metrics["preference_quality_score"] == 1.0
     assert metrics["raw_preference_quality_score"] < 1.0
-    assert failure_return == pytest.approx(-1.0)
+    penalty = float(truncated_config["reward"]["terminal_failure_penalty"])
+    assert failure_return == pytest.approx(-penalty)
     expected = (
         metrics["operation_progress"]
         - metrics["initial_progress"]
         + initial_score
         - metrics["raw_preference_quality_score"]
-        - 1.0
+        - penalty
     )
     assert reward_return == pytest.approx(
         expected,
