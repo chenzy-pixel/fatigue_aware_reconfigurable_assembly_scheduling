@@ -147,8 +147,23 @@ The default Universal run contains 2,000 training episodes.
 Universal validates every 100 episodes on the ordered 13-point set and runs
 the 66-point final test after reloading its selected best checkpoint.
 Its training and validation worker counts are both 20 in the effective config.
-The five-seed batch entry point is `scripts/run_v8_universal.ps1`, which loads
-`configs/v8/universal.json` by default.
+The Universal launcher `scripts/run_v8_universal.ps1` defaults to seed 11 and
+`configs/v8/universal.json`. Pass `-Seeds 11,23,37` for a selected seed list; runs
+execute sequentially. Each batch appends a timestamp to its run names.
+
+```powershell
+.\scripts\run_v8_universal.ps1 -DryRun
+.\scripts\run_v8_universal.ps1
+.\scripts\run_v8_universal.ps1 -Seeds 11,23,37
+.\scripts\run_v8_universal.ps1 -Smoke
+```
+
+The launcher uses the project virtual environment when present, otherwise the
+active `python` command. Pass `-Python` with an executable path to select an
+interpreter. `-DryRun` prints the launch commands, and `-Smoke` forwards the
+training smoke option. A failed run stops the batch. Run directories follow
+`result/runs/v8_universal_seed11_<batch timestamp>`; use that generated directory
+for the checkpoint paths in the evaluation commands below.
 
 ## Evaluate
 
