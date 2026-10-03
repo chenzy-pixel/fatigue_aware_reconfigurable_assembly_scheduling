@@ -319,13 +319,18 @@ def proxy_return_from_metrics(
     else:
         initial_score = float(initial_score_value)
     terminal_score_value = metrics.get(
-        "actual_preference_quality_score", metrics.get("raw_preference_quality_score")
+        "reward_preference_quality_score",
+        metrics.get(
+            "actual_preference_quality_score", metrics.get("raw_preference_quality_score")
+        ),
     )
     terminal_score = (
         bounded_quality_score(
             float(metrics["flow_time_objective"]),
             float(metrics["reconfiguration_cost"]),
-            float(metrics["worker_load_variance"]),
+            float(metrics.get(
+                "reward_objective_worker_load_variance", metrics["worker_load_variance"]
+            )),
             config,
             preference=preference,
         ) if terminal_score_value is None else float(terminal_score_value)

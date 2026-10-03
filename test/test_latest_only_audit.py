@@ -136,4 +136,9 @@ def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
         "configs/baselines/mo_alns_smoke.json",
         "configs/baselines/mo_alns_manifest.json",
         "configs/v8/universal.json",
+        "configs/ablations/no_graph.json",
+        "configs/ablations/shared_head.json",
+        "configs/ablations/neutral_flow.json",
+        "configs/ablations/neutral_cost.json",
+        "configs/ablations/neutral_variance.json",
     }

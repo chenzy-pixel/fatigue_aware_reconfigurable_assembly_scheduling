@@ -20,7 +20,7 @@ from data.models import (
     load_instance_yaml,
     parse_instance_dict,
 )
-from data.distribution import PRESSURE_TYPES, protocol_hashes, training_sampling_plan, weighted_labels
+from data.distribution import PRESSURE_TYPES, benchmark_environment_config, protocol_hashes, training_sampling_plan, weighted_labels
 from data.feasibility import PRECHECK_VERSION
 
 
@@ -538,7 +538,7 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
             "template_sha256": self.generator.template_hash,
             "episode_count": self.episode_count,
             "generator_config": config["generator"],
-            "environment_config": config["environment"],
+            "environment_config": benchmark_environment_config(config),
             "precheck_version": PRECHECK_VERSION,
         }
         self.config_fingerprint = sha256_bytes(
@@ -546,7 +546,7 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
         )
         combined_config = {
             "generator": config["generator"],
-            "environment": config["environment"],
+            "environment": benchmark_environment_config(config),
             "precheck_version": PRECHECK_VERSION,
         }
         self.generator_environment_precheck_config_hash = sha256_bytes(
@@ -560,6 +560,11 @@ class OnlineInstanceDataset(Sequence[GeneratedInstanceRecord]):
                 "data/instances/train_cache",
             )
         )
+        if os.name == "nt":
+            native = str(cache_root.resolve())
+            if not native.startswith("\\\\?\\"):
+                native = ("\\\\?\\UNC\\" + native[2:]) if native.startswith("\\\\") else ("\\\\?\\" + native)
+            cache_root = Path(native)
         self.cache_directory = cache_root / self.config_fingerprint
         self.cache_directory.mkdir(parents=True, exist_ok=True)
 

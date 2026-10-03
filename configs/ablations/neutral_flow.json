@@ -1,0 +1,5 @@
+{
+  "extends": "../e1/single_flow.json",
+  "experiment_name": "ablation_neutral_flow",
+  "environment": {"fatigue_mode": "neutral"}
+}

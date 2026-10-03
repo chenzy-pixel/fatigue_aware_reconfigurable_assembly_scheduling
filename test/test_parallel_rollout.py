@@ -347,7 +347,7 @@ def test_environment_failure_marks_done_and_disables_critic_bootstrap(
     buffer.compute_gae(last_value=123.0, gamma=1.0, gae_lambda=0.95)
     transition = buffer.transitions[0]
     assert environment.metrics()["task_failed"] is True
-    assert reward.failure == pytest.approx(-1.0)
+    assert reward.failure == pytest.approx(-effective_config["reward"]["terminal_failure_penalty"])
     assert transition.done is True
     assert transition.return_value == pytest.approx(transition.reward)
 
@@ -399,7 +399,7 @@ def test_parallel_collector_accepts_failed_episode_reward_identity(
     runner.config = effective_config
     episode = runner._episode_result(context, environment.metrics())
     assert episode.metrics["task_failed"] is True
-    assert episode.reward_components["failure"] == pytest.approx(-1.0)
+    assert episode.reward_components["failure"] == pytest.approx(-effective_config["reward"]["terminal_failure_penalty"])
     assert episode.unshaped_reward_sum == pytest.approx(
         episode.expected_reward,
         abs=1e-8,

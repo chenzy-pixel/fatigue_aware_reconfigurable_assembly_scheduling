@@ -195,3 +195,23 @@ The test suite covers reward telescoping, fixed progress denominators,
 termination/bootstrap semantics, horizon-boundary completion, deterministic
 serial/parallel rollout, checkpoint ranking, preference-balanced aggregation,
 manifest integrity, and checkpoint compatibility.
+
+## Ablation experiments
+
+The five matched variants and their training, evaluation, and pairing contracts are
+documented in [the ablation protocol](docs/ablation_protocol.md). Structural variants
+use the Universal budget; fatigue-neutral variants use their single-objective parent
+budgets. All inherit the current V2 data, frozen scales, and failure penalty 2.0.
+
+```powershell
+python scripts/run_10_ablation_smoke.py
+python scripts/run_11_train_structural.py
+python scripts/run_12_train_neutral.py
+python scripts/run_13_evaluate_ablations.py
+python scripts/run_14_summarize_ablations.py
+```
+
+The training entry points default to seed 11. Evaluation requires the matched Universal
+and three full-fatigue single-objective baselines, checks protocol compatibility, and
+saves an evaluation manifest. Summarization uses that manifest to pair identical
+instance/preference/repeat cells.
