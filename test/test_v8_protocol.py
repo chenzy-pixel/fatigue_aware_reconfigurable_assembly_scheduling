@@ -109,10 +109,10 @@ def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     with pytest.raises(ValueError, match="reward.quality_weights"):
         validate_latest_only_config(config)
     config["reward"].pop("quality_weights")
-    config["reward"]["terminal_failure_penalty"] = 0.5
+    config["reward"]["terminal_failure_penalty"] = -0.5
     with pytest.raises(ValueError, match="terminal_failure_penalty"):
         validate_latest_only_config(config)
-    config["reward"]["terminal_failure_penalty"] = 1.0
+    config["reward"]["terminal_failure_penalty"] = 2.0
     config["ppo"]["gamma"] = 0.99
     with pytest.raises(ValueError, match="gamma"):
         validate_latest_only_config(config)

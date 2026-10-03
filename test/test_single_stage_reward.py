@@ -171,14 +171,15 @@ def test_environment_failures_keep_actual_quality_and_apply_one_penalty(
     assert metrics["task_failed"] is True
     assert metrics["preference_quality_score"] == 1.0
     assert metrics["actual_preference_quality_score"] < 1.0
-    assert metrics["terminal_failure_penalty_applied"] == pytest.approx(1.0)
-    assert failure_sum == pytest.approx(-1.0)
+    assert metrics["terminal_failure_penalty_applied"] == pytest.approx(2.0)
+    assert failure_sum == pytest.approx(-2.0)
+    assert sum(item["reward"]["failure"] != 0.0 for item in transitions) == 1
     assert 0.0 <= metrics["operation_progress"] < 1.0
     assert reward_sum == pytest.approx(
         proxy_return_from_metrics(metrics, effective), abs=1e-8
     )
     audit = _reward_audit(environment, transitions)
-    assert audit["component_sums"]["failure"] == pytest.approx(-1.0)
+    assert audit["component_sums"]["failure"] == pytest.approx(-2.0)
     assert audit["base_cumulative_reward"] == pytest.approx(
         metrics["base_cumulative_reward"], abs=1e-8
     )
@@ -207,8 +208,8 @@ def test_failure_v2_distinguishes_equal_progress_by_actual_quality(config):
     worse = {**common, "raw_preference_quality_score": 0.80}
     better_return = proxy_return_from_metrics(better, config)
     worse_return = proxy_return_from_metrics(worse, config)
-    assert better_return == pytest.approx(-0.71)
-    assert worse_return == pytest.approx(-0.86)
+    assert better_return == pytest.approx(-1.71)
+    assert worse_return == pytest.approx(-1.86)
     assert better_return - worse_return == pytest.approx(0.15)
 
 
@@ -265,7 +266,7 @@ def test_episode_csv_row_reconstructs_failed_training_return(
     with path.open("r", encoding="utf-8", newline="") as handle:
         row = next(csv.DictReader(handle))
     assert row["reward_version"] == FAILURE_PENALTY_REWARD
-    assert float(row["reward_failure"]) == pytest.approx(-1.0)
+    assert float(row["reward_failure"]) == pytest.approx(-2.0)
     assert float(row["base_reward"]) + float(row["reward_failure"]) == pytest.approx(
         float(row["reward"]), abs=1e-8
     )
