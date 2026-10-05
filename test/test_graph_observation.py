@@ -119,16 +119,14 @@ def test_graph_observation_static_contract(config, fixed_instance):
     assert observation.workers.shape[0] == 6
     assert observation.global_feature_names == (
         "current_time_norm",
-        "active_order_ratio",
-        "ready_operation_ratio",
         "pending_reconfiguration_ratio",
         "completed_operation_ratio",
         "production_decision",
-        "worker_decision",
-        "safe_idle_worker_ratio",
         "worker_matching_deficit_norm",
         "minimum_worker_alternative_ratio",
-        "minimum_candidate_horizon_slack",
+        "objective_flow_norm",
+        "objective_cost_norm",
+        "objective_committed_variance_norm",
     )
     assert observation.global_features.shape == (
         len(observation.global_feature_names),
@@ -261,7 +259,7 @@ def test_capability_est_for_idle_and_processing_machine(
         machine_index,
         "earliest_start_time_norm",
     ) == pytest.approx(
-        machine.busy_until_tick / environment.horizon_tick
+        environment.operations[direct_operation_index].start_tick / environment.horizon_tick
     )
     assert _edge_feature(
         observation,
@@ -271,10 +269,7 @@ def test_capability_est_for_idle_and_processing_machine(
         "earliest_start_time_norm",
     ) == pytest.approx(
         (
-            machine.busy_until_tick
-            + environment.estimate_reconfiguration_ticks(
-                mismatch_operation_index, machine_index
-            )
+            environment.estimate_earliest_start_tick(mismatch_operation_index, machine_index)
         )
         / environment.horizon_tick
     )

@@ -8,6 +8,7 @@ from typing import Any
 
 from .runtime import attach_runtime_manifest
 from .normalization import apply_normalization_manifest
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -68,13 +69,20 @@ def _load_config_path(
     return _deep_merge(base, raw), (*chain, resolved)
 
 
-def load_config(path: str | Path) -> dict[str, Any]:
+def load_config(path: str | Path, *, allow_observation_migration: bool = False) -> dict[str, Any]:
     """Load a JSON config with optional single-parent ``extends`` support."""
 
     config_path = project_path(path).resolve()
     config, chain = _load_config_path(config_path, stack=())
+    saved_manifest = config.pop("runtime_manifest", None)
+    if saved_manifest is not None and not isinstance(saved_manifest, Mapping):
+        raise ValueError("saved runtime_manifest must be an object")
+    if saved_manifest is not None and saved_manifest.get("observation_schema") != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError(f"saved runtime_manifest is incompatible: schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation snapshots cannot be migrated")
     apply_normalization_manifest(config, project_root=PROJECT_ROOT)
     attach_runtime_manifest(config)
+    if saved_manifest is not None and saved_manifest != config["runtime_manifest"]:
+        raise ValueError(f"saved runtime_manifest does not match schema {OBSERVATION_SCHEMA_VERSION}; retraining is required and legacy observations cannot be migrated")
     config["_config_path"] = str(config_path)
     config["_config_chain"] = tuple(str(item) for item in chain)
     return config

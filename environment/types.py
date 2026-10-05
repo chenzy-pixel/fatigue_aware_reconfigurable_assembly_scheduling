@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
+from .observation_schema import GLOBAL_FEATURE_NAMES, OBSERVATION_SCHEMA_VERSION
 
 from .preference import (
     CANONICAL_PREFERENCE,
@@ -15,7 +16,8 @@ from .preference import (
 
 EdgeType = tuple[str, str, str]
 
-FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v2"
+LEGACY_PROGRESS_QUALITY_REWARD = "single_stage_progress_quality_v1"
+FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v3"
 SUPPORTED_REWARD_MODES = frozenset(
     {FAILURE_PENALTY_REWARD}
 )
@@ -40,6 +42,8 @@ SERVICE_CANDIDATE_EDGE: EdgeType = (
     "service_candidate",
     "worker",
 )
+PROCESSING_ON_EDGE: EdgeType = ("operation", "processing_on", "machine")
+SERVED_BY_EDGE: EdgeType = ("machine", "served_by", "worker")
 
 ASSEMBLY_EDGE_TYPES: tuple[EdgeType, ...] = (
     PRECEDES_EDGE,
@@ -54,6 +58,8 @@ ASSEMBLY_EDGE_TYPES: tuple[EdgeType, ...] = (
     WORKER_MODULE_EDGE,
     WAVE_MODULE_EDGE,
     SERVICE_CANDIDATE_EDGE,
+    PROCESSING_ON_EDGE,
+    SERVED_BY_EDGE,
 )
 
 ASSEMBLY_NODE_TYPES: tuple[str, ...] = (
@@ -335,7 +341,7 @@ def proxy_return_from_metrics(
             preference=preference,
         ) if terminal_score_value is None else float(terminal_score_value)
     )
-    task_failed = bool(metrics.get("task_failed", metrics.get("truncated", False)))
+    task_failed = bool(metrics.get("task_failed", False))
     failure_penalty = (
         terminal_failure_penalty(config)
         if mode == FAILURE_PENALTY_REWARD and task_failed
@@ -513,6 +519,8 @@ class HeterogeneousGraphObservation:
         node_features = self.node_features
         if self.global_features.ndim != 1:
             raise ValueError("global features must have shape (F,)")
+        if not np.all(np.isfinite(self.global_features)):
+            raise ValueError("global features must be finite")
         if self.preference.shape != (3,) or not np.all(np.isfinite(self.preference)):
             raise ValueError("preference must have shape (3,) with finite values")
         if self.action_set_features.ndim != 1:
@@ -530,6 +538,9 @@ class HeterogeneousGraphObservation:
             raise ValueError(
                 "global feature width must match the number of feature names"
             )
+        if self.relations and (self.global_features.shape != (len(GLOBAL_FEATURE_NAMES),)
+                               or tuple(self.global_feature_names) != GLOBAL_FEATURE_NAMES):
+            raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order/dimensions are incompatible")
         expected_node_types = set(ASSEMBLY_NODE_TYPES)
         if set(node_features) != expected_node_types:
             raise ValueError(
@@ -565,7 +576,7 @@ class HeterogeneousGraphObservation:
                 raise ValueError(f"{node_type} features must be finite")
         if self.relations and set(self.relations) != set(ASSEMBLY_EDGE_TYPES):
             raise ValueError(
-                "relations must contain exactly the M1 graph edge types"
+                f"schema {OBSERVATION_SCHEMA_VERSION} graph relations are incompatible; legacy observations require retraining"
             )
         for edge_type, edge_store in self.relations.items():
             source_type, _, target_type = edge_type
@@ -586,6 +597,70 @@ class HeterogeneousGraphObservation:
             order = np.lexsort((target, source))
             if not np.array_equal(order, np.arange(edge_store.num_edges)):
                 raise ValueError(f"edge relation {edge_type} is not stably sorted")
+        if self.relations:
+            self._validate_actual_resource_relations()
+
+    def _validate_actual_resource_relations(self) -> None:
+        """Validate actual assignments independently of compatibility candidates."""
+        def column(kind: str, name: str) -> np.ndarray:
+            names = self.node_feature_names.get(kind, ())
+            if name not in names:
+                raise ValueError(f"actual resource relations require {kind}.{name}")
+            return self.node_features[kind][:, names.index(name)]
+
+        for kind in (PROCESSING_ON_EDGE, SERVED_BY_EDGE):
+            store = self.relations[kind]
+            if store.feature_names or store.edge_features.shape != (store.num_edges, 0):
+                raise ValueError(f"{kind} must have zero edge attributes")
+            if not store.bidirectional:
+                raise ValueError(f"{kind} must be bidirectional")
+            if any(len(np.unique(indices)) != store.num_edges for indices in store.edge_index):
+                raise ValueError(f"{kind} actual assignments must be one-to-one")
+
+        processing = self.relations[PROCESSING_ON_EDGE].edge_index
+        for indices, kind in zip(processing, ("operation", "machine")):
+            expected = np.flatnonzero(column(kind, "state_PROCESSING") == 1)
+            if set(indices.tolist()) != set(expected.tolist()):
+                raise ValueError(f"processing_on must cover exactly PROCESSING {kind} nodes")
+        for op, machine in processing.T:
+            names = self.node_feature_names["operation"]
+            for name in (n for n in names if n.startswith("required_module_")):
+                module = name.removeprefix("required_module_")
+                if column("operation", name)[op] == 1 and (
+                    column("machine", f"current_module_{module}")[machine] != 1
+                    or column("machine", f"supports_module_{module}")[machine] != 1
+                ):
+                    raise ValueError("processing_on module is incompatible with actual machine")
+
+        serving = self.relations[SERVED_BY_EDGE].edge_index
+        for indices, kind in zip(serving, ("machine", "worker")):
+            expected = np.flatnonzero((column(kind, "state_DIS") == 1) | (column(kind, "state_INS") == 1))
+            if set(indices.tolist()) != set(expected.tolist()):
+                raise ValueError(f"served_by must cover exactly active DIS/INS {kind} nodes")
+        locked = self.relations[LOCKED_EDGE]
+        for machine, worker in serving.T:
+            phase = "DIS" if column("machine", "state_DIS")[machine] == 1 else "INS"
+            if column("worker", f"state_{phase}")[worker] != 1:
+                raise ValueError("served_by machine and worker phases differ")
+            if column("machine", "remaining_busy_time_norm")[machine] != column("worker", "remaining_busy_time_norm")[worker]:
+                raise ValueError("served_by machine and worker end times differ")
+            positions = np.flatnonzero(locked.edge_index[1] == machine)
+            if len(positions) != 1 or "stage_"+phase not in locked.feature_names:
+                raise ValueError("served_by requires a unique locked operation with its active phase")
+            position = int(positions[0])
+            if locked.edge_features[position, locked.feature_names.index("stage_"+phase)] != 1:
+                raise ValueError("served_by phase differs from locked_to")
+            op = locked.edge_index[0, position]
+            if column("operation", "state_LOCKED")[op] != 1:
+                raise ValueError("served_by operation must be LOCKED")
+            prefix = "source_module_" if phase == "DIS" else "target_module_"
+            for name in (n for n in locked.feature_names if n.startswith(prefix)):
+                if locked.edge_features[position, locked.feature_names.index(name)] != 1:
+                    continue
+                module = name.removeprefix(prefix)
+                if (column("worker", f"qualified_module_{module}")[worker] != 1
+                    or column("machine", f"supports_module_{module}")[machine] != 1):
+                    raise ValueError("served_by resource lacks the required module qualification/support")
 
 
 

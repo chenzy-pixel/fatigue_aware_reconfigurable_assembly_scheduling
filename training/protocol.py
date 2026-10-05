@@ -29,6 +29,7 @@ class LexicographicCheckpointSelector:
     best_episode: int | None = None
     eligible_validations: int = 0
     unsafe_validations: int = 0
+    incomplete_validations: int = 0
     improvement_count: int = 0
     tie_count: int = 0
     last_decision: dict[str, object] = field(default_factory=dict)
@@ -36,7 +37,7 @@ class LexicographicCheckpointSelector:
     @classmethod
     def from_config(cls, config: dict) -> "LexicographicCheckpointSelector":
         if str(config["reward"].get("mode")) != (
-            "single_stage_progress_quality_failure_v2"
+            "single_stage_progress_quality_failure_v3"
         ):
             raise ValueError(
                 "single-stage checkpoint selection requires the single-stage reward"
@@ -62,6 +63,19 @@ class LexicographicCheckpointSelector:
         completed_episodes: int,
         physical_safety_pass: bool,
     ) -> str:
+        if not validation.get("evaluation_complete", True) or validation.get("sampling_truncated_count", 0):
+            self.incomplete_validations += 1
+            self.last_decision = {
+                "checkpoint_event": "ineligible",
+                "checkpoint_decision_reason": "sampling_truncated_evaluation",
+                "checkpoint_eligible": False,
+                "candidate_completion_rate": None,
+                "candidate_preference_balanced_quality_score": None,
+                "best_completion_rate": self.best_completion_rate,
+                "best_preference_balanced_quality_score": self.best_quality_score,
+                "best_episode": self.best_episode,
+            }
+            return "ineligible"
         completion_rate = float(validation["completion_rate"])
         quality_score = float(
             validation.get("preference_balanced_quality_score", math.inf)
@@ -146,7 +160,7 @@ class LexicographicCheckpointSelector:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "protocol": "single_stage_lexicographic_failure_v2",
+            "protocol": "single_stage_lexicographic_failure_v3",
             "selection_tolerance": SELECTION_TOLERANCE,
             "has_best": self.has_best,
             "best_completion_rate": self.best_completion_rate,
@@ -154,6 +168,7 @@ class LexicographicCheckpointSelector:
             "best_episode": self.best_episode,
             "eligible_validations": self.eligible_validations,
             "unsafe_validations": self.unsafe_validations,
+            "incomplete_validations": self.incomplete_validations,
             "improvement_count": self.improvement_count,
             "tie_count": self.tie_count,
             "last_decision": dict(self.last_decision),

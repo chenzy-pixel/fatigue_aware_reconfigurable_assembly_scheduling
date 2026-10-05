@@ -1,6 +1,6 @@
 # 当前实验协议
 
-更新日期：2026-10-03。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
+更新日期：2026-10-05。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
 
 2026-10-03 奖励参数变更：全局失败终止惩罚设为 **2.0**，由 `configs/default.json`
 统一提供，单目标、Universal 和 MO-ALNS 入口继承。每条失败轨迹只在终止步扣除一次，
@@ -20,6 +20,16 @@
 2026-10-03 消融变更：接入节点 MLP 编码器、共享偏好评分头和三个疲劳中性单目标变体。
 五组继承当前 V2 数据、schema-6 时间上下文、冻结尺度、惩罚 2.0 和父配置训练预算；
 原始疲劳监测与活动约束分别报告。训练、评估及配对汇总入口见[五组消融协议](ablation_protocol.md)。
+
+## 观测与终止契约（2026-10-05）
+
+全局向量的名称和顺序由 `environment/observation_schema.py` 统一维护，共九项。实际加工与工人服务由 `processing_on`、`served_by` 双向零属性关系表示；时间上下文为 `order_chain_action_context_v2`。候选的时间、费用和方差增量从同一完整安全路径计算。
+
+工程保护保持当前物理状态，标记 `terminated=false,truncated=true,sampling_truncated=true`，成功与失败均为 false。真实完成或失败标记 `terminated=true,truncated=false`，通过明确的 `task_succeeded`、`task_failed` 区分。PPO 以最终观测自举，轨迹段分别计算 GAE；截断占一次采样启动预算。
+
+评估保留全部请求单元；有采样截断时标记不完整、报告完成覆盖率，不产生最佳模型、Pareto 或 HV 的正式比较汇总。当前 checkpoint 和有效配置仅接受 schema 10，迁移开关不能绕过观测契约。方法说明及验收见 [schema 10 顺序投影](schema10_sequential_projection.md)。
+
+匹配消融通过 `configs/manifests/ablation_seed11.json` 管理九个训练运行及五组配对；完整疲劳臂继承对应 neutral 臂的预算，仅切换疲劳动力学。主线 V2 数据、当前冻结尺度和原实例字节保留。
 
 ## 固定尺度和质量
 
@@ -41,9 +51,9 @@
 
 ## 网络、奖励和预算
 
-网络为 V8 HGNN actor-critic，schema-6 图包含六类节点和十二类关系。生产与工人采用 pair-plus-WAIT；WAIT 由精确进展证书控制。工人 Flow 专家采用 `candidate_zscore_v1`，标准差下限 `0.001`。正式执行模式为 `phase_batched_v1`，精度为 `float32`。
+网络为 V8 HGNN actor-critic，schema-10 图包含六类节点、十四类关系和九维全局向量。生产与工人采用 pair-plus-WAIT；WAIT 由精确进展证书控制。工人 Flow 专家采用 `candidate_zscore_v1`，标准差下限 `0.001`。正式执行模式为 `phase_batched_v1`，精度为 `float32`。
 
-所有训练入口使用 `single_stage_progress_quality_failure_v2`：`r_t = delta_progress + Q_t - Q_(t+1) - failure_penalty`。任务失败仅在终止步扣 2，实际质量保持可重建；`gamma=1`、feasibility shaping 关闭。rollout cutoff 使用 critic 自举。
+所有训练入口使用 `single_stage_progress_quality_failure_v3`：`r_t = delta_progress + Q_t - Q_(t+1) - failure_penalty`。任务失败仅在终止步扣 2，实际质量保持可重建；`gamma=1`、feasibility shaping 关闭。工程决策上限和 rollout cutoff 均使用最终物理观测的 critic 自举。
 
 | 配置 | 训练轮数 | 验证间隔 | 训练 worker | 验证 worker | 每次 PPO 更新 episode |
 |---|---:|---:|---:|---:|---:|

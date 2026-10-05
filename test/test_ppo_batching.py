@@ -232,7 +232,7 @@ def test_ppo_update_uses_one_batched_forward_per_minibatch(
             log_probability,
             value,
             reward.scalarize(effective_config["reward"]),
-            terminated or truncated,
+            terminated,
         )
         observation = next_observation
         if terminated or truncated:

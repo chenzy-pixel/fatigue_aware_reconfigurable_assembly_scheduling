@@ -4,10 +4,27 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from environment.observation_schema import GLOBAL_FEATURE_NAMES, OBSERVATION_SCHEMA_VERSION
 from environment import (
+    ASSEMBLY_EDGE_TYPES,
     HeterogeneousGraphObservation,
     Observation,
 )
+
+
+def validate_graph_schema(observation: Observation) -> None:
+    """Check the current graph contract before storing a rollout sample."""
+    if not isinstance(observation, HeterogeneousGraphObservation) or not observation.relations:
+        return
+    if (observation.global_features.shape != (len(GLOBAL_FEATURE_NAMES),)
+            or tuple(observation.global_feature_names) != GLOBAL_FEATURE_NAMES):
+        raise ValueError(
+            f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order/dimensions are incompatible"
+        )
+    if not np.all(np.isfinite(observation.global_features)):
+        raise ValueError("global features must be finite")
+    if set(observation.relations) != set(ASSEMBLY_EDGE_TYPES):
+        raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} graph relations are incompatible")
 
 
 @dataclass
@@ -44,6 +61,7 @@ class RolloutBuffer:
         done: bool,
     ) -> None:
         stored_observation = observation.copy()
+        validate_graph_schema(stored_observation)
         self.transitions.append(
             Transition(
                 observation=stored_observation,

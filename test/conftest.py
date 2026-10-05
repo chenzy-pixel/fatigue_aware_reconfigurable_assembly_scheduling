@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from configs import load_config, project_path
-from data import load_instance_pickle
+from data.models import load_instance_yaml
 from data.generate_orders import InstanceGenerator, PRESSURE_TYPES
 
 
@@ -41,8 +41,7 @@ def config():
 
 @pytest.fixture(scope="session")
 def fixed_instance(config):
-    from eval import load_configured_instance
-    return load_configured_instance(config)
+    return load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
 
 
 @pytest.fixture(scope="session")

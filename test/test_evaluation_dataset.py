@@ -27,15 +27,17 @@ from result.io import write_config, write_csv, write_json
 
 def _aggregate_row(
     *,
-    terminated: bool,
-    truncated: bool,
+    task_succeeded: bool,
+    task_failed: bool,
     makespan: float,
     total_flow_time: float | None,
     flow_time_objective: float,
 ) -> dict:
     return {
-        "terminated": terminated,
-        "truncated": truncated,
+        "terminated": True,
+        "task_succeeded": task_succeeded,
+        "task_failed": task_failed,
+        "truncated": False,
         "makespan": makespan,
         "total_flow_time": total_flow_time,
         "flow_time_objective": flow_time_objective,
@@ -85,15 +87,15 @@ def test_gap_and_sample_statistics_contract():
 def test_aggregate_uses_completed_and_all_instance_populations():
     rows = [
         _aggregate_row(
-            terminated=True,
-            truncated=False,
+            task_succeeded=True,
+            task_failed=False,
             makespan=100.0,
             total_flow_time=500.0,
             flow_time_objective=500.0,
         ),
         _aggregate_row(
-            terminated=False,
-            truncated=True,
+            task_succeeded=False,
+            task_failed=True,
             makespan=240.0,
             total_flow_time=None,
             flow_time_objective=1_000.0,
@@ -111,7 +113,8 @@ def test_aggregate_uses_completed_and_all_instance_populations():
     )
     assert aggregate["completed_count"] == 1
     assert aggregate["completion_rate"] == 0.5
-    assert aggregate["truncated_count"] == 1
+    assert aggregate["truncated_count"] == 0
+    assert aggregate["task_failed_count"] == 1
     assert aggregate["completed_metrics"]["makespan"] == {
         "count": 1,
         "mean": 100.0,
@@ -209,6 +212,9 @@ def test_fixed_validation_evaluation_is_read_only_and_reports_zero_gap(
     assert {
         "instance_id",
         "terminated",
+        "task_succeeded",
+        "task_failed",
+        "sampling_truncated",
         "truncated",
         "termination_reason",
         "decisions",
@@ -285,13 +291,14 @@ def test_ppo_checkpoint_loads_once_and_validation_preserves_rng(
     load_count = 0
     original_load = PPOAgent.load
 
-    def counting_load(self, path, *, load_optimizer=False):
+    def counting_load(self, path, *, load_optimizer=False, allow_observation_migration=False):
         nonlocal load_count
         load_count += 1
         return original_load(
             self,
             path,
             load_optimizer=load_optimizer,
+            allow_observation_migration=allow_observation_migration,
         )
 
     monkeypatch.setattr(PPOAgent, "load", counting_load)
@@ -367,3 +374,20 @@ def test_eval_cli_requires_dataset(monkeypatch):
     with pytest.raises(SystemExit) as error:
         evaluation_module.main()
     assert error.value.code == 2
+
+
+def test_external_truncation_preserves_partial_coverage_and_blocks_selection():
+    from result.metrics import evaluation_selection_key
+    row = _aggregate_row(task_succeeded=False, task_failed=False, makespan=50.0,
+                         total_flow_time=None, flow_time_objective=200.0)
+    row.update(terminated=False, truncated=True, sampling_truncated=True,
+               task_succeeded=False, task_failed=False)
+    result = aggregate_evaluation_rows([row], dataset="validation", policy="ppo", manifest="manifest.json")
+    assert result["evaluation_complete"] is False
+    assert result["selection_eligible"] is False
+    assert result["sampling_truncated_count"] == 1
+    assert result["task_failed_count"] == 0
+    assert result["completion_rate"] is None
+    assert result["preference_balanced_quality_score"] is None
+    with pytest.raises(ValueError, match="incomplete"):
+        evaluation_selection_key(result)

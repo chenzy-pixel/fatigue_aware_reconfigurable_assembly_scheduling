@@ -124,7 +124,7 @@ def test_single_stage_reward_is_unshaped_and_telescopes(config, fixed_instance):
     "preference",
     ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
 )
-def test_terminal_failure_uses_actual_quality_plus_one_penalty(
+def test_sampling_guard_preserves_actual_quality_and_reward(
     config,
     fixed_instance,
     preference,
@@ -157,16 +157,16 @@ def test_terminal_failure_uses_actual_quality_plus_one_penalty(
 
     assert terminated is False
     assert truncated is True
-    assert metrics["preference_quality_score"] == 1.0
+    assert metrics["preference_quality_score"] == metrics["raw_preference_quality_score"]
     assert metrics["raw_preference_quality_score"] < 1.0
     penalty = float(truncated_config["reward"]["terminal_failure_penalty"])
-    assert failure_return == pytest.approx(-penalty)
+    assert failure_return == 0
     expected = (
         metrics["operation_progress"]
         - metrics["initial_progress"]
         + initial_score
         - metrics["raw_preference_quality_score"]
-        - penalty
+
     )
     assert reward_return == pytest.approx(
         expected,
@@ -201,6 +201,14 @@ def test_quality_preference_quota_is_deterministic(config):
     assert repeated == points[13]
 
 
+def test_v8_residual_gates_initialize_at_half(config, fixed_instance):
+    observation = AssemblySchedulingEnv(config).reset(fixed_instance)
+    network = build_actor_critic(observation, config["network"])
+    assert torch.sigmoid(network.production_residual_gate).item() == pytest.approx(0.5)
+    assert torch.sigmoid(network.worker_residual_gate).item() == pytest.approx(0.5)
+    assert network.residual_std_floor == pytest.approx(1e-3)
+
+
 def test_v8_rejects_v7_checkpoint_spec():
     with pytest.raises(ValueError, match="V7"):
         infer_checkpoint_network_spec(
@@ -231,8 +239,17 @@ def test_v8_checkpoint_round_trip_preserves_normalization_manifest_hash(
         device="cpu",
     )
     metadata = clone.load(checkpoint)
+    assert len(metadata["network_weights_sha256"]) == 64
     assert metadata["normalization_manifest_sha256"] == manifest_sha
     assert clone.network.network_spec()["normalization_manifest_sha256"] == manifest_sha
+
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["network_spec"]["policy_head_version"] = 7
+    payload["network_spec"]["observation_schema_version"] = 4
+    incompatible_path = tmp_path / "incompatible.pt"
+    torch.save(payload, incompatible_path)
+    with pytest.raises(ValueError, match="V7"):
+        clone.load(incompatible_path)
 
     incompatible_config = dict(network_config)
     incompatible_config["normalization_manifest_sha256"] = "b" * 64

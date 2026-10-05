@@ -67,7 +67,7 @@ def test_network_spec_records_public_observation_schema(config, fixed_instance):
     network = build_actor_critic(observation, config["network"])
     spec = network.network_spec()
 
-    assert spec["observation_schema_version"] == 6
+    assert spec["observation_schema_version"] == 10
     assert spec["policy_head_version"] == 8
     assert spec["expert_weight_parameterization"] == "simplex_softplus_v8"
     assert spec["preference_embedding_dim"] == 32

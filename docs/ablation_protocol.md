@@ -1,6 +1,6 @@
 # 五组消融实验
 
-2026-10-03。五组消融使用当前 V2 算例、schema-6 时间上下文、冻结尺度
+2026-10-05。五组消融使用当前 V2 算例、schema-10 观测与顺序时间上下文、冻结尺度
 `(1089.15,353.27,2.2629)` 和全局失败惩罚 `2.0`。默认算法种子为 11。
 
 | 变体 | 对照 | 改变的组件 | 训练轮数 | 验证间隔 |
@@ -41,8 +41,7 @@ python scripts/run_11_train_structural.py
 python scripts/run_12_train_neutral.py
 ```
 
-第一条为五组小规模 PPO 更新、验证和重载检查；后两条分别顺序训练两组结构消融和三组疲劳中性消融。
-Universal 和完整疲劳的三个单目标基线分别训练。各入口支持 `--seed`、`--device` 和 `--dry-run`；
+第一条检查匹配模型的小规模 PPO 更新、验证和重载；后两条分别训练 Universal/no_graph/shared_head 三个结构角色，以及三个单目标的 full/neutral 共六个角色。完整疲劳臂继承对应 neutral 配置的全部预算，仅切换疲劳动力学。各入口支持 `--seed`、`--device` 和 `--dry-run`；
 默认正式入口使用配置中的设备，冒烟入口自动选择可用 CUDA 或 CPU。
 每批结果带时间戳，清单写入 `result/runs/ablation_batches/`，保存各变体训练目录与 checkpoint 路径。
 
@@ -59,6 +58,6 @@ python scripts/run_14_summarize_ablations.py
 
 汇总先核验九个角色的训练配置、评估配置、checkpoint 和 CSV 来源哈希，要求完整测试集、偏好与重复矩阵。
 随后按相同实例、偏好、采样重复及派生随机种子配对，检查数据与尺度哈希以及失败惩罚。
-完成数统计全部轨迹，目标差仅统计两侧共同成功的轨迹。产出 `paired_cells.csv`、`summary.csv`、
+完成数统计全部轨迹，目标差仅统计两侧共同成功的轨迹。出现工程采样截断时评估标记不完整，不生成配对目标、正式 Pareto/HV 或最佳模型比较。产出 `paired_cells.csv`、`summary.csv`、
 来源清单和 `report.md`。默认汇总最新完成的 seed11 评估清单，也可显式指定 `--manifest`。
 一个训练种子的结果属于描述性证据；跨训练种子的稳定性需使用匹配的多种子实验。

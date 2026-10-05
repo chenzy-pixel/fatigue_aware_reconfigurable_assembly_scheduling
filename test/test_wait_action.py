@@ -179,8 +179,8 @@ def test_process_completion_after_horizon_is_not_labeled_deadlock(
 
     environment._resolve_terminal_or_deadlock()
 
-    assert environment.terminated is False
-    assert environment.truncated is True
+    assert environment.terminated is True
+    assert environment.truncated is False
     assert environment.terminal_reason == "horizon"
     assert environment.current_tick == environment.horizon_tick
     diagnostic = environment.metrics()[

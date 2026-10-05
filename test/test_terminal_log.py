@@ -57,7 +57,7 @@ def test_original_train_command_automatically_saves_terminal_log(
     monkeypatch.setattr(
         training_module,
         "load_config",
-        lambda path: _main_config(result_root),
+        lambda path, **kwargs: _main_config(result_root),
     )
     monkeypatch.setattr(training_module, "train", fake_train)
     monkeypatch.setattr(
@@ -104,7 +104,7 @@ def test_training_exception_traceback_is_saved_inside_created_run(
     monkeypatch.setattr(
         training_module,
         "load_config",
-        lambda path: _main_config(result_root),
+        lambda path, **kwargs: _main_config(result_root),
     )
     monkeypatch.setattr(training_module, "train", failing_train)
     monkeypatch.setattr(

@@ -26,113 +26,32 @@ def _metadata_without_counterfactual(metadata):
 
 
 def _scalar_capability_features(environment):
-    values = []
-    cost_scale = float(
-        environment.config["objective_scalarizer"]["scales"]["cost"]
-    )
-    variance_scale = float(
-        environment.config["objective_scalarizer"]["scales"]["variance"]
-    )
-    horizon_tick = environment.horizon_tick
-    for operation_index, machine_index in environment._static_edge_indices[
-        CAPABLE_EDGE
-    ].T:
-        operation_index = int(operation_index)
-        machine_index = int(machine_index)
-        operation = environment.operations[operation_index]
-        machine = environment.machines[machine_index]
-        profile = environment._production_resource_profile(
-            machine_index, operation.spec.required_module
-        )
-        predicted_finish_tick = (
-            profile.processing_start_tick
-            + environment.estimate_processing_ticks(
-                operation_index, machine_index
-            )
-            if profile.processing_start_tick is not None
-            else environment.horizon_tick + 1
-        )
-        configuration_match = (
-            machine.current_module == operation.spec.required_module
-        )
-        source_cost = environment.instance.module_costs.get(
-            machine.current_module
-        )
-        fixed_disassembly_cost = (
-            0.0
-            if configuration_match or source_cost is None
-            else source_cost.fixed_disassembly_cost
-        )
-        fixed_installation_cost = (
-            0.0
-            if configuration_match
-            else environment.instance.module_costs[
-                operation.spec.required_module
-            ].fixed_installation_cost
-        )
-        labor_cost, downtime_cost = (
-            environment._estimate_candidate_reconfiguration_costs(
-                machine, operation.spec.required_module
-            )
-        )
-        values.append(
-            [
-                min(
-                    2.0,
-                    max(
-                        0.0,
-                        environment.estimate_processing_ticks(
-                            operation_index, machine_index
-                        )
-                        / horizon_tick,
-                    ),
-                ),
-                float(configuration_match),
-                min(
-                    2.0,
-                    max(
-                        0.0,
-                        environment.estimate_earliest_start_tick(
-                            operation_index, machine_index
-                        )
-                        / horizon_tick,
-                    ),
-                ),
-                min(2.0, max(0.0, profile.resource_ready_tick / horizon_tick)),
-                min(
-                    2.0,
-                    max(0.0, predicted_finish_tick / horizon_tick),
-                ),
-                profile.safe_disassembly_workers
-                / max(1, len(environment.workers)),
-                profile.safe_installation_workers
-                / max(1, len(environment.workers)),
-                profile.matching_deficit_after_commit
-                / max(1, len(environment.workers)),
-                max(
-                    -1.0,
-                    min(
-                        1.0,
-                        (environment.horizon_tick - predicted_finish_tick)
-                        / horizon_tick,
-                    ),
-                ),
-                environment.estimate_reconfiguration_ticks(
-                    operation_index, machine_index
-                )
-                / horizon_tick,
-                fixed_disassembly_cost / cost_scale,
-                fixed_installation_cost / cost_scale,
-                labor_cost / cost_scale,
-                downtime_cost / cost_scale,
-                environment._estimate_candidate_load_variance_delta(
-                    machine_index, operation.spec.required_module
-                )
-                / variance_scale,
-                environment.estimated_order_slack_norm(operation.spec.order_id),
-            ]
-        )
-    return np.asarray(values, dtype=np.float32)
+    """Uncached per-edge reference for the grouped observation projection cache."""
+    from environment.resource_projection import ResourceProjector
+    projector = ResourceProjector(environment)
+    rows = []
+    h, nw = environment.horizon_tick, max(1, len(environment.workers))
+    scales = environment.config["objective_scalarizer"]["scales"]
+    for oi, mi in environment._static_edge_indices[CAPABLE_EDGE].T:
+        oi, mi = int(oi), int(mi)
+        candidate = projector.candidate(oi, mi)
+        path = candidate.path
+        profile = environment._production_resource_profile(mi, environment.operations[oi].spec.required_module)
+        start = candidate.processing_start_tick if candidate.processing_start_tick is not None else h+1
+        finish = candidate.finish_tick if candidate.finish_tick is not None else h+1
+        dis, ins, labor, downtime, variance = projector.path_costs(mi, path)
+        rows.append([
+            np.clip(environment.estimate_processing_ticks(oi, mi)/h, 0, 2),
+            float(environment.machines[mi].current_module == environment.operations[oi].spec.required_module),
+            np.clip(start/h, 0, 2), np.clip(candidate.resource_ready_tick/h, 0, 2), np.clip(finish/h, 0, 2),
+            (path.safe_disassembly_workers if path and path.stages else nw if path else 0)/nw,
+            (path.safe_installation_workers if path and path.stages else nw if path else 0)/nw,
+            profile.matching_deficit_after_commit/nw, np.clip((h-finish)/h, -1, 1),
+            (path.end_tick-path.start_tick)/h if path else 0,
+            dis/scales["cost"], ins/scales["cost"], labor/scales["cost"], downtime/scales["cost"],
+            variance/scales["variance"], environment.estimated_order_slack_norm(environment.operations[oi].spec.order_id),
+        ])
+    return np.asarray(rows, dtype=np.float32)
 
 
 def test_online_generation_skips_counterfactual_without_changing_instance(

@@ -11,13 +11,13 @@ import torch
 from agent.baselines import HeuristicPolicy
 from agent.ppo import PPOAgent, build_actor_critic
 from agent.ppo.network import (
-    HeteroGraphActorCritic,
     SharedPreferenceHead,
     infer_checkpoint_network_spec,
     network_requires_graph_observation,
     normalize_network_config,
 )
 from environment import AssemblySchedulingEnv, CAPABLE_EDGE, DecisionType, SERVICE_CANDIDATE_EDGE
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
 
 
 VARIANTS = tuple(product(
@@ -85,7 +85,7 @@ def test_variant_spec_and_structure(config, mixed_batch, encoder_variant, actor_
     spec = infer_checkpoint_network_spec({"network_spec": network.network_spec()})
     assert spec["encoder_type"] == spec["encoder_variant"] == encoder_variant
     assert spec["actor_head_variant"] == actor_head_variant
-    assert spec["observation_schema_version"] == 6
+    assert spec["observation_schema_version"] == OBSERVATION_SCHEMA_VERSION
     assert spec["normalization_manifest_sha256"] == config["network"]["normalization_manifest_sha256"]
     assert network_requires_graph_observation(settings)
     assert len(network.message_layers) == (2 if encoder_variant == "hetero_gnn" else 0)
@@ -282,68 +282,31 @@ def test_checkpoint_structural_variant_mismatch_is_rejected(config, mixed_batch,
         torch.testing.assert_close(target.network.state_dict()[name], value, atol=0, rtol=0)
 
 
-def _schema5_observation(observation):
-    nodes = dict(observation.node_features)
-    nodes["order"] = nodes["order"][:, :-1]
-    names = dict(observation.node_feature_names)
-    names["order"] = names["order"][:-1]
-    relations = dict(observation.relations)
-    for edge, count in ((CAPABLE_EDGE, 1), (SERVICE_CANDIDATE_EDGE, 2)):
-        store = relations[edge]
-        relations[edge] = replace(store, edge_features=store.edge_features[:, :-count],
-                                  feature_names=store.feature_names[:-count])
-    return replace(observation, node_features=nodes, node_feature_names=names, relations=relations,
-                   action_set_features=observation.action_set_features[:-2],
-                   action_set_feature_names=observation.action_set_feature_names[:-2])
-
 
 @pytest.mark.parametrize("encoder_variant,actor_head_variant", VARIANTS)
-def test_schema5_migration_preserves_variant_predictions_and_adam_state(config, mixed_batch, tmp_path, encoder_variant, actor_head_variant):
-    batch, batch_masks = mixed_batch
-    observations, masks = [batch[0], batch[2]], [batch_masks[0], batch_masks[2]]
-    legacy = [_schema5_observation(item) for item in observations]
+def test_legacy_schema_rejection_preserves_variant_weights_and_adam_state(
+    config, mixed_batch, tmp_path, encoder_variant, actor_head_variant
+):
+    observations, masks = mixed_batch
     settings = _settings(config, encoder_variant, actor_head_variant)
-    normalized = normalize_network_config(settings)
-    construction = {name: normalized[name] for name in (
-        "hidden_dim", "message_passing_layers", "dropout", "residual_gate_initial_logit",
-        "residual_std_floor", "normalization_manifest_sha256", "worker_flow_time_normalization",
-        "worker_flow_time_std_floor", "encoder_variant", "actor_head_variant",
-    )}
-    old_network = HeteroGraphActorCritic(
-        legacy[0].feature_dimensions, legacy[0].edge_feature_dimensions,
-        legacy[0].action_set_feature_names, **construction,
-    )
-    old_agent = PPOAgent(old_network, config["ppo"], device="cpu")
-    logits, values = old_network.forward_batch(legacy, masks, device="cpu")
+    source = PPOAgent(build_actor_critic(observations[0], settings), config["ppo"], device="cpu")
+    logits, values = source.network.forward_batch(observations, masks, device="cpu")
     _loss(logits, values, masks).backward()
-    old_agent.optimizer.step()
+    source.optimizer.step()
+    assert source.optimizer.state
     path = tmp_path / "schema5.pt"
-    old_agent.save(path)
+    source.save(path)
     checkpoint = torch.load(path, weights_only=False)
     checkpoint["network_spec"]["observation_schema_version"] = 5
-    checkpoint["network_spec"].pop("time_context_version")
-    checkpoint["network_spec"].pop("time_context_feature_schema")
-    if (encoder_variant, actor_head_variant) == ("hetero_gnn", "objective_experts"):
-        checkpoint["network_spec"].pop("encoder_variant")
-        checkpoint["network_spec"].pop("actor_head_variant")
     torch.save(checkpoint, path)
+
     target = PPOAgent(build_actor_critic(observations[0], settings), config["ppo"], device="cpu")
-    metadata = target.load(path, load_optimizer=True)
-    assert metadata["checkpoint_load_migration"]["target_observation_schema"] == 6
-    assert metadata["source_network_weights_sha256"] == checkpoint["metadata"]["network_weights_sha256"]
+    original_state = {name: value.detach().clone() for name, value in target.network.state_dict().items()}
+    for allow in (False, True):
+        with pytest.raises(ValueError, match="requires retraining"):
+            target.load(path, load_optimizer=True, allow_observation_migration=allow)
+        for name, value in target.network.state_dict().items():
+            torch.testing.assert_close(value, original_state[name], atol=0, rtol=0)
+        assert not target.optimizer.state
     assert target.network.network_spec()["encoder_variant"] == encoder_variant
     assert target.network.network_spec()["actor_head_variant"] == actor_head_variant
-    with torch.no_grad():
-        expected = old_network.forward_batch(legacy, masks, device="cpu")
-        actual = target.network.forward_batch(observations, masks, device="cpu")
-    for value, reference in zip(actual, expected, strict=True):
-        torch.testing.assert_close(value, reference, atol=1e-6, rtol=1e-5)
-    assert target.optimizer.state
-    for parameter, state in target.optimizer.state.items():
-        assert state["exp_avg"].shape == parameter.shape
-        assert state["exp_avg_sq"].shape == parameter.shape
-    target.optimizer.zero_grad(set_to_none=True)
-    logits, values = target.network.forward_batch(observations, masks, device="cpu")
-    _loss(logits, values, masks).backward()
-    target.optimizer.step()
-    assert all(torch.isfinite(parameter).all() for parameter in target.network.parameters())

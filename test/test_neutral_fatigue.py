@@ -198,7 +198,7 @@ def test_original_fatigue_monitor_integrates_threshold_crossings_and_saturation(
     assert sum(row["over_limit_area"] for row in segments) == pytest.approx(1.6)
 
 
-def test_monitor_clips_active_stages_and_counts_completed_installations(fixed_instance):
+def test_monitor_clips_active_stages_and_preserves_partial_exposure(fixed_instance):
     worker = replace(fixed_instance.workers[0], initial_fatigue=0.0)
     instance = replace(fixed_instance, workers=(worker,))
     records = [
@@ -214,12 +214,17 @@ def test_monitor_clips_active_stages_and_counts_completed_installations(fixed_in
     assert metrics["worker_reconfiguration_idle_minutes"] == 0.0
     assert metrics["max_consecutive_worker_stages"] == 2
     assert metrics["mean_interstage_idle_minutes"] == 0.0
-    assert metrics["completed_reconfigurations_per_minute"] == 0.0
     assert segments[-1]["end"] == 5.0
     records[1] = {**records[1], "end": 5.0, "truncated": True}
-    assert audit_fatigue(instance, records, 5.0)[0]["completed_reconfigurations_per_minute"] == 0.0
+    partial_metrics, partial_segments = audit_fatigue(instance, records, 5.0)
+    assert partial_metrics == metrics
+    assert partial_segments == segments
     records[1].pop("truncated")
-    assert audit_fatigue(instance, records, 5.0)[0]["completed_reconfigurations_per_minute"] == 0.2
+    completed_metrics, completed_segments = audit_fatigue(instance, records, 5.0)
+    assert completed_metrics == metrics
+    assert completed_segments == segments
+    # Completion densities use the environment's actual completion ledger;
+    # this monitor integrates the executed stages' fatigue exposure.
     with pytest.raises(ValueError, match="overlapping"):
         audit_fatigue(instance, records + [{**records[0], "start": 1.0}], 5.0)
 

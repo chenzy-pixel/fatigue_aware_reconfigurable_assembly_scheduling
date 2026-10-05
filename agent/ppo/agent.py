@@ -11,7 +11,6 @@ from torch.distributions import Categorical
 from torch.nn import functional as functional
 
 from agent.ppo.buffer import RolloutBuffer
-from agent.ppo.checkpoint import migrate_time_context_checkpoint
 from agent.ppo.network import (
     ActorCriticNetwork,
     assert_network_config_matches_spec,
@@ -115,6 +114,9 @@ class PPOAgent:
         device: str = "cpu",
     ):
         self.network = network
+        for module in network.modules():
+            if isinstance(module, torch.nn.Dropout) and module.p != 0.0:
+                raise ValueError("PPO requires network.dropout = 0")
         self.config = config
         self.device = torch.device(device)
         if self.device.type == "cuda" and not torch.cuda.is_available():
@@ -439,7 +441,7 @@ class PPOAgent:
     def save(self, path: str | Path, metadata: dict[str, Any] | None = None) -> None:
         output = Path(path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        saved_metadata = dict(metadata or {})
+        saved_metadata = dict(getattr(self, "loaded_checkpoint_metadata", {}) if metadata is None else metadata)
         network_state = self.network.state_dict()
         weights_hash = network_weights_sha256(network_state)
         saved_metadata["network_weights_sha256"] = weights_hash
@@ -456,21 +458,22 @@ class PPOAgent:
                 "network": network_state,
                 "network_spec": self.network.network_spec(),
                 "optimizer": self.optimizer.state_dict(),
+                "optimizer_parameter_names": [name for name, _ in self.network.named_parameters()],
                 "ppo_config": self.config,
                 "metadata": saved_metadata,
             },
             output,
         )
 
-    def load(self, path: str | Path, *, load_optimizer: bool = False) -> dict[str, Any]:
+    def load(self, path: str | Path, *, load_optimizer: bool = False,
+             allow_observation_migration: bool = False) -> dict[str, Any]:
         checkpoint = torch.load(
             Path(path), map_location=self.device, weights_only=False
         )
-        source_schema = infer_checkpoint_network_spec(checkpoint)["observation_schema_version"]
-        checkpoint = migrate_time_context_checkpoint(
-            checkpoint, self.network.network_spec(),
-            [name for name, _ in self.network.named_parameters()],
-        )
+        source_weights_hash = network_weights_sha256(checkpoint["network"])
+        saved_weights_hash = checkpoint.get("metadata", {}).get("network_weights_sha256")
+        if saved_weights_hash is not None and saved_weights_hash != source_weights_hash:
+            raise ValueError("checkpoint metadata network_weights_sha256 does not match the checkpoint network state")
         checkpoint_spec = infer_checkpoint_network_spec(checkpoint)
         assert_network_config_matches_spec(
             self.network.network_spec(),
@@ -480,11 +483,5 @@ class PPOAgent:
         if load_optimizer and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         metadata = dict(checkpoint.get("metadata", {}))
-        if source_schema == 5:
-            metadata["source_network_weights_sha256"] = metadata.get("network_weights_sha256")
-            metadata["network_weights_sha256"] = network_weights_sha256(self.network.state_dict())
-            if isinstance(metadata.get("provenance"), dict):
-                metadata["provenance"] = provenance_with_network_weights(
-                    metadata["provenance"], metadata["network_weights_sha256"]
-                )
+        self.loaded_checkpoint_metadata = metadata
         return metadata

@@ -93,6 +93,19 @@ def _weighted_choice(rng: random.Random, weights: dict[str, float]) -> str:
     return rng.choices(names, weights=values, k=1)[0]
 
 
+def _physical_precheck_config(instance: AssemblyInstance, config: dict[str, Any]) -> dict[str, Any]:
+    """Keep instance acceptance independent of the learner's sampling guards."""
+    effective = copy.deepcopy(config)
+    ticks = math.ceil(instance.horizon / instance.resolution)
+    # At most three dispatches per operation, one WAIT per tick, and one
+    # production-to-worker handoff between successive time advances.
+    effective["environment"]["max_decisions"] = 3 * len(instance.operations) + 2 * ticks + 2
+    effective["environment"]["max_zero_time_actions"] = (
+        len(instance.machines) + min(len(instance.machines), len(instance.workers)) + 2
+    )
+    return effective
+
+
 def _rollout_metrics(
     instance: AssemblyInstance,
     config: dict[str, Any],
@@ -102,7 +115,7 @@ def _rollout_metrics(
     from environment import AssemblySchedulingEnv
     from environment.types import MachineState, OperationState
 
-    environment = AssemblySchedulingEnv(config)
+    environment = AssemblySchedulingEnv(_physical_precheck_config(instance, config))
     environment.reset(instance, build_observation=False)
     policy = HeuristicPolicy()
     seen_ready: set[str] = set()
@@ -131,8 +144,9 @@ def _rollout_metrics(
     completed_reconfigurations = int(base_metrics["completed_reconfigurations"])
     total_operations = len(instance.operations)
     heuristic_metrics = {
-        "heuristic_completed": bool(base_metrics["terminated"]),
+        "heuristic_completed": bool(base_metrics["task_succeeded"]),
         "heuristic_truncated": bool(base_metrics["truncated"]),
+        "heuristic_failed": bool(base_metrics["task_failed"]),
         "heuristic_terminal_reason": base_metrics["terminal_reason"],
         "heuristic_makespan": float(base_metrics["time"]),
         "heuristic_flow_time": base_metrics["total_flow_time"],
@@ -834,7 +848,7 @@ class InstanceGenerator:
         from agent.baselines import HeuristicPolicy
         from environment import AssemblySchedulingEnv, DecisionType
 
-        environment = AssemblySchedulingEnv(self.precheck_config)
+        environment = AssemblySchedulingEnv(_physical_precheck_config(instance, self.precheck_config))
         environment.reset(instance, build_observation=False)
         policy = HeuristicPolicy()
         values: list[float] = []
@@ -927,7 +941,7 @@ class InstanceGenerator:
             else:
                 action = policy.select_action(environment)
             environment.step(action, build_observation=False)
-        return bool(environment.terminated)
+        return bool(environment.task_succeeded)
 
     @staticmethod
     def _select_avoiding_reconfiguration(

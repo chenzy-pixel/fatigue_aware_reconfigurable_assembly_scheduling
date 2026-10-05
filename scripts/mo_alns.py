@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from agent.mo_alns import MOALNSSolver, decode_solution
 from agent.mo_alns.types import preference_key
@@ -111,6 +115,7 @@ def _run_record(
             {
                 **row,
                 "arm": "mo_alns",
+                "method_version": "MO_ALNS_v1",
                 "algorithm_seed": int(algorithm_seed),
                 "dataset": dataset_name,
                 "candidate_id": candidate_id,
@@ -124,6 +129,7 @@ def _run_record(
                 "tchebycheff": replay.tchebycheff,
                 "initial_best_tchebycheff": search.initial_best_tchebycheff,
                 "replay_verified": True,
+                "search_scalarizer": json.dumps(worker_config["objective_scalarizer"], sort_keys=True),
             }
         )
         schedules.extend(
@@ -212,6 +218,9 @@ def run_mo_alns_dataset(
     if dataset_name not in PERSISTED_SPLITS:
         raise ValueError(f"unknown persisted split {dataset_name!r}")
     effective_config = deepcopy(dict(config))
+    if effective_config.get("mo_alns", {}).get("protocol", PROTOCOL_VERSION) != PROTOCOL_VERSION:
+        raise ValueError("unsupported mo_alns.protocol")
+    effective_config["method_version"] = "MO_ALNS_v1"
     effective_config["seed"] = validate_algorithm_seed(effective_config, int(algorithm_seed))
     dataset = load_dataset_split(effective_config, dataset_name)
     indices = resolve_instance_indices(dataset, instance_indices=instance_indices,
@@ -263,6 +272,7 @@ def run_mo_alns_dataset(
     aggregate.update(
         {
             "protocol": PROTOCOL_VERSION,
+            "search_scalarizer": deepcopy(effective_config["objective_scalarizer"]),
             "algorithm_seed": int(algorithm_seed),
             "preference_count_per_instance": len(points),
             "candidate_budget_per_preference": int(effective_config.get("mo_alns", {}).get("max_evaluations_per_preference", 300)),
