@@ -332,7 +332,7 @@ def _worker_roll_forward(
             local_forced_action_count
         ),
     }
-    if terminated or truncated:
+    if terminated:
         return WorkerResponse(
             lane_id=lane_id,
             terminated=terminated,
@@ -344,13 +344,17 @@ def _worker_roll_forward(
         observation = environment.observe()
     if observation is None:
         raise RuntimeError("active worker has no observation")
-    return _worker_state(
+    response = _worker_state(
         lane_id,
         environment,
         observation,
         preserve_graph=preserve_graph,
         **response_kwargs,
     )
+    if truncated:
+        response.truncated = True
+        response.metrics = _terminal_metrics(environment)
+    return response
 
 
 def _commit_pending_transition(
@@ -1305,8 +1309,7 @@ class ParallelEpisodeRunner:
                 raise ParallelWorkerError(
                     "reset worker returned steps without rewards"
                 )
-            task_done = bool(response.terminated or response.truncated)
-            if task_done:
+            if response.terminated:
                 if response.metrics is None:
                     raise ParallelWorkerError(
                         "terminal reset worker returned no metrics"
@@ -1325,8 +1328,8 @@ class ParallelEpisodeRunner:
                     f"worker {lane_id} returned no active reset state"
                 )
             if (
-                step_limit is not None
-                and context["step_count"] >= step_limit
+                response.truncated
+                or (step_limit is not None and context["step_count"] >= step_limit)
             ):
                 reset_cutoff_lanes.append(lane_id)
             else:
@@ -1490,7 +1493,6 @@ class ParallelEpisodeRunner:
                 scalar_reward = response.reward_vector.scalarize(
                     self.config["reward"],
                 )
-                task_done = bool(response.terminated or response.truncated)
                 if lane in sampled_transitions:
                     pending = sampled_transitions[lane]
                     pending.reward += scalar_reward
@@ -1515,7 +1517,7 @@ class ParallelEpisodeRunner:
                 context["environment_step_time_seconds"] += (
                     response.environment_step_time_seconds
                 )
-                if task_done:
+                if response.terminated:
                     _commit_pending_transition(context, done=True)
                     if response.metrics is None:
                         raise ParallelWorkerError(
@@ -1535,8 +1537,8 @@ class ParallelEpisodeRunner:
                     active.remove(lane)
                     continue
                 if (
-                    step_limit is not None
-                    and context["step_count"] >= step_limit
+                    response.truncated
+                    or (step_limit is not None and context["step_count"] >= step_limit)
                 ):
                     _commit_pending_transition(context, done=False)
                     cutoff_lanes.append(lane)

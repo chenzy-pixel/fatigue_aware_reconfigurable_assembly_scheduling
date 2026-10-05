@@ -1,0 +1,22 @@
+{
+  "protocol": "v8_matched_ablation_failure2_frozen_v1",
+  "algorithm_seed": 11,
+  "runs": {
+    "universal": {"config": "configs/v8/universal.json", "run_name": "universal_seed11_ep2000", "group": "structural", "universal": true},
+    "no_graph": {"config": "configs/ablations/no_graph.json", "run_name": "ablation_no_graph_seed11_ep2000", "group": "structural", "universal": true},
+    "shared_head": {"config": "configs/ablations/shared_head.json", "run_name": "ablation_shared_head_seed11_ep2000", "group": "structural", "universal": true},
+    "full_flow": {"config": "configs/ablations/full_flow.json", "run_name": "full_flow_seed11_ep1000", "group": "fatigue", "universal": false},
+    "neutral_flow": {"config": "configs/ablations/neutral_flow.json", "run_name": "neutral_flow_seed11_ep1000", "group": "fatigue", "universal": false},
+    "full_cost": {"config": "configs/ablations/full_cost.json", "run_name": "full_cost_seed11_ep1000", "group": "fatigue", "universal": false},
+    "neutral_cost": {"config": "configs/ablations/neutral_cost.json", "run_name": "neutral_cost_seed11_ep1000", "group": "fatigue", "universal": false},
+    "full_variance": {"config": "configs/ablations/full_variance.json", "run_name": "full_variance_seed11_ep1000", "group": "fatigue", "universal": false},
+    "neutral_variance": {"config": "configs/ablations/neutral_variance.json", "run_name": "neutral_variance_seed11_ep1000", "group": "fatigue", "universal": false}
+  },
+  "pairs": [
+    {"experiment": "graph_propagation", "baseline": "universal", "variant": "no_graph", "changed_field": "encoder_variant"},
+    {"experiment": "objective_experts", "baseline": "universal", "variant": "shared_head", "changed_field": "actor_head_variant"},
+    {"experiment": "fatigue_flow", "baseline": "full_flow", "variant": "neutral_flow", "changed_field": "fatigue_mode"},
+    {"experiment": "fatigue_cost", "baseline": "full_cost", "variant": "neutral_cost", "changed_field": "fatigue_mode"},
+    {"experiment": "fatigue_variance", "baseline": "full_variance", "variant": "neutral_variance", "changed_field": "fatigue_mode"}
+  ]
+}

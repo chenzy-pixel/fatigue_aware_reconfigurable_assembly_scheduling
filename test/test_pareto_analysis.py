@@ -42,7 +42,7 @@ def _formal_candidates(config, stage="validation", arm="ppo"):
         for repeat in range(repeats):
             rows.append({
                 "arm": arm, "dataset": "test", "algorithm_seed": 11, "instance_id": "matrix_instance",
-                "terminated": True, "truncated": False, "schedule_violation_count": 0,
+                "terminated": True, "task_succeeded": True, "task_failed": False, "truncated": False, "schedule_violation_count": 0,
                 "maximum_worker_fatigue": 0.5, "safe_fatigue_limit": 0.75,
                 "flow_time_objective": 1000.0, "reconfiguration_cost": 300.0, "worker_load_variance": 3.0,
                 "result_schema_version": EVALUATION_SCHEMA_VERSION,
@@ -94,3 +94,12 @@ def test_comparison_uses_sampled_ppo_and_solver_endpoint_budgets():
     assert instances[0]["ppo_hypervolume"] == pytest.approx(instances[0]["mo_alns_hypervolume"])
     assert summary["analysis_protocol"] == "ppo_mo_alns_solver_budget_v2"
     assert summary["statistics"]["test"]["algorithm_seed_count"] == 1
+
+
+def test_current_analysis_rejects_external_sampling_truncation():
+    config = load_config("configs/default.json")
+    rows = _formal_candidates(config)
+    rows[0].update(terminated=False, truncated=True, sampling_truncated=True,
+                   task_succeeded=False, task_failed=False)
+    with pytest.raises(ValueError, match="truncated"):
+        analyze_rows(rows, config, stage="validation")

@@ -78,15 +78,17 @@ def _mean(values: Sequence[float]) -> float | None:
 def _validation_summary(rows: list[dict[str, str]]) -> dict[str, Any]:
     if not rows:
         return {"count": 0, "best_episode": None}
-    completion = [float(row["completion_rate"]) for row in rows]
-    quality = [_number(row.get("preference_balanced_quality_score")) for row in rows]
+    complete = [row for row in rows if row.get("evaluation_complete", "True").lower() == "true"]
+    completion = [float(row["completion_rate"]) for row in complete]
+    quality = [_number(row.get("preference_balanced_quality_score")) for row in complete]
     return {
         "count": len(rows),
-        "episodes": [int(row["episode"]) for row in rows],
+        "episodes": [int(row["episode"]) for row in complete],
+        "incomplete_count": len(rows) - len(complete),
         "sampled_completion_rates": completion,
         "preference_balanced_quality_scores": quality,
-        "maximum_sampled_completion_rate": max(completion),
-        "last_sampled_completion_rate": completion[-1],
+        "maximum_sampled_completion_rate": max(completion) if completion else None,
+        "last_sampled_completion_rate": completion[-1] if completion else None,
     }
 
 
@@ -172,11 +174,12 @@ def plot_run(run_directory: str | Path, output: str | Path | None = None) -> Pat
         alpha=0.5,
     )
     axes[1, 0].set(title=f"Raw {objective} objective", xlabel="Episode")
-    if validations:
-        validation_episodes = [int(row["episode"]) for row in validations]
+    complete_validations = [row for row in validations if row.get("evaluation_complete", "True").lower() == "true"]
+    if complete_validations:
+        validation_episodes = [int(row["episode"]) for row in complete_validations]
         axes[1, 1].plot(
             validation_episodes,
-            [float(row["completion_rate"]) for row in validations],
+            [float(row["completion_rate"]) for row in complete_validations],
             marker="o",
             label="sampled",
         )

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from configs import load_config, project_path
 from scripts.mo_alns import PROTOCOL_VERSION, run_mo_alns_dataset

@@ -12,6 +12,9 @@ from datetime import datetime
 from pathlib import Path
 
 from configs import load_config, project_path
+from configs.ablation_protocol import validate_training_run, validate_evaluation_run
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
+from environment.time_context import TIME_CONTEXT_VERSION
 from data.dataset import sha256_file, validate_algorithm_seed
 from result.io import write_json
 from result.provenance import dataset_manifest_snapshot
@@ -21,16 +24,17 @@ ROLE_CONFIGS = {
     "universal": "configs/v8/universal.json",
     "no_graph": "configs/ablations/no_graph.json",
     "shared_head": "configs/ablations/shared_head.json",
-    "full_flow": "configs/e1/single_flow.json",
+    "full_flow": "configs/ablations/full_flow.json",
     "neutral_flow": "configs/ablations/neutral_flow.json",
-    "full_cost": "configs/e1/single_cost.json",
+    "full_cost": "configs/ablations/full_cost.json",
     "neutral_cost": "configs/ablations/neutral_cost.json",
-    "full_variance": "configs/e1/single_variance.json",
+    "full_variance": "configs/ablations/full_variance.json",
     "neutral_variance": "configs/ablations/neutral_variance.json",
 }
-STRUCTURAL = ("no_graph", "shared_head")
+STRUCTURAL = ("universal", "no_graph", "shared_head")
 NEUTRAL = ("neutral_flow", "neutral_cost", "neutral_variance")
-VARIANTS = STRUCTURAL + NEUTRAL
+FATIGUE = ("full_flow", "neutral_flow", "full_cost", "neutral_cost", "full_variance", "neutral_variance")
+VARIANTS = ("no_graph", "shared_head") + FATIGUE
 
 
 def batch_directory() -> Path:
@@ -70,6 +74,7 @@ def protocol_profile(config: dict) -> dict:
 
 def discover_training_run(role: str, seed: int, run_root: Path | None = None) -> Path:
     expected = load_config(ROLE_CONFIGS[role])
+    expected["seed"] = seed
     root = run_root or project_path(expected["paths"]["result_root"])
     validation_manifest = project_path(expected["paths"]["manifests_root"]) / "validation/manifest.json"
     validation_hash = dataset_manifest_snapshot(validation_manifest)["sha256"]
@@ -83,14 +88,18 @@ def discover_training_run(role: str, seed: int, run_root: Path | None = None) ->
             runtime = actual.get("runtime_manifest", {})
             if (int(actual["seed"]) != seed or int(summary["episodes"]) != expected["training"]["episodes"]
                     or not summary["checkpoint_selection"]["has_best"]
-                    or runtime.get("observation_schema") != 6
-                    or runtime.get("time_context") != "order_chain_action_context_v1"
+                    or runtime.get("observation_schema") != OBSERVATION_SCHEMA_VERSION
+                    or runtime.get("time_context") != TIME_CONTEXT_VERSION
                     or summary["provenance"].get("dataset_manifest_sha256") != validation_hash
                     or protocol_profile(actual) != protocol_profile(expected)):
                 continue
         except (ValueError, TypeError, KeyError, OSError):
             continue
         if sha256_file(run / "best_checkpoint.pt") != summary["provenance"].get("checkpoint_sha256"):
+            continue
+        try:
+            validate_training_run(run, expected)
+        except (ValueError, TypeError, KeyError, OSError):
             continue
         candidates.append(run)
     if not candidates:
@@ -117,7 +126,7 @@ def train_group(roles: tuple[str, ...], *, smoke: bool = False) -> None:
     args = parser.parse_args()
     seed = validate_algorithm_seed(load_config("configs/default.json"), args.seed)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    group = "smoke" if smoke else ("structural" if roles == STRUCTURAL else "neutral")
+    group = "smoke" if smoke else ("structural" if roles == STRUCTURAL else "fatigue")
     manifest_path = batch_directory() / f"training_{group}_seed{seed}_{stamp}.json"
     manifest = {"schema": "matched_ablation_batch_v1", "seed": seed, "group": group, "status": "running", "runs": {}}
     for role in roles:
@@ -186,11 +195,14 @@ def evaluate_group() -> None:
         save_batch_manifest(manifest_path, manifest)
         try:
             subprocess.run(command, cwd=ROOT, check=True)
-        except subprocess.CalledProcessError as error:
+            expected = load_config(config_path)
+            expected["seed"] = seed
+            output = project_path(expected["paths"]["result_root"]) / name
+            validate_evaluation_run(output, expected, checkpoint)
+        except Exception as error:
             manifest.update(status="failed", failed_role=role, error=str(error))
             save_batch_manifest(manifest_path, manifest)
             raise
-        output = project_path(load_config(config_path)["paths"]["result_root"]) / name
         manifest["runs"][role] = {"config": config_path, "training_run": str(sources[role]),
             "checkpoint": str(checkpoint), "evaluation_run": str(output)}
         save_batch_manifest(manifest_path, manifest)

@@ -39,7 +39,7 @@ def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
     config = load_config("configs/default.json")
     public = public_config(config)
     assert config["reward"]["mode"] == (
-        "single_stage_progress_quality_failure_v2"
+        "single_stage_progress_quality_failure_v3"
     )
     assert config["reward"]["terminal_failure_penalty"] == 2.0
     assert config["ppo"]["gamma"] == 1.0
@@ -54,7 +54,7 @@ def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
         "unfinished_order_penalty",
     }.intersection(config["reward"])
     assert public["runtime_manifest"]["training_protocol"] == (
-        "single_stage_lexicographic_failure_v2"
+        "single_stage_lexicographic_failure_v3"
     )
 
 
@@ -197,3 +197,12 @@ def test_latest_only_validation_rejects_stage_configuration():
 
     with pytest.raises(ValueError, match="training.two_stage"):
         validate_latest_only_config(config)
+
+
+def test_incomplete_validation_cannot_select_a_best_checkpoint(config):
+    selector = LexicographicCheckpointSelector.from_config(config)
+    validation = _validation(1.0, 0.0)
+    validation.update(evaluation_complete=False, sampling_truncated_count=1)
+    assert selector.observe(validation, completed_episodes=100, physical_safety_pass=True) == "ineligible"
+    assert not selector.has_best
+    assert selector.incomplete_validations == 1

@@ -12,6 +12,8 @@ from statistics import mean
 import torch
 
 from configs import load_config, project_path
+from configs.ablation_protocol import assert_paired_configs
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
 from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from data.dataset import sha256_file
@@ -56,6 +58,9 @@ def _key(row: dict) -> tuple[str, str, str]:
 
 
 def paired_rows(baseline: list[dict], variant: list[dict], experiment: str) -> tuple[list[dict], dict]:
+    for row in (*baseline, *variant):
+        if _true(row.get("sampling_truncated", row.get("truncated", False))):
+            raise ValueError(f"incomplete evaluation cell: {experiment}")
     left, right = ({_key(row): row for row in rows} for rows in (baseline, variant))
     if len(left) != len(baseline) or len(right) != len(variant):
         raise ValueError(f"duplicate evaluation cell: {experiment}")
@@ -103,6 +108,7 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
         if not condition:
             raise ValueError(f"{role}: {detail}")
 
+    require(metrics.get("evaluation_complete", True) and not metrics.get("sampling_truncated_count", 0), "incomplete evaluation")
     require(entry.get("config") == ROLE_CONFIGS[role], "role config mismatch")
     expected = load_config(ROLE_CONFIGS[role])
     expected["seed"] = seed
@@ -133,7 +139,7 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
                  "fatigue_mode": expected["environment"].get("fatigue_mode", "full")}
     require(all(payload["network_spec"].get(key, default) == selectors[key] for key, default in
                 (("encoder_variant", "hetero_gnn"), ("actor_head_variant", "objective_experts")))
-            and payload["network_spec"]["observation_schema_version"] == 6
+            and payload["network_spec"]["observation_schema_version"] == OBSERVATION_SCHEMA_VERSION
             and metadata["runtime_manifest"].get("fatigue_mode", "full") == selectors["fatigue_mode"],
             "checkpoint variant mismatch")
     dataset = load_dataset_split(expected, "test")
@@ -176,6 +182,7 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
     finite_fields = ("flow_time_objective", "reconfiguration_cost", "worker_load_variance",
                      "fatigue_monitor_peak", "fatigue_monitor_over_limit_minutes", "fatigue_monitor_over_limit_area")
     for row in rows:
+        require(not _true(row.get("sampling_truncated", row.get("truncated", False))), "incomplete evaluation cell")
         for key, value in controls.items():
             actual = row.get(key)
             match = (actual not in (None, "") and float(actual) == float(value)) if isinstance(value, (int, float)) else actual == value
@@ -215,6 +222,9 @@ def summarize(manifest_path: Path, output: Path) -> Path:
         for field in ("dataset_manifest_sha256", "subset_sha256", "quality_metric_sha256", "normalization_manifest_sha256"):
             if old_metrics.get(field) != new_metrics.get(field):
                 raise ValueError(f"aggregate {field} mismatch: {experiment}")
+        changed_field = ("encoder_variant" if experiment == "graph_propagation" else
+                         "actor_head_variant" if experiment == "objective_experts" else "fatigue_mode")
+        assert_paired_configs(load_config(ROLE_CONFIGS[baseline]), load_config(ROLE_CONFIGS[variant]), changed_field)
         cells, row = paired_rows(left, right, experiment)
         for cell in cells:
             cell.update(baseline=baseline, variant=variant)

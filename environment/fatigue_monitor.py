@@ -145,13 +145,6 @@ def audit_fatigue(
         affected += int(worker_peak > limit + 1e-9)
 
     denominator = len(instance.workers) * end_time
-    total_operations = sum(len(order.operations) for order in instance.orders)
-    completed_reconfigs = len({
-        str(row["reconfiguration_id"])
-        for row in records
-        if row["stage"] == "INS" and float(row["end"]) <= end_time
-        and not bool(row.get("truncated", False))
-    })
     metrics = {
         "fatigue_monitor_peak": peak,
         "fatigue_monitor_over_limit_worker_ratio": affected / max(1, len(instance.workers)),
@@ -172,7 +165,5 @@ def audit_fatigue(
         },
         "mean_interstage_idle_minutes": sum(idle_gaps) / len(idle_gaps) if idle_gaps else None,
         "max_consecutive_worker_stages": max_consecutive,
-        "completed_reconfigurations_per_minute": completed_reconfigs / end_time if end_time else None,
-        "completed_reconfigurations_per_operation": completed_reconfigs / total_operations if total_operations else None,
     }
     return metrics, segments

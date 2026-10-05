@@ -1,0 +1,5 @@
+{
+  "extends": "neutral_variance.json",
+  "experiment_name": "ablation_full_variance_seed11",
+  "environment": {"fatigue_mode": "full"}
+}

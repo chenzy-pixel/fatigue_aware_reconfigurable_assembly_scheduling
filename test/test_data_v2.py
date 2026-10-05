@@ -176,7 +176,10 @@ def test_unknown_instances_in_denominator_and_invalid_gap_is_empty(config, tmp_p
     modified = replace(original, metadata={**original.metadata, "feasibility_status": "unknown", "heuristic_metrics": None})
     row = _evaluation_row(modified, metrics, config, evaluation_quality_metric(config))
     assert all(row[name] is None for name in ("relative_heuristic_gap_percent", "makespan_heuristic_gap_percent", "reconfiguration_cost_heuristic_gap_percent", "worker_load_variance_heuristic_gap_percent"))
-    failed = {**row, "terminated": False, "truncated": True, "termination_reason": "horizon", "operation_progress": .75}
+    failed = {**row, "terminated": True, "truncated": False,
+              "task_succeeded": False, "task_failed": True, "task_done": True,
+              "sampling_truncated": False, "objective_complete": True,
+              "termination_reason": "horizon", "operation_progress": .75}
     aggregate = aggregate_evaluation_rows([row,failed], dataset="validation", policy="heuristic", manifest="manifest.json")
     assert aggregate["completion_rate"] == .5
     assert aggregate["by_feasibility_status"]["unknown"]["count"] == 2
@@ -195,10 +198,16 @@ def test_unknown_instances_in_denominator_and_invalid_gap_is_empty(config, tmp_p
 
 
 def test_legacy_data_is_preserved_and_loadable():
+    import json
+    from pathlib import Path
     from configs import load_config
     assert verify_legacy_files() == 565
-    legacy = load_config("configs/archive/data_v1.json")
+    # Archived instance bytes remain readable under their recorded data contract.
+    legacy = json.loads(Path("configs/archive/data_v1.json").read_text(encoding="utf-8"))
     assert load_dataset_split(legacy, "validation").manifest["schema_version"] == "1.2.0"
+    for allow in (False, True):
+        with pytest.raises(ValueError, match="failure-v3 reward contract"):
+            load_config("configs/archive/data_v1.json", allow_observation_migration=allow)
 
 
 def test_run_audit_loads_saved_runtime_config(config, tmp_path):

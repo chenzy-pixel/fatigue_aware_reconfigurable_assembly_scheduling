@@ -24,7 +24,7 @@ from result.metrics import (
 from utils import SAMPLED_EVALUATION_RNG_VERSION
 
 
-PROVENANCE_SCHEMA_VERSION = "1.0.0"
+PROVENANCE_SCHEMA_VERSION = "1.1.0"
 
 
 def _sha256(value: bytes) -> str:
@@ -198,6 +198,7 @@ def build_provenance(
     dataset_manifest_path: str | Path | None = None,
     checkpoint_path: str | Path | None = None,
     checkpoint_metadata: Mapping[str, Any] | None = None,
+    executed_network_state: Mapping[str, torch.Tensor] | None = None,
     formal_evaluation_stage: str | None = None,
     evaluation_subset_sha256: str | None = None,
     root: str | Path = PROJECT_ROOT,
@@ -222,10 +223,20 @@ def build_provenance(
         if weights_hash is None:
             weights_hash = computed_weights_hash
         elif str(weights_hash) != computed_weights_hash:
-            raise ValueError(
-                "checkpoint metadata network_weights_sha256 does not match "
-                "the checkpoint network state"
-            )
+            source_hash = (checkpoint_metadata or {}).get("source_network_weights_sha256")
+            migration = (checkpoint_metadata or {}).get("checkpoint_load_migration")
+            if not migration or source_hash != computed_weights_hash:
+                raise ValueError(
+                    "checkpoint metadata network_weights_sha256 does not match "
+                    "the checkpoint network state"
+                )
+            if executed_network_state is None:
+                raise ValueError("migrated checkpoint provenance requires executed_network_state")
+    if executed_network_state is not None:
+        executed_hash = network_weights_sha256(executed_network_state)
+        if weights_hash is not None and weights_hash != executed_hash:
+            raise ValueError("checkpoint metadata does not match the executed network state")
+        weights_hash = executed_hash
     provenance: dict[str, Any] = {
         "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
         **protocol_hashes(config),
@@ -242,6 +253,10 @@ def build_provenance(
         "git": git_state(root),
         "checkpoint_sha256": checkpoint_hash,
         "network_weights_sha256": weights_hash,
+        "source_network_weights_sha256": (
+            computed_weights_hash if checkpoint_path is not None else None
+        ),
+        "checkpoint_load_migration": (checkpoint_metadata or {}).get("checkpoint_load_migration"),
         "checkpoint_protocol_version": checkpoint_protocol,
         "evaluator_protocol_version": config["experiment_suite_version"],
         "result_schema_version": result_schema_version(config),

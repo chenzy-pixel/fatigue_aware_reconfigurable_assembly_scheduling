@@ -64,7 +64,7 @@ def _enabled_config(config):
 
 def _phase_state():
     return {
-        "protocol": "single_stage_lexicographic_failure_v2",
+        "protocol": "single_stage_lexicographic_failure_v3",
         "has_best": False,
         "best_episode": None,
     }

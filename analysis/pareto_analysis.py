@@ -149,7 +149,7 @@ def valid_candidate(row: Mapping[str, Any]) -> bool:
     try:
         objectives = [float(row[name]) for name in OBJECTIVE_FIELDS]
         return bool(
-            _flag(row.get("terminated")) and not _flag(row.get("truncated"))
+            _flag(row["task_succeeded"]) and not _flag(row.get("sampling_truncated", row["truncated"]))
             and int(float(row.get("schedule_violation_count", 0))) == 0
             and float(row.get("maximum_worker_fatigue", 0)) <= float(row.get("safe_fatigue_limit", math.inf)) + 1e-9
             and all(math.isfinite(value) and value >= 0 for value in objectives)
@@ -180,7 +180,7 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
         value = float(row[field])
         if not math.isfinite(value) or not math.isclose(value, expected, rel_tol=1e-12, abs_tol=1e-12):
             raise ValueError(f"candidate {field} does not match the current experiment")
-    for field in ("dataset", "algorithm_seed", "instance_id", "schedule_violation_count", "maximum_worker_fatigue", "safe_fatigue_limit", "dataset_manifest_sha256", "subset_sha256"):
+    for field in ("dataset", "algorithm_seed", "instance_id", "schedule_violation_count", "maximum_worker_fatigue", "safe_fatigue_limit", "dataset_manifest_sha256", "subset_sha256", "task_succeeded", "task_failed", "truncated"):
         if row.get(field) in {None, ""}:
             raise ValueError(f"candidate is missing {field}")
     if row["arm"] == "ppo":
@@ -193,7 +193,7 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
     normalize_objectives([float(row[field]) for field in OBJECTIVE_FIELDS], objective_scales(config))
     quality = terminal_quality_score(
         *(float(row[field]) for field in OBJECTIVE_FIELDS), dict(config),
-        preference=_preference(row).preference, terminal_failure=_flag(row.get("truncated")),
+        preference=_preference(row).preference, terminal_failure=_flag(row["task_failed"]),
     )
     if not math.isclose(float(row["preference_quality_score"]), quality, rel_tol=1e-9, abs_tol=1e-9):
         raise ValueError("candidate preference quality does not match its objectives and preference")
@@ -212,6 +212,8 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
         row["arm"] = arm
         if arms is not None and arm not in arms:
             continue
+        if _flag(row.get("sampling_truncated", row.get("truncated", False))) or row.get("evaluation_complete") is False:
+            raise ValueError("externally truncated evaluations cannot enter Pareto/HV analysis")
         _validate_row_protocol(row, config)
         row["preference_key"] = _preference(row).key
         for name, value in zip(("flow", "cost", "variance"), _preference(row).as_tuple()):

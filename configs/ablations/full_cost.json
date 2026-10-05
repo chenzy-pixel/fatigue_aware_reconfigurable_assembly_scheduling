@@ -1,0 +1,5 @@
+{
+  "extends": "neutral_cost.json",
+  "experiment_name": "ablation_full_cost_seed11",
+  "environment": {"fatigue_mode": "full"}
+}

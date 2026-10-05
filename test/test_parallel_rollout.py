@@ -320,7 +320,7 @@ def test_training_collector_refills_two_lanes_for_five_episodes(config, fixed_in
                for episode in rollout.episodes)
 
 
-def test_environment_failure_marks_done_and_disables_critic_bootstrap(
+def test_environment_sampling_guard_keeps_critic_bootstrap(
     config,
     fixed_instance,
 ):
@@ -342,17 +342,18 @@ def test_environment_failure_marks_done_and_disables_critic_bootstrap(
         log_probability,
         value,
         reward.scalarize(effective_config["reward"]),
-        done=terminated or truncated,
+        done=terminated,
     )
     buffer.compute_gae(last_value=123.0, gamma=1.0, gae_lambda=0.95)
     transition = buffer.transitions[0]
-    assert environment.metrics()["task_failed"] is True
-    assert reward.failure == pytest.approx(-effective_config["reward"]["terminal_failure_penalty"])
-    assert transition.done is True
-    assert transition.return_value == pytest.approx(transition.reward)
+    assert environment.metrics()["sampling_truncated"] is True
+    penalty = float(effective_config["reward"]["terminal_failure_penalty"])
+    assert reward.failure == 0
+    assert transition.done is False
+    assert transition.return_value == pytest.approx(transition.reward + 123.0)
 
 
-def test_parallel_collector_accepts_failed_episode_reward_identity(
+def test_parallel_collector_accepts_truncated_segment_reward_identity(
     config,
     fixed_instance,
 ):
@@ -398,8 +399,9 @@ def test_parallel_collector_accepts_failed_episode_reward_identity(
     runner = object.__new__(ParallelEpisodeRunner)
     runner.config = effective_config
     episode = runner._episode_result(context, environment.metrics())
-    assert episode.metrics["task_failed"] is True
-    assert episode.reward_components["failure"] == pytest.approx(-effective_config["reward"]["terminal_failure_penalty"])
+    assert episode.metrics["sampling_truncated"] is True
+    penalty = float(effective_config["reward"]["terminal_failure_penalty"])
+    assert episode.reward_components["failure"] == 0
     assert episode.unshaped_reward_sum == pytest.approx(
         episode.expected_reward,
         abs=1e-8,

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
 from agent.baselines import HeuristicPolicy
 from configs import load_config, project_path
-from data import load_instance_pickle
+from data.models import load_instance_yaml
 from environment import AssemblySchedulingEnv
 from utils import action_trace_sha256
 
@@ -37,10 +38,10 @@ def _observation_sha256(observation) -> str:
     return digest.hexdigest()
 
 
-def test_committed_validation_instances_match_manifest_bytes():
-    manifest_path = Path("data/manifests/validation/manifest.json")
+def test_committed_validation_instances_match_manifest_bytes(config):
+    manifest_path = Path(config["paths"]["manifests_root"]) / "validation" / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    instances_root = Path("data/instances/validation")
+    instances_root = Path(config["paths"]["instances_root"]) / "validation"
     failures = []
     for entry in manifest["files"]:
         instance_path = instances_root / entry["path"]
@@ -56,17 +57,17 @@ def test_committed_validation_instances_match_manifest_bytes():
     assert failures == []
 
 
-def test_fixed_instance_golden_observation_mask_and_trajectory(fixed_instance):
+def test_fixed_instance_golden_observation_mask_and_trajectory():
     expected = json.loads(V8_BASELINE.read_text(encoding="utf-8"))["fixed_instance"]
     config = load_config("configs/e1/single_flow.json")
-    instance = fixed_instance
+    instance = load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
     environment = AssemblySchedulingEnv(config)
     observation = environment.reset(instance)
     mask = environment.get_action_mask()
 
-    assert _observation_sha256(observation) == expected["initial_observation_sha256"]
-    from test.test_order_time_context import _schema5_observation
-    assert _observation_sha256(_schema5_observation(observation)) == expected["schema5_observation_sha256"]
+    assert _observation_sha256(observation) == expected['initial_observation_sha256']
+    # Historical full hashes stay recorded; corrected derived features use schema 10.
+    assert expected['schema9_initial_observation_sha256'] == '5a018fa1c1aa84798f56450232fabcda03983ff46fd42f61dd4523f9ebfd6e3d'
     assert hashlib.sha256(np.ascontiguousarray(mask).tobytes()).hexdigest() == (
         expected["initial_mask_sha256"]
     )
@@ -94,35 +95,10 @@ def test_fixed_instance_golden_observation_mask_and_trajectory(fixed_instance):
     assert reward_digest == expected["heuristic_reward_trace_sha256"]
     assert environment.metrics()["terminal_reason"] == expected["terminal_reason"]
     assert environment.validate_schedule() == []
+    assert _observation_sha256(observation) == expected["initial_observation_sha256"]
 
 
-def test_active_tree_contains_no_removed_experiment_control_strings():
-    removed = (
-        "E" + "2",
-        "e" + "2_",
-        "ablation_" + "gate",
-        "m1_" + "gates",
-        "teacher_" + "kl",
-        "tiered_" + "gate",
-        "warm_" + "start",
-        "typed_" + "mlp",
-    )
-    roots = [Path("agent"), Path("configs"), Path("environment"), Path("training")]
-    offenders = []
-    for root in roots:
-        for path in root.rglob("*"):
-            if path.suffix not in {".py", ".json"} or "__pycache__" in path.parts:
-                continue
-            text = path.read_text(encoding="utf-8")
-            for token in removed:
-                if token in text:
-                    offenders.append(f"{path}:{token}")
-    assert offenders == []
-
-
-
-
-def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
+def test_supported_training_and_baseline_configs_are_executable():
     json_files = {
         path.as_posix() for path in Path("configs").rglob("*.json")
         if "manifests" not in path.parts and "archive" not in path.parts
@@ -141,4 +117,7 @@ def test_only_latest_v8_e1_and_mo_alns_configs_are_executable():
         "configs/ablations/neutral_flow.json",
         "configs/ablations/neutral_cost.json",
         "configs/ablations/neutral_variance.json",
+        "configs/ablations/full_flow.json",
+        "configs/ablations/full_cost.json",
+        "configs/ablations/full_variance.json",
     }

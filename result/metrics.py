@@ -145,9 +145,11 @@ def compare_lexicographic(
     tolerance: float = 1e-6,
 ) -> int:
     """Return -1 if first is better, 1 if second is better, and 0 for a tie."""
-    if first["truncated"] != second["truncated"]:
-        return 1 if first["truncated"] else -1
-    if first["truncated"]:
+    if first.get("sampling_truncated", first.get("truncated", False)) or second.get("sampling_truncated", second.get("truncated", False)):
+        raise ValueError("cannot rank externally truncated schedules")
+    if first["task_failed"] != second["task_failed"]:
+        return 1 if first["task_failed"] else -1
+    if first["task_failed"]:
         unfinished_difference = (
             first["unfinished_orders"] - second["unfinished_orders"]
         )
@@ -270,6 +272,34 @@ def aggregate_evaluation_rows(
         values = {str(row.get(field)) for row in rows}
         if len(values) > 1:
             raise ValueError(f"cannot aggregate rows with different {field}")
+    sampling_truncated_count = sum(bool(row.get("sampling_truncated", row.get("truncated", False))) for row in rows)
+    if sampling_truncated_count:
+        return {
+            "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+            "evaluation_complete": False,
+            "selection_eligible": False,
+            "quality_metric_version": normalized_metric["version"],
+            "quality_metric": normalized_metric,
+            "quality_metric_sha256": metric_hash,
+            "dataset": dataset, "manifest": manifest, "policy": policy,
+            "instance_count": len(rows),
+            "completed_count": sum(bool(row["task_succeeded"]) for row in rows),
+            "task_failed_count": sum(bool(row["task_failed"]) for row in rows),
+            "terminated_count": sum(bool(row["terminated"]) for row in rows),
+            "truncated_count": sampling_truncated_count,
+            "sampling_truncated_count": sampling_truncated_count,
+            "completion_coverage": (len(rows) - sampling_truncated_count) / len(rows),
+            "completion_rate": None,
+            "schedule_violation_count": sum(int(row["schedule_violation_count"]) for row in rows),
+            "decision_count": sum(int(row["decisions"]) for row in rows),
+            "total_inference_time_seconds": sum(float(row["inference_time_seconds"]) for row in rows),
+            "total_solve_time_seconds": sum(float(row["solve_time_seconds"]) for row in rows),
+            "completed_metrics": {}, "all_instance_metrics": {},
+            "preference_quality_by_key": {}, "preference_balanced_quality_score": None,
+            "gap_metrics": {}, "tail_metrics": {},
+            "by_pressure_type": {}, "by_feasibility_status": {},
+            "failure_reasons": dict(Counter(failure_reason(row) for row in rows if row["task_failed"])),
+        }
     completed = [
         row
         for row in rows
@@ -502,6 +532,12 @@ def aggregate_evaluation_rows(
 
     return {
         "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+        "evaluation_complete": True,
+        "selection_eligible": True,
+        "completion_coverage": 1.0 if rows else 0.0,
+        "sampling_truncated_count": 0,
+        "task_failed_count": sum(bool(row["task_failed"]) for row in rows),
+        "terminated_count": sum(bool(row["terminated"]) for row in rows),
         "quality_metric_version": normalized_metric["version"],
         "quality_metric": normalized_metric,
         "quality_metric_sha256": metric_hash,
@@ -541,6 +577,8 @@ def evaluation_selection_key(
 ) -> tuple[float, float, float, float]:
     """Return completion first, then preference-balanced quality."""
 
+    if not aggregate.get("evaluation_complete", True) or aggregate.get("sampling_truncated_count", 0):
+        raise ValueError("incomplete evaluation cannot select a checkpoint")
     quality = float(
         aggregate.get("preference_balanced_quality_score", math.inf)
     )
@@ -554,7 +592,7 @@ def evaluation_selection_key(
 
 
 def successful_row(row: dict[str, Any]) -> bool:
-    return (bool(row["terminated"]) and not bool(row["truncated"])
+    return (bool(row["task_succeeded"]) and not bool(row.get("sampling_truncated", row["truncated"]))
             and not row.get("schedule_violation_count", 0)
             and float(row.get("maximum_worker_fatigue", 0)) <= float(row.get("safe_fatigue_limit", math.inf)) + 1e-9)
 

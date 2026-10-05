@@ -148,7 +148,7 @@ def test_standard_reset_and_successful_trajectory_satisfy_general_identity(
 
 
 @pytest.mark.parametrize("reason", ("decision_limit", "horizon"))
-def test_environment_failures_keep_actual_quality_and_apply_one_penalty(
+def test_terminal_boundaries_preserve_quality_and_failure_rewards(
     config, fixed_instance, reason
 ):
     effective = deepcopy(config)
@@ -168,18 +168,20 @@ def test_environment_failures_keep_actual_quality_and_apply_one_penalty(
         failure_sum += reward.failure
         transitions.append({"reward": reward.as_dict()})
     metrics = environment.metrics()
-    assert metrics["task_failed"] is True
-    assert metrics["preference_quality_score"] == 1.0
+    penalty = float(effective["reward"]["terminal_failure_penalty"])
+    assert metrics["task_failed"] is (reason == "horizon")
+    assert metrics["preference_quality_score"] == (1.0 if reason == "horizon" else metrics["raw_preference_quality_score"])
     assert metrics["actual_preference_quality_score"] < 1.0
-    assert metrics["terminal_failure_penalty_applied"] == pytest.approx(2.0)
-    assert failure_sum == pytest.approx(-2.0)
-    assert sum(item["reward"]["failure"] != 0.0 for item in transitions) == 1
+    assert metrics["terminal_failure_penalty_configured"] == pytest.approx(penalty)
+    assert metrics["terminal_failure_penalty_applied"] == pytest.approx(penalty if reason == "horizon" else 0)
+    assert failure_sum == pytest.approx(-penalty if reason == "horizon" else 0)
+    assert sum(item["reward"]["failure"] != 0.0 for item in transitions) == int(reason == "horizon")
     assert 0.0 <= metrics["operation_progress"] < 1.0
     assert reward_sum == pytest.approx(
         proxy_return_from_metrics(metrics, effective), abs=1e-8
     )
     audit = _reward_audit(environment, transitions)
-    assert audit["component_sums"]["failure"] == pytest.approx(-2.0)
+    assert audit["component_sums"]["failure"] == pytest.approx(-penalty if reason == "horizon" else 0)
     assert audit["base_cumulative_reward"] == pytest.approx(
         metrics["base_cumulative_reward"], abs=1e-8
     )
@@ -215,7 +217,7 @@ def test_failure_v2_distinguishes_equal_progress_by_actual_quality(config):
 
 
 
-def test_episode_csv_row_reconstructs_failed_training_return(
+def test_episode_csv_row_reconstructs_truncated_training_return(
     config, fixed_instance, tmp_path
 ):
     effective = deepcopy(config)
@@ -266,7 +268,7 @@ def test_episode_csv_row_reconstructs_failed_training_return(
     with path.open("r", encoding="utf-8", newline="") as handle:
         row = next(csv.DictReader(handle))
     assert row["reward_version"] == FAILURE_PENALTY_REWARD
-    assert float(row["reward_failure"]) == pytest.approx(-2.0)
+    assert float(row["reward_failure"]) == 0
     assert float(row["base_reward"]) + float(row["reward_failure"]) == pytest.approx(
         float(row["reward"]), abs=1e-8
     )

@@ -9,7 +9,7 @@ import math
 import statistics
 from collections import defaultdict
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 NORMALIZATION_MANIFEST_SCHEMA = "e1_tail_validation_scales_v1"
@@ -136,7 +136,7 @@ def build_normalization_manifest(
                 raise ValueError(f"invalid sampled repeats at episode {episode}: {run}")
             successful = [
                 row for row in cells
-                if row["terminated"] == "True" and row["truncated"] == "False"
+                if row["task_succeeded"] == "True"
             ]
             if not successful:
                 raise ValueError(f"no successful validation trajectory at episode {episode}: {run}")
@@ -267,13 +267,22 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     if not manifest_path or not expected:
         raise ValueError("frozen scales require manifest path and SHA256")
     path = Path(str(manifest_path))
+    if (path.is_absolute() or PureWindowsPath(str(manifest_path)).is_absolute()) and not path.is_file():
+        # Relocate snapshots from another checkout. The pinned digest is still
+        # checked by load_normalization_manifest before this file is accepted.
+        relocated = project_root / "configs" / "manifests" / PureWindowsPath(str(manifest_path)).name
+        if relocated.is_file():
+            path = relocated
     if not path.is_absolute():
         path = project_root / path
     manifest = load_normalization_manifest(path, expected_sha256=str(expected))
     scalarizer["scales"] = {
         name: float(manifest["scales"][name]) for name in OBJECTIVE_FIELDS
     }
-    scalarizer["normalization_manifest"] = str(path.resolve())
+    try:
+        scalarizer["normalization_manifest"] = path.resolve().relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        scalarizer["normalization_manifest"] = str(path.resolve())
     scalarizer["normalization_manifest_sha256"] = str(expected).lower()
     scalarizer["normalization_manifest_content_sha256"] = manifest["content_sha256"]
     network = config.setdefault("network", {})

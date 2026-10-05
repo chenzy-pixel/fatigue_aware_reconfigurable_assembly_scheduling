@@ -25,16 +25,22 @@ from environment import (
     WORKER_MODULE_EDGE,
     LOCKED_EDGE,
     SERVICE_CANDIDATE_EDGE,
+    PROCESSING_ON_EDGE,
+    SERVED_BY_EDGE,
     DecisionType,
     EdgeType,
     HeterogeneousGraphObservation,
 )
 
 
+from environment.observation_schema import (
+    OBSERVATION_SCHEMA_VERSION, GLOBAL_FEATURE_NAMES,
+)
+
+
 NODE_TYPES = ASSEMBLY_NODE_TYPES
 OBJECTIVES = ("flow", "cost", "variance")
 POLICY_HEAD_VERSION = 8
-OBSERVATION_SCHEMA_VERSION = 6
 EXPERT_WEIGHT_PARAMETERIZATION = "simplex_softplus_v8"
 SHARED_HEAD_PARAMETERIZATION = "shared_preference_mlp_v1"
 PREFERENCE_ENCODER_DIM = 32
@@ -80,6 +86,8 @@ BIDIRECTIONAL_EDGE_TYPES = frozenset(
         WORKER_MODULE_EDGE,
         WAVE_MODULE_EDGE,
         SERVICE_CANDIDATE_EDGE,
+        PROCESSING_ON_EDGE,
+        SERVED_BY_EDGE,
     )
 )
 
@@ -91,6 +99,8 @@ def _relation_key(edge_type: EdgeType) -> str:
 def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(config, Mapping):
         raise TypeError("network config must be a mapping")
+    if int(config.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION)) != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; network observation schema is incompatible")
     hidden_dim = int(config.get("hidden_dim", 128))
     layers = int(config.get("message_passing_layers", 2))
     encoder_variant = str(config.get("encoder_variant", "hetero_gnn"))
@@ -105,8 +115,8 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("V8 runtime accepts only policy_head_version=8")
     if hidden_dim <= 0 or layers <= 0:
         raise ValueError("hidden_dim and message_passing_layers must be positive")
-    if not 0.0 <= dropout < 1.0:
-        raise ValueError("network.dropout must be in [0, 1)")
+    if dropout != 0.0:
+        raise ValueError("PPO requires network.dropout = 0")
     gate = float(config.get("residual_gate_initial_logit", 0.0))
     if not np.isfinite(gate):
         raise ValueError("network.residual_gate_initial_logit must be finite")
@@ -172,14 +182,26 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     if int(spec.get("policy_head_version", 0)) != POLICY_HEAD_VERSION:
         raise ValueError("V7 and earlier checkpoints are rejected by V8 runtime")
     schema_version = int(spec.get("observation_schema_version", 0))
-    if schema_version not in {5, OBSERVATION_SCHEMA_VERSION}:
-        raise ValueError("checkpoint observation schema must be V8 schema 5 or 6")
-    if schema_version == OBSERVATION_SCHEMA_VERSION and spec.get("time_context_version") != TIME_CONTEXT_VERSION:
+    if schema_version != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation schemas cannot be loaded or migrated")
+    dimensions = spec.get("edge_feature_dimensions", {})
+    if set(dimensions) != set(ASSEMBLY_EDGE_TYPES):
+        raise ValueError(f"checkpoint edge feature dimensions must contain all schema-{OBSERVATION_SCHEMA_VERSION} relations")
+    if any(dimensions[kind] != 0 for kind in (PROCESSING_ON_EDGE, SERVED_BY_EDGE)):
+        raise ValueError("checkpoint actual resource relations must have zero edge attributes")
+    if schema_version >= 6 and spec.get("time_context_version") != TIME_CONTEXT_VERSION:
         raise ValueError("checkpoint time context version is incompatible")
-    if schema_version == OBSERVATION_SCHEMA_VERSION and spec.get("time_context_feature_schema") != TIME_CONTEXT_FEATURE_SCHEMA:
+    if schema_version >= 6 and spec.get("time_context_feature_schema") != TIME_CONTEXT_FEATURE_SCHEMA:
         raise ValueError("checkpoint time context feature schema is incompatible")
-    normalized = normalize_network_config(spec)
-    if spec.get("expert_weight_parameterization") != normalized["expert_weight_parameterization"]:
+    expected_globals = GLOBAL_FEATURE_NAMES
+    if int(spec.get("feature_dimensions", {}).get("global", 0)) != len(expected_globals):
+        raise ValueError("checkpoint global feature dimensions are incompatible")
+    if tuple(spec.get("global_feature_names", ())) != expected_globals:
+        raise ValueError("checkpoint global feature names/order are incompatible")
+    variant = str(spec.get("actor_head_variant", "objective_experts"))
+    expected_head = (EXPERT_WEIGHT_PARAMETERIZATION if variant == "objective_experts"
+                     else SHARED_HEAD_PARAMETERIZATION)
+    if spec.get("expert_weight_parameterization") != expected_head:
         raise ValueError("checkpoint actor head parameterization is incompatible")
     if int(spec.get("preference_embedding_dim", 0)) != PREFERENCE_ENCODER_DIM:
         raise ValueError("checkpoint preference encoder is not V8 3->32->ReLU->32")
@@ -191,6 +213,7 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     for name, expected in expected_schemas.items():
         if spec.get(name) != expected:
             raise ValueError(f"checkpoint {name} is incompatible with V8")
+    normalized = normalize_network_config(spec)
     for name in ("encoder_variant", "actor_head_variant"):
         spec[name] = normalized[name]
     for name in ("worker_flow_time_normalization", "worker_flow_time_std_floor"):
@@ -206,7 +229,7 @@ def assert_network_config_matches_spec(
     configured = normalize_network_config(config)
     saved = infer_checkpoint_network_spec({"network_spec": checkpoint_spec})
     if saved["observation_schema_version"] != config.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION):
-        raise ValueError("checkpoint observation schema requires time-context migration")
+        raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; checkpoint observation schema is incompatible")
     for name in (
         "encoder_variant",
         "actor_head_variant",
@@ -241,8 +264,12 @@ def assert_network_config_matches_spec(
         "feature_dimensions",
         "edge_feature_dimensions",
         "action_set_feature_names",
+        "global_feature_names",
     ):
-        if checkpoint_spec.get(name) != config.get(name):
+        saved_value, configured_value = checkpoint_spec.get(name), config.get(name)
+        if name == "global_feature_names":
+            saved_value, configured_value = tuple(saved_value or ()), tuple(configured_value or ())
+        if saved_value != configured_value:
             raise ValueError(f"checkpoint {name} is incompatible with this observation")
 
 
@@ -441,6 +468,8 @@ class HeteroGraphActorCritic(nn.Module):
         worker_flow_time_std_floor: float = 0.001,
         encoder_variant: str = "hetero_gnn",
         actor_head_variant: str = "objective_experts",
+        global_feature_names: Sequence[str] | None = None,
+        observation_schema_version: int = OBSERVATION_SCHEMA_VERSION,
     ):
         super().__init__()
         self.feature_dimensions = {name: int(value) for name, value in feature_dimensions.items()}
@@ -451,6 +480,17 @@ class HeteroGraphActorCritic(nn.Module):
         self.hidden_dim = int(hidden_dim)
         self.message_passing_layer_count = int(message_passing_layers)
         self.dropout_probability = float(dropout)
+        if self.dropout_probability != 0.0:
+            raise ValueError("PPO requires network.dropout = 0")
+        if observation_schema_version != OBSERVATION_SCHEMA_VERSION:
+            raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; legacy observations cannot be migrated")
+        self.global_feature_names = tuple(
+            GLOBAL_FEATURE_NAMES if global_feature_names is None else global_feature_names
+        )
+        if (self.feature_dimensions.get("global") != len(GLOBAL_FEATURE_NAMES)
+                or self.global_feature_names != GLOBAL_FEATURE_NAMES):
+            raise ValueError("global feature names/order/dimensions are incompatible")
+        self.observation_schema_version = observation_schema_version
         self.policy_head_version = POLICY_HEAD_VERSION
         variant_config = normalize_network_config({
             "encoder_variant": encoder_variant, "actor_head_variant": actor_head_variant,
@@ -471,6 +511,8 @@ class HeteroGraphActorCritic(nn.Module):
             raise ValueError("feature dimensions must contain six nodes and global")
         if set(self.edge_feature_dimensions) != set(ASSEMBLY_EDGE_TYPES):
             raise ValueError("edge feature dimensions do not match assembly graph")
+        if any(self.edge_feature_dimensions[kind] != 0 for kind in (PROCESSING_ON_EDGE, SERVED_BY_EDGE)):
+            raise ValueError("actual resource relations must have zero edge attributes")
         missing_wait = {
             field
             for fields in WAIT_DIRECT_SCHEMA.values()
@@ -582,7 +624,8 @@ class HeteroGraphActorCritic(nn.Module):
             "message_passing_layers": self.message_passing_layer_count,
             "dropout": self.dropout_probability,
             "policy_head_version": POLICY_HEAD_VERSION,
-            "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
+            "observation_schema_version": self.observation_schema_version,
+            "global_feature_names": self.global_feature_names,
             "time_context_version": TIME_CONTEXT_VERSION,
             "time_context_feature_schema": {
                 name: list(fields) for name, fields in TIME_CONTEXT_FEATURE_SCHEMA.items()
@@ -743,8 +786,8 @@ class HeteroGraphActorCritic(nn.Module):
     ) -> torch.Tensor:
         return self.critic(torch.cat((graph_context, preference_embedding), dim=-1)).squeeze(-1)
 
-    @staticmethod
     def _validate_observation_batch(
+        self,
         observations: Sequence[HeterogeneousGraphObservation],
         action_masks: Sequence[np.ndarray | torch.Tensor],
     ) -> None:
@@ -752,6 +795,12 @@ class HeteroGraphActorCritic(nn.Module):
             raise ValueError("observation/action-mask batches must be non-empty and aligned")
         if any(not isinstance(item, HeterogeneousGraphObservation) for item in observations):
             raise TypeError("V8 requires heterogeneous graph observations")
+        for item in observations:
+            if (tuple(item.global_feature_names) != self.global_feature_names
+                    or item.global_features.shape != (len(self.global_feature_names),)):
+                raise ValueError("observation global feature names/order/dimensions are incompatible")
+            if not np.all(np.isfinite(item.global_features)):
+                raise ValueError("global features must be finite")
         if any(item.decision_type not in (DecisionType.PRODUCTION, DecisionType.WORKER)
                for item in observations):
             raise ValueError("actor cannot evaluate a terminal observation")
@@ -1548,16 +1597,18 @@ def build_actor_critic(
     if not isinstance(observation, HeterogeneousGraphObservation):
         raise TypeError("V8 network construction requires a graph observation")
     observation.validate()
-    expected = {
+    if tuple(observation.global_feature_names) != GLOBAL_FEATURE_NAMES:
+        raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order are missing or incompatible")
+    required = {
         "order": (set(observation.node_feature_names.get("order", ())), {ORDER_TIME_FEATURE}),
         "production": (set(observation.relations[CAPABLE_EDGE].feature_names), {ORDER_TIME_FEATURE}),
         "worker": (set(observation.relations[SERVICE_CANDIDATE_EDGE].feature_names),
                    {ORDER_TIME_FEATURE, WORKER_WAIT_FEATURE}),
         "wait": (set(observation.action_set_feature_names), set(WAIT_TIME_FEATURES)),
     }
-    for kind, (present, required) in expected.items():
-        if not required <= present:
-            raise ValueError(f"schema-6 {kind} time context features are missing")
+    for kind, (names, expected) in required.items():
+        if not expected.issubset(names):
+            raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} {kind} time context features are missing")
     config = normalize_network_config(network_config)
     return HeteroGraphActorCritic(
         observation.feature_dimensions,
@@ -1573,4 +1624,5 @@ def build_actor_critic(
         worker_flow_time_std_floor=config["worker_flow_time_std_floor"],
         encoder_variant=config["encoder_variant"],
         actor_head_variant=config["actor_head_variant"],
+        global_feature_names=observation.global_feature_names,
     )

@@ -1,7 +1,10 @@
 .venv/
+.venv.pre-shared-*/
+.idea/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_tmp/
 result/runs/
 result/run_logs/
 result/analysis/

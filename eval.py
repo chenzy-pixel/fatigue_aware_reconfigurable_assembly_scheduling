@@ -121,6 +121,7 @@ class EvaluationPolicy:
         ppo_agent: PPOAgent | None = None,
         decode_mode: str | None = None,
         sampling_seed: int | None = None,
+        allow_observation_migration: bool = False,
     ):
         self.policy_name = policy_name
         self.device = torch.device(config["device"])
@@ -176,7 +177,8 @@ class EvaluationPolicy:
                     device=config["device"],
                 )
                 from configs.runtime import assert_checkpoint_fatigue_mode
-                assert_checkpoint_fatigue_mode(ppo_agent.load(checkpoint_path), config)
+                assert_checkpoint_fatigue_mode(ppo_agent.load(checkpoint_path,
+                    allow_observation_migration=allow_observation_migration), config)
             self.ppo_agent = ppo_agent
             self.device = ppo_agent.device
             if self.decode_mode == "sampled":
@@ -345,15 +347,22 @@ def evaluate_instance(
     runner.begin_episode(instance.instance_id, evaluation_key)
     inference_time = 0.0
     decisions = 0
-    while not (env.terminated or env.truncated):
-        runner.synchronize()
-        inference_start = time.perf_counter()
-        action = runner.select_action(observation, env)
-        runner.synchronize()
-        inference_time += time.perf_counter() - inference_start
-        observation, _, _, _, _ = env.step(action)
-        decisions += 1
+    was_training = runner.enter_evaluation_mode()
+    try:
+        while not (env.terminated or env.truncated):
+            runner.synchronize()
+            inference_start = time.perf_counter()
+            action = runner.select_action(observation, env)
+            runner.synchronize()
+            inference_time += time.perf_counter() - inference_start
+            observation, _, _, _, _ = env.step(action)
+            decisions += 1
+    finally:
+        runner.restore_mode(was_training)
     solve_time = time.perf_counter() - solve_start
+    if env.sampling_truncated:
+        # Match the final bootstrap-mask construction used by parallel workers.
+        env.get_action_mask()
     metrics = env.metrics()
     metrics["policy"] = policy_name
     metrics["arm"] = policy_name
@@ -522,6 +531,10 @@ def _evaluation_row(
         "truncated": metrics["truncated"],
         "task_succeeded": metrics.get("task_succeeded"),
         "task_failed": metrics.get("task_failed"),
+        "sampling_truncated": metrics["sampling_truncated"],
+        "objective_complete": metrics["objective_complete"],
+        "decision_count": metrics["decision_count"],
+        "zero_time_action_count": metrics["zero_time_action_count"],
         "termination_reason": metrics["terminal_reason"],
         "decisions": metrics["decisions"],
         "makespan": metrics["time"],
@@ -605,7 +618,7 @@ def _evaluation_row(
             metrics["worker_load_variance"],
             config,
             preference=preference,
-            terminal_failure=bool(metrics["truncated"]),
+            terminal_failure=bool(metrics["task_failed"]),
         ),
         "heuristic_reward_quality_score": bounded_quality_score(
             heuristic_flow_time,
@@ -1136,7 +1149,7 @@ def evaluate_preference_grid_parallel(
         "ordered_preference_set": [PreferenceContext.from_input(point).preference.as_dict() for point in grid],
         "cell_count": cell_count,
         "completed_cell_count": int(summary["completed_count"]),
-        "cell_completion_rate": float(summary["completion_rate"]),
+        "cell_completion_rate": summary["completion_rate"],
         "completed_count": sum(
             all(
                 successful_row(row)
@@ -1166,6 +1179,9 @@ def evaluate_preference_grid_parallel(
             else None
         ),
     })
+    if not summary["evaluation_complete"]:
+        summary.update(completion_rate=None, cell_completion_rate=None,
+                       completion_rate_by_preference={}, minimum_preference_completion_rate=None)
     return rows, summary
 
 
@@ -1210,7 +1226,8 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         device=config["device"],
     )
     checkpoint_path = project_path(args.checkpoint)
-    metadata = agent.load(checkpoint_path, load_optimizer=False)
+    metadata = agent.load(checkpoint_path, load_optimizer=False,
+                          allow_observation_migration=args.allow_observation_migration)
     from configs.runtime import assert_checkpoint_fatigue_mode
     assert_checkpoint_fatigue_mode(metadata, config)
     seeds = (
@@ -1269,6 +1286,7 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         dataset_manifest_path=dataset.manifest_path,
         checkpoint_path=checkpoint_path,
         checkpoint_metadata=metadata,
+        executed_network_state=agent.network.state_dict(),
         formal_evaluation_stage=args.preference_set,
         evaluation_subset_sha256=selection["subset_sha256"],
     )
@@ -1296,6 +1314,8 @@ def main() -> None:
         "--policy", choices=("heuristic", "random", "ppo"), default="heuristic"
     )
     parser.add_argument("--checkpoint")
+    parser.add_argument("--allow-observation-migration", action="store_true",
+                        help="Compatibility flag; current observation schema requires retraining of older models")
     parser.add_argument(
         "--decode-mode",
         choices=("greedy", "sampled"),
@@ -1318,7 +1338,7 @@ def main() -> None:
     if args.instance_indices is not None and (args.instance_limit is not None or args.instance_offset is not None):
         parser.error("--instance-indices and --instance-offset/--instance-limit are mutually exclusive")
 
-    config = deepcopy(load_config(args.config))
+    config = deepcopy(load_config(args.config, allow_observation_migration=args.allow_observation_migration))
     if args.device is not None:
         config["device"] = args.device
     config["seed"] = validate_algorithm_seed(
@@ -1331,6 +1351,23 @@ def main() -> None:
     if args.preference_set is not None:
         _run_formal_grid_cli(config, args, decode_mode)
         return
+    checkpoint_path = project_path(args.checkpoint) if args.checkpoint is not None else None
+    checkpoint_metadata = None
+    prepared_agent = None
+    if args.policy == "ppo":
+        if checkpoint_path is None:
+            raise ValueError("--checkpoint is required for PPO evaluation")
+        dataset = load_dataset_split(config, args.dataset)
+        bootstrap = AssemblySchedulingEnv(config).reset(dataset[0].instance)
+        set_seed(int(config["seed"]))
+        prepared_agent = PPOAgent(
+            build_actor_critic(bootstrap, config["network"]),
+            config["ppo"], device=config["device"],
+        )
+        checkpoint_metadata = prepared_agent.load(checkpoint_path,
+            allow_observation_migration=args.allow_observation_migration)
+        from configs.runtime import assert_checkpoint_fatigue_mode
+        assert_checkpoint_fatigue_mode(checkpoint_metadata, config)
     sampling_seeds: list[int | None]
     if decode_mode == "sampled":
         sampling_seeds = (
@@ -1354,7 +1391,8 @@ def main() -> None:
                 config,
                 dataset_name=args.dataset,
                 policy_name=args.policy,
-                checkpoint=args.checkpoint,
+                checkpoint=(args.checkpoint if prepared_agent is None else None),
+                ppo_agent=prepared_agent,
                 instance_limit=args.instance_limit,
                 instance_offset=args.instance_offset,
                 instance_indices=args.instance_indices,
@@ -1405,23 +1443,13 @@ def main() -> None:
     metrics["result_role"] = (
         "formal_sampled" if decode_mode == "sampled" else "greedy_diagnostic"
     )
-    checkpoint_path = (
-        project_path(args.checkpoint) if args.checkpoint is not None else None
-    )
-    checkpoint_metadata = None
-    if checkpoint_path is not None:
-        checkpoint_payload = torch.load(
-            checkpoint_path,
-            map_location="cpu",
-            weights_only=False,
-        )
-        checkpoint_metadata = dict(checkpoint_payload.get("metadata", {}))
     metrics["provenance"] = build_provenance(
         config,
         dataset_manifest_path=metrics["manifest"],
         checkpoint_path=checkpoint_path,
         checkpoint_metadata=checkpoint_metadata,
         evaluation_subset_sha256=metrics["subset_sha256"],
+        executed_network_state=(prepared_agent.network.state_dict() if prepared_agent is not None else None),
     )
     for row in rows:
         row["checkpoint_sha256"] = metrics["provenance"].get("checkpoint_sha256")

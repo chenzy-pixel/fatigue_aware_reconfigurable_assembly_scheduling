@@ -140,8 +140,8 @@ def test_terminal_observation_does_not_advance_settled_worker_tasks(config, fixe
     observation, _, terminated, truncated, _ = env.step(int(np.flatnonzero(~env.get_action_mask()[:-1])[0]))
     assert truncated and not terminated
     observation.validate()
-    assert _wait_columns(observation)["wait_duration_norm"] == 0
-    assert _wait_columns(observation)[WAIT_TIME_FEATURES[1]] == 0
+    assert _wait_columns(observation)["wait_duration_norm"] > 0
+    assert np.isfinite(_wait_columns(observation)[WAIT_TIME_FEATURES[1]])
 
 
 def test_wait_projection_advances_work_instead_of_subtracting_duration(config, fixed_instance):
@@ -278,62 +278,33 @@ def _schema5_observation(observation):
         relations[edge] = replace(relation, edge_features=relation.edge_features[:, :-count],
                                   feature_names=relation.feature_names[:-count])
     return replace(observation, node_features=nodes, node_feature_names=names, relations=relations,
+                   global_features=observation.global_features[:11],
+                   global_feature_names=observation.global_feature_names[:11],
                    action_set_features=observation.action_set_features[:-2],
                    action_set_feature_names=observation.action_set_feature_names[:-2])
 
 
-def test_schema5_checkpoint_and_adam_migration_preserve_predictions(config, fixed_instance, tmp_path):
-    env = AssemblySchedulingEnv(config)
-    observation = env.reset(fixed_instance)
-    mask = env.get_action_mask()
-    legacy = _schema5_observation(observation)
-    settings = dict(config["network"], hidden_dim=16)
-    normalized = normalize_network_config(settings)
-    old_network = HeteroGraphActorCritic(
-        legacy.feature_dimensions, legacy.edge_feature_dimensions, legacy.action_set_feature_names,
-        hidden_dim=16, message_passing_layers=2, dropout=0.0,
-        normalization_manifest_sha256=normalized["normalization_manifest_sha256"],
-    )
-    old_agent = PPOAgent(old_network, config["ppo"], device="cpu")
-    old_logits, old_value = old_network(legacy, mask, device="cpu")
-    (old_logits[~torch.as_tensor(mask)].square().mean() + old_value.square()).backward()
-    old_agent.optimizer.step()
-    path = tmp_path / "schema5.pt"
-    old_agent.save(path)
-    checkpoint = torch.load(path, weights_only=False)
-    checkpoint["network_spec"]["observation_schema_version"] = 5
-    checkpoint["network_spec"].pop("time_context_version")
-    checkpoint["network_spec"].pop("time_context_feature_schema")
-    torch.save(checkpoint, path)
-    agent = PPOAgent(build_actor_critic(observation, settings), config["ppo"], device="cpu")
-    metadata = agent.load(path, load_optimizer=True)
-    assert metadata["checkpoint_load_migration"]["target_observation_schema"] == 6
-    source_hash = checkpoint["metadata"]["network_weights_sha256"]
-    assert metadata["source_network_weights_sha256"] == source_hash
-    assert metadata["network_weights_sha256"] != source_hash
-    migrated_path = tmp_path / "schema6.pt"
-    agent.save(migrated_path, metadata=metadata)
-    reloaded_metadata = agent.load(migrated_path, load_optimizer=True)
-    assert reloaded_metadata["source_network_weights_sha256"] == source_hash
-    assert reloaded_metadata["network_weights_sha256"] == metadata["network_weights_sha256"]
-    with torch.no_grad():
-        expected_logits, expected_value = old_network(legacy, mask, device="cpu")
-        actual_logits, actual_value = agent.network(observation, mask, device="cpu")
-    torch.testing.assert_close(actual_logits, expected_logits, atol=1e-6, rtol=1e-5)
-    torch.testing.assert_close(actual_value, expected_value, atol=1e-6, rtol=1e-5)
-    for parameter, state in agent.optimizer.state.items():
-        assert state["exp_avg"].shape == parameter.shape
-        assert state["exp_avg_sq"].shape == parameter.shape
-    agent.optimizer.zero_grad(set_to_none=True)
-    logits, value = agent.network(observation, mask, device="cpu")
-    (logits[~torch.as_tensor(mask)].square().mean() + value.square()).backward()
-    agent.optimizer.step()
-    assert all(torch.isfinite(p).all() for p in agent.network.parameters())
-
-
-def test_schema6_requires_explicit_time_features(config, fixed_instance):
+@pytest.mark.parametrize("variant", ["hetero_gnn", "node_mlp_pool", "shared_preference"])
+def test_schema5_checkpoint_rejected_for_each_network_variant(config, fixed_instance, tmp_path, variant):
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
-    with pytest.raises(ValueError, match="schema-6"):
+    settings = dict(config['network'], hidden_dim=16)
+    if variant == 'shared_preference':
+        settings['actor_head_variant'] = variant
+    else:
+        settings['encoder_variant'] = variant
+    agent = PPOAgent(build_actor_critic(observation, settings), config['ppo'], device='cpu')
+    path = tmp_path/'schema5.pt'
+    agent.save(path)
+    payload = torch.load(path,weights_only=False)
+    payload['network_spec']['observation_schema_version'] = 5
+    torch.save(payload,path)
+    with pytest.raises(ValueError,match='requires retraining'):
+        agent.load(path,load_optimizer=True,allow_observation_migration=True)
+
+
+def test_schema10_requires_explicit_time_features(config, fixed_instance):
+    observation = AssemblySchedulingEnv(config).reset(fixed_instance)
+    with pytest.raises(ValueError, match="schema-10"):
         build_actor_critic(_schema5_observation(observation), config["network"])
     spec = build_actor_critic(observation, config["network"]).network_spec()
     spec["time_context_feature_schema"]["worker"] = []

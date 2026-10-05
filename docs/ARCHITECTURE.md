@@ -35,9 +35,9 @@ configs → data → environment → agent/ppo → training + train.py → resul
 | 策略头 | V8 objective experts |
 | Pair 可行性 | `instant_physical_pair_mask_v1` |
 | WAIT mask | `progress_certified_wait_v2` |
-| Observation | schema 6, `order_chain_action_context_v1` |
-| Reward | `single_stage_progress_quality_failure_v2` |
-| 训练协议 | `single_stage_lexicographic_failure_v2` |
+| Observation | schema 10，9 维全局输入、14 类关系与 order_chain_action_context_v2 |
+| Reward | `single_stage_progress_quality_failure_v3` |
+| 训练协议 | `single_stage_lexicographic_failure_v3` |
 
 ## 3. 环境契约
 
@@ -46,7 +46,7 @@ configs → data → environment → agent/ppo → training + train.py → resul
 | 接口 | 契约 |
 |---|---|
 | `reset(instance, preference=...)` | 固定订单/工序进度分母，初始化事件、状态和 `P_0,Q_0` |
-| `observe()` | 生成 schema-6 异质图、订单时间上下文与三目标偏好字段 |
+| `observe()` | 生成 schema-10 异质图与三目标偏好字段 |
 | `get_action_mask()` | 返回当前生产或工人阶段的精确合法动作 mask |
 | `step(action)` | 执行动作、推进事件并返回 `RewardVector` 与真实任务终止状态 |
 | `metrics()` | 返回目标、进度、质量、终止、安全和资源诊断 |
@@ -75,7 +75,7 @@ RewardVector
   flow, cost, variance          原始诊断差分
   operation_progress           P(t+1)-P(t)
   quality                      -(Q(t+1)-Q(t))
-  failure                      仅任务失败终止步骤为 -lambda（默认 -2）
+  failure                      仅任务失败终止步骤为 -lambda（当前默认 2）
   feasibility_shaping          可选势函数差分
 ```
 
@@ -109,8 +109,8 @@ Cost=353.27、工人负荷方差=2.2629。三项来自用户选定的 V2 续训�
   → 检查 horizon 与其他失败条件
 ```
 
-训练奖励始终使用实际 `Q_T`；环境失败另扣一次配置中的惩罚，默认值为 2.0。正式评测仍可把失败质量标记为
-1，且该字段不进入 v2 回报重建。PPO collector 只对真实任务成功或失败提交
+训练奖励始终使用实际 `Q_T`；环境失败另扣一次配置的惩罚（当前默认 2）。正式评测仍可把失败质量标记为
+1，且该字段不进入 v3 回报重建。PPO collector 只对真实任务成功或失败提交
 `done=True` 和 `last_value=0`。采集步数 cutoff 保持 `done=False`，并从实际下一
 observation 调用 `value_batch` 自举。
 
@@ -127,16 +127,27 @@ HeterogeneousGraphObservation
   → production / worker / WAIT logits + state value
 ```
 
-图包含六类节点、十二种关系和两层 HGNN 消息传递。偏好是 episode 级三维字段，
+图包含六类节点、十四种关系和两层 HGNN 消息传递。偏好是 episode 级三维字段，
 经 `3 → 32 → ReLU → 32` 编码后供 actor 与 critic 共用，不拼入图全局特征。
 PPO 使用 clipped policy loss、
-value loss、entropy、GAE 和梯度裁剪。正式配置强制 `gamma=1`。
+value loss、entropy、GAE 和梯度裁剪。配置强制 `gamma=1`、`dropout=0`。
+全局输入共 9 维：当前时间、待重构比例、工序完成比例、生产阶段标志、工人匹配缺口、
+最小工人备选比例，以及累计 Flow/尺度、累计成本/尺度、承诺负荷方差/尺度。
+三目标读取奖励使用的 `_objective_vector()`，不裁剪。完整名称与顺序进入 network spec，
+actor、critic 和 WAIT 上下文共享这一输入。order 节点继续保留 released、completed；
+其差值的均值表达全系统活跃订单比例。
+
+训练、评估与配置快照要求 schema 10，旧 schema 5/6/7/8/9 模型须重新训练。
+决策保护触发 sampling_truncated，保留末状态并做价值自举；真实完成、期限失败及死锁
+使用真实终止标志。实际加工和工人服务使用独立、零属性的双向 processing_on/served_by
+关系，严格核对两端实体状态。候选时间、费用、方差和订单时间上下文共用安全顺序
+投影，见 [schema 10 说明](schema10_sequential_projection.md)。
 生产、工人和 WAIT 动作各有三目标专家；直连 ranker 使用固定符号的归一化
 `softplus(theta)` 权重，偏好残差以合法动作基础 logit 的标准差缩放。
 Universal 的工人 Flow 专家将合法候选工期标准化为 `candidate_zscore_v1`，
 标准差下限 `0.001`；动作与上下文编码仍保留绝对工期。
 
-schema-6 将整个订单预计裕量放入订单节点和生产候选边，工人候选另带当前待拆/待装阶段的等待年龄，
+当前时间上下文将整个订单预计裕量放入订单节点和生产候选边，工人候选另带当前待拆/待装阶段的等待年龄，
 WAIT 向量记录下一已知事件后的最小裕量及其变化。它们经动作 embedding 进入各目标专家独立的 context MLP。
 估计纳入已知资源占用和疲劳恢复，未来未确定的跨订单竞争仍可能使其偏乐观；字段定义见
 [订单时间上下文](order_time_context.md)。
@@ -145,8 +156,6 @@ WAIT 向量记录下一已知事件后的最小裕量及其变化。它们经动
 `value_batch()` 仅运行图编码、偏好编码和共享 critic，用于采集 cutoff 自举。
 执行对照和本机计时见 [推理优化](graph_network_performance.md)。
 
-同尺度 schema-5 checkpoint 的新增输入列补零，Adam 状态同步扩展，加载时记录迁移来源。
-网络结构及归一化哈希仍严格检查；新时间特征经后续训练才产生作用。
 
 `agent/ppo/parallel.py` 对任意 worker 数使用同一进程协议：
 
@@ -241,7 +250,7 @@ checkpoint metadata 记录选模所用的 13 点验证集合，最终评估 prov
 | `test_parallel_rollout.py` | cutoff 自举、真实终止、串并行确定性 |
 | `test_e1_single_objective.py` | checkpoint 初始化、改善、平局、安全性和 metadata |
 | `test_v8_protocol.py` | 13 点验证、66 点最终评估、偏好等权聚合、固定尺度清单 |
-| `test_latest_only_audit.py` | manifest 字节哈希、黄金 observation/mask/action/reward |
+| `test_repository_contract.py` | manifest 字节哈希、黄金 observation/mask/action/reward、支持的配置集合 |
 | `test_ppo*.py` | GAE、batching、更新与 checkpoint 兼容 |
 
 固定数据的 manifest 顺序和文件 SHA256 是正式评测协议的一部分。

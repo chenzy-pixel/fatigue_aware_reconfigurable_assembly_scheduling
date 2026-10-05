@@ -3,17 +3,18 @@ from __future__ import annotations
 
 from copy import copy
 from dataclasses import dataclass
-import math
 from typing import TYPE_CHECKING
+import numpy as np
 
 from .state import ReconfigurationRuntime
+from .resource_projection import ResourceProjector, ProjectedResources
 from .dynamics import quantize_to_ticks
-from .types import MachineState, OperationState, ReconfigurationStage
+from .types import OperationState
 
 if TYPE_CHECKING:
     from .env import AssemblySchedulingEnv
 
-TIME_CONTEXT_VERSION = "order_chain_action_context_v1"
+TIME_CONTEXT_VERSION = "order_chain_action_context_v2"
 ORDER_TIME_FEATURE = "estimated_order_slack_norm"
 WORKER_WAIT_FEATURE = "stage_wait_time_norm"
 WAIT_TIME_FEATURES = (
@@ -32,157 +33,97 @@ TIME_CONTEXT_FEATURE_SCHEMA = {
 class _Resources:
     machines: list[tuple[int, str]]
     workers: list[tuple[int, float]]
+    loads: np.ndarray | None = None
+    materialized: set[int] | None = None
 
     def copy(self) -> "_Resources":
-        return _Resources(self.machines.copy(), self.workers.copy())
+        return _Resources(self.machines.copy(), self.workers.copy(),
+                          self.loads.copy() if self.loads is not None else None,
+                          set(self.materialized or ()))
 
 
 class OrderTimeEstimator:
-    """Project one order at a time, honoring physical work already committed.
-
-    Future choices reserve resources within the estimated chain. Other orders'
-    undecided assignments are not a known schedule and are not hard constraints.
-    """
+    """Estimate each order using the shared sequential resource projector."""
 
     def __init__(self, env: "AssemblySchedulingEnv"):
         self.env = env
+        self.projector = ResourceProjector(env)
+        state = self.projector.initial_resources()
+        self.workers, self.loads = state.workers, state.loads
         self.operation_indices = env.instance.operation_index
         self.machine_indices = env.instance.machine_index
-        self.workers = [env._worker_fatigue_at_availability(i) for i in range(len(env.workers))]
-        self.machines = []
-        for i, machine in enumerate(env.machines):
-            if machine.state == MachineState.IDLE:
-                available = (env.current_tick, machine.current_module)
-            elif machine.state == MachineState.PROCESSING:
-                available = (max(env.current_tick, machine.busy_until_tick or env.current_tick),
-                             machine.current_module)
-            else:
-                reconfiguration = env._active_reconfiguration(machine.spec.id)
-                if reconfiguration is None:
-                    raise RuntimeError("active machine lacks its reconfiguration")
-                resources = _Resources([], self.workers.copy())
-                end = self._reconfiguration_finish(i, reconfiguration, resources)
-                op = self.operation_indices[reconfiguration.operation_id]
-                available = (end + env.estimate_processing_ticks(op, i), reconfiguration.target_module)
-            self.machines.append(available)
+        self.machines = [(env.current_tick, m.current_module) for m in env.machines]
 
-    def _stage_finish(
-        self, machine_index: int, module: str, installation: bool,
-        earliest: int, resources: _Resources,
-    ) -> int:
-        env = self.env
-        temporary = ReconfigurationRuntime(
-            id="time_projection", machine_id=env.machines[machine_index].spec.id,
-            operation_id="", source_module=env.instance.no_module_state if installation else module,
-            target_module=module if installation else env.instance.no_module_state,
-            lock_tick=env.current_tick,
-            stage=ReconfigurationStage.WAIT_INS if installation else ReconfigurationStage.WAIT_DIS,
-        )
-        recovery = env.instance.fatigue.idle_recovery_rate_per_minute
-        choices = []
-        for i, worker in enumerate(env.workers):
-            if module not in worker.spec.qualified_modules:
-                continue
-            available, fatigue = resources.workers[i]
-            start = max(earliest, available)
+    def _state(self, resources: _Resources) -> ProjectedResources:
+        return ProjectedResources(resources.workers.copy(),
+                                  (self.loads if resources.loads is None else resources.loads).copy())
 
-            def safe(tick: int) -> tuple[bool, int]:
-                return env._safe_stage_projection_at_tick(
-                    temporary, worker, available_tick=available, available_fatigue=fatigue,
-                    recovery_rate=recovery, tick=tick,
-                )
+    def _save(self, resources: _Resources, state: ProjectedResources) -> None:
+        resources.workers = state.workers.copy()
+        resources.loads = state.loads.copy()
 
-            allowed, duration = safe(start)
-            if not allowed:
-                if recovery <= 0:
-                    continue
-                upper = max(start, available + math.ceil(fatigue / recovery / env.resolution) + 1)
-                if not safe(upper)[0]:
-                    continue
-                lower = start
-                while lower < upper:
-                    middle = (lower + upper) // 2
-                    if safe(middle)[0]:
-                        upper = middle
-                    else:
-                        lower = middle + 1
-                start = lower
-                _, duration = safe(start)
-            start_fatigue = max(0.0, fatigue - recovery * (start - available) * env.resolution)
-            after = start_fatigue + env._stage_accumulation_rate(temporary) * duration * env.resolution
-            choices.append((start + duration, i, after))
-        if not choices:
-            # A finite pessimistic sentinel keeps unusable stages visible to the
-            # context network without changing action feasibility.
-            return earliest + env.horizon_tick + 1
-        end, worker, fatigue = min(choices)
-        resources.workers[worker] = (end, min(1.0, fatigue))
-        return end
+    def _transition_finish(self, machine: int, source: str, target: str, earliest: int, resources: _Resources) -> int:
+        route = self.projector.transition(machine, source, target, earliest, self._state(resources))
+        if route is None:
+            return max(earliest, self.env.horizon_tick)+self.env.horizon_tick+1
+        self._save(resources, route.resources)
+        return route.end_tick
 
-    def _transition_finish(
-        self, machine: int, source: str, target: str, earliest: int, resources: _Resources
-    ) -> int:
-        if source == target:
-            return earliest
-        if source != self.env.instance.no_module_state:
-            earliest = self._stage_finish(machine, source, False, earliest, resources)
-        return self._stage_finish(machine, target, True, earliest, resources)
+    def _reconfiguration_finish(self, machine: int, reconfiguration: ReconfigurationRuntime, resources: _Resources) -> int:
+        route = self.projector.active(machine, self._state(resources))
+        if route is None:
+            return max(self.env.current_tick, self.env.horizon_tick)+self.env.horizon_tick+1
+        self._save(resources, route.resources)
+        return route.end_tick
 
-    def _reconfiguration_finish(
-        self, machine: int, reconfiguration: ReconfigurationRuntime, resources: _Resources
-    ) -> int:
-        env = self.env
-        stage = reconfiguration.stage
-        if stage == ReconfigurationStage.WAIT_DIS:
-            end = self._stage_finish(machine, reconfiguration.source_module, False, env.current_tick, resources)
-            return self._stage_finish(machine, reconfiguration.target_module, True, end, resources)
-        if stage == ReconfigurationStage.DIS:
-            end = max(env.current_tick, reconfiguration.disassembly_end_tick or env.current_tick)
-            return self._stage_finish(machine, reconfiguration.target_module, True, end, resources)
-        if stage == ReconfigurationStage.WAIT_INS:
-            return self._stage_finish(machine, reconfiguration.target_module, True, env.current_tick, resources)
-        if stage == ReconfigurationStage.INS:
-            return max(env.current_tick, reconfiguration.installation_end_tick or env.current_tick)
-        return env.current_tick
+    def _release(self, mi: int, resources: _Resources) -> tuple[int, str]:
+        if resources.materialized is None:
+            resources.materialized = set()
+        if mi not in resources.materialized:
+            tick, module, state = self.projector.machine_release(mi, self._state(resources))
+            self._save(resources, state)
+            resources.machines[mi] = (tick if tick is not None else 2*self.env.horizon_tick+1, module)
+            resources.materialized.add(mi)
+        return resources.machines[mi]
 
     def finish_ticks(self) -> dict[str, int]:
         env = self.env
         result = {}
         for order in env.instance.orders:
-            resources = _Resources(self.machines.copy(), self.workers.copy())
+            resources = _Resources(self.machines.copy(), self.workers.copy(), self.loads.copy(), set())
             cursor = max(env.current_tick, quantize_to_ticks(order.release_time, env.resolution))
             for spec in order.operations:
-                op = self.operation_indices[spec.id]
-                runtime = env.operations[op]
-                if runtime.state == OperationState.DONE:
+                oi = self.operation_indices[spec.id]
+                operation = env.operations[oi]
+                if operation.state == OperationState.DONE:
                     continue
-                if runtime.state == OperationState.PROCESSING:
-                    machine = env.machines[self.machine_indices[runtime.machine_id]]
-                    cursor = max(cursor, machine.busy_until_tick or env.current_tick)
+                if operation.state == OperationState.PROCESSING:
+                    mi = self.machine_indices[operation.machine_id]
+                    cursor = max(cursor, env.machines[mi].busy_until_tick)
+                    resources.machines[mi] = (cursor, spec.required_module)
+                    resources.materialized.add(mi)
                     continue
-                if runtime.state == OperationState.LOCKED:
-                    machine = self.machine_indices[runtime.machine_id]
-                    reconfiguration = env._active_reconfiguration(runtime.machine_id)
-                    cursor = max(cursor, self._reconfiguration_finish(machine, reconfiguration, resources))
-                    cursor += env.estimate_processing_ticks(op, machine)
-                    resources.machines[machine] = (cursor, spec.required_module)
+                if operation.state == OperationState.LOCKED:
+                    mi = self.machine_indices[operation.machine_id]
+                    rec = env._active_reconfiguration(operation.machine_id)
+                    cursor = max(cursor, self._reconfiguration_finish(mi, rec, resources))
+                    cursor += env.estimate_processing_ticks(oi, mi)
+                    resources.machines[mi] = (cursor, spec.required_module)
+                    resources.materialized.add(mi)
                     continue
                 choices = []
-                for machine, machine_runtime in enumerate(env.machines):
-                    if spec.required_module not in machine_runtime.spec.module_parameters:
+                for mi, machine in enumerate(env.machines):
+                    if spec.required_module not in machine.spec.module_parameters:
                         continue
-                    available, source = resources.machines[machine]
-                    candidate = resources.copy()
-                    start = self._transition_finish(
-                        machine, source, spec.required_module, max(cursor, available), candidate
-                    )
-                    end = start + env.estimate_processing_ticks(op, machine)
-                    choices.append((end, machine, candidate))
+                    branch = resources.copy()
+                    available, source = self._release(mi, branch)
+                    start = self._transition_finish(mi, source, spec.required_module, max(cursor, available), branch)
+                    choices.append((start+env.estimate_processing_ticks(oi, mi), mi, branch))
                 if choices:
-                    cursor, machine, resources = min(choices, key=lambda item: (item[0], item[1]))
-                    resources.machines[machine] = (cursor, spec.required_module)
+                    cursor, mi, resources = min(choices, key=lambda item: (item[0], item[1]))
+                    resources.machines[mi] = (cursor, spec.required_module)
                 else:
-                    cursor += env.horizon_tick + 1
+                    cursor += env.horizon_tick+1
             result[order.id] = cursor
         return result
 

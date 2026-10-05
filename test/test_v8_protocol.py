@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import statistics
 from copy import deepcopy
@@ -9,6 +10,7 @@ import pytest
 
 from configs import load_config, validate_latest_only_config
 from configs.formal_preferences import formal_preferences
+from configs.runtime import runtime_manifest
 from configs.normalization import (
     NORMALIZATION_MANIFEST_SCHEMA,
     SELECTED_VALIDATION_MANIFEST_SCHEMA,
@@ -36,6 +38,8 @@ def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
     preference: list[float],
 ):
     config = load_config(path)
+    assert config["reward"]["terminal_failure_penalty"] == 2.0
+    assert config["runtime_manifest"]["terminal_failure_penalty"] == 2.0
     assert "feasibility" not in config["preference"]
     assert config["preference"]["quality"]["fixed"] == preference
     assert quality_preference_for_episode(
@@ -46,6 +50,8 @@ def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
 
 def test_universal_uses_13_validation_and_66_final_preferences_with_training_sequence():
     config = load_config("configs/v8/universal.json")
+    assert config["reward"]["terminal_failure_penalty"] == 2.0
+    assert config["runtime_manifest"]["terminal_failure_penalty"] == 2.0
     assert len(formal_preferences(config, "validation")) == 13
     assert len(formal_preferences(config, "final_test")) == 66
     expected_validation = [
@@ -100,7 +106,7 @@ def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     config["experiment_suite_version"] = "single_stage_progress_quality_v1"
     with pytest.raises(ValueError, match="experiment_suite_version"):
         validate_latest_only_config(config)
-    config["experiment_suite_version"] = "single_stage_progress_quality_failure_v2"
+    config["experiment_suite_version"] = "single_stage_progress_quality_failure_v3"
     config["reward"]["quality_weights"] = {
         "flow": 1.0,
         "cost": 0.0,
@@ -115,6 +121,28 @@ def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     config["reward"]["terminal_failure_penalty"] = 2.0
     config["ppo"]["gamma"] = 0.99
     with pytest.raises(ValueError, match="gamma"):
+        validate_latest_only_config(config)
+
+
+@pytest.mark.parametrize("penalty", (0.0, 0.5, 1.0, 2.0, 5.0))
+def test_failure_penalty_override_loads_and_is_persisted(tmp_path: Path, penalty: float):
+    path = tmp_path / "penalty.json"
+    path.write_text(json.dumps({
+        "extends": str(Path(__file__).resolve().parents[1] / "configs/default.json"),
+        "reward": {"terminal_failure_penalty": penalty},
+    }), encoding="utf-8")
+    config = load_config(path)
+    assert config["reward"]["terminal_failure_penalty"] == penalty
+    assert config["runtime_manifest"]["terminal_failure_penalty"] == penalty
+    assert runtime_manifest()["terminal_failure_penalty"] == 2.0
+
+
+@pytest.mark.parametrize("penalty", (-1.0, math.inf, -math.inf, math.nan, None, "invalid"))
+def test_failure_penalty_rejects_invalid_values(penalty):
+    config = deepcopy(load_config("configs/default.json"))
+    config.pop("runtime_manifest")
+    config["reward"]["terminal_failure_penalty"] = penalty
+    with pytest.raises(ValueError, match="terminal_failure_penalty"):
         validate_latest_only_config(config)
 
 
@@ -224,8 +252,10 @@ def _row(
         "preference_key": preference_key,
         "preference_quality_score": quality if succeeded else 1.0,
         "quality_score": quality,
-        "terminated": succeeded,
-        "truncated": not succeeded,
+        "terminated": True,
+        "truncated": False,
+        "task_succeeded": succeeded,
+        "task_failed": not succeeded,
         "makespan": 1.0,
         "total_flow_time": 1.0 if succeeded else None,
         "flow_time_objective": 1.0,
@@ -346,7 +376,7 @@ def test_formal_aggregation_rejects_duplicate_cells_even_when_counts_match(stage
     assert aggregate["completed_count"] == 2
     assert aggregate["formal_evaluation_stage"] == stage
     failed_rows = [dict(row) for row in rows]
-    failed_rows[0].update(terminated=False, truncated=True)
+    failed_rows[0].update(terminated=True, truncated=False, task_succeeded=False, task_failed=True)
     failed = _aggregate_formal_rows(rows=failed_rows, **arguments)
     assert failed["completed_cell_count"] == preference_count * 2 * 3 - 1
     assert failed["completed_count"] == 1

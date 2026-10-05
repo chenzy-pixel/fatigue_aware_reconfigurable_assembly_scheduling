@@ -372,7 +372,7 @@ def decode_solution(
     metrics["action_trace_sha256"] = action_trace_sha256(actions)
     objectives = metrics_objectives(metrics)
     feasible = bool(
-        metrics["terminated"]
+        metrics["task_succeeded"]
         and not metrics["truncated"]
         and not metrics["schedule_violations"]
         and int(metrics["completed_orders"]) == int(metrics["total_orders"])

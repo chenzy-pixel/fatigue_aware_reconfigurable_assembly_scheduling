@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from configs import load_config
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
 from configs.config import public_config
 from configs.runtime import assert_checkpoint_fatigue_mode
 from data.dataset import OnlineInstanceDataset
@@ -64,16 +65,34 @@ def test_checkpoint_fatigue_guard_covers_old_and_current_metadata():
 
 
 def _fake_run(root: Path, name: str, config: dict):
+    import torch
+    from agent.ppo import build_actor_critic
+    from data.models import load_instance_yaml
+    from configs import project_path
+    from environment import AssemblySchedulingEnv
+    from result.provenance import network_weights_sha256
+    from data.dataset import sha256_file
+
     run = root / name
     run.mkdir()
-    (run / "config.json").write_text(json.dumps(public_config(config)), encoding="utf-8")
-    (run / "best_checkpoint.pt").write_bytes(b"checkpoint fixture")
-    manifest = Path(config["paths"]["manifests_root"]) / "validation/manifest.json"
-    if not manifest.is_absolute():
-        manifest = Path(__file__).resolve().parents[1] / manifest
-    summary = {"episodes": config["training"]["episodes"], "checkpoint_selection": {"has_best": True},
-        "provenance": {"dataset_manifest_sha256": dataset_manifest_snapshot(manifest)["sha256"],
-            "checkpoint_sha256": hashlib.sha256(b"checkpoint fixture").hexdigest()}}
+    saved = public_config(config)
+    (run / "config.json").write_text(json.dumps(saved), encoding="utf-8")
+    manifest = project_path(config["paths"]["manifests_root"]) / "validation/manifest.json"
+    manifest_snapshot = dataset_manifest_snapshot(manifest)
+    env = AssemblySchedulingEnv(config)
+    observation = env.reset(load_instance_yaml(project_path(config["paths"]["fixed_instance"])))
+    spec = build_actor_critic(observation, config["network"]).network_spec()
+    state = {"fixture.weight": torch.zeros(2)}
+    torch.save({"network": state, "network_spec": spec, "metadata": {
+        "checkpoint_role": "best", "checkpoint_episode": 1,
+        "effective_config": saved, "runtime_manifest": config["runtime_manifest"],
+        "network_weights_sha256": network_weights_sha256(state),
+        "validation_dataset_manifest": manifest_snapshot,
+    }}, run / "best_checkpoint.pt")
+    summary = {"episodes": config["training"]["episodes"],
+        "checkpoint_selection": {"has_best": True, "best_episode": 1},
+        "provenance": {"dataset_manifest_sha256": manifest_snapshot["sha256"],
+            "checkpoint_sha256": sha256_file(run / "best_checkpoint.pt")}}
     (run / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
     return run
 
@@ -171,7 +190,7 @@ def _evaluation_fixture(tmp_path, role):
                  "actor_head_variant": config["network"].get("actor_head_variant", "objective_experts"),
                  "fatigue_mode": config["environment"].get("fatigue_mode", "full")}
     torch.save({"network": {"test.weight": torch.zeros(2)},
-                "network_spec": {"observation_schema_version": 6, **selectors},
+                "network_spec": {"observation_schema_version": OBSERVATION_SCHEMA_VERSION, **selectors},
                 "metadata": {"algorithm_seed": 11, "effective_config": public_config(config),
                              "runtime_manifest": config["runtime_manifest"]}}, checkpoint)
     checkpoint_hash = sha256_file(checkpoint)
@@ -294,3 +313,15 @@ def test_summary_exports_five_source_backed_comparisons(tmp_path):
     sources = json.loads((output / "manifest.json").read_text(encoding="utf-8"))["sources"]
     assert set(sources) == set(ROLE_CONFIGS)
     assert "descriptive results from one training seed" in (output / "report.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("partial_source", ("metadata", "cell"))
+def test_summary_rejects_external_sampling_truncation(tmp_path, partial_source):
+    from analysis.ablation_analysis import validate_role_evaluation
+    entry, rows, metrics = _evaluation_fixture(tmp_path, "neutral_cost")
+    if partial_source == "metadata":
+        metrics.update(evaluation_complete=False, sampling_truncated_count=1)
+    else:
+        rows[0].update(sampling_truncated="True", truncated="True")
+    with pytest.raises(ValueError, match="incomplete"):
+        validate_role_evaluation("neutral_cost", entry, rows, metrics, 11)

@@ -261,6 +261,10 @@ def _aggregate_formal_rows(
         aggregate["completion_rate"] = aggregate[
             "minimum_preference_completion_rate"
         ]
+    if not aggregate["evaluation_complete"]:
+        aggregate.update(completion_rate=None, completion_rate_by_preference={},
+                         minimum_preference_completion_rate=None,
+                         preference_quality_by_key={}, preference_balanced_quality_score=None)
     return aggregate
 
 
@@ -349,14 +353,15 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
         "instance_count": int(aggregate["instance_count"]),
         "cell_count": aggregate.get("cell_count", aggregate["instance_count"]),
         "repeat_count": int(aggregate.get("repeat_count", 1)),
-        "completion_rate": float(aggregate["completion_rate"]),
+        "evaluation_complete": bool(aggregate.get("evaluation_complete", True)),
+        "completion_coverage": aggregate.get("completion_coverage", 1.0),
+        "sampling_truncated_count": int(aggregate.get("sampling_truncated_count", 0)),
+        "completion_rate": aggregate["completion_rate"],
         "truncated_count": int(aggregate["truncated_count"]),
         "schedule_violation_count": int(aggregate["schedule_violation_count"]),
         "physical_safety_pass": bool(aggregate["physical_safety_pass"]),
         "active_constraint_pass": bool(aggregate.get("active_constraint_pass", aggregate["physical_safety_pass"])),
-        "preference_balanced_quality_score": float(
-            aggregate["preference_balanced_quality_score"]
-        ),
+        "preference_balanced_quality_score": aggregate["preference_balanced_quality_score"],
         "mean_quality_score": _summary_value(completed, "quality_score"),
         "mean_preference_quality_score": _summary_value(
             completed, "preference_quality_score"
@@ -473,6 +478,8 @@ def _episode_log_row(episode) -> dict[str, Any]:
         "truncated": bool(metrics["truncated"]),
         "task_succeeded": bool(metrics.get("task_succeeded", False)),
         "task_failed": bool(metrics.get("task_failed", False)),
+        "sampling_truncated": bool(metrics["sampling_truncated"]),
+        "objective_complete": bool(metrics["objective_complete"]),
         "terminal_reason": metrics["terminal_reason"],
         "completed_order_ratio": float(metrics["completed_orders"]) / total_orders,
         "completed_operation_ratio": float(metrics["completed_operations"])
@@ -517,7 +524,7 @@ def _failure_progress_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     values = sorted(
         float(row["operation_progress"])
         for row in rows
-        if bool(row.get("task_failed", row.get("truncated", False)))
+        if bool(row.get("task_failed", False))
     )
     if not values:
         return {"count": 0, "mean": None, "median": None, "bins": {}}
@@ -560,6 +567,7 @@ class TrainingEngine:
         validation_parallel_envs: int | None = None,
         visdom_enabled: bool | None = None,
         initial_checkpoint: str | Path | None = None,
+        allow_observation_migration: bool = False,
     ) -> None:
         self.config = deepcopy(config)
         self.smoke = bool(smoke)
@@ -570,6 +578,7 @@ class TrainingEngine:
         self.validation_parallel_envs = validation_parallel_envs
         self.visdom_enabled = visdom_enabled
         self.initial_checkpoint = initial_checkpoint
+        self.allow_observation_migration = bool(allow_observation_migration)
 
     def run(self) -> Path:
         config = self.config
@@ -627,6 +636,7 @@ class TrainingEngine:
             parallel_envs=min(workers, episodes),
             episodes_per_update=update_size,
             initial_checkpoint=self.initial_checkpoint,
+            allow_observation_migration=self.allow_observation_migration,
         )
 
 
@@ -642,6 +652,7 @@ def train(
     validation_parallel_envs: int | None = None,
     visdom_enabled: bool | None = None,
     initial_checkpoint: str | Path | None = None,
+    allow_observation_migration: bool = False,
 ) -> Path:
     if online_instances is False:
         raise ValueError("latest-only training uses the online instance collector")
@@ -655,6 +666,7 @@ def train(
         validation_parallel_envs=validation_parallel_envs,
         visdom_enabled=visdom_enabled,
         initial_checkpoint=initial_checkpoint,
+        allow_observation_migration=allow_observation_migration,
     ).run()
 
 
@@ -667,6 +679,7 @@ def _train_single_stage(
     parallel_envs: int,
     episodes_per_update: int,
     initial_checkpoint: str | Path | None,
+    allow_observation_migration: bool = False,
 ) -> Path:
     started_at = time.perf_counter()
     template = load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
@@ -678,7 +691,17 @@ def _train_single_stage(
     agent = PPOAgent(network, config["ppo"], device=config["device"])
     if initial_checkpoint is not None:
         from configs.runtime import assert_checkpoint_fatigue_mode
-        assert_checkpoint_fatigue_mode(agent.load(initial_checkpoint, load_optimizer=False), config)
+        initial_metadata = agent.load(initial_checkpoint, load_optimizer=False,
+                                      allow_observation_migration=allow_observation_migration)
+        assert_checkpoint_fatigue_mode(initial_metadata, config)
+        from data.dataset import sha256_file
+        config["training"]["initial_checkpoint_identity"] = {
+            "checkpoint_sha256": sha256_file(initial_checkpoint),
+            "source_network_weights_sha256": initial_metadata.get("source_network_weights_sha256",
+                                                                     initial_metadata.get("network_weights_sha256")),
+            "executed_network_weights_sha256": initial_metadata.get("network_weights_sha256"),
+            "observation_migration": initial_metadata.get("checkpoint_load_migration"),
+        }
 
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
@@ -758,10 +781,8 @@ def _train_single_stage(
                 step_limit=step_limit,
                 max_parallelism=parallel_envs,
             )
-            if rollout.transition_count == 0:
-                raise RuntimeError("training batch contains no policy transitions")
             update_started = time.perf_counter()
-            losses = agent.update(rollout.buffer)
+            losses = agent.update(rollout.buffer) if rollout.transition_count else {}
             ppo_update_seconds = time.perf_counter() - update_started
             batch_rows = [_episode_log_row(episode) for episode in rollout.episodes]
             episode_rows.extend(batch_rows)
@@ -772,6 +793,11 @@ def _train_single_stage(
                 "episode_start": indices[0],
                 "episode_end": indices[-1],
                 "episode_count": len(indices),
+                "sampling_attempt_count": len(indices),
+                "terminated_count": sum(row["terminated"] for row in batch_rows),
+                "task_succeeded_count": sum(row["task_succeeded"] for row in batch_rows),
+                "task_failed_count": sum(row["task_failed"] for row in batch_rows),
+                "sampling_truncated_count": sum(row["sampling_truncated"] for row in batch_rows),
                 "transition_count": rollout.transition_count,
                 "environment_step_count": rollout.environment_step_count,
                 "forced_action_count": rollout.forced_action_count,
@@ -840,7 +866,7 @@ def _train_single_stage(
                     best_checkpoint,
                     metadata=best_checkpoint_metadata,
                 )
-            if plateau.observe(improved):
+            if formal.get("evaluation_complete", True) and plateau.observe(improved):
                 agent.set_learning_rate(plateau.learning_rate)
             validation_row.update(plateau.as_dict())
             validation_rows.append(validation_row)
@@ -950,6 +976,11 @@ def _train_single_stage(
         "training_distribution": training_distribution_summary(episode_rows),
         "validation_subsets": subsets,
         "diagnostic_validation_count": len(diagnostic_log),
+        "sampling_attempt_count": len(episode_rows),
+        "terminated_count": sum(row["terminated"] for row in episode_rows),
+        "task_succeeded_count": sum(row["task_succeeded"] for row in episode_rows),
+        "task_failed_count": sum(row["task_failed"] for row in episode_rows),
+        "sampling_truncated_count": sum(row["sampling_truncated"] for row in episode_rows),
         "objective_name": _objective_name(config),
         "reward_mode": config["reward"]["mode"],
         "terminal_failure_penalty": config["reward"].get(
@@ -984,6 +1015,8 @@ def main() -> int:
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--episodes", type=int)
     parser.add_argument("--initial-checkpoint")
+    parser.add_argument("--allow-observation-migration", action="store_true",
+                        help="Compatibility flag; current observation schema requires retraining of older models")
     parser.add_argument("--run-name")
     parser.add_argument("--algorithm-seed", type=int)
     parser.add_argument("--parallel-envs", type=int)
@@ -1000,7 +1033,7 @@ def main() -> int:
         default=None,
     )
     args = parser.parse_args()
-    config = load_config(args.config)
+    config = load_config(args.config, allow_observation_migration=args.allow_observation_migration)
     if args.episodes is not None:
         if args.episodes <= 0:
             parser.error("--episodes must be positive")
@@ -1026,6 +1059,7 @@ def main() -> int:
                     validation_parallel_envs=args.validation_parallel_envs,
                     visdom_enabled=args.visdom_enabled,
                     initial_checkpoint=args.initial_checkpoint,
+                    allow_observation_migration=args.allow_observation_migration,
                 )
             except KeyboardInterrupt as error:
                 exit_code = 130
