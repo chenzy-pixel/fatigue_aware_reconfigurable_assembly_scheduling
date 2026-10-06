@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,9 @@ from agent.ppo.network import (
     ActorCriticNetwork,
     assert_network_config_matches_spec,
     infer_checkpoint_network_spec,
+    normalize_network_config,
 )
+from configs.runtime import assert_checkpoint_fatigue_mode
 from environment import Observation
 from result.provenance import (
     network_weights_sha256,
@@ -142,6 +144,16 @@ class PPOAgent:
     @property
     def requires_graph_observation(self) -> bool:
         return bool(self.network.requires_graph_observation)
+
+    def assert_evaluation_config(self, config: Mapping[str, Any]) -> None:
+        """Check the executing model and loaded physics identity before reuse."""
+        spec = self.network.network_spec()
+        # Observation dimensions belong to the constructed network. Architecture
+        # controls and generated message identities come from evaluation config.
+        configured_spec = {**spec, **normalize_network_config(config["network"])}
+        assert_network_config_matches_spec(configured_spec, spec)
+        if hasattr(self, "loaded_checkpoint_metadata"):
+            assert_checkpoint_fatigue_mode(self.loaded_checkpoint_metadata, config)
 
     @torch.no_grad()
     def act(

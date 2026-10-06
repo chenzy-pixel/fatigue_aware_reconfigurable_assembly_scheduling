@@ -1707,6 +1707,7 @@ class ParallelEpisodeRunner:
         sampling_seed: int | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
     ) -> list[FixedEvaluationRollout]:
+        agent.assert_evaluation_config(self.config)
         parallelism = (
             self.worker_count
             if max_parallelism is None

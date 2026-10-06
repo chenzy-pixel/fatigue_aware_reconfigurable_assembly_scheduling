@@ -224,6 +224,8 @@ def test_zero_density_denominators(config,fixed_instance):
 
 
 def test_single_instance_evaluation_restores_mode_on_exception(config,fixed_instance,monkeypatch):
+    config = deepcopy(config)
+    config['network']['hidden_dim'] = 16
     obs = AssemblySchedulingEnv(config).reset(fixed_instance)
     agent = _agent(config,obs)
     policy = EvaluationPolicy(config,policy_name='ppo',bootstrap_observation=obs,ppo_agent=agent,decode_mode='greedy')

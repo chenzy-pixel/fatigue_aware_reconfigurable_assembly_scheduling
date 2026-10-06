@@ -224,6 +224,13 @@ Universal 按评估阶段提供偏好集合：
 
 ## 7. 可复现评测
 
+复用内存 PPO agent 时，`assert_evaluation_config()` 统一检查实际 network spec
+与评估配置，包括结构、消息身份及归一化身份；已加载 agent 还检查 checkpoint 的
+fatigue mode。串行评估、并行评估和 worker 的固定记录评估入口均执行该检查。
+prepared policy 保存创建时的 fatigue mode，并在每次复用前重新校验。
+encoder/head 输出身份来自实际执行的网络。新建训练 agent 按当前 full/neutral
+配置评估；checkpoint 缺少疲劳模式时沿用原有 full 约定。
+
 `training.formal_evaluation` 固定 sampled decoding 和 temperature `1.0`：
 
 - validation root seeds：`algorithm_seed + 100000 + repeat`；

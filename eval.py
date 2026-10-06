@@ -124,6 +124,7 @@ class EvaluationPolicy:
         allow_observation_migration: bool = False,
     ):
         self.policy_name = policy_name
+        self.fatigue_mode = config.get("environment", {}).get("fatigue_mode", "full")
         self.device = torch.device(config["device"])
         self.ppo_agent: PPOAgent | None = None
         self.policy: HeuristicPolicy | RandomPolicy | None = None
@@ -176,9 +177,9 @@ class EvaluationPolicy:
                     config["ppo"],
                     device=config["device"],
                 )
-                from configs.runtime import assert_checkpoint_fatigue_mode
-                assert_checkpoint_fatigue_mode(ppo_agent.load(checkpoint_path,
-                    allow_observation_migration=allow_observation_migration), config)
+                ppo_agent.load(checkpoint_path,
+                    allow_observation_migration=allow_observation_migration)
+            ppo_agent.assert_evaluation_config(config)
             self.ppo_agent = ppo_agent
             self.device = ppo_agent.device
             if self.decode_mode == "sampled":
@@ -188,6 +189,16 @@ class EvaluationPolicy:
                     )
         else:
             raise ValueError(f"unknown policy {policy_name}")
+
+    def assert_config(self, config: dict[str, Any]) -> None:
+        """Validate a prepared PPO policy before starting another episode."""
+        if self.ppo_agent is not None:
+            self.ppo_agent.assert_evaluation_config(config)
+            mode = config.get("environment", {}).get("fatigue_mode", "full")
+            if mode != self.fatigue_mode:
+                raise ValueError(
+                    f"prepared policy fatigue mode {self.fatigue_mode!r} does not match {mode!r}"
+                )
 
     def select_action(
         self,
@@ -336,6 +347,7 @@ def evaluate_instance(
             f"prepared decode mode is {runner.decode_mode}, "
             f"expected {decode_mode}"
         )
+    runner.assert_config(config)
     solve_start = time.perf_counter()
     env = AssemblySchedulingEnv(config)
     observation = env.reset(instance, preference=preference)
@@ -366,6 +378,9 @@ def evaluate_instance(
     metrics = env.metrics()
     metrics["policy"] = policy_name
     metrics["arm"] = policy_name
+    if runner.ppo_agent is not None:
+        metrics["encoder_variant"] = runner.ppo_agent.network.encoder_variant
+        metrics["actor_head_variant"] = runner.ppo_agent.network.actor_head_variant
     metrics["policy_execution_version"] = (
         runner.ppo_agent.network.execution_mode
         if runner.ppo_agent is not None else policy_name
@@ -502,8 +517,8 @@ def _evaluation_row(
     preference = metrics.get("preference") or {}
     return {
         "experiment_name": config.get("experiment_name"),
-        "encoder_variant": config.get("network", {}).get("encoder_variant", "hetero_gnn"),
-        "actor_head_variant": config.get("network", {}).get("actor_head_variant", "objective_experts"),
+        "encoder_variant": metrics.get("encoder_variant", config.get("network", {}).get("encoder_variant", "hetero_gnn")),
+        "actor_head_variant": metrics.get("actor_head_variant", config.get("network", {}).get("actor_head_variant", "objective_experts")),
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
         "generator_version": record.metadata.get("generator_version"),
@@ -914,6 +929,7 @@ def evaluate_dataset_parallel(
     sampling_seed: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate fixed records in parallel for periodic training validation."""
+    ppo_agent.assert_evaluation_config(config)
     dataset = load_dataset_split(config, dataset_name)
     indices = resolve_instance_indices(dataset, instance_indices=instance_indices, instance_limit=instance_limit, instance_offset=instance_offset)
     offset = 0 if instance_offset is None else instance_offset
@@ -951,6 +967,8 @@ def evaluate_dataset_parallel(
     quality_metric = evaluation_quality_metric(config)
     for rollout in rollouts:
         metrics = dict(rollout.metrics)
+        metrics["encoder_variant"] = ppo_agent.network.encoder_variant
+        metrics["actor_head_variant"] = ppo_agent.network.actor_head_variant
         metrics["policy_execution_version"] = ppo_agent.network.execution_mode
         metrics["decisions"] = rollout.decisions
         metrics["inference_time_seconds"] = (
@@ -1040,6 +1058,7 @@ def evaluate_preference_grid_parallel(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Evaluate each fixed instance at an ordered formal preference set."""
 
+    ppo_agent.assert_evaluation_config(config)
     dataset = load_dataset_split(config, dataset_name)
     indices = resolve_instance_indices(dataset, instance_indices=instance_indices, instance_limit=instance_limit, instance_offset=instance_offset)
     offset = 0 if instance_offset is None else instance_offset
@@ -1077,6 +1096,8 @@ def evaluate_preference_grid_parallel(
     rows: list[dict[str, Any]] = []
     for rollout in rollouts:
         metrics = dict(rollout.metrics)
+        metrics["encoder_variant"] = ppo_agent.network.encoder_variant
+        metrics["actor_head_variant"] = ppo_agent.network.actor_head_variant
         metrics["policy_execution_version"] = ppo_agent.network.execution_mode
         metrics.update(
             {
