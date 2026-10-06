@@ -129,6 +129,13 @@ HeterogeneousGraphObservation
 
 图包含六类节点、十四种关系和两层 HGNN 消息传递。偏好是 episode 级三维字段，
 经 `3 → 32 → ReLU → 32` 编码后供 actor 与 critic 共用，不拼入图全局特征。
+有属性关系的消息为 `ReLU(Linear([邻居表示, 边属性]))`，正向和反向均在
+`index_add` 前计算；零属性关系继续使用 Linear。所有进入节点的关系消息统一按总度数
+求均值，再做原有残差、LayerNorm 和 ReLU，图读出按节点类型求均值。
+`configs/network_contract.py` 统一生成 HGNN 的 `attributed_joint_relu_v1` /
+`total_degree_mean_v1` 消息身份；node-MLP 两项为 `not_applicable`。
+身份进入 normalized network config、network spec 与 runtime manifest。
+图消融校验允许该身份随 encoder_variant 派生变化，其他配对严格一致。
 PPO 使用 clipped policy loss、
 value loss、entropy、GAE 和梯度裁剪。配置强制 `gamma=1`、`dropout=0`。
 全局输入共 9 维：当前时间、待重构比例、工序完成比例、生产阶段标志、工人匹配缺口、
@@ -138,6 +145,8 @@ actor、critic 和 WAIT 上下文共享这一输入。order 节点继续保留 r
 其差值的均值表达全系统活跃订单比例。
 
 训练、评估与配置快照要求 schema 10，旧 schema 5/6/7/8/9 模型须重新训练。
+同为 schema 10 的旧消息结构检查点若缺少或不匹配当前计算身份，也需重新训练。
+加载在网络和 optimizer 状态修改前完成校验，迁移开关不能绕过该边界。
 决策保护触发 sampling_truncated，保留末状态并做价值自举；真实完成、期限失败及死锁
 使用真实终止标志。实际加工和工人服务使用独立、零属性的双向 processing_on/served_by
 关系，严格核对两端实体状态。候选时间、费用、方差和订单时间上下文共用安全顺序

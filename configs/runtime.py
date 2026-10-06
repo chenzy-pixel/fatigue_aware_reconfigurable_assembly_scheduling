@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
 from environment.time_context import TIME_CONTEXT_VERSION
+from .network_contract import message_identity, validate_message_identity
 
 
 _RUNTIME_MANIFEST: dict[str, Any] = {
@@ -51,9 +52,11 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Return implementation identity and the configured task-failure penalty."""
 
     manifest = deepcopy(_RUNTIME_MANIFEST)
+    manifest.update(message_identity())
     if config is not None:
         network = config.get("network", {})
         manifest["encoder_variant"] = network.get("encoder_variant", "hetero_gnn")
+        manifest.update(validate_message_identity(network))
         manifest["actor_head_variant"] = network.get("actor_head_variant", "objective_experts")
         manifest["fatigue_mode"] = config.get("environment", {}).get("fatigue_mode", "full")
         if manifest["actor_head_variant"] == "shared_preference":
@@ -96,6 +99,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
         raise ValueError("PPO requires network.dropout = 0")
     if network.get("encoder_variant", "hetero_gnn") not in {"hetero_gnn", "node_mlp_pool"}:
         raise ValueError("unknown network.encoder_variant")
+    validate_message_identity(network)
     if network.get("actor_head_variant", "objective_experts") not in {"objective_experts", "shared_preference"}:
         raise ValueError("unknown network.actor_head_variant")
     scalarizer = config.get("objective_scalarizer", {})

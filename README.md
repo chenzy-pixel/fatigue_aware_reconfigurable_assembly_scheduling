@@ -38,6 +38,14 @@ operations, decision phase, worker matching deficit, minimum worker alternatives
 and cumulative Flow, cost and committed-load variance divided by their frozen
 scales. PPO requires `network.dropout=0`.
 
+Attributed HGNN messages apply `ReLU(Linear([neighbor, edge]))` before
+aggregation in both directions. Messages are averaged over the total incoming
+degree; residual updates and per-node-type graph pooling follow the current
+network contract. The generated computation identity is
+`message_function=attributed_joint_relu_v1` and
+`message_aggregation=total_degree_mean_v1`. The node-MLP ablation records both
+fields as `not_applicable`. See [the implementation and acceptance record](docs/joint_messages_20261006.md).
+
 ## Confirmed main-experiment protocol (2026-10-02)
 
 The agreed objective scales are **Flow=1089.15, Cost=353.27,
@@ -193,6 +201,10 @@ An explicit compatible checkpoint can initialize network weights:
 Training initialization and evaluation require schema-10 checkpoints. Schema
 5/6/7/8/9 models and effective-config snapshots require retraining; the retained
 `--allow-observation-migration` CLI option cannot bypass this boundary.
+Checkpoint loading also requires the current message-computation identity.
+Schema-10 models and snapshots created before the joint-message change require
+retraining, even though parameter names, shapes, and counts are the same.
+New checkpoints restore compatible network and optimizer state normally.
 
 Engineering decision guards stop sampling with `terminated=false` and
 `truncated=true`, preserving the physical observation and action mask. PPO
