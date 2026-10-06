@@ -82,7 +82,7 @@ def load_config(path: str | Path, *, allow_observation_migration: bool = False) 
     apply_normalization_manifest(config, project_root=PROJECT_ROOT)
     attach_runtime_manifest(config)
     if saved_manifest is not None and saved_manifest != config["runtime_manifest"]:
-        raise ValueError(f"saved runtime_manifest does not match schema {OBSERVATION_SCHEMA_VERSION}; retraining is required and legacy observations cannot be migrated")
+        raise ValueError("saved runtime_manifest does not match the current implementation; retraining is required")
     config["_config_path"] = str(config_path)
     config["_config_chain"] = tuple(str(item) for item in chain)
     return config

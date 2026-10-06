@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from .config import load_config, project_path
 from .formal_preferences import formal_preferences
+from .network_contract import MESSAGE_IDENTITY_FIELDS
 
 ABLATION_MANIFEST = "configs/manifests/ablation_seed11.json"
 ABLATION_PROTOCOL = "v8_matched_ablation_failure2_frozen_v1"
@@ -76,6 +77,9 @@ def assert_paired_configs(baseline: Mapping[str, Any], variant: Mapping[str, Any
         if changed_field == "encoder_variant":
             first["network"].pop("encoder_type")
             second["network"].pop("encoder_type")
+            for name in MESSAGE_IDENTITY_FIELDS:
+                first["network"].pop(name)
+                second["network"].pop(name)
         else:
             first["network"].pop("expert_weight_parameterization")
             second["network"].pop("expert_weight_parameterization")

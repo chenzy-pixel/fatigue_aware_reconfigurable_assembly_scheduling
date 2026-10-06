@@ -8,6 +8,9 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from configs.network_contract import (
+    MESSAGE_IDENTITY_FIELDS, message_identity, validate_message_identity,
+)
 from environment.time_context import (
     ORDER_TIME_FEATURE, TIME_CONTEXT_FEATURE_SCHEMA, TIME_CONTEXT_VERSION,
     WAIT_TIME_FEATURES, WORKER_WAIT_FEATURE,
@@ -107,6 +110,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     actor_head_variant = str(config.get("actor_head_variant", "objective_experts"))
     if encoder_variant not in {"hetero_gnn", "node_mlp_pool"}:
         raise ValueError("unknown network.encoder_variant")
+    messages = validate_message_identity(config)
     if actor_head_variant not in {"objective_experts", "shared_preference"}:
         raise ValueError("unknown network.actor_head_variant")
     dropout = float(config.get("dropout", 0.0))
@@ -140,6 +144,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "encoder_type": encoder_variant,
         "encoder_variant": encoder_variant,
         "actor_head_variant": actor_head_variant,
+        **messages,
         "hidden_dim": hidden_dim,
         "message_passing_layers": layers,
         "dropout": dropout,
@@ -184,6 +189,7 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     schema_version = int(spec.get("observation_schema_version", 0))
     if schema_version != OBSERVATION_SCHEMA_VERSION:
         raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation schemas cannot be loaded or migrated")
+    validate_message_identity(spec, require=True)
     dimensions = spec.get("edge_feature_dimensions", {})
     if set(dimensions) != set(ASSEMBLY_EDGE_TYPES):
         raise ValueError(f"checkpoint edge feature dimensions must contain all schema-{OBSERVATION_SCHEMA_VERSION} relations")
@@ -233,6 +239,7 @@ def assert_network_config_matches_spec(
     for name in (
         "encoder_variant",
         "actor_head_variant",
+        *MESSAGE_IDENTITY_FIELDS,
         "hidden_dim",
         "message_passing_layers",
         "dropout",
@@ -380,6 +387,7 @@ class _GraphBatch:
 
 
 class HeterogeneousMessagePassingLayer(nn.Module):
+    """Joint nonlinear attributed messages with total-degree mean aggregation."""
     def __init__(
         self,
         hidden_dim: int,
@@ -420,6 +428,8 @@ class HeterogeneousMessagePassingLayer(nn.Module):
             forward = transform(
                 torch.cat((embeddings[source_type][source], edge_features), dim=-1)
             )
+            if edge_features.shape[1] > 0:
+                forward = F.relu(forward)
             total[target_type].index_add_(0, target, forward)
             degree[target_type].index_add_(
                 0, target, forward.new_ones((forward.shape[0], 1))
@@ -428,6 +438,8 @@ class HeterogeneousMessagePassingLayer(nn.Module):
                 reverse = transform(
                     torch.cat((embeddings[target_type][target], edge_features), dim=-1)
                 )
+                if edge_features.shape[1] > 0:
+                    reverse = F.relu(reverse)
                 total[source_type].index_add_(0, source, reverse)
                 degree[source_type].index_add_(
                     0, source, reverse.new_ones((reverse.shape[0], 1))
@@ -620,6 +632,7 @@ class HeteroGraphActorCritic(nn.Module):
             "encoder_type": self.encoder_variant,
             "encoder_variant": self.encoder_variant,
             "actor_head_variant": self.actor_head_variant,
+            **message_identity(self.encoder_variant),
             "hidden_dim": self.hidden_dim,
             "message_passing_layers": self.message_passing_layer_count,
             "dropout": self.dropout_probability,
