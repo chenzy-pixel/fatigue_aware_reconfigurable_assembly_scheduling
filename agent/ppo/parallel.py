@@ -1724,174 +1724,169 @@ class ParallelEpisodeRunner:
         if preferences is not None and len(preferences) != len(records):
             raise ValueError("evaluation preferences must align with records")
         results: list[FixedEvaluationRollout] = []
-        for start in range(0, len(records), parallelism):
-            chunk = records[start : start + parallelism]
-            chunk_start = time.perf_counter()
-            reset_responses = self._exchange(
-                {
-                    lane_id: (
-                        "reset_instance",
-                        _WorkerResetRequest(
-                            value=record.instance,
-                            preference=(
-                                None
-                                if preferences is None
-                                else preferences[start + lane_id]
-                            ),
-                        ),
-                    )
-                    for lane_id, record in enumerate(chunk)
-                }
-            )
-            states = dict(reset_responses)
-            active = set(range(len(chunk)))
-            decisions = {lane: 0 for lane in active}
-            inference_times = {lane: 0.0 for lane in active}
-            action_traces: dict[int, list[int]] = {
-                lane: [] for lane in active
-            }
-            policy_diagnostics: dict[int, list[dict[str, Any]]] = {
-                lane: [] for lane in active
-            }
-            evaluation_keys = {
-                lane: (
-                    None
-                    if preferences is None
-                    else PreferenceContext.from_input(
-                        preferences[start + lane]
-                    ).key
+        states: dict[int, WorkerResponse] = {}
+        active: set[int] = set()
+        record_indices: dict[int, int] = {}
+        started_at: dict[int, float] = {}
+        decisions: dict[int, int] = {}
+        inference_times: dict[int, float] = {}
+        action_traces: dict[int, list[int]] = {}
+        policy_diagnostics: dict[int, list[dict[str, Any]]] = {}
+        evaluation_keys: dict[int, str | None] = {}
+        derived_sampling_seeds: dict[int, int] = {}
+        generators: dict[int, torch.Generator] = {}
+        next_record = 0
+
+        def fill_available(lanes: Sequence[int]) -> None:
+            nonlocal next_record
+            requests = {}
+            reset_start = time.perf_counter()
+            for lane in lanes:
+                if next_record >= len(records):
+                    break
+                index = next_record
+                next_record += 1
+                record_indices[lane] = index
+                started_at[lane] = reset_start
+                decisions[lane] = 0
+                inference_times[lane] = 0.0
+                action_traces[lane] = []
+                policy_diagnostics[lane] = []
+                preference = None if preferences is None else preferences[index]
+                evaluation_keys[lane] = (
+                    None if preference is None else PreferenceContext.from_input(preference).key
                 )
-                for lane in active
-            }
-            derived_sampling_seeds = (
-                {
-                    lane: derive_evaluation_sampling_seed(
-                        int(sampling_seed),
-                        chunk[lane].instance.instance_id,
+                if not deterministic:
+                    derived_sampling_seeds[lane] = derive_evaluation_sampling_seed(
+                        int(sampling_seed), records[index].instance.instance_id,
                         evaluation_keys[lane],
                     )
-                    for lane in active
-                }
-                if not deterministic
-                else {}
-            )
-            generators = {
-                lane: torch.Generator(device=agent.device).manual_seed(
-                    derived_sampling_seeds[lane]
-                )
-                for lane in derived_sampling_seeds
-            }
-            while active:
-                lanes = sorted(active)
-                observations = [
-                    states[lane].observation for lane in lanes
-                ]
-                masks = [
-                    states[lane].action_mask for lane in lanes
-                ]
-                if deterministic:
-                    inference_start = time.perf_counter()
-                    actions, _, _ = agent.act_batch(
-                        observations,
-                        masks,
-                        deterministic=True,
+                    generators[lane] = torch.Generator(device=agent.device).manual_seed(
+                        derived_sampling_seeds[lane]
                     )
-                    elapsed = time.perf_counter() - inference_start
-                    share = elapsed / len(lanes)
-                    for lane in lanes:
-                        inference_times[lane] += share
-                    diagnostic_rows = (
-                        agent.consume_policy_decision_diagnostics()
-                    )
-                    if diagnostic_rows and len(diagnostic_rows) != len(lanes):
-                        raise RuntimeError(
-                            "batched policy diagnostics do not match lanes"
-                        )
-                    for lane, action, diagnostic in zip(
-                        lanes, actions, diagnostic_rows
-                    ):
-                        diagnostic["selected_action"] = int(action)
-                        diagnostic["ranker_top_selected"] = bool(
-                            int(action)
-                            == int(diagnostic.get("relative_top_action", -1))
-                        )
-                        policy_diagnostics[lane].append(diagnostic)
-                else:
-                    inference_start = time.perf_counter()
-                    if getattr(agent.network, "execution_mode", "") == "reference_v8":
-                        actions = []
-                        diagnostic_rows = []
-                        for lane, observation, mask in zip(lanes, observations, masks):
-                            actions.append(agent.act(
-                                observation, mask, generator=generators[lane]
-                            )[0])
-                            diagnostic_rows.extend(agent.consume_policy_decision_diagnostics())
-                    else:
-                        actions, _, _ = agent.act_batch(
-                            observations, masks,
-                            generators=[generators[lane] for lane in lanes],
-                        )
-                        diagnostic_rows = agent.consume_policy_decision_diagnostics()
-                    elapsed = time.perf_counter() - inference_start
-                    for lane in lanes:
-                        inference_times[lane] += elapsed / len(lanes)
-                    if diagnostic_rows and len(diagnostic_rows) != len(lanes):
-                        raise RuntimeError("batched policy diagnostics do not match lanes")
-                    for lane, action, diagnostic in zip(lanes, actions, diagnostic_rows):
-                        diagnostic["selected_action"] = int(action)
-                        diagnostic["ranker_top_selected"] = bool(
-                            int(action) == int(diagnostic.get("relative_top_action", -1))
-                        )
-                        policy_diagnostics[lane].append(diagnostic)
-                for lane, action in zip(lanes, actions):
-                    action_traces[lane].append(int(action))
-                step_responses = self._exchange(
-                    {
-                        lane: ("step", action)
-                        for lane, action in zip(lanes, actions)
-                    }
+                requests[lane] = (
+                    "reset_instance",
+                    _WorkerResetRequest(value=records[index].instance, preference=preference),
                 )
+            if requests:
+                states.update(self._exchange(requests))
+                active.update(requests)
+
+        # A completed lane immediately takes the next fixed evaluation unit.
+        # Sampling state belongs to the instance/preference unit, not its lane.
+        fill_available(range(parallelism))
+        while active:
+            lanes = sorted(active)
+            observations = [
+                states[lane].observation for lane in lanes
+            ]
+            masks = [
+                states[lane].action_mask for lane in lanes
+            ]
+            if deterministic:
+                inference_start = time.perf_counter()
+                actions, _, _ = agent.act_batch(
+                    observations,
+                    masks,
+                    deterministic=True,
+                )
+                elapsed = time.perf_counter() - inference_start
+                share = elapsed / len(lanes)
                 for lane in lanes:
-                    decisions[lane] += 1
-                    response = step_responses[lane]
-                    if response.terminated or response.truncated:
-                        if response.metrics is None:
-                            raise ParallelWorkerError(
-                                f"worker {lane} returned no metrics"
-                            )
-                        response.metrics.update(
-                            summarize_policy_decision_diagnostics(
-                                policy_diagnostics[lane]
-                            )
+                    inference_times[lane] += share
+                diagnostic_rows = (
+                    agent.consume_policy_decision_diagnostics()
+                )
+                if diagnostic_rows and len(diagnostic_rows) != len(lanes):
+                    raise RuntimeError(
+                        "batched policy diagnostics do not match lanes"
+                    )
+                for lane, action, diagnostic in zip(
+                    lanes, actions, diagnostic_rows
+                ):
+                    diagnostic["selected_action"] = int(action)
+                    diagnostic["ranker_top_selected"] = bool(
+                        int(action)
+                        == int(diagnostic.get("relative_top_action", -1))
+                    )
+                    policy_diagnostics[lane].append(diagnostic)
+            else:
+                inference_start = time.perf_counter()
+                if getattr(agent.network, "execution_mode", "") == "reference_v8":
+                    actions = []
+                    diagnostic_rows = []
+                    for lane, observation, mask in zip(lanes, observations, masks):
+                        actions.append(agent.act(
+                            observation, mask, generator=generators[lane]
+                        )[0])
+                        diagnostic_rows.extend(agent.consume_policy_decision_diagnostics())
+                else:
+                    actions, _, _ = agent.act_batch(
+                        observations, masks,
+                        generators=[generators[lane] for lane in lanes],
+                    )
+                    diagnostic_rows = agent.consume_policy_decision_diagnostics()
+                elapsed = time.perf_counter() - inference_start
+                for lane in lanes:
+                    inference_times[lane] += elapsed / len(lanes)
+                if diagnostic_rows and len(diagnostic_rows) != len(lanes):
+                    raise RuntimeError("batched policy diagnostics do not match lanes")
+                for lane, action, diagnostic in zip(lanes, actions, diagnostic_rows):
+                    diagnostic["selected_action"] = int(action)
+                    diagnostic["ranker_top_selected"] = bool(
+                        int(action) == int(diagnostic.get("relative_top_action", -1))
+                    )
+                    policy_diagnostics[lane].append(diagnostic)
+            for lane, action in zip(lanes, actions):
+                action_traces[lane].append(int(action))
+            step_responses = self._exchange(
+                {
+                    lane: ("step", action)
+                    for lane, action in zip(lanes, actions)
+                }
+            )
+            for lane in lanes:
+                decisions[lane] += 1
+                response = step_responses[lane]
+                if response.terminated or response.truncated:
+                    if response.metrics is None:
+                        raise ParallelWorkerError(
+                            f"worker {lane} returned no metrics"
                         )
-                        results.append(
-                            FixedEvaluationRollout(
-                                record_index=start + lane,
-                                metrics=response.metrics,
-                                decisions=decisions[lane],
-                                inference_time_seconds=(
-                                    inference_times[lane]
-                                ),
-                                solve_time_seconds=(
-                                    time.perf_counter() - chunk_start
-                                ),
-                                action_trace_sha256=action_trace_sha256(
-                                    action_traces[lane]
-                                ),
-                                sampling_seed=(
-                                    None if deterministic else int(sampling_seed)
-                                ),
-                                derived_sampling_seed=(
-                                    None
-                                    if deterministic
-                                    else derived_sampling_seeds[lane]
-                                ),
-                                sampling_evaluation_key=evaluation_keys[lane],
-                            )
+                    response.metrics.update(
+                        summarize_policy_decision_diagnostics(
+                            policy_diagnostics[lane]
                         )
-                        active.remove(lane)
-                    else:
-                        states[lane] = response
+                    )
+                    results.append(
+                        FixedEvaluationRollout(
+                            record_index=record_indices[lane],
+                            metrics=response.metrics,
+                            decisions=decisions[lane],
+                            inference_time_seconds=(
+                                inference_times[lane]
+                            ),
+                            solve_time_seconds=(
+                                time.perf_counter() - started_at[lane]
+                            ),
+                            action_trace_sha256=action_trace_sha256(
+                                action_traces[lane]
+                            ),
+                            sampling_seed=(
+                                None if deterministic else int(sampling_seed)
+                            ),
+                            derived_sampling_seed=(
+                                None
+                                if deterministic
+                                else derived_sampling_seeds[lane]
+                            ),
+                            sampling_evaluation_key=evaluation_keys[lane],
+                        )
+                    )
+                    active.remove(lane)
+                else:
+                    states[lane] = response
+            fill_available([lane for lane in range(parallelism) if lane not in active])
         results.sort(key=lambda value: value.record_index)
         return results
 

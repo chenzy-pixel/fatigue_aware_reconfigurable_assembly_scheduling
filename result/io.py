@@ -54,6 +54,24 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
     os.replace(temporary, output)
 
 
+def append_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
+    """Append fixed-schema research rows from a single training coordinator."""
+    if not rows:
+        return
+    output = Path(path)
+    fields = list(rows[0])
+    existing = output.exists() and output.stat().st_size > 0
+    if existing:
+        with output.open(encoding="utf-8-sig",newline="") as stream:
+            if next(csv.reader(stream)) != fields:
+                raise ValueError("appended CSV research schema changed")
+    with output.open("a",encoding="utf-8-sig",newline="") as stream:
+        writer = csv.DictWriter(stream,fieldnames=fields)
+        if not existing:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
 def write_evaluation_outputs(
     run_directory: str | Path,
     *,

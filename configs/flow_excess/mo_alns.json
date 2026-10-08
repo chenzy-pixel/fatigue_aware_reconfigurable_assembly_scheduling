@@ -1,0 +1,13 @@
+{
+  "extends": "../baselines/mo_alns.json",
+  "experiment_name": "flow_excess_mo_alns",
+  "experiment_suite_version": "single_stage_progress_quality_failure_v4",
+  "objective_scalarizer": {
+    "flow_mode": "excess_proportional_lb_v1",
+    "normalization_manifest": "configs/manifests/flow_excess_scales_20261008.json",
+    "normalization_manifest_sha256": "17367f71e7a529ee504feb2b531a6a44fdf7458f323797ca9be33508723ce61b"
+  },
+  "reward": {
+    "mode": "single_stage_progress_quality_failure_v4"
+  }
+}

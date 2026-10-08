@@ -370,7 +370,7 @@ def decode_solution(
     metrics["inference_time_per_decision_ms"] = 0.0
     metrics["schedule_violations"] = env.validate_schedule()
     metrics["action_trace_sha256"] = action_trace_sha256(actions)
-    objectives = metrics_objectives(metrics)
+    objectives = metrics_objectives(metrics, config)
     feasible = bool(
         metrics["task_succeeded"]
         and not metrics["truncated"]

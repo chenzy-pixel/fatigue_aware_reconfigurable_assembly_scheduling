@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from environment.types import flow_mode, flow_reward_version
 from configs.network_contract import (
     MESSAGE_IDENTITY_FIELDS, message_identity, validate_message_identity,
 )
@@ -134,6 +135,10 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not np.isfinite(worker_time_floor) or worker_time_floor <= 0:
         raise ValueError("network.worker_flow_time_std_floor must be finite and positive")
     manifest_sha = config.get("normalization_manifest_sha256")
+    selected_flow = flow_mode(dict(config))
+    expected_reward = flow_reward_version(dict(config))
+    if config.get("reward_version", expected_reward) != expected_reward:
+        raise ValueError("network reward_version disagrees with flow_mode")
     if manifest_sha is not None:
         manifest_sha = str(manifest_sha).lower()
         if len(manifest_sha) != 64 or any(
@@ -159,6 +164,8 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
             if actor_head_variant == "objective_experts" else SHARED_HEAD_PARAMETERIZATION
         ),
         "normalization_manifest_sha256": manifest_sha,
+        "flow_mode": selected_flow,
+        "reward_version": expected_reward,
     }
 
 
@@ -220,6 +227,8 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         if spec.get(name) != expected:
             raise ValueError(f"checkpoint {name} is incompatible with V8")
     normalized = normalize_network_config(spec)
+    spec["flow_mode"] = normalized["flow_mode"]
+    spec["reward_version"] = normalized["reward_version"]
     for name in ("encoder_variant", "actor_head_variant"):
         spec[name] = normalized[name]
     for name in ("worker_flow_time_normalization", "worker_flow_time_std_floor"):
@@ -251,6 +260,8 @@ def assert_network_config_matches_spec(
         "worker_flow_time_std_floor",
         "expert_weight_parameterization",
         "normalization_manifest_sha256",
+        "flow_mode",
+        "reward_version",
     ):
         if configured[name] != saved.get(name):
             raise ValueError(
@@ -476,6 +487,8 @@ class HeteroGraphActorCritic(nn.Module):
         residual_gate_initial_logit: float = 0.0,
         residual_std_floor: float = RESIDUAL_STD_FLOOR,
         normalization_manifest_sha256: str | None = None,
+        flow_mode: str = "raw_v1",
+        reward_version: str | None = None,
         worker_flow_time_normalization: str = "candidate_zscore_v1",
         worker_flow_time_std_floor: float = 0.001,
         encoder_variant: str = "hetero_gnn",
@@ -513,6 +526,10 @@ class HeteroGraphActorCritic(nn.Module):
         self.residual_gate_initial_logit = float(residual_gate_initial_logit)
         self.residual_std_floor = float(residual_std_floor)
         self.normalization_manifest_sha256 = normalization_manifest_sha256
+        identity = normalize_network_config({"flow_mode": flow_mode,
+            **({"reward_version": reward_version} if reward_version is not None else {})})
+        self.flow_mode = identity["flow_mode"]
+        self.reward_version = identity["reward_version"]
         worker_time_config = normalize_network_config({
             "worker_flow_time_normalization": worker_flow_time_normalization,
             "worker_flow_time_std_floor": worker_flow_time_std_floor,
@@ -659,6 +676,8 @@ class HeteroGraphActorCritic(nn.Module):
             "edge_feature_dimensions": dict(self.edge_feature_dimensions),
             "action_set_feature_names": self.action_set_feature_names,
             "normalization_manifest_sha256": self.normalization_manifest_sha256,
+            "flow_mode": self.flow_mode,
+            "reward_version": self.reward_version,
         }
 
     def encode_graph(
@@ -1633,6 +1652,8 @@ def build_actor_critic(
         residual_gate_initial_logit=config["residual_gate_initial_logit"],
         residual_std_floor=config["residual_std_floor"],
         normalization_manifest_sha256=config["normalization_manifest_sha256"],
+        flow_mode=config["flow_mode"],
+        reward_version=config["reward_version"],
         worker_flow_time_normalization=config["worker_flow_time_normalization"],
         worker_flow_time_std_floor=config["worker_flow_time_std_floor"],
         encoder_variant=config["encoder_variant"],

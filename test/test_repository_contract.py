@@ -120,4 +120,11 @@ def test_supported_training_and_baseline_configs_are_executable():
         "configs/ablations/full_flow.json",
         "configs/ablations/full_cost.json",
         "configs/ablations/full_variance.json",
+        "configs/flow_excess/universal.json",
+        "configs/flow_excess/single_flow.json",
+        "configs/flow_excess/mo_alns.json",
+        "configs/flow_excess/shared_head/universal.json",
+        "configs/flow_excess/shared_head/single_flow.json",
+        "configs/flow_excess/shared_head/single_cost.json",
+        "configs/flow_excess/shared_head/single_variance.json",
     }

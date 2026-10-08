@@ -81,6 +81,10 @@ def load_config(path: str | Path, *, allow_observation_migration: bool = False) 
         raise ValueError(f"saved runtime_manifest is incompatible: schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation snapshots cannot be migrated")
     apply_normalization_manifest(config, project_root=PROJECT_ROOT)
     attach_runtime_manifest(config)
+    if saved_manifest is not None and config["runtime_manifest"].get("flow_mode") == "raw_v1":
+        saved_manifest = dict(saved_manifest)
+        saved_manifest.setdefault("flow_mode", "raw_v1")
+        saved_manifest.setdefault("normalization_manifest_sha256", config["objective_scalarizer"]["normalization_manifest_sha256"])
     if saved_manifest is not None and saved_manifest != config["runtime_manifest"]:
         raise ValueError("saved runtime_manifest does not match the current implementation; retraining is required")
     config["_config_path"] = str(config_path)

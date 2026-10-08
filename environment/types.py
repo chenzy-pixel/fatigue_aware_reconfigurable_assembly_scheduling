@@ -18,9 +18,28 @@ EdgeType = tuple[str, str, str]
 
 LEGACY_PROGRESS_QUALITY_REWARD = "single_stage_progress_quality_v1"
 FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v3"
+EXCESS_FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v4"
+FLOW_RAW = "raw_v1"
+FLOW_EXCESS = "excess_proportional_lb_v1"
 SUPPORTED_REWARD_MODES = frozenset(
-    {FAILURE_PENALTY_REWARD}
+    {FAILURE_PENALTY_REWARD, EXCESS_FAILURE_PENALTY_REWARD}
 )
+
+
+def flow_mode(config: dict) -> str:
+    value = str(config.get("objective_scalarizer", config).get("flow_mode", FLOW_RAW))
+    if value not in {FLOW_RAW, FLOW_EXCESS}:
+        raise ValueError(f"unknown flow_mode {value!r}")
+    return value
+
+
+def flow_reward_version(config: dict) -> str:
+    return EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS else FAILURE_PENALTY_REWARD
+
+
+def metrics_flow_objective(metrics: dict, config: dict) -> float:
+    field = "flow_excess_objective" if flow_mode(config) == FLOW_EXCESS else "flow_time_objective"
+    return float(metrics[field])
 
 PRECEDES_EDGE: EdgeType = ("operation", "precedes", "operation")
 CAPABLE_EDGE: EdgeType = ("operation", "capable_on", "machine")
@@ -197,7 +216,7 @@ def objective_scalarizer_config(config: dict) -> dict:
     rho = float(raw.get("rho", 0.05))
     if not np.isfinite(rho) or rho < 0.0:
         raise ValueError("objective_scalarizer.rho must be finite and non-negative")
-    return {"type": kind, "scales": scales, "rho": rho}
+    return {"type": kind, "scales": scales, "rho": rho, "flow_mode": flow_mode(config)}
 
 
 def reward_config(config: dict) -> dict:
@@ -332,7 +351,8 @@ def proxy_return_from_metrics(
     )
     terminal_score = (
         bounded_quality_score(
-            float(metrics["flow_time_objective"]),
+            float(metrics["reward_objective_flow"] if "reward_objective_flow" in metrics
+                  else metrics_flow_objective(metrics, config)),
             float(metrics["reconfiguration_cost"]),
             float(metrics.get(
                 "reward_objective_worker_load_variance", metrics["worker_load_variance"]
@@ -344,7 +364,7 @@ def proxy_return_from_metrics(
     task_failed = bool(metrics.get("task_failed", False))
     failure_penalty = (
         terminal_failure_penalty(config)
-        if mode == FAILURE_PENALTY_REWARD and task_failed
+        if mode in SUPPORTED_REWARD_MODES and task_failed
         else 0.0
     )
     return (

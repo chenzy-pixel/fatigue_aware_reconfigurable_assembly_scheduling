@@ -514,6 +514,11 @@ def _evaluation_row(
     def comparison_gap(value, reference):
         return relative_gap_percent(value, reference) if comparison_valid else None
     metric_hash = quality_metric_sha256(quality_metric)
+    from environment.types import metrics_flow_objective, flow_mode, FLOW_EXCESS
+    reward_flow = metrics_flow_objective(metrics, config)
+    heuristic_reward_flow = heuristic_flow_time
+    if reference_valid and flow_mode(config) == FLOW_EXCESS:
+        heuristic_reward_flow = max(0.0, float(heuristic_flow_time) - float(metrics["flow_processing_lower_bound"]))
     preference = metrics.get("preference") or {}
     return {
         "experiment_name": config.get("experiment_name"),
@@ -566,6 +571,11 @@ def _evaluation_row(
         ],
         "total_flow_time": metrics["total_flow_time"],
         "flow_time_objective": metrics["flow_time_objective"],
+        "flow_excess_objective": metrics.get("flow_excess_objective"),
+        "flow_processing_lower_bound": metrics.get("flow_processing_lower_bound"),
+        "flow_lower_bound_credit": metrics.get("flow_lower_bound_credit"),
+        "reward_objective_flow": metrics.get("reward_objective_flow", reward_flow),
+        "flow_mode": flow_mode(config),
         "reconfiguration_cost": metrics["reconfiguration_cost"],
         "worker_load_variance": metrics["worker_load_variance"],
         "preference": metrics.get("preference"),
@@ -628,7 +638,7 @@ def _evaluation_row(
             quality_metric,
         ) if reference_valid else None,
         "reward_quality_score": terminal_quality_score(
-            metrics["flow_time_objective"],
+            reward_flow,
             metrics["reconfiguration_cost"],
             metrics["worker_load_variance"],
             config,
@@ -636,7 +646,7 @@ def _evaluation_row(
             terminal_failure=bool(metrics["task_failed"]),
         ),
         "heuristic_reward_quality_score": bounded_quality_score(
-            heuristic_flow_time,
+            heuristic_reward_flow,
             heuristic_cost,
             heuristic_variance,
             config,

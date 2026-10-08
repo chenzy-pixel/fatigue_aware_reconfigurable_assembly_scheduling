@@ -1,7 +1,7 @@
 """Soft completion estimates for order chains and known WAIT transitions."""
 from __future__ import annotations
 
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 import numpy as np
@@ -128,20 +128,60 @@ class OrderTimeEstimator:
         return result
 
 
-def project_wait_state(env: "AssemblySchedulingEnv", wait_ticks: int) -> "AssemblySchedulingEnv":
+def project_wait_state(env: "AssemblySchedulingEnv", wait_ticks: int, *,
+                       settle_terminal: bool = False, certificate: dict | None = None) -> "AssemblySchedulingEnv":
     """Copy mutable kernel state and apply known events without an env action."""
     projected = copy(env)
+    if settle_terminal:
+        # Static reset-time arrays are only read by the WAIT kernel. Runtime
+        # records are copied below; caches are cleared before any transition.
+        shared = {"config", "_static_relations", "_static_edge_indices",
+                  "_machine_module_constant_features", "_processing_lower_bound_ticks"}
+        replaced = {"operations", "machines", "workers", "reconfigurations", "_events",
+                    "schedule_log", "reconfiguration_log", "_committed_worker_loads",
+                    "_machine_reconfiguration", "_order_released", "_order_completion_tick",
+                    "_active_committed_worker_tasks", "_post_reconfiguration_process_count"}
+        invalidated = {"_production_resource_profile_cache", "_candidate_projection_cache",
+                       "_stage_projection_cache", "_order_finish_tick_cache",
+                       "_wait_certificate_cache", "_action_mask_cache"}
+        for name, value in vars(env).items():
+            if name in shared or name in replaced or name in invalidated or name.startswith("_capability_"):
+                continue
+            if isinstance(value, set):
+                # Diagnostic set members are immutable ticks/action tuples.
+                setattr(projected, name, value.copy())
+            elif isinstance(value, (dict, list)):
+                setattr(projected, name, deepcopy(value))
+            elif isinstance(value, np.ndarray):
+                isolated = value.copy()
+                isolated.flags.writeable = value.flags.writeable
+                setattr(projected, name, isolated)
     for name in ("operations", "machines", "workers"):
         setattr(projected, name, [copy(value) for value in getattr(env, name)])
     projected.reconfigurations = {key: copy(value) for key, value in env.reconfigurations.items()}
     for name in ("_machine_reconfiguration", "_order_released", "_order_completion_tick",
                  "_active_committed_worker_tasks", "_post_reconfiguration_process_count"):
         setattr(projected, name, dict(getattr(env, name)))
-    projected._events = env._events.copy()
-    projected.schedule_log = []
-    projected.reconfiguration_log = []
+    projected._events = ([(*event[:-1], dict(event[-1])) for event in env._events]
+                         if settle_terminal else env._events.copy())
+    # Execution logs contain scalar fields. Copy each record once; retain a
+    # deep-copy fallback for extensions containing nested mutable values.
+    for name in ("schedule_log", "reconfiguration_log"):
+        records = getattr(env, name)
+        isolated = [deepcopy(record) if any(isinstance(value, (dict, list, set, np.ndarray))
+                                           for value in record.values()) else dict(record)
+                    for record in records] if settle_terminal else []
+        setattr(projected, name, isolated)
     projected._committed_worker_loads = env._committed_worker_loads.copy()
     projected._invalidate_resource_snapshot()
+    if settle_terminal:
+        certified = dict(certificate) if certificate is not None else dict(projected._wait_certificate())
+        if not certified.get("allowed") or int(certified.get("wait_ticks", -1)) != wait_ticks:
+            raise ValueError("WAIT projection requires a matching legal certificate")
+        projected._execute_wait(certified)
+        projected._resolve_terminal_or_deadlock()
+        projected._invalidate_resource_snapshot()
+        return projected
     next_tick = env.current_tick + wait_ticks
     projected._advance_interval(next_tick)
     projected.current_tick = next_tick

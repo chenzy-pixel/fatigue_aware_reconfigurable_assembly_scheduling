@@ -347,6 +347,8 @@ def aggregate_evaluation_rows(
         "flow_time_objective": summarize_values(
             row["flow_time_objective"] for row in rows
         ),
+        "flow_excess_objective": summarize_values(row.get("flow_excess_objective") for row in rows),
+        "reward_objective_flow": summarize_values(row.get("reward_objective_flow") for row in rows),
         "reconfiguration_cost": summarize_values(
             row["reconfiguration_cost"] for row in rows
         ),
@@ -468,6 +470,8 @@ def aggregate_evaluation_rows(
             )
         },
     }
+    for field in ("flow_excess_objective", "reward_objective_flow"):
+        completed_metrics[field] = summarize_values(row.get(field) for row in completed)
     gap_metrics = {
         "relative_heuristic_gap_percent": summarize_values(
             row["relative_heuristic_gap_percent"] for row in rows

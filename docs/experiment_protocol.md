@@ -2,6 +2,11 @@
 
 更新日期：2026-10-05。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
 
+2026-10-08 独立实验：新增 `excess_proportional_lb_v1`、Flow 尺度 368.3143 和
+v4 奖励身份；默认 raw/v3 继续使用本协议。主 HV 统一报告原始 Flow，excess HV
+作为补充。完整状态、WAIT、checkpoint、尺度出处和验收见
+[Flow 比例抵扣实验契约](flow_excess_experiment.md)。
+
 2026-10-03 奖励参数变更：全局失败终止惩罚设为 **2.0**，由 `configs/default.json`
 统一提供，单目标、Universal 和 MO-ALNS 入口继承。每条失败轨迹只在终止步扣除一次，
 生效值记录于运行配置、runtime manifest 和 checkpoint 元数据。

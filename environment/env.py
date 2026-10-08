@@ -56,6 +56,9 @@ from environment.types import (
     EdgeType,
     EventType,
     FAILURE_PENALTY_REWARD,
+    FLOW_EXCESS,
+    SUPPORTED_REWARD_MODES,
+    flow_mode,
     HeterogeneousGraphObservation,
     MachineState,
     Observation,
@@ -116,6 +119,7 @@ class AssemblySchedulingEnv:
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
+        self.flow_mode = flow_mode(config)
         self.fatigue_mode = str(config.get("environment", {}).get("fatigue_mode", "full"))
         if self.fatigue_mode not in {"full", "neutral"}:
             raise ValueError("environment.fatigue_mode must be full or neutral")
@@ -343,6 +347,14 @@ class AssemblySchedulingEnv:
             )
             for worker in instance.workers
         ]
+        self._processing_lower_bound_ticks = np.asarray([
+            min(self.estimate_processing_ticks(oi, mi)
+                for mi, machine in enumerate(self.machines)
+                if operation.spec.required_module in machine.spec.module_parameters)
+            for oi, operation in enumerate(self.operations)
+        ], dtype=np.int64)
+        self._processing_lower_bound_ticks.setflags(write=False)
+        self._total_processing_lower_bound_ticks = int(self._processing_lower_bound_ticks.sum())
         self._committed_worker_loads = np.zeros(
             len(self.workers), dtype=np.float64
         )
@@ -1035,12 +1047,17 @@ class AssemblySchedulingEnv:
             "estimated_labor_cost_norm", "estimated_downtime_cost_norm",
             "estimated_worker_load_variance_delta_norm", ORDER_TIME_FEATURE,
         )
-        rows = []
+        rows = np.empty((edge_index.shape[1], len(feature_names)), dtype=np.float64)
         h = max(1, self.horizon_tick)
         nw = max(1, len(self.workers))
         scales = objective_scalarizer_config(self.config)["scales"]
         projector = ResourceProjector(self)
-        for oi, mi in edge_index.T:
+        # Candidates with the same module/release share a stored service path.
+        # Keep these caches local to this observation so state changes cannot
+        # reuse costs or slack from a previous scheduling decision.
+        path_costs = {}
+        order_slacks = {}
+        for edge, (oi, mi) in enumerate(edge_index.T):
             oi, mi = int(oi), int(mi)
             operation, machine = self.operations[oi], self.machines[mi]
             candidate = self._candidate_resource_projection(oi, mi)
@@ -1048,21 +1065,30 @@ class AssemblySchedulingEnv:
             profile = self._production_resource_profile(mi, operation.spec.required_module)
             start = candidate.processing_start_tick if candidate.processing_start_tick is not None else h+1
             finish = candidate.finish_tick if candidate.finish_tick is not None else h+1
-            dis, ins, labor, downtime, variance = projector.path_costs(mi, path)
-            rows.append([
-                np.clip(self.estimate_processing_ticks(oi, mi)/h, 0, 2),
+            path_key = (mi, id(path))
+            if path_key not in path_costs:
+                path_costs[path_key] = projector.path_costs(mi, path)
+            dis, ins, labor, downtime, variance = path_costs[path_key]
+            order_id = operation.spec.order_id
+            if order_id not in order_slacks:
+                order_slacks[order_id] = self.estimated_order_slack_norm(order_id)
+            rows[edge] = [
+                self._capability_processing_ticks[edge]/h,
                 float(machine.current_module == operation.spec.required_module),
-                np.clip(start/h, 0, 2), np.clip(candidate.resource_ready_tick/h, 0, 2),
-                np.clip(finish/h, 0, 2),
+                start/h, candidate.resource_ready_tick/h,
+                finish/h,
                 (path.safe_disassembly_workers if path and path.stages else nw if path else 0)/nw,
                 (path.safe_installation_workers if path and path.stages else nw if path else 0)/nw,
-                profile.matching_deficit_after_commit/nw, np.clip((h-finish)/h, -1, 1),
+                profile.matching_deficit_after_commit/nw, (h-finish)/h,
                 (path.end_tick-path.start_tick)/h if path else 0,
                 dis/scales["cost"], ins/scales["cost"], labor/scales["cost"], downtime/scales["cost"],
-                variance/scales["variance"], self.estimated_order_slack_norm(operation.spec.order_id),
-            ])
+                variance/scales["variance"], order_slacks[order_id],
+            ]
+        time_columns = (0, 2, 3, 4)
+        rows[:, time_columns] = np.clip(rows[:, time_columns], 0, 2)
+        rows[:, 8] = np.clip(rows[:, 8], -1, 1)
         return EdgeStore(edge_index=edge_index.copy(),
-                         edge_features=np.asarray(rows, dtype=np.float32).reshape(-1, len(feature_names)),
+                         edge_features=rows.astype(np.float32),
                          feature_names=feature_names, bidirectional=True)
 
     def _candidate_resource_projection(self, operation_index: int, machine_index: int) -> CandidateProjection:
@@ -1450,6 +1476,11 @@ class AssemblySchedulingEnv:
             MachineState.INS,
         }
         flow_delta = len(active_orders) * wait_minutes
+        wait_projection = None
+        if self.flow_mode == FLOW_EXCESS and certificate.get("allowed"):
+            wait_projection = project_wait_state(
+                self, wait_ticks, settle_terminal=True, certificate=certificate)
+            flow_delta = wait_projection.flow_objective() - self.flow_objective()
         cost_delta = wait_minutes * (
             sum(
                 machine.spec.downtime_cost_per_minute
@@ -1478,10 +1509,18 @@ class AssemblySchedulingEnv:
             "configuration_reuse_gain",
         ) + WAIT_TIME_FEATURES
         current_slack = self.minimum_active_order_slack_norm()
-        after_slack = (
-            project_wait_state(self, wait_ticks).minimum_active_order_slack_norm()
-            if wait_ticks > 0 else current_slack
-        )
+        if self.flow_mode == FLOW_EXCESS:
+            if wait_projection is None or wait_projection.task_done:
+                after_slack, slack_delta = 0.0, 0.0
+            else:
+                after_slack = wait_projection.minimum_active_order_slack_norm()
+                slack_delta = after_slack - current_slack
+        else:
+            after_slack = (
+                project_wait_state(self, wait_ticks).minimum_active_order_slack_norm()
+                if wait_ticks > 0 else current_slack
+            )
+            slack_delta = after_slack - current_slack
         values = np.asarray(
             [
                 flow_delta / scalarizer["scales"]["flow"],
@@ -1498,7 +1537,7 @@ class AssemblySchedulingEnv:
                 future_release_delta,
                 reusable / max(1, len(self.operations)),
                 after_slack,
-                after_slack - current_slack,
+                slack_delta,
             ],
             dtype=np.float32,
         )
@@ -1956,7 +1995,7 @@ class AssemblySchedulingEnv:
         quality_after = actual_quality_after
         failure_reward = 0.0
         if (
-            reward_mode == FAILURE_PENALTY_REWARD
+            reward_mode in SUPPORTED_REWARD_MODES
             and self.task_failed
             and not self._failure_penalty_applied
         ):
@@ -2280,13 +2319,13 @@ class AssemblySchedulingEnv:
         )
         total_wait_ticks = self._production_wait_ticks + self._worker_wait_ticks
         terminal_objectives = (
-            self._flow_integral + self._flow_penalty,
+            self.flow_objective(),
             self._reconfiguration_cost,
             self._load_variance(),
         )
         raw_quality_score = bounded_quality_score(
-            *terminal_objectives,
-            self.config,
+            self._flow_integral + self._flow_penalty, *terminal_objectives[1:],
+            self.config["evaluation"]["quality_metric"] if self.flow_mode == FLOW_EXCESS else self.config,
         )
         raw_preference_quality_score = bounded_quality_score(
             *terminal_objectives,
@@ -2294,8 +2333,8 @@ class AssemblySchedulingEnv:
             preference=self.preference,
         )
         quality_score = terminal_quality_score(
-            *terminal_objectives,
-            self.config,
+            self._flow_integral + self._flow_penalty, *terminal_objectives[1:],
+            self.config["evaluation"]["quality_metric"] if self.flow_mode == FLOW_EXCESS else self.config,
             terminal_failure=self.task_failed,
         )
         preference_quality_score = terminal_quality_score(
@@ -2319,6 +2358,12 @@ class AssemblySchedulingEnv:
             len(completed_reconfigurations) / completed_operations
             if completed_operations else None
         )
+        reported_credit = self.flow_lower_bound_credit()
+        # Raw diagnostic callers may manufacture DONE states without a physical
+        # processing history. Do not reinterpret those as validated excess data.
+        reported_excess = (self.flow_excess_objective()
+                           if self.flow_mode == FLOW_EXCESS or self._flow_integral >= reported_credit-1e-8
+                           else None)
         return {
             "instance_id": self.instance.instance_id,
             "terminated": self.terminated,
@@ -2342,6 +2387,11 @@ class AssemblySchedulingEnv:
             "total_flow_time": self._flow_integral if self.task_succeeded else None,
             "censored_flow_time": self._flow_integral,
             "flow_time_objective": self._flow_integral + self._flow_penalty,
+            "flow_excess_objective": reported_excess,
+            "flow_processing_lower_bound": self._total_processing_lower_bound_ticks * self.resolution,
+            "flow_lower_bound_credit": reported_credit,
+            "reward_objective_flow": self.flow_objective(),
+            "flow_mode": self.flow_mode,
             "reconfiguration_cost": self._reconfiguration_cost,
             "worker_load_variance": self._load_variance(),
             "maximum_worker_fatigue": self._maximum_fatigue_seen,
@@ -2739,6 +2789,7 @@ class AssemblySchedulingEnv:
         operation.state = OperationState.PROCESSING
         operation.machine_id = machine.spec.id
         operation.start_tick = self.current_tick
+        operation.planned_duration_ticks = duration_ticks
         machine.state = MachineState.PROCESSING
         machine.busy_until_tick = end_tick
         self._push_event(
@@ -2759,6 +2810,7 @@ class AssemblySchedulingEnv:
                 "start": self.current_time,
                 "end": ticks_to_minutes(end_tick, self.resolution),
                 "duration": ticks_to_minutes(duration_ticks, self.resolution),
+                "planned_duration_ticks": duration_ticks,
             }
         )
 
@@ -4154,9 +4206,39 @@ class AssemblySchedulingEnv:
             record["duration"] = max(0.0, terminal_time - record["start"])
             record["truncated"] = True
 
+    def flow_lower_bound_credit(self) -> float:
+        """Closed-form credit in minutes; no incrementally accumulated ledger."""
+        done_ticks = 0
+        active_ticks = []
+        for index, operation in enumerate(self.operations):
+            minimum = int(self._processing_lower_bound_ticks[index])
+            if operation.state == OperationState.DONE:
+                done_ticks += minimum
+            elif operation.state == OperationState.PROCESSING:
+                planned = operation.planned_duration_ticks
+                if planned is None or planned <= 0 or operation.start_tick is None:
+                    raise RuntimeError("processing operation has no frozen planned duration")
+                elapsed = self.current_tick - operation.start_tick
+                if not 0 <= elapsed <= planned:
+                    raise RuntimeError("processing elapsed ticks exceed planned duration")
+                active_ticks.append(minimum * elapsed / planned)
+        if self.task_succeeded and (active_ticks or done_ticks != self._total_processing_lower_bound_ticks):
+            raise RuntimeError("successful Flow credit does not equal the instance lower bound")
+        return (done_ticks + math.fsum(active_ticks)) * self.resolution
+
+    def flow_excess_objective(self) -> float:
+        excess = self._flow_integral - self.flow_lower_bound_credit()
+        if excess < -1e-8:
+            raise RuntimeError("Flow lower-bound credit exceeds physical Flow")
+        return max(0.0, excess) + self._flow_penalty
+
+    def flow_objective(self) -> float:
+        return (self.flow_excess_objective() if self.flow_mode == FLOW_EXCESS
+                else self._flow_integral + self._flow_penalty)
+
     def _objective_vector(self) -> tuple[float, float, float]:
         return (
-            self._flow_integral + self._flow_penalty,
+            self.flow_objective(),
             self._reconfiguration_cost,
             self._committed_load_variance(),
         )

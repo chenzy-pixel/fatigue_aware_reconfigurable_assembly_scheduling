@@ -369,6 +369,8 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
         "mean_flow_time_objective": _summary_value(
             completed, "flow_time_objective"
         ),
+        "mean_flow_excess_objective": _summary_value(completed, "flow_excess_objective"),
+        "mean_reward_objective_flow": _summary_value(completed, "reward_objective_flow"),
         "mean_reconfiguration_cost": _summary_value(
             completed, "reconfiguration_cost"
         ),
@@ -500,6 +502,11 @@ def _episode_log_row(episode) -> dict[str, Any]:
             metrics["terminal_failure_penalty_applied"]
         ),
         "flow_time_objective": float(metrics["flow_time_objective"]),
+        "flow_excess_objective": metrics.get("flow_excess_objective"),
+        "flow_processing_lower_bound": metrics.get("flow_processing_lower_bound"),
+        "flow_lower_bound_credit": metrics.get("flow_lower_bound_credit"),
+        "reward_objective_flow": metrics.get("reward_objective_flow", metrics["flow_time_objective"]),
+        "flow_mode": metrics.get("flow_mode", "raw_v1"),
         "reconfiguration_cost": float(metrics["reconfiguration_cost"]),
         "worker_load_variance": float(metrics["worker_load_variance"]),
         "maximum_worker_fatigue": float(metrics["maximum_worker_fatigue"]),
@@ -781,6 +788,19 @@ def _train_single_stage(
                 step_limit=step_limit,
                 max_parallelism=parallel_envs,
             )
+            if config.get("logging", {}).get("save_rollout_decisions", False):
+                # Buffers already contain computed GAE; this is opt-in research evidence.
+                from result.io import append_csv
+                decision_rows = [{
+                    "episode": episode.episode_index, "instance_id": episode.instance_id,
+                    "transition": index, "action": transition.action,
+                    "time_ratio": float(transition.observation.global_features[0]),
+                    "flow_feature": float(transition.observation.global_features[6]),
+                    "reward": transition.reward, "done": transition.done,
+                    "value": transition.value, "advantage": transition.advantage,
+                    "return_value": transition.return_value,
+                } for episode in rollout.episodes for index, transition in enumerate(episode.buffer.transitions)]
+                append_csv(run_directory / "rollout_decisions.csv", decision_rows)
             update_started = time.perf_counter()
             losses = agent.update(rollout.buffer) if rollout.transition_count else {}
             ppo_update_seconds = time.perf_counter() - update_started

@@ -264,6 +264,7 @@ def build_provenance(
         "quality_metric_sha256": quality_metric_sha256(quality_metric),
         "sampled_rng_version": SAMPLED_EVALUATION_RNG_VERSION,
         "objective_scales": dict(config["objective_scalarizer"]["scales"]),
+        "flow_mode": config["objective_scalarizer"].get("flow_mode", "raw_v1"),
         "normalization_manifest_sha256": config["objective_scalarizer"].get("normalization_manifest_sha256"),
         "normalization_manifest_content_sha256": config["objective_scalarizer"].get("normalization_manifest_content_sha256"),
         "validation_preference_set": [point.preference.as_dict() for point in formal_preferences(config, "validation")],
