@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import time
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -14,7 +15,8 @@ from data.models import (
 from environment.fatigue_monitor import audit_fatigue
 from environment.observation_schema import GLOBAL_FEATURE_NAMES
 from environment.actions import ActionCodec
-from environment.resource_projection import ResourceProjector, CandidateProjection
+from environment.resource_projection import ResourceProjector, CandidateProjection, projection_cache_scope
+from environment.observation_index import observation_index_scope, observation_operation_index
 from environment.time_context import (
     ORDER_TIME_FEATURE, WAIT_TIME_FEATURES, WORKER_WAIT_FEATURE,
     OrderTimeEstimator, project_wait_state,
@@ -127,6 +129,9 @@ class AssemblySchedulingEnv:
             value = config["environment"][name]
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"environment.{name} must be a positive integer")
+        capacity = config.get("training", {}).get("resource_projection_cache_entries", 1024)
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 0:
+            raise ValueError("training.resource_projection_cache_entries must be a nonnegative integer")
         self.original_instance: AssemblyInstance | None = None
         self.preference_context = default_preference_context(config)
         self.preference: PreferenceVector = self.preference_context.preference
@@ -202,6 +207,8 @@ class AssemblySchedulingEnv:
             tuple[int, str], ProductionResourceProfile
         ] = {}
         self._candidate_projection_cache: dict[tuple, CandidateProjection] = {}
+        self._projection_transition_cache = None
+        self._observation_time_seconds = 0.0
         self._stage_projection_cache: dict[
             tuple[int, int, str, bool, int], tuple[int, int] | None
         ] = {}
@@ -282,6 +289,7 @@ class AssemblySchedulingEnv:
         self._resource_snapshot_cache = None
         self._production_resource_profile_cache = {}
         self._candidate_projection_cache = {}
+        self._projection_transition_cache = None
         self._stage_projection_cache = {}
         self._reconfiguration_duration_improvement_cache_version = -1
         self._reconfiguration_duration_improvement_cache = None
@@ -300,6 +308,7 @@ class AssemblySchedulingEnv:
         preference: PreferenceContextInput | None = None,
         build_observation: bool = True,
     ) -> Observation | None:
+        self._observation_time_seconds = 0.0
         self.preference_context = (
             default_preference_context(self.config)
             if preference is None
@@ -455,12 +464,23 @@ class AssemblySchedulingEnv:
         return self.observe() if build_observation else None
 
     def observe(self) -> Observation:
+        started = time.perf_counter()
+        try:
+            return self._observe()
+        finally:
+            self._observation_time_seconds += time.perf_counter() - started
+
+    def _observe(self) -> Observation:
         self._require_instance()
         if (
             self._observation_cache is not None
             and self._observation_cache_version == self._state_version
         ):
             return self._observation_cache.copy()
+        with projection_cache_scope(self), observation_index_scope(self.instance):
+            return self._build_observation()
+
+    def _build_observation(self) -> Observation:
         horizon = float(self.instance.horizon)
         total_operations = max(1, len(self.operations))
         total_machines = max(1, len(self.machines))
@@ -823,7 +843,7 @@ class AssemblySchedulingEnv:
         return observation
 
     def estimated_order_finish_ticks(self) -> dict[str, int]:
-        """Soft full-chain estimates, cached for the current physical state."""
+        """Configured soft chain estimates, cached for the current physical state."""
         if self._order_finish_tick_cache is None:
             self._order_finish_tick_cache = OrderTimeEstimator(self).finish_ticks()
         return dict(self._order_finish_tick_cache)
@@ -834,15 +854,20 @@ class AssemblySchedulingEnv:
         return (self.horizon_tick - self._order_finish_tick_cache[order_id]) / max(1, self.horizon_tick)
 
     def minimum_active_order_slack_norm(self) -> float:
-        return min(
-            (self.estimated_order_slack_norm(order.id) for order in self.instance.orders
-             if self._order_released[order.id] and order.id not in self._order_completion_tick),
-            default=(self.horizon_tick - self.current_tick) / max(1, self.horizon_tick),
-        )
+        active = [order.id for order in self.instance.orders
+                  if self._order_released[order.id] and order.id not in self._order_completion_tick]
+        if not active:
+            return (self.horizon_tick - self.current_tick) / max(1, self.horizon_tick)
+        finishes = self._order_finish_tick_cache
+        if finishes is None:
+            # WAIT only consumes active-order slack. Do not fill the full cache
+            # with this subset: order nodes may subsequently request future orders.
+            finishes = OrderTimeEstimator(self).finish_ticks(active)
+        return min((self.horizon_tick - finishes[order]) / max(1, self.horizon_tick) for order in active)
 
     def _build_static_edge_indices(self) -> dict[EdgeType, np.ndarray]:
         self._require_instance()
-        operation_index = self.instance.operation_index
+        operation_index = observation_operation_index(self.instance)
         order_index = {
             order.id: index for index, order in enumerate(self.instance.orders)
         }
@@ -996,6 +1021,28 @@ class AssemblySchedulingEnv:
             ],
             dtype=np.int64,
         )
+        release_ticks = {
+            order.id: quantize_to_ticks(order.release_time, self.resolution)
+            for order in self.instance.orders
+        }
+        candidate_groups: dict[tuple[int, str, int], list[int]] = {}
+        for edge, (operation_value, machine_value) in enumerate(capability_index.T):
+            operation = self.operations[int(operation_value)]
+            key = (int(machine_value), operation.spec.required_module,
+                   release_ticks[operation.spec.order_id])
+            candidate_groups.setdefault(key, []).append(edge)
+        self._capability_candidate_groups = tuple(
+            (machine, module, release_tick, np.asarray(edges, dtype=np.int64))
+            for (machine, module, release_tick), edges in candidate_groups.items()
+        )
+        self._capability_candidate_group_indices = np.empty(
+            capability_index.shape[1], dtype=np.int64
+        )
+        self._capability_pair_edges = {}
+        for group, (_, _, _, edges) in enumerate(self._capability_candidate_groups):
+            self._capability_candidate_group_indices[edges] = group
+        for edge, (operation, machine) in enumerate(capability_index.T):
+            self._capability_pair_edges[int(operation), int(machine)] = edge
 
         machine_module_index = self._static_edge_indices[MACHINE_MODULE_EDGE]
         self._machine_module_constant_features = np.asarray(
@@ -1047,43 +1094,98 @@ class AssemblySchedulingEnv:
             "estimated_labor_cost_norm", "estimated_downtime_cost_norm",
             "estimated_worker_load_variance_delta_norm", ORDER_TIME_FEATURE,
         )
-        rows = np.empty((edge_index.shape[1], len(feature_names)), dtype=np.float64)
+        group_rows = np.empty(
+            (len(self._capability_candidate_groups), len(feature_names)),
+            dtype=np.float64,
+        )
         h = max(1, self.horizon_tick)
         nw = max(1, len(self.workers))
         scales = objective_scalarizer_config(self.config)["scales"]
         projector = ResourceProjector(self)
-        # Candidates with the same module/release share a stored service path.
-        # Keep these caches local to this observation so state changes cannot
-        # reuse costs or slack from a previous scheduling decision.
-        path_costs = {}
-        order_slacks = {}
-        for edge, (oi, mi) in enumerate(edge_index.T):
-            oi, mi = int(oi), int(mi)
-            operation, machine = self.operations[oi], self.machines[mi]
-            candidate = self._candidate_resource_projection(oi, mi)
+        # Future candidates sharing machine/module/release have the same
+        # service path. Actual PROCESSING/LOCKED operations retain their own
+        # identity because their projection is tied to the committed task.
+        order_slacks = {
+            order.id: self.estimated_order_slack_norm(order.id)
+            for order in self.instance.orders
+        }
+        slacks_by_operation = np.asarray([
+            order_slacks[operation.spec.order_id] for operation in self.operations
+        ])
+        actual_edges = {
+            self._capability_pair_edges[oi, self.instance.machine_index[operation.machine_id]]
+            for oi, operation in enumerate(self.operations)
+            if operation.state in (OperationState.LOCKED, OperationState.PROCESSING)
+        }
+        actual_groups = {
+            int(self._capability_candidate_group_indices[edge])
+            for edge in actual_edges
+        }
+
+        def shared_row(oi: int, mi: int, target_module: str, release_tick: int,
+                       actual: bool) -> tuple[list[float], CandidateProjection]:
+            # The group already owns the quantized release and separates actual
+            # operations. Use the service result directly; future finish ticks
+            # are broadcast below, so no per-operation dataclass replacement is
+            # needed here.
+            key = (mi, target_module, release_tick, oi if actual else None)
+            if key not in self._candidate_projection_cache:
+                self._candidate_projection_cache[key] = projector.candidate(oi, mi)
+            candidate = self._candidate_projection_cache[key]
+            profile = self._production_resource_profile(mi, target_module)
             path = candidate.path
-            profile = self._production_resource_profile(mi, operation.spec.required_module)
-            start = candidate.processing_start_tick if candidate.processing_start_tick is not None else h+1
-            finish = candidate.finish_tick if candidate.finish_tick is not None else h+1
-            path_key = (mi, id(path))
-            if path_key not in path_costs:
-                path_costs[path_key] = projector.path_costs(mi, path)
-            dis, ins, labor, downtime, variance = path_costs[path_key]
-            order_id = operation.spec.order_id
-            if order_id not in order_slacks:
-                order_slacks[order_id] = self.estimated_order_slack_norm(order_id)
-            rows[edge] = [
-                self._capability_processing_ticks[edge]/h,
-                float(machine.current_module == operation.spec.required_module),
-                start/h, candidate.resource_ready_tick/h,
-                finish/h,
-                (path.safe_disassembly_workers if path and path.stages else nw if path else 0)/nw,
-                (path.safe_installation_workers if path and path.stages else nw if path else 0)/nw,
-                profile.matching_deficit_after_commit/nw, (h-finish)/h,
-                (path.end_tick-path.start_tick)/h if path else 0,
-                dis/scales["cost"], ins/scales["cost"], labor/scales["cost"], downtime/scales["cost"],
-                variance/scales["variance"], order_slacks[order_id],
-            ]
+            dis, ins, labor, downtime, variance = projector.path_costs(mi, path)
+            start = candidate.processing_start_tick if candidate.processing_start_tick is not None else h + 1
+            finish = candidate.finish_tick if candidate.finish_tick is not None else h + 1
+            return [
+                0., float(self.machines[mi].current_module == target_module),
+                start / h, candidate.resource_ready_tick / h, finish / h,
+                (path.safe_disassembly_workers if path and path.stages else nw if path else 0) / nw,
+                (path.safe_installation_workers if path and path.stages else nw if path else 0) / nw,
+                profile.matching_deficit_after_commit / nw, (h - finish) / h,
+                (path.end_tick - path.start_tick) / h if path else 0,
+                dis / scales["cost"], ins / scales["cost"], labor / scales["cost"],
+                downtime / scales["cost"], variance / scales["variance"], 0.,
+            ], candidate
+
+        starts = np.empty(len(self._capability_candidate_groups), dtype=np.int64)
+        reachable = np.empty(len(self._capability_candidate_groups), dtype=bool)
+        actual_rows = {}
+        for group, (mi, target_module, release_tick, edges) in enumerate(self._capability_candidate_groups):
+            representative = int(edges[0])
+            if group in actual_groups:
+                representative = next(
+                    (int(edge) for edge in edges if int(edge) not in actual_edges),
+                    representative,
+                )
+            values, candidate = shared_row(int(edge_index[0, representative]), mi, target_module,
+                                            release_tick, representative in actual_edges)
+            group_rows[group] = values
+            if representative in actual_edges:
+                actual_rows[representative] = values
+            reachable[group] = candidate.processing_start_tick is not None
+            starts[group] = candidate.processing_start_tick if reachable[group] else h + 1
+
+        groups = self._capability_candidate_group_indices
+        rows = group_rows[groups]
+        finishes = np.where(
+            reachable[groups], starts[groups] + self._capability_processing_ticks, h + 1
+        )
+        rows[:, 4] = finishes / h
+        rows[:, 8] = (h - finishes) / h
+        # Committed operations have actual start/finish semantics. Override
+        # only their edges after broadcasting the ordinary future candidates.
+        for edge in actual_edges:
+            if edge in actual_rows:
+                rows[edge] = actual_rows[edge]
+                continue
+            oi, mi = (int(value) for value in edge_index[:, edge])
+            group = int(groups[edge])
+            release_tick = self._capability_candidate_groups[group][2]
+            values, _ = shared_row(oi, mi, self.operations[oi].spec.required_module, release_tick, True)
+            rows[edge] = values
+        rows[:, 0] = self._capability_processing_ticks / h
+        rows[:, 15] = slacks_by_operation[edge_index[0]]
         time_columns = (0, 2, 3, 4)
         rows[:, time_columns] = np.clip(rows[:, time_columns], 0, 2)
         rows[:, 8] = np.clip(rows[:, 8], -1, 1)
@@ -1094,8 +1196,11 @@ class AssemblySchedulingEnv:
     def _candidate_resource_projection(self, operation_index: int, machine_index: int) -> CandidateProjection:
         operation = self.operations[operation_index]
         actual = operation.state in (OperationState.LOCKED, OperationState.PROCESSING) and operation.machine_id == self.machines[machine_index].spec.id
-        release = self._order_by_id(operation.spec.order_id).release_time
-        key = (machine_index, operation.spec.required_module, release,
+        release_tick = quantize_to_ticks(
+            self._order_by_id(operation.spec.order_id).release_time,
+            self.resolution,
+        )
+        key = (machine_index, operation.spec.required_module, release_tick,
                operation_index if actual else None)
         if key not in self._candidate_projection_cache:
             self._candidate_projection_cache[key] = ResourceProjector(self).candidate(operation_index, machine_index)
@@ -1376,7 +1481,7 @@ class AssemblySchedulingEnv:
             worker_id = record.disassembly_worker_id if dis else record.installation_worker_id
             wi = worker_indices.get(worker_id)
             mi = self.instance.machine_index.get(record.machine_id)
-            oi = self.instance.operation_index.get(record.operation_id)
+            oi = observation_operation_index(self.instance).get(record.operation_id)
             if wi is None or mi is None or oi is None:
                 raise RuntimeError(f"served_by: incomplete allocation for {record.id}")
             worker, machine = self.workers[wi], self.machines[mi]
@@ -1557,7 +1662,7 @@ class AssemblySchedulingEnv:
             if reconfiguration.stage not in ACTIVE_RECONFIGURATION_STAGES:
                 continue
             pair = (
-                self.instance.operation_index[reconfiguration.operation_id],
+                observation_operation_index(self.instance)[reconfiguration.operation_id],
                 self.instance.machine_index[reconfiguration.machine_id],
             )
             source_one_hot = [
@@ -2120,7 +2225,7 @@ class AssemblySchedulingEnv:
             self.current_tick
             + self._remaining_reconfiguration_ticks(reconfiguration)
         )
-        locked_operation_index = self.instance.operation_index[
+        locked_operation_index = observation_operation_index(self.instance)[
             reconfiguration.operation_id
         ]
         processing_ticks = self.estimate_processing_ticks(
@@ -3813,7 +3918,7 @@ class AssemblySchedulingEnv:
             pending = [
                 operation
                 for operation in order.operations
-                if self.operations[self.instance.operation_index[operation.id]].state
+                if self.operations[observation_operation_index(self.instance)[operation.id]].state
                 != OperationState.DONE
             ]
             if not pending:
@@ -3822,7 +3927,7 @@ class AssemblySchedulingEnv:
             previous_module = self.instance.no_module_state
             for operation in pending:
                 runtime = self.operations[
-                    self.instance.operation_index[operation.id]
+                    observation_operation_index(self.instance)[operation.id]
                 ]
                 if runtime.state == OperationState.PROCESSING:
                     machine = (
@@ -3839,7 +3944,7 @@ class AssemblySchedulingEnv:
                     continue
                 values = self._capability_processing_ticks[
                     self._capability_operation_indices
-                    == self.instance.operation_index[operation.id]
+                    == observation_operation_index(self.instance)[operation.id]
                 ]
                 chain += (
                     int(values.min()) if values.size else self.horizon_tick + 1

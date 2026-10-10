@@ -15,7 +15,7 @@ from agent.ppo import (
     build_actor_critic,
     summarize_policy_decision_diagnostics,
 )
-from agent.ppo.parallel import ParallelEpisodeRunner
+from agent.ppo.parallel import ParallelEpisodeRunner, EVALUATION_WORKER_TIMING_FIELDS
 from agent.baselines import HeuristicPolicy, RandomPolicy
 from configs import load_config, project_path
 from configs.formal_preferences import formal_preferences
@@ -674,6 +674,7 @@ def _evaluation_row(
         "inference_time_per_decision_ms": metrics[
             "inference_time_per_decision_ms"
         ],
+        **{name: metrics.get(name) for name in EVALUATION_WORKER_TIMING_FIELDS},
         "heuristic_completed": heuristic.get(
             "heuristic_completed"
         ),
@@ -977,6 +978,7 @@ def evaluate_dataset_parallel(
     quality_metric = evaluation_quality_metric(config)
     for rollout in rollouts:
         metrics = dict(rollout.metrics)
+        metrics.update({name: getattr(rollout, name, 0.0) for name in EVALUATION_WORKER_TIMING_FIELDS})
         metrics["encoder_variant"] = ppo_agent.network.encoder_variant
         metrics["actor_head_variant"] = ppo_agent.network.actor_head_variant
         metrics["policy_execution_version"] = ppo_agent.network.execution_mode
@@ -1046,6 +1048,7 @@ def evaluate_dataset_parallel(
     aggregate["instance_indices"] = indices
     aggregate["subset_sha256"] = selection["subset_sha256"]
     aggregate["parallel_envs"] = parallelism
+    aggregate["evaluation_runtime"] = dict(getattr(runner, "last_evaluation_runtime", {}))
     aggregate["dataset_manifest_sha256"] = dataset_manifest_snapshot(
         dataset.manifest_path
     )["sha256"]
@@ -1106,6 +1109,7 @@ def evaluate_preference_grid_parallel(
     rows: list[dict[str, Any]] = []
     for rollout in rollouts:
         metrics = dict(rollout.metrics)
+        metrics.update({name: getattr(rollout, name, 0.0) for name in EVALUATION_WORKER_TIMING_FIELDS})
         metrics["encoder_variant"] = ppo_agent.network.encoder_variant
         metrics["actor_head_variant"] = ppo_agent.network.actor_head_variant
         metrics["policy_execution_version"] = ppo_agent.network.execution_mode
@@ -1213,6 +1217,7 @@ def evaluate_preference_grid_parallel(
     if not summary["evaluation_complete"]:
         summary.update(completion_rate=None, cell_completion_rate=None,
                        completion_rate_by_preference={}, minimum_preference_completion_rate=None)
+    summary["evaluation_runtime"] = dict(getattr(runner, "last_evaluation_runtime", {}))
     return rows, summary
 
 
@@ -1267,6 +1272,7 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         else configured_formal_evaluation_sampling_seeds(config, args.preference_set)
     )
     rows: list[dict[str, Any]] = []
+    runtime_totals: dict[str, float] = {}
     with ParallelEpisodeRunner(
         config=config,
         template=load_instance_yaml(project_path(config["paths"]["fixed_instance"])),
@@ -1277,7 +1283,7 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         ),
     ) as runner:
         for repeat_index, seed in enumerate(seeds):
-            current, _ = evaluate_preference_grid_parallel(
+            current, current_summary = evaluate_preference_grid_parallel(
                 config,
                 dataset_name=args.dataset,
                 ppo_agent=agent,
@@ -1287,6 +1293,9 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
                 decode_mode=decode_mode,
                 sampling_seed=seed,
             )
+            for name, value in current_summary.get("evaluation_runtime", {}).items():
+                if name != "mean_policy_batch_size":
+                    runtime_totals[name] = runtime_totals.get(name, 0) + value
             for row in current:
                 row["sampling_repeat"] = repeat_index
             rows.extend(current)
@@ -1304,6 +1313,10 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         strict_counts=True,
     )
     metrics["sampling_seeds"] = [int(seed) for seed in seeds]
+    runtime_totals["mean_policy_batch_size"] = (
+        runtime_totals.get("policy_observation_count", 0)
+        / max(1, runtime_totals.get("policy_batch_count", 0)))
+    metrics["evaluation_runtime"] = runtime_totals
     selection = subset_snapshot(dataset, indices, role="evaluation")
     metrics.update(instance_indices=indices, subset_sha256=selection["subset_sha256"])
     metrics["dataset_manifest_sha256"] = dataset_manifest_snapshot(

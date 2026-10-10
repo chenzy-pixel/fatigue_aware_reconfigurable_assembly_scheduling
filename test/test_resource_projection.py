@@ -89,6 +89,80 @@ def test_sequential_path_replays_time_fatigue_cost_and_load(config, fixed_instan
     np.testing.assert_allclose(env._committed_worker_loads, route.resources.loads)
 
 
+def test_time_only_route_matches_full_route_without_load_materialization(config, fixed_instance):
+    env = AssemblySchedulingEnv(config)
+    env.reset(sequential_instance(fixed_instance), build_observation=False)
+    projector = ResourceProjector(env)
+    resources = projector.initial_resources()
+
+    full = projector.transition(5, 'A3', 'A2', 0, resources)
+    timed = projector.transition_time(5, 'A3', 'A2', 0, resources.workers)
+
+    assert full is not None and timed is not None
+    assert timed.end_tick == full.end_tick
+    assert timed.stages == full.stages
+    assert timed.safe_disassembly_workers == full.safe_disassembly_workers
+    assert timed.safe_installation_workers == full.safe_installation_workers
+    assert list(timed.workers) == full.resources.workers
+    assert not hasattr(timed, 'loads')
+
+
+def test_route_selection_is_independent_of_loads(config, fixed_instance):
+    # Protect the invariant that lets both result types share one route kernel.
+    env = AssemblySchedulingEnv(config)
+    env.reset(sequential_instance(fixed_instance), build_observation=False)
+    projector = ResourceProjector(env)
+    state = projector.initial_resources()
+    reference = projector.transition(5, 'A3', 'A2', 0, state)
+    state.loads[:] = np.arange(len(state.loads)) * 1e9
+    changed = projector.transition(5, 'A3', 'A2', 0, state)
+    timed = projector.transition_time(5, 'A3', 'A2', 0, state.workers)
+    assert reference.stages == changed.stages == timed.stages
+    assert reference.end_tick == changed.end_tick == timed.end_tick
+    assert reference.resources.workers == changed.resources.workers == list(timed.workers)
+
+
+def test_order_chain_does_not_materialize_full_resource_state(config, fixed_instance, monkeypatch):
+    env = AssemblySchedulingEnv(config)
+    env.reset(sequential_instance(fixed_instance), build_observation=False)
+    expected = OrderTimeEstimator(env).finish_ticks()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('time-only order chain materialized full resources')
+
+    monkeypatch.setattr(ResourceProjector, 'initial_resources', forbidden)
+    monkeypatch.setattr(ResourceProjector, 'transition', forbidden)
+    monkeypatch.setattr(ProjectedResources, 'copy', forbidden)
+    assert OrderTimeEstimator(env).finish_ticks() == expected
+
+
+def test_legacy_estimator_load_access_remains_isolated(config, fixed_instance):
+    env = AssemblySchedulingEnv(config)
+    env.reset(fixed_instance, build_observation=False)
+    estimator = OrderTimeEstimator(env)
+    estimator.finish_ticks()
+    before = env._committed_worker_loads.copy()
+    estimator.loads[:] = -999
+    np.testing.assert_array_equal(env._committed_worker_loads, before)
+
+
+@pytest.mark.parametrize('source, target', [('A0', 'A2'), ('A3', 'A3')])
+def test_time_only_route_matches_single_stage_and_noop(config, fixed_instance, source, target):
+    env = AssemblySchedulingEnv(config)
+    env.reset(fixed_instance, build_observation=False)
+    projector = ResourceProjector(env)
+    resources = projector.initial_resources()
+
+    full = projector.transition(0, source, target, 0, resources)
+    timed = projector.transition_time(0, source, target, 0, resources.workers)
+    assert (full is None) == (timed is None)
+    if full is not None:
+        assert timed is not None
+        assert timed.end_tick == full.end_tick
+        assert timed.stages == full.stages
+        assert list(timed.workers) == full.resources.workers
+
+
 def test_all_worker_pairs_are_compared_before_selecting_route(config, fixed_instance):
     # The quickest DIS by H5 delays its own INS; slightly slower H6 lets H5 stay rested.
     instance = worker_alias_instance(fixed_instance)

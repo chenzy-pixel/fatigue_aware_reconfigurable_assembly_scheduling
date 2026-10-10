@@ -13,6 +13,7 @@ import agent.ppo.parallel as parallel_module
 from agent.ppo import PPOAgent, build_actor_critic
 from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.parallel import (
+    EVALUATION_WORKER_TIMING_FIELDS,
     ParallelEpisodeRunner,
     ParallelWorkerError,
     ParallelWorkerTimeout,
@@ -217,6 +218,44 @@ def test_worker_local_roll_forward_aggregates_terminal_suffix():
     assert environment.build_observation_flags == [False, False]
 
 
+def test_worker_timer_includes_observe_after_step_and_initial_reset(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(parallel_module.time, "perf_counter", lambda: clock[0])
+
+    class TimedEnvironment(_LocalForcedChainEnvironment):
+        _observation_time_seconds = 0.3
+
+        def step(self, *args, **kwargs):
+            clock[0] += 0.2
+            return super().step(*args, **kwargs)
+
+        def observe(self):
+            clock[0] += 0.7
+            self._observation_time_seconds += 0.7
+            return super().observe()
+
+        def metrics(self):
+            clock[0] += 0.1
+            return super().metrics()
+
+    env = TimedEnvironment([[False, False]] * 3, [False] * 3, terminate_at=2)
+    reset = _worker_roll_forward(0, env, _FakeObservation(0), preserve_graph=True,
+                                requested_action=None, drain_physical_forced_actions=False,
+                                max_environment_steps=None, reset_time_seconds=0.5)
+    assert reset.observation_time_seconds == pytest.approx(0.3)
+    assert reset.worker_service_time_seconds == pytest.approx(0.5)
+    step = _worker_roll_forward(0, env, None, preserve_graph=True, requested_action=0,
+                               drain_physical_forced_actions=False, max_environment_steps=None)
+    assert step.environment_step_time_seconds == pytest.approx(0.2)
+    assert step.observation_time_seconds == pytest.approx(0.7)
+    assert step.worker_service_time_seconds == pytest.approx(0.9)
+    terminal = _worker_roll_forward(0, env, None, preserve_graph=True, requested_action=0,
+                                   drain_physical_forced_actions=False, max_environment_steps=None)
+    assert terminal.observation_time_seconds == 0
+    assert terminal.terminal_metrics_time_seconds == pytest.approx(0.1)
+    assert terminal.worker_service_time_seconds == pytest.approx(0.3)
+
+
 def test_parallel_training_seeds_and_cleanup(
     config,
     fixed_instance,
@@ -260,6 +299,17 @@ def test_parallel_training_seeds_and_cleanup(
             == pytest.approx(episode.buffer.transitions[0].reward + 7.0)
             for episode in rollout.episodes
         )
+        from train import _episode_log_row, training_distribution_summary
+        timing_rows = [_episode_log_row(episode) for episode in rollout.episodes]
+        for episode, row in zip(rollout.episodes, timing_rows):
+            assert episode.observation_time_seconds > 0
+            assert episode.worker_service_time_seconds >= episode.observation_time_seconds
+            assert episode.reset_time_seconds > 0
+            assert episode.terminal_metrics_time_seconds > 0  # cutoff snapshot
+            for name in EVALUATION_WORKER_TIMING_FIELDS:
+                assert row[name] == getattr(episode, name)
+        totals = training_distribution_summary(timing_rows)
+        assert totals["observation_time_seconds"] == sum(episode.observation_time_seconds for episode in rollout.episodes)
         assert all(
             value.base_reward_sum == pytest.approx(value.expected_reward)
             for value in rollout.episodes
@@ -757,6 +807,7 @@ def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
         "solve_time_seconds",
         "inference_time_per_decision_ms",
         "validation_parallel_envs",
+        *EVALUATION_WORKER_TIMING_FIELDS,
     }
 
     random.seed(314)
@@ -815,6 +866,14 @@ def test_sampled_validation_is_parallelism_invariant_and_preserves_rng(
             assert aggregate["parallel_envs"] == parallel_envs
             assert all(row["validation_parallel_envs"] == parallel_envs for row in parallel_rows)
             assert all(row["action_trace_sha256"] for row in parallel_rows)
+            runtime = aggregate["evaluation_runtime"]
+            assert runtime["policy_observation_count"] == sum(row["decisions"] for row in parallel_rows)
+            assert runtime["policy_inference_seconds"] > 0
+            assert runtime["main_receive_seconds"] > 0
+            assert runtime["wall_seconds"] >= runtime["main_receive_seconds"]
+            totals = aggregate["worker_timing_totals"]
+            assert totals["observation_time_seconds"] > 0
+            assert totals["worker_service_time_seconds"] >= totals["observation_time_seconds"]
 
     assert random.getstate() == python_state
     after_numpy = np.random.get_state()

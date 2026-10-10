@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from copy import copy, deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 import numpy as np
 
 from .state import ReconfigurationRuntime
-from .resource_projection import ResourceProjector, ProjectedResources
+from .observation_index import observation_operation_index
+from .resource_projection import ResourceProjector, ProjectedResources, projection_cache_scope
 from .dynamics import quantize_to_ticks
 from .types import OperationState
 
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from .env import AssemblySchedulingEnv
 
 TIME_CONTEXT_VERSION = "order_chain_action_context_v2"
+
+
 ORDER_TIME_FEATURE = "estimated_order_slack_norm"
 WORKER_WAIT_FEATURE = "stage_wait_time_norm"
 WAIT_TIME_FEATURES = (
@@ -39,7 +42,14 @@ class _Resources:
     def copy(self) -> "_Resources":
         return _Resources(self.machines.copy(), self.workers.copy(),
                           self.loads.copy() if self.loads is not None else None,
-                          set(self.materialized or ()))
+            set(self.materialized or ()))
+
+
+@dataclass
+class _TimeResources:
+    machines: list[tuple[int, str]]
+    workers: tuple[tuple[int, float], ...]
+    materialized: set[int] | None = None
 
 
 class OrderTimeEstimator:
@@ -48,11 +58,20 @@ class OrderTimeEstimator:
     def __init__(self, env: "AssemblySchedulingEnv"):
         self.env = env
         self.projector = ResourceProjector(env)
-        state = self.projector.initial_resources()
-        self.workers, self.loads = state.workers, state.loads
-        self.operation_indices = env.instance.operation_index
+        self.workers = [env._worker_fatigue_at_availability(i)
+                        for i in range(len(env.workers))]
+        # Full-state compatibility helpers materialize an isolated load array
+        # lazily. The production time-only chain never requests it.
+        self._loads: np.ndarray | None = None
+        self.operation_indices = observation_operation_index(env.instance)
         self.machine_indices = env.instance.machine_index
         self.machines = [(env.current_tick, m.current_module) for m in env.machines]
+
+    @property
+    def loads(self) -> np.ndarray:
+        if self._loads is None:
+            self._loads = self.env._committed_worker_loads.copy()
+        return self._loads
 
     def _state(self, resources: _Resources) -> ProjectedResources:
         return ProjectedResources(resources.workers.copy(),
@@ -76,6 +95,40 @@ class OrderTimeEstimator:
         self._save(resources, route.resources)
         return route.end_tick
 
+    def _transition_finish_time(self, machine: int, source: str, target: str,
+                                earliest: int, resources: _TimeResources) -> int:
+        route = self.projector.transition_time(
+            machine, source, target, earliest, resources.workers
+        )
+        if route is None:
+            return max(earliest, self.env.horizon_tick) + self.env.horizon_tick + 1
+        resources.workers = route.workers
+        return route.end_tick
+
+    def _reconfiguration_finish_time(self, machine: int,
+                                      reconfiguration: ReconfigurationRuntime,
+                                      resources: _TimeResources) -> int:
+        route = self.projector.active_time(machine, resources.workers)
+        if route is None:
+            return max(self.env.current_tick, self.env.horizon_tick) + self.env.horizon_tick + 1
+        resources.workers = route.workers
+        return route.end_tick
+
+    def _release_time(self, machine: int, resources: _TimeResources) -> tuple[int, str]:
+        if resources.materialized is None:
+            resources.materialized = set()
+        if machine not in resources.materialized:
+            tick, module, workers = self.projector.machine_release_time(
+                machine, resources.workers
+            )
+            resources.workers = workers
+            resources.machines[machine] = (
+                tick if tick is not None else 2 * self.env.horizon_tick + 1,
+                module,
+            )
+            resources.materialized.add(machine)
+        return resources.machines[machine]
+
     def _release(self, mi: int, resources: _Resources) -> tuple[int, str]:
         if resources.materialized is None:
             resources.materialized = set()
@@ -86,11 +139,23 @@ class OrderTimeEstimator:
             resources.materialized.add(mi)
         return resources.machines[mi]
 
-    def finish_ticks(self) -> dict[str, int]:
+    def finish_ticks(self, order_ids: Sequence[str] | None = None) -> dict[str, int]:
+        requested = None if order_ids is None else frozenset(order_ids)
+        if requested is not None:
+            unknown = requested - {order.id for order in self.env.instance.orders}
+            if unknown:
+                raise KeyError(f"unknown order ids: {sorted(unknown)}")
+        with projection_cache_scope(self.env):
+            return self._finish_ticks(requested)
+
+    def _finish_ticks(self, order_ids: frozenset[str] | None = None) -> dict[str, int]:
         env = self.env
         result = {}
+        initial_workers = tuple(self.workers)
         for order in env.instance.orders:
-            resources = _Resources(self.machines.copy(), self.workers.copy(), self.loads.copy(), set())
+            if order_ids is not None and order.id not in order_ids:
+                continue
+            resources = _TimeResources(self.machines.copy(), initial_workers, set())
             cursor = max(env.current_tick, quantize_to_ticks(order.release_time, env.resolution))
             for spec in order.operations:
                 oi = self.operation_indices[spec.id]
@@ -106,7 +171,7 @@ class OrderTimeEstimator:
                 if operation.state == OperationState.LOCKED:
                     mi = self.machine_indices[operation.machine_id]
                     rec = env._active_reconfiguration(operation.machine_id)
-                    cursor = max(cursor, self._reconfiguration_finish(mi, rec, resources))
+                    cursor = max(cursor, self._reconfiguration_finish_time(mi, rec, resources))
                     cursor += env.estimate_processing_ticks(oi, mi)
                     resources.machines[mi] = (cursor, spec.required_module)
                     resources.materialized.add(mi)
@@ -115,10 +180,15 @@ class OrderTimeEstimator:
                 for mi, machine in enumerate(env.machines):
                     if spec.required_module not in machine.spec.module_parameters:
                         continue
-                    branch = resources.copy()
-                    available, source = self._release(mi, branch)
-                    start = self._transition_finish(mi, source, spec.required_module, max(cursor, available), branch)
-                    choices.append((start+env.estimate_processing_ticks(oi, mi), mi, branch))
+                    branch = _TimeResources(
+                        resources.machines.copy(), resources.workers,
+                        set(resources.materialized or ()),
+                    )
+                    available, source = self._release_time(mi, branch)
+                    start = self._transition_finish_time(
+                        mi, source, spec.required_module, max(cursor, available), branch
+                    )
+                    choices.append((start + env.estimate_processing_ticks(oi, mi), mi, branch))
                 if choices:
                     cursor, mi, resources = min(choices, key=lambda item: (item[0], item[1]))
                     resources.machines[mi] = (cursor, spec.required_module)
@@ -142,6 +212,7 @@ def project_wait_state(env: "AssemblySchedulingEnv", wait_ticks: int, *,
                     "_machine_reconfiguration", "_order_released", "_order_completion_tick",
                     "_active_committed_worker_tasks", "_post_reconfiguration_process_count"}
         invalidated = {"_production_resource_profile_cache", "_candidate_projection_cache",
+                       "_projection_transition_cache",
                        "_stage_projection_cache", "_order_finish_tick_cache",
                        "_wait_certificate_cache", "_action_mask_cache"}
         for name, value in vars(env).items():

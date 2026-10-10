@@ -16,7 +16,7 @@ from typing import Any
 import torch
 
 from agent.ppo import PPOAgent, build_actor_critic
-from agent.ppo.parallel import ParallelEpisodeRunner
+from agent.ppo.parallel import EVALUATION_WORKER_TIMING_FIELDS, ParallelEpisodeRunner
 from configs import load_config, project_path
 from configs.config import public_config
 from configs.formal_preferences import formal_preferences
@@ -285,6 +285,7 @@ def _evaluate_policy(
         raise ValueError("sampled evaluation requires at least one seed")
     rows: list[dict[str, Any]] = []
     reference: dict[str, Any] | None = None
+    runtime_totals: dict[str, float] = {}
     for repeat_index, seed in enumerate(sampling_seeds):
         if universal:
             current_rows, current = evaluate_preference_grid_parallel(
@@ -313,6 +314,9 @@ def _evaluate_policy(
             row["sampling_repeat"] = repeat_index
         rows.extend(current_rows)
         reference = current
+        for name, value in current.get("evaluation_runtime", {}).items():
+            if name != "mean_policy_batch_size":
+                runtime_totals[name] = runtime_totals.get(name, 0.0) + float(value)
     if reference is None:
         raise RuntimeError("evaluation produced no aggregate")
     aggregate = _aggregate_formal_rows(
@@ -333,6 +337,9 @@ def _evaluate_policy(
     aggregate["wall_time_seconds"] = time.perf_counter() - evaluation_started
     aggregate["physical_safety_pass"] = _rows_are_physically_safe(rows)
     aggregate["active_constraint_pass"] = _rows_satisfy_active_constraints(rows)
+    runtime_totals["mean_policy_batch_size"] = (
+        runtime_totals.get("policy_observation_count", 0.0) / max(1, runtime_totals.get("policy_batch_count", 0.0)))
+    aggregate["evaluation_runtime"] = runtime_totals
     return rows, aggregate
 
 
@@ -350,6 +357,12 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
         "dataset_manifest_sha256": aggregate.get("dataset_manifest_sha256"),
         "instance_indices": aggregate.get("instance_indices"),
         "validation_wall_time_seconds": float(aggregate.get("wall_time_seconds", 0.0)),
+        **{f"evaluation_{name}": aggregate.get("evaluation_runtime", {}).get(name)
+           for name in ("main_send_seconds", "main_receive_seconds", "response_tail_seconds",
+                        "policy_inference_seconds", "exchange_count", "policy_batch_count",
+                        "mean_policy_batch_size")},
+        **{f"worker_total_{name}": aggregate.get("worker_timing_totals", {}).get(name)
+           for name in EVALUATION_WORKER_TIMING_FIELDS},
         "instance_count": int(aggregate["instance_count"]),
         "cell_count": aggregate.get("cell_count", aggregate["instance_count"]),
         "repeat_count": int(aggregate.get("repeat_count", 1)),
@@ -450,7 +463,8 @@ def training_distribution_summary(rows):
         "by_pressure_type": grouped_outcomes(rows, "pressure_type"),
         "failure_reasons": dict(Counter(row.get("terminal_reason", "unknown") for row in rows if row.get("truncated") or not row.get("terminated"))),
         "generation_time_seconds": sum(row.get("generation_time_seconds", 0) for row in rows),
-        "environment_step_time_seconds": sum(row.get("environment_step_time_seconds", 0) for row in rows),
+        **{name: sum(row.get(name, 0.0) for row in rows)
+           for name in EVALUATION_WORKER_TIMING_FIELDS},
     }
 
 
@@ -466,7 +480,8 @@ def _episode_log_row(episode) -> dict[str, Any]:
         "result_schema_version": EVALUATION_SCHEMA_VERSION,
         **{"instance_" + name: value for name, value in (episode.metadata.get("sampled_parameters") or {}).items()},
         "generation_time_seconds": episode.generation_time_seconds,
-        "environment_step_time_seconds": episode.environment_step_time_seconds,
+        **{name: float(getattr(episode, name, 0.0))
+           for name in EVALUATION_WORKER_TIMING_FIELDS},
         "preference_group": preference_group(metrics.get("preference", {})),
         "reward_version": metrics["reward_version"],
         "reward": float(episode.reward_sum),
@@ -828,9 +843,8 @@ def _train_single_stage(
                 "generation_time_seconds": sum(
                     episode.generation_time_seconds for episode in rollout.episodes
                 ),
-                "environment_step_time_seconds": sum(
-                    episode.environment_step_time_seconds for episode in rollout.episodes
-                ),
+                **{name: sum(float(getattr(episode, name, 0.0)) for episode in rollout.episodes)
+                   for name in EVALUATION_WORKER_TIMING_FIELDS},
                 "transitions_per_second": rollout.transition_count / training_seconds,
                 "learning_rate": plateau.learning_rate,
                 **losses,
