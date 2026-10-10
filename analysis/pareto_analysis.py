@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from configs import load_config, project_path
 from configs.formal_preferences import formal_preferences, objective_scales
 from environment import PreferenceContext, terminal_quality_score
+from environment.types import metrics_flow_objective
 from result.io import write_csv, write_json
 from result.metrics import EVALUATION_SCHEMA_VERSION, evaluation_quality_metric, quality_metric_sha256
 
@@ -160,6 +161,9 @@ def valid_candidate(row: Mapping[str, Any]) -> bool:
 
 def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) -> None:
     from data.distribution import protocol_hashes
+    from environment.types import flow_mode
+    if row.get("flow_mode", "raw_v1") != flow_mode(dict(config)):
+        raise ValueError("candidate Flow mode does not match its training identity")
     scalarizer = config["objective_scalarizer"]
     required = {
         **protocol_hashes(config),
@@ -192,19 +196,27 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
             raise ValueError("candidate policy precision does not match the current experiment")
     normalize_objectives([float(row[field]) for field in OBJECTIVE_FIELDS], objective_scales(config))
     quality = terminal_quality_score(
-        *(float(row[field]) for field in OBJECTIVE_FIELDS), dict(config),
+        metrics_flow_objective(dict(row),dict(config)),
+        float(row["reconfiguration_cost"]),float(row["worker_load_variance"]), dict(config),
         preference=_preference(row).preference, terminal_failure=_flag(row["task_failed"]),
     )
     if not math.isclose(float(row["preference_quality_score"]), quality, rel_tol=1e-9, abs_tol=1e-9):
         raise ValueError("candidate preference quality does not match its objectives and preference")
 
 
-def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final_test", arms=None):
+def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final_test", arms=None,
+                 evaluation_flow_mode=None):
     """Validate the preference/repeat matrix and analyze each scheduling instance."""
     config = load_config("configs/default.json") if config is None else config
     preferences = formal_preferences(config, stage)
     expected = {point.key for point in preferences}
     scales = objective_scales(config)
+    from environment.types import flow_mode, FLOW_RAW, FLOW_EXCESS
+    selected_evaluation_mode = flow_mode(config) if evaluation_flow_mode is None else evaluation_flow_mode
+    if selected_evaluation_mode not in {FLOW_RAW,FLOW_EXCESS}:
+        raise ValueError("unknown evaluation_flow_mode")
+    if evaluation_flow_mode is not None:
+        scales = (1089.15,353.27,2.2629) if selected_evaluation_mode==FLOW_RAW else (368.3143,353.27,2.2629)
     groups = defaultdict(list)
     for original in rows:
         row = dict(original)
@@ -249,7 +261,9 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
             if observed != wanted:
                 raise ValueError(f"{instance_id}/{arm} requires {len(expected)} preferences x {repeats} repeats; incomplete or unexpected cells")
             safe = [row for row in cells if valid_candidate(row)]
-            points = [normalize_objectives([float(row[name]) for name in OBJECTIVE_FIELDS], scales) for row in safe]
+            points = [normalize_objectives([
+                float(row["flow_excess_objective"] if selected_evaluation_mode==FLOW_EXCESS else row["flow_time_objective"]),
+                float(row["reconfiguration_cost"]),float(row["worker_load_variance"])], scales) for row in safe]
             front = set(nondominated_indices(points))
             all_points.extend(points)
             all_safe_rows.extend(safe)

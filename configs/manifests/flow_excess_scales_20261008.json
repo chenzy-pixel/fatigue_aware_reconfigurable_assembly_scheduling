@@ -1,0 +1,353 @@
+{
+  "schema_version": "proportional_flow_validation_scales_v1",
+  "flow_mode": "excess_proportional_lb_v1",
+  "selection": "user_selected_rounded_heuristic_validation_mean",
+  "selected_date": "2026-10-08",
+  "bounded_objective": "q_i=J_i/(s_i+J_i)",
+  "scales": {
+    "flow": 368.3143,
+    "cost": 353.27,
+    "variance": 2.2629
+  },
+  "validation_dataset_manifest_sha256": "5e973c436d14f079fdf8992c8ac772dc4e9efebf1e0477a38e13e7240f457c35",
+  "validation_subset_sha256": "b54cbf99baa94debc48ec245a163da8269dd2dc2d0fab8094c051b5eb65d57f5",
+  "sources": {
+    "cost": {
+      "algorithm_seed": 11,
+      "config_sha256": "02831605f7e7ed446c7bfe5e7451e370eb8c05eececd7f22f9ff64948dae9d2a",
+      "rounding_digits": 2,
+      "run": "result/continuation/v2_seed11_best_plus500/runs/cost_v2_seed11_best_plus500",
+      "sampled_validation_rows_sha256": "3fed9e439fc376ebb6fa218308de8515adab4e8e02352ef64e405c35fb031657",
+      "successful_count": 145,
+      "successful_trajectory_mean": 353.2652386890254,
+      "trajectory_count": 150,
+      "validation_episode": 500,
+      "validation_log_sha256": "e1608e301e5cf29f12fd3af219ab7bad663245af25b5e17336161d53c0e52665"
+    },
+    "variance": {
+      "algorithm_seed": 11,
+      "config_sha256": "05a29c05d2a1966583305c5b7158516fca614b99d457910645754ecfbdfd9a60",
+      "rounding_digits": 4,
+      "run": "result/continuation/v2_seed11_best_plus500/runs/variance_v2_seed11_best_plus500",
+      "sampled_validation_rows_sha256": "c391200d123709a4f588c7bfa5360bc66fcb86abaa703002df528377e64ab07d",
+      "successful_count": 146,
+      "successful_trajectory_mean": 2.262897640791476,
+      "trajectory_count": 150,
+      "validation_episode": 360,
+      "validation_log_sha256": "94963343ddadc478529721f6aee11c3293baf427da5897af7a0271b7f6425ba6"
+    },
+    "flow": {
+      "successful_trajectory_mean": 368.31428571428575,
+      "rounding_digits": 4,
+      "successful_count": 49,
+      "trajectory_count": 50,
+      "policy": "HeuristicPolicy",
+      "validation_metrics_path": "result/analysis/objective_prestage_research_20261008/prestage_validation_metrics.csv",
+      "validation_metrics_sha256": "41f02e4274bf3727923c11925e595e2f2e09c7b07be8b6e950e3e89c9d9f3fa1",
+      "validation_subset_file_sha256": "f16d9036615349b9b43b026f2d777697957b813e3e1220ff65d17d3bb0a56270",
+      "baseline_rows": [
+        {
+          "instance_id": "validation_balanced_2000001",
+          "success": true,
+          "flow": 652.0,
+          "flow_lb": 566.0
+        },
+        {
+          "instance_id": "validation_high_arrival_pressure_2000006",
+          "success": true,
+          "flow": 1165.3,
+          "flow_lb": 672.6
+        },
+        {
+          "instance_id": "validation_easy_2000028",
+          "success": true,
+          "flow": 435.30000000000007,
+          "flow_lb": 366.7000000000001
+        },
+        {
+          "instance_id": "validation_balanced_2000029",
+          "success": true,
+          "flow": 673.1,
+          "flow_lb": 595.9
+        },
+        {
+          "instance_id": "validation_fatigue_bottleneck_2000033",
+          "success": true,
+          "flow": 1976.8,
+          "flow_lb": 800.9
+        },
+        {
+          "instance_id": "validation_high_arrival_pressure_2000034",
+          "success": true,
+          "flow": 1367.5999999999997,
+          "flow_lb": 715.3000000000001
+        },
+        {
+          "instance_id": "validation_machine_bottleneck_2000079",
+          "success": true,
+          "flow": 1067.3000000000004,
+          "flow_lb": 813.7
+        },
+        {
+          "instance_id": "validation_easy_2000091",
+          "success": true,
+          "flow": 471.69999999999993,
+          "flow_lb": 404.1
+        },
+        {
+          "instance_id": "validation_worker_bottleneck_2000095",
+          "success": true,
+          "flow": 1241.0,
+          "flow_lb": 658.3000000000001
+        },
+        {
+          "instance_id": "validation_balanced_2000099",
+          "success": true,
+          "flow": 826.6000000000003,
+          "flow_lb": 718.3000000000001
+        },
+        {
+          "instance_id": "validation_high_arrival_pressure_2000104",
+          "success": true,
+          "flow": 1356.000000000001,
+          "flow_lb": 714.8000000000001
+        },
+        {
+          "instance_id": "validation_reconfiguration_bottleneck_2000115",
+          "success": false,
+          "flow": 1791.9,
+          "flow_lb": 821.9000000000001
+        },
+        {
+          "instance_id": "validation_machine_bottleneck_2000121",
+          "success": true,
+          "flow": 1271.0999999999997,
+          "flow_lb": 826.5
+        },
+        {
+          "instance_id": "validation_worker_bottleneck_2000130",
+          "success": true,
+          "flow": 1557.8999999999996,
+          "flow_lb": 797.4
+        },
+        {
+          "instance_id": "validation_high_arrival_pressure_2000139",
+          "success": true,
+          "flow": 1193.0000000000002,
+          "flow_lb": 686.3000000000001
+        },
+        {
+          "instance_id": "validation_fatigue_bottleneck_2000152",
+          "success": true,
+          "flow": 1779.4,
+          "flow_lb": 844.1
+        },
+        {
+          "instance_id": "validation_easy_2000154",
+          "success": true,
+          "flow": 482.69999999999993,
+          "flow_lb": 409.2000000000001
+        },
+        {
+          "instance_id": "validation_balanced_2000169",
+          "success": true,
+          "flow": 754.5999999999999,
+          "flow_lb": 619.6
+        },
+        {
+          "instance_id": "validation_machine_bottleneck_2000176",
+          "success": true,
+          "flow": 1141.5000000000002,
+          "flow_lb": 840.3000000000001
+        },
+        {
+          "instance_id": "validation_reconfiguration_bottleneck_2000177",
+          "success": true,
+          "flow": 1204.000000000001,
+          "flow_lb": 721.2
+        },
+        {
+          "instance_id": "validation_worker_bottleneck_2000178",
+          "success": true,
+          "flow": 1221.3000000000004,
+          "flow_lb": 698.2
+        },
+        {
+          "instance_id": "validation_fatigue_bottleneck_2000179",
+          "success": true,
+          "flow": 1776.9999999999998,
+          "flow_lb": 815.2
+        },
+        {
+          "instance_id": "validation_machine_bottleneck_2000182",
+          "success": true,
+          "flow": 1392.4999999999995,
+          "flow_lb": 828.8000000000001
+        },
+        {
+          "instance_id": "validation_balanced_2000193",
+          "success": true,
+          "flow": 680.5000000000001,
+          "flow_lb": 588.7
+        },
+        {
+          "instance_id": "validation_high_arrival_pressure_2000198",
+          "success": true,
+          "flow": 1442.2000000000005,
+          "flow_lb": 747.0
+        },
+        {
+          "instance_id": "validation_balanced_2000205",
+          "success": true,
+          "flow": 912.7999999999998,
+          "flow_lb": 712.8000000000001
+        },
+        {
+          "instance_id": "validation_worker_bottleneck_2000226",
+          "success": true,
+          "flow": 1163.000000000001,
+          "flow_lb": 679.7
+        },
+        {
+          "instance_id": "validation_fatigue_bottleneck_2000233",
+          "success": true,
+          "flow": 1270.4,
+          "flow_lb": 591.3000000000001
+        },
+        {
+          "instance_id": "validation_fatigue_bottleneck_2000239",
+          "success": true,
+          "flow": 1451.9999999999998,
+          "flow_lb": 742.5
+        },
+        {
+          "instance_id": "validation_balanced_2000247",
+          "success": true,
+          "flow": 844.3999999999999,
+          "flow_lb": 664.2
+        },
+        {
+          "instance_id": "validation_balanced_2000253",
+          "success": true,
+          "flow": 854.2999999999998,
+          "flow_lb": 672.0
+        },
+        {
+          "instance_id": "validation_reconfiguration_bottleneck_2000279",
+          "success": true,
+          "flow": 1179.4,
+          "flow_lb": 736.7
+        },
+        {
+          "instance_id": "validation_balanced_2000289",
+          "success": true,
+          "flow": 635.8999999999999,
+          "flow_lb": 557.2
+        },
+        {
+          "instance_id": "validation_worker_bottleneck_2000298",
+          "success": true,
+          "flow": 1108.7000000000005,
+          "flow_lb": 648.8000000000001
+        },
+        {
+          "instance_id": "validation_balanced_2000307",
+          "success": true,
+          "flow": 753.7000000000002,
+          "flow_lb": 640.4000000000001
+        },
+        {
+          "instance_id": "validation_machine_bottleneck_2000308",
+          "success": true,
+          "flow": 1152.8,
+          "flow_lb": 822.8000000000001
+        },
+        {
+          "instance_id": "validation_balanced_2000325",
+          "success": true,
+          "flow": 692.6000000000003,
+          "flow_lb": 563.1
+        },
+        {
+          "instance_id": "validation_machine_bottleneck_2000326",
+          "success": true,
+          "flow": 1194.8000000000002,
+          "flow_lb": 846.1
+        },
+        {
+          "instance_id": "validation_reconfiguration_bottleneck_2000330",
+          "success": true,
+          "flow": 1798.8,
+          "flow_lb": 856.1
+        },
+        {
+          "instance_id": "validation_reconfiguration_bottleneck_2000339",
+          "success": true,
+          "flow": 1250.0,
+          "flow_lb": 751.5
+        },
+        {
+          "instance_id": "validation_balanced_2000346",
+          "success": true,
+          "flow": 694.5,
+          "flow_lb": 598.7
+        },
+        {
+          "instance_id": "validation_balanced_2000376",
+          "success": true,
+          "flow": 534.5000000000001,
+          "flow_lb": 487.8
+        },
+        {
+          "instance_id": "validation_machine_bottleneck_2000377",
+          "success": true,
+          "flow": 1397.6,
+          "flow_lb": 873.1
+        },
+        {
+          "instance_id": "validation_reconfiguration_bottleneck_2000381",
+          "success": true,
+          "flow": 1070.4,
+          "flow_lb": 730.6
+        },
+        {
+          "instance_id": "validation_reconfiguration_bottleneck_2000387",
+          "success": true,
+          "flow": 922.3000000000004,
+          "flow_lb": 694.9
+        },
+        {
+          "instance_id": "validation_balanced_2000404",
+          "success": true,
+          "flow": 780.8000000000001,
+          "flow_lb": 660.8000000000001
+        },
+        {
+          "instance_id": "validation_balanced_2000411",
+          "success": true,
+          "flow": 767.2000000000002,
+          "flow_lb": 671.0
+        },
+        {
+          "instance_id": "validation_balanced_2000446",
+          "success": true,
+          "flow": 545.6999999999999,
+          "flow_lb": 504.00000000000006
+        },
+        {
+          "instance_id": "validation_balanced_2000448",
+          "success": true,
+          "flow": 538.8999999999999,
+          "flow_lb": 482.4
+        },
+        {
+          "instance_id": "validation_balanced_2000462",
+          "success": true,
+          "flow": 550.7,
+          "flow_lb": 511.6
+        }
+      ]
+    }
+  },
+  "content_sha256": "d9bb1bb9ba12a7613d5fbecb02ac9f577119ff469e236ff1acf8544e4e89dc7f"
+}

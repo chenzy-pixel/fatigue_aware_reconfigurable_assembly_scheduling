@@ -1,5 +1,48 @@
 # Fatigue-aware reconfigurable assembly scheduling
 
+## Independent proportional Flow experiment
+
+The seed11 continuation after the current remote Cost run is documented in
+[the seven-experiment launch sequence](docs/remaining_seed11_experiments.md):
+
+```powershell
+python scripts/check_remaining_seed11_experiments.py
+python scripts/run_remaining_seed11_experiments.py
+```
+
+This sequence runs mainline raw Variance, mainline raw Universal, mainline excess Flow, and shared-head
+excess Flow/Cost/Variance/Universal, in that order. The five endpoints use 1000
+episodes each; both Universal runs use 2000.
+
+The proportional lower-bound experiment has separate Universal, single-Flow and
+MO-ALNS configurations. The default uses raw Flow; the primary HV always uses
+raw objectives and the supplementary HV uses excess Flow. See the
+[implementation contract and acceptance record](docs/flow_excess_experiment.md).
+
+For the modified experiments on the remote computer, see the
+[startup and performance record](docs/flow_excess_remote_startup.md):
+
+```powershell
+python scripts/check_flow_excess_startup.py
+python scripts/run_flow_excess_single_flow.py
+python scripts/run_flow_excess_universal.py
+```
+
+The first command validates both configurations without training. The next two
+start the modified single-Flow and Universal runs. Local work is optimization and
+validation; full training runs remotely.
+
+```powershell
+python scripts/run_flow_excess_smoke.py
+python scripts/benchmark_flow_excess.py
+python scripts/run_flow_normalization_experiment.py
+python scripts/run_flow_single_flow_experiment.py
+python scripts/run_flow_excess_mo_alns.py
+```
+
+The last three commands run full matched experiments. Short training and evaluation
+smokes have been completed; full multi-seed training runs separately.
+
 ## Ablation runs
 
 The seed11 ablation matrix has two Universal network variants (node MLP with

@@ -93,6 +93,9 @@ def _load_run(directory: Path) -> tuple[dict, dict, list[dict[str, str]], dict]:
         raise ValueError("evaluation objective scales mismatch")
     if provenance.get("normalization_manifest_sha256") != config["objective_scalarizer"].get("normalization_manifest_sha256"):
         raise ValueError("evaluation normalization manifest mismatch")
+    from environment.types import flow_mode
+    if provenance.get("flow_mode", "raw_v1") != flow_mode(config):
+        raise ValueError("evaluation Flow mode mismatch")
     if not provenance.get("dataset_manifest_sha256"):
         raise ValueError("evaluation has no dataset manifest hash")
     with csv_path.open(encoding="utf-8-sig", newline="") as handle:
@@ -105,12 +108,16 @@ def _load_run(directory: Path) -> tuple[dict, dict, list[dict[str, str]], dict]:
         "checkpoint_sha256": provenance.get("checkpoint_sha256"),
         "network_weights_sha256": provenance.get("network_weights_sha256"),
         "dataset_manifest_sha256": provenance["dataset_manifest_sha256"],
+        "flow_mode": flow_mode(config),
+        "training_scales": config["objective_scalarizer"]["scales"],
+        "reward_version": config["reward"]["mode"],
     }
     return config, metrics, rows, source
 
 
 def analyze_runs(
     runs: Mapping[str, str | Path | Sequence[str | Path]], output_dir: str | Path,
+    *, evaluation_flow_mode: str | None = None,
 ) -> dict[str, Any]:
     """Analyze matched candidate budgets separately for each instance and seed.
 
@@ -120,6 +127,12 @@ def analyze_runs(
     """
     if not runs:
         raise ValueError("at least one V8 run is required")
+    from environment.types import FLOW_RAW, FLOW_EXCESS, flow_mode
+    if evaluation_flow_mode not in {None, FLOW_RAW, FLOW_EXCESS}:
+        raise ValueError("unknown evaluation_flow_mode")
+    evaluation_scales = ((368.3143,353.27,2.2629) if evaluation_flow_mode == FLOW_EXCESS
+                         else (1089.15,353.27,2.2629))
+    lower_bounds = {}
     candidates: list[dict[str, Any]] = []
     instances: list[dict[str, Any]] = []
     sources = []
@@ -156,6 +169,20 @@ def analyze_runs(
                         tuple(sorted(ids)), tuple(sorted(keys)), repeats,
                         tuple(config["objective_scalarizer"]["scales"][name] for name in ("flow", "cost", "variance")),
                         config["objective_scalarizer"].get("normalization_manifest_sha256"))
+            if evaluation_flow_mode is not None:
+                # Training identities are validated per run above; compare shared physical/evaluation identity.
+                identity = (*identity[:5], evaluation_scales, json.dumps(config.get("environment",{}),sort_keys=True))
+                if not lower_bounds and evaluation_flow_mode == FLOW_EXCESS:
+                    from data import load_dataset_split
+                    from environment import AssemblySchedulingEnv
+                    dataset = load_dataset_split(config,metrics["dataset"])
+                    if dataset_manifest_snapshot_hash(dataset) != source["dataset_manifest_sha256"]:
+                        raise ValueError("cannot derive excess from an unverified instance manifest")
+                    env = AssemblySchedulingEnv(config)
+                    for record in dataset:
+                        if record.instance.instance_id in ids:
+                            env.reset(record.instance,build_observation=False)
+                            lower_bounds[record.instance.instance_id] = env._total_processing_lower_bound_ticks*env.resolution
             if shared_identity is None:
                 shared_identity, shared_config = identity, config
             elif identity != shared_identity:
@@ -189,7 +216,17 @@ def analyze_runs(
                         <= _finite(raw["safe_fatigue_limit"], "fatigue limit") + 1e-9)
                 if raw.get("fatigue_mode", "full") != "full":
                     raise ValueError("neutral row in full-fatigue evaluation")
-                point = normalize_objectives([_finite(raw[name], name) for name in OBJECTIVE_FIELDS], scales)
+                objectives = [_finite(raw[name], name) for name in OBJECTIVE_FIELDS]
+                if evaluation_flow_mode == FLOW_EXCESS and succeeded:
+                    lb = lower_bounds.get(raw["instance_id"])
+                    if lb is None or objectives[0] < lb-1e-8:
+                        raise ValueError("successful excess derivation has invalid processing lower bound")
+                    expected_excess = max(0.0,objectives[0]-lb)
+                    if raw.get("flow_excess_objective") not in {None,""} and not math.isclose(
+                            _finite(raw["flow_excess_objective"],"flow_excess_objective"),expected_excess,abs_tol=1e-7):
+                        raise ValueError("excess report disagrees with verified instance lower bound")
+                    objectives[0] = expected_excess
+                point = normalize_objectives(objectives, scales)
                 row = {**raw, "method": method, "algorithm_seed": seed,
                        "sampling_repeat": repeat, "candidate_feasible": succeeded and safe,
                        "is_pareto": False,
@@ -249,7 +286,8 @@ def analyze_runs(
         "protocol": PROTOCOL, "dataset": shared_identity[0], "independent_test": shared_identity[0] == "test",
         "dataset_manifest_sha256": shared_identity[1], "instance_count": len(shared_identity[2]),
         "preference_count": len(shared_identity[3]), "repeat_count": shared_identity[4],
-        "normalization": "J/(scale+J)", "objective_scales": shared_config["objective_scalarizer"]["scales"],
+        "normalization": "J/(scale+J)", "objective_scales": dict(zip(("flow","cost","variance"),shared_identity[5])),
+        "evaluation_flow_mode": evaluation_flow_mode or flow_mode(shared_config),
         "reference_point": [1.0, 1.0, 1.0], "methods": method_summary,
         "coverage_definition": "fraction of unique front points weakly dominated by the other method",
         "candidate_count": len(candidates), "front_row_count": sum(r["is_pareto"] for r in candidates),
@@ -277,4 +315,20 @@ def analyze_runs(
     lines += [f"| {r['method']} | {r['algorithm_seed']} | {r['mean_completion_rate']:.4f} | "
               f"{r['mean_pooled_hypervolume']:.6f} | {r['mean_repeat_hypervolume']:.6f} |" for r in seed_summary]
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return summary
+
+
+def dataset_manifest_snapshot_hash(dataset) -> str:
+    from data.dataset import canonical_json_bytes,sha256_bytes
+    return sha256_bytes(canonical_json_bytes(dataset.manifest))
+
+
+def analyze_dual_flow_runs(runs, output_dir):
+    """One common raw primary metric and one common excess supplementary metric."""
+    from environment.types import FLOW_RAW,FLOW_EXCESS
+    output=Path(output_dir)
+    primary=analyze_runs(runs,output/"raw_primary",evaluation_flow_mode=FLOW_RAW)
+    supplementary=analyze_runs(runs,output/"excess_supplementary",evaluation_flow_mode=FLOW_EXCESS)
+    summary={"primary":primary,"supplementary":supplementary}
+    write_json(output/"dual_flow_summary.json",summary)
     return summary

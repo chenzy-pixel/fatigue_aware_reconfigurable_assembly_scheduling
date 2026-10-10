@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from environment.types import flow_reward_version
 from dataclasses import dataclass, field
 
 
@@ -36,9 +37,7 @@ class LexicographicCheckpointSelector:
 
     @classmethod
     def from_config(cls, config: dict) -> "LexicographicCheckpointSelector":
-        if str(config["reward"].get("mode")) != (
-            "single_stage_progress_quality_failure_v3"
-        ):
+        if str(config["reward"].get("mode")) != flow_reward_version(config):
             raise ValueError(
                 "single-stage checkpoint selection requires the single-stage reward"
             )

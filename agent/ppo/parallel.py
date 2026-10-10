@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import time
 import traceback
+from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from multiprocessing.connection import Connection, wait
@@ -35,6 +36,11 @@ from utils import action_trace_sha256, derive_evaluation_sampling_seed
 if TYPE_CHECKING:
     from agent.ppo.agent import PPOAgent
 
+EVALUATION_WORKER_TIMING_FIELDS = (
+    "observation_time_seconds", "environment_step_time_seconds",
+    "terminal_metrics_time_seconds", "worker_service_time_seconds", "reset_time_seconds",
+)
+
 
 @dataclass
 class WorkerResponse:
@@ -49,6 +55,10 @@ class WorkerResponse:
     metadata: dict[str, Any] | None = None
     generation_time_seconds: float = 0.0
     environment_step_time_seconds: float = 0.0
+    observation_time_seconds: float = 0.0
+    terminal_metrics_time_seconds: float = 0.0
+    worker_service_time_seconds: float = 0.0
+    reset_time_seconds: float = 0.0
     environment_step_count: int = 0
     local_physical_forced_action_count: int = 0
     cache_hit: bool = False
@@ -103,6 +113,10 @@ class EpisodeRollout:
     worker_step_command_count: int = 0
     worker_local_physical_forced_action_count: int = 0
     policy_diagnostics: dict[str, float | int] = field(default_factory=dict)
+    observation_time_seconds: float = 0.0
+    terminal_metrics_time_seconds: float = 0.0
+    worker_service_time_seconds: float = 0.0
+    reset_time_seconds: float = 0.0
 
     @property
     def base_reward_sum(self) -> float:
@@ -272,6 +286,18 @@ def _worker_roll_forward(
     **kwargs,
 ) -> WorkerResponse:
     """Execute one requested action plus its physically forced suffix."""
+    service_started = time.perf_counter()
+    observation_started = (0.0 if requested_action is None else
+                           getattr(environment, "_observation_time_seconds", 0.0))
+    metrics_seconds = 0.0
+
+    def stamp(response):
+        response.observation_time_seconds = max(
+            0.0, getattr(environment, "_observation_time_seconds", 0.0) - observation_started)
+        response.terminal_metrics_time_seconds = metrics_seconds
+        response.worker_service_time_seconds = (
+            time.perf_counter() - service_started + float(kwargs.get("reset_time_seconds", 0.0)))
+        return response
 
     if max_environment_steps is not None and max_environment_steps < 0:
         raise ValueError("max_environment_steps cannot be negative")
@@ -333,13 +359,16 @@ def _worker_roll_forward(
         ),
     }
     if terminated:
-        return WorkerResponse(
+        metrics_started = time.perf_counter()
+        terminal_metrics = _terminal_metrics(environment)
+        metrics_seconds += time.perf_counter() - metrics_started
+        return stamp(WorkerResponse(
             lane_id=lane_id,
             terminated=terminated,
             truncated=truncated,
-            metrics=_terminal_metrics(environment),
+            metrics=terminal_metrics,
             **response_kwargs,
-        )
+        ))
     if environment_step_count > 0:
         observation = environment.observe()
     if observation is None:
@@ -353,8 +382,10 @@ def _worker_roll_forward(
     )
     if truncated:
         response.truncated = True
+        metrics_started = time.perf_counter()
         response.metrics = _terminal_metrics(environment)
-    return response
+        metrics_seconds += time.perf_counter() - metrics_started
+    return stamp(response)
 
 
 def _commit_pending_transition(
@@ -388,6 +419,11 @@ class FixedEvaluationRollout:
     sampling_seed: int | None = None
     derived_sampling_seed: int | None = None
     sampling_evaluation_key: str | None = None
+    observation_time_seconds: float = 0.0
+    environment_step_time_seconds: float = 0.0
+    terminal_metrics_time_seconds: float = 0.0
+    worker_service_time_seconds: float = 0.0
+    reset_time_seconds: float = 0.0
 
 
 class ParallelWorkerError(RuntimeError):
@@ -477,9 +513,11 @@ def _worker_main(
                     episode_index
                 )
                 generation_time = time.perf_counter() - generation_start
+                reset_started = time.perf_counter()
                 observation = environment.reset(
                     record.instance, preference=request.preference
                 )
+                reset_seconds = time.perf_counter() - reset_started
                 metadata = {
                     key: record.metadata.get(key)
                     for key in (
@@ -513,6 +551,7 @@ def _worker_main(
                         instance_id=record.instance.instance_id,
                         metadata=metadata,
                         generation_time_seconds=generation_time,
+                        reset_time_seconds=reset_seconds,
                         cache_hit=cache_hit,
                         record_sha256=digest,
                     )
@@ -551,9 +590,11 @@ def _worker_main(
                     raise TypeError(
                         "reset_instance requires an AssemblyInstance"
                     )
+                reset_started = time.perf_counter()
                 observation = environment.reset(
                     request.value, preference=request.preference
                 )
+                reset_seconds = time.perf_counter() - reset_started
                 connection.send(
                     _worker_roll_forward(
                         lane_id,
@@ -568,6 +609,7 @@ def _worker_main(
                             request.max_environment_steps
                         ),
                         instance_id=request.value.instance_id,
+                        reset_time_seconds=reset_seconds,
                     )
                 )
                 continue
@@ -594,10 +636,17 @@ def _worker_main(
                 )
                 continue
             if command == "snapshot":
+                metrics_started = time.perf_counter()
+                observation_started = environment._observation_time_seconds
+                metrics = _terminal_metrics(environment)
+                metrics_seconds = time.perf_counter() - metrics_started
                 connection.send(
                     WorkerResponse(
                         lane_id=lane_id,
-                        metrics=_terminal_metrics(environment),
+                        metrics=metrics,
+                        observation_time_seconds=environment._observation_time_seconds - observation_started,
+                        terminal_metrics_time_seconds=metrics_seconds,
+                        worker_service_time_seconds=metrics_seconds,
                     )
                 )
                 continue
@@ -723,12 +772,14 @@ class ParallelEpisodeRunner:
                 self._record_worker_error(lane_id, exc_value)
         self.close(force=exc_type is not None)
 
-    def _exchange(
+    def _send_commands(
         self,
         commands: dict[int, tuple[str, Any]],
-    ) -> dict[int, WorkerResponse]:
+    ) -> None:
         if self._closed:
             raise RuntimeError("parallel runner is closed")
+        timing = getattr(self, "_evaluation_runtime_timing", None)
+        sending_started = time.perf_counter() if timing is not None else 0.0
         command_started = time.monotonic()
         for lane_id, message in commands.items():
             starts_instance = message[0] in {"reset_online", "reset_instance", "generate_online"}
@@ -753,7 +804,21 @@ class ParallelEpisodeRunner:
             except (ParallelWorkerError, OSError) as error:
                 self._record_worker_error(lane_id, error)
                 raise
-        return self._receive_responses(commands)
+        if timing is not None:
+            timing["main_send_seconds"] += time.perf_counter() - sending_started
+
+    def _exchange(self, commands: dict[int, tuple[str, Any]]) -> dict[int, WorkerResponse]:
+        self._send_commands(commands)
+        timing = getattr(self, "_evaluation_runtime_timing", None)
+        if timing is None:
+            return self._receive_responses(commands)
+        receiving_started = time.perf_counter()
+        timing["exchange_count"] += 1
+        try:
+            return self._receive_responses(commands)
+        finally:
+            # Includes worker computation, transport and response handling; not pure IPC.
+            timing["main_receive_seconds"] += time.perf_counter() - receiving_started
 
     def _append_diagnostic_jsonl(
         self, filename: str, payload: dict[str, Any]
@@ -954,6 +1019,8 @@ class ParallelEpisodeRunner:
         self, pending: dict[Connection, int]
     ) -> dict[int, WorkerResponse]:
         responses: dict[int, WorkerResponse] = {}
+        timing = getattr(self, "_evaluation_runtime_timing", None)
+        arrivals = []
         started = time.monotonic()
         hard_deadline = started + self.timeout_seconds
         last_heartbeat = {lane_id: started for lane_id in pending.values()}
@@ -1018,7 +1085,11 @@ class ParallelEpisodeRunner:
                     )
                 pending.pop(connection)
                 responses[lane_id] = response
+                if timing is not None:
+                    arrivals.append(time.perf_counter())
                 self._record_completed_response(response)
+        if timing is not None and len(arrivals) > 1:
+            timing["response_tail_seconds"] += arrivals[-1] - arrivals[0]
         return responses
 
     def pre_generate_training_instances(
@@ -1269,6 +1340,8 @@ class ParallelEpisodeRunner:
                 "environment_step_time_seconds": (
                     response.environment_step_time_seconds
                 ),
+                **{name: float(getattr(response, name, 0.0))
+                   for name in EVALUATION_WORKER_TIMING_FIELDS if name != "environment_step_time_seconds"},
             }
             context["metadata"] = {
                 **context["metadata"],
@@ -1345,6 +1418,8 @@ class ParallelEpisodeRunner:
                 )
                 for lane in reset_cutoff_lanes:
                     context = contexts[lane]
+                    for name in EVALUATION_WORKER_TIMING_FIELDS:
+                        context[name] += float(getattr(snapshots[lane], name, 0.0))
                     context["buffer"].compute_gae(
                         last_value=0.0,
                         gamma=gamma,
@@ -1514,9 +1589,8 @@ class ParallelEpisodeRunner:
                 context[
                     "worker_local_physical_forced_action_count"
                 ] += response.local_physical_forced_action_count
-                context["environment_step_time_seconds"] += (
-                    response.environment_step_time_seconds
-                )
+                for name in EVALUATION_WORKER_TIMING_FIELDS:
+                    context[name] += float(getattr(response, name, 0.0))
                 if response.terminated:
                     _commit_pending_transition(context, done=True)
                     if response.metrics is None:
@@ -1586,6 +1660,8 @@ class ParallelEpisodeRunner:
                 )
                 for lane in cutoff_lanes:
                     context = contexts[lane]
+                    for name in EVALUATION_WORKER_TIMING_FIELDS:
+                        context[name] += float(getattr(snapshots[lane], name, 0.0))
                     context["buffer"].compute_gae(
                         last_value=last_value_by_lane[lane],
                         gamma=gamma,
@@ -1667,6 +1743,8 @@ class ParallelEpisodeRunner:
             environment_step_time_seconds=context[
                 "environment_step_time_seconds"
             ],
+            **{name: context.get(name, 0.0)
+               for name in EVALUATION_WORKER_TIMING_FIELDS if name != "environment_step_time_seconds"},
             reward_components=dict(context["reward_components"]),
             expected_reward=proxy_return_from_metrics(
                 metrics,
@@ -1697,7 +1775,37 @@ class ParallelEpisodeRunner:
             )
         return episode
 
+    @contextmanager
+    def _track_evaluation_runtime(self):
+        previous = getattr(self, "_evaluation_runtime_timing", None)
+        timing = dict(main_send_seconds=0.0, main_receive_seconds=0.0,
+                      response_tail_seconds=0.0, policy_inference_seconds=0.0,
+                      exchange_count=0, policy_batch_count=0, policy_observation_count=0)
+        self._evaluation_runtime_timing = timing
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            timing["wall_seconds"] = time.perf_counter() - started
+            timing["mean_policy_batch_size"] = (
+                timing["policy_observation_count"] / max(1, timing["policy_batch_count"]))
+            self.last_evaluation_runtime = dict(timing)
+            self._evaluation_runtime_timing = previous
+
     def evaluate_records(
+        self, agent: "PPOAgent", records: Sequence[GeneratedInstanceRecord], *,
+        max_parallelism: int | None = None, deterministic: bool = True,
+        sampling_seed: int | None = None,
+        preferences: Sequence[PreferenceContextInput] | None = None,
+    ) -> list[FixedEvaluationRollout]:
+        # Reject incompatible agents before starting any evaluation bookkeeping.
+        agent.assert_evaluation_config(self.config)
+        with self._track_evaluation_runtime():
+            return self._evaluate_records(
+                agent, records, max_parallelism=max_parallelism,
+                deterministic=deterministic, sampling_seed=sampling_seed, preferences=preferences)
+
+    def _evaluate_records(
         self,
         agent: "PPOAgent",
         records: Sequence[GeneratedInstanceRecord],
@@ -1707,7 +1815,6 @@ class ParallelEpisodeRunner:
         sampling_seed: int | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
     ) -> list[FixedEvaluationRollout]:
-        agent.assert_evaluation_config(self.config)
         parallelism = (
             self.worker_count
             if max_parallelism is None
@@ -1724,174 +1831,182 @@ class ParallelEpisodeRunner:
         if preferences is not None and len(preferences) != len(records):
             raise ValueError("evaluation preferences must align with records")
         results: list[FixedEvaluationRollout] = []
-        for start in range(0, len(records), parallelism):
-            chunk = records[start : start + parallelism]
-            chunk_start = time.perf_counter()
-            reset_responses = self._exchange(
-                {
-                    lane_id: (
-                        "reset_instance",
-                        _WorkerResetRequest(
-                            value=record.instance,
-                            preference=(
-                                None
-                                if preferences is None
-                                else preferences[start + lane_id]
-                            ),
-                        ),
-                    )
-                    for lane_id, record in enumerate(chunk)
-                }
-            )
-            states = dict(reset_responses)
-            active = set(range(len(chunk)))
-            decisions = {lane: 0 for lane in active}
-            inference_times = {lane: 0.0 for lane in active}
-            action_traces: dict[int, list[int]] = {
-                lane: [] for lane in active
-            }
-            policy_diagnostics: dict[int, list[dict[str, Any]]] = {
-                lane: [] for lane in active
-            }
-            evaluation_keys = {
-                lane: (
-                    None
-                    if preferences is None
-                    else PreferenceContext.from_input(
-                        preferences[start + lane]
-                    ).key
+        states: dict[int, WorkerResponse] = {}
+        active: set[int] = set()
+        record_indices: dict[int, int] = {}
+        started_at: dict[int, float] = {}
+        decisions: dict[int, int] = {}
+        inference_times: dict[int, float] = {}
+        action_traces: dict[int, list[int]] = {}
+        policy_diagnostics: dict[int, list[dict[str, Any]]] = {}
+        evaluation_keys: dict[int, str | None] = {}
+        derived_sampling_seeds: dict[int, int] = {}
+        generators: dict[int, torch.Generator] = {}
+        next_record = 0
+        worker_times: dict[int, dict[str, float]] = {}
+
+        def fill_available(lanes: Sequence[int]) -> None:
+            nonlocal next_record
+            requests = {}
+            reset_start = time.perf_counter()
+            for lane in lanes:
+                if next_record >= len(records):
+                    break
+                index = next_record
+                next_record += 1
+                record_indices[lane] = index
+                started_at[lane] = reset_start
+                decisions[lane] = 0
+                inference_times[lane] = 0.0
+                action_traces[lane] = []
+                policy_diagnostics[lane] = []
+                worker_times[lane] = dict.fromkeys(EVALUATION_WORKER_TIMING_FIELDS, 0.0)
+                preference = None if preferences is None else preferences[index]
+                evaluation_keys[lane] = (
+                    None if preference is None else PreferenceContext.from_input(preference).key
                 )
-                for lane in active
-            }
-            derived_sampling_seeds = (
-                {
-                    lane: derive_evaluation_sampling_seed(
-                        int(sampling_seed),
-                        chunk[lane].instance.instance_id,
+                if not deterministic:
+                    derived_sampling_seeds[lane] = derive_evaluation_sampling_seed(
+                        int(sampling_seed), records[index].instance.instance_id,
                         evaluation_keys[lane],
                     )
-                    for lane in active
-                }
-                if not deterministic
-                else {}
-            )
-            generators = {
-                lane: torch.Generator(device=agent.device).manual_seed(
-                    derived_sampling_seeds[lane]
-                )
-                for lane in derived_sampling_seeds
-            }
-            while active:
-                lanes = sorted(active)
-                observations = [
-                    states[lane].observation for lane in lanes
-                ]
-                masks = [
-                    states[lane].action_mask for lane in lanes
-                ]
-                if deterministic:
-                    inference_start = time.perf_counter()
-                    actions, _, _ = agent.act_batch(
-                        observations,
-                        masks,
-                        deterministic=True,
+                    generators[lane] = torch.Generator(device=agent.device).manual_seed(
+                        derived_sampling_seeds[lane]
                     )
-                    elapsed = time.perf_counter() - inference_start
-                    share = elapsed / len(lanes)
-                    for lane in lanes:
-                        inference_times[lane] += share
-                    diagnostic_rows = (
-                        agent.consume_policy_decision_diagnostics()
-                    )
-                    if diagnostic_rows and len(diagnostic_rows) != len(lanes):
-                        raise RuntimeError(
-                            "batched policy diagnostics do not match lanes"
-                        )
-                    for lane, action, diagnostic in zip(
-                        lanes, actions, diagnostic_rows
-                    ):
-                        diagnostic["selected_action"] = int(action)
-                        diagnostic["ranker_top_selected"] = bool(
-                            int(action)
-                            == int(diagnostic.get("relative_top_action", -1))
-                        )
-                        policy_diagnostics[lane].append(diagnostic)
-                else:
-                    inference_start = time.perf_counter()
-                    if getattr(agent.network, "execution_mode", "") == "reference_v8":
-                        actions = []
-                        diagnostic_rows = []
-                        for lane, observation, mask in zip(lanes, observations, masks):
-                            actions.append(agent.act(
-                                observation, mask, generator=generators[lane]
-                            )[0])
-                            diagnostic_rows.extend(agent.consume_policy_decision_diagnostics())
-                    else:
-                        actions, _, _ = agent.act_batch(
-                            observations, masks,
-                            generators=[generators[lane] for lane in lanes],
-                        )
-                        diagnostic_rows = agent.consume_policy_decision_diagnostics()
-                    elapsed = time.perf_counter() - inference_start
-                    for lane in lanes:
-                        inference_times[lane] += elapsed / len(lanes)
-                    if diagnostic_rows and len(diagnostic_rows) != len(lanes):
-                        raise RuntimeError("batched policy diagnostics do not match lanes")
-                    for lane, action, diagnostic in zip(lanes, actions, diagnostic_rows):
-                        diagnostic["selected_action"] = int(action)
-                        diagnostic["ranker_top_selected"] = bool(
-                            int(action) == int(diagnostic.get("relative_top_action", -1))
-                        )
-                        policy_diagnostics[lane].append(diagnostic)
-                for lane, action in zip(lanes, actions):
-                    action_traces[lane].append(int(action))
-                step_responses = self._exchange(
-                    {
-                        lane: ("step", action)
-                        for lane, action in zip(lanes, actions)
-                    }
+                requests[lane] = (
+                    "reset_instance",
+                    _WorkerResetRequest(value=records[index].instance, preference=preference),
                 )
+            if requests:
+                responses = self._exchange(requests)
+                states.update(responses)
+                for lane, response in responses.items():
+                    for name in EVALUATION_WORKER_TIMING_FIELDS:
+                        worker_times[lane][name] += float(getattr(response, name, 0.0))
+                active.update(requests)
+
+        # A completed lane immediately takes the next fixed evaluation unit.
+        # Sampling state belongs to the instance/preference unit, not its lane.
+        fill_available(range(parallelism))
+        while active:
+            lanes = sorted(active)
+            observations = [
+                states[lane].observation for lane in lanes
+            ]
+            masks = [
+                states[lane].action_mask for lane in lanes
+            ]
+            if deterministic:
+                inference_start = time.perf_counter()
+                actions, _, _ = agent.act_batch(
+                    observations,
+                    masks,
+                    deterministic=True,
+                )
+                elapsed = time.perf_counter() - inference_start
+                share = elapsed / len(lanes)
                 for lane in lanes:
-                    decisions[lane] += 1
-                    response = step_responses[lane]
-                    if response.terminated or response.truncated:
-                        if response.metrics is None:
-                            raise ParallelWorkerError(
-                                f"worker {lane} returned no metrics"
-                            )
-                        response.metrics.update(
-                            summarize_policy_decision_diagnostics(
-                                policy_diagnostics[lane]
-                            )
+                    inference_times[lane] += share
+                diagnostic_rows = (
+                    agent.consume_policy_decision_diagnostics()
+                )
+                if diagnostic_rows and len(diagnostic_rows) != len(lanes):
+                    raise RuntimeError(
+                        "batched policy diagnostics do not match lanes"
+                    )
+                for lane, action, diagnostic in zip(
+                    lanes, actions, diagnostic_rows
+                ):
+                    diagnostic["selected_action"] = int(action)
+                    diagnostic["ranker_top_selected"] = bool(
+                        int(action)
+                        == int(diagnostic.get("relative_top_action", -1))
+                    )
+                    policy_diagnostics[lane].append(diagnostic)
+            else:
+                inference_start = time.perf_counter()
+                if getattr(agent.network, "execution_mode", "") == "reference_v8":
+                    actions = []
+                    diagnostic_rows = []
+                    for lane, observation, mask in zip(lanes, observations, masks):
+                        actions.append(agent.act(
+                            observation, mask, generator=generators[lane]
+                        )[0])
+                        diagnostic_rows.extend(agent.consume_policy_decision_diagnostics())
+                else:
+                    actions, _, _ = agent.act_batch(
+                        observations, masks,
+                        generators=[generators[lane] for lane in lanes],
+                    )
+                    diagnostic_rows = agent.consume_policy_decision_diagnostics()
+                elapsed = time.perf_counter() - inference_start
+                for lane in lanes:
+                    inference_times[lane] += elapsed / len(lanes)
+                if diagnostic_rows and len(diagnostic_rows) != len(lanes):
+                    raise RuntimeError("batched policy diagnostics do not match lanes")
+                for lane, action, diagnostic in zip(lanes, actions, diagnostic_rows):
+                    diagnostic["selected_action"] = int(action)
+                    diagnostic["ranker_top_selected"] = bool(
+                        int(action) == int(diagnostic.get("relative_top_action", -1))
+                    )
+                    policy_diagnostics[lane].append(diagnostic)
+            timing = self._evaluation_runtime_timing
+            timing["policy_inference_seconds"] += elapsed
+            timing["policy_batch_count"] += 1
+            timing["policy_observation_count"] += len(lanes)
+            for lane, action in zip(lanes, actions):
+                action_traces[lane].append(int(action))
+            step_responses = self._exchange(
+                {
+                    lane: ("step", action)
+                    for lane, action in zip(lanes, actions)
+                }
+            )
+            for lane in lanes:
+                decisions[lane] += 1
+                response = step_responses[lane]
+                for name in EVALUATION_WORKER_TIMING_FIELDS:
+                    worker_times[lane][name] += float(getattr(response, name, 0.0))
+                if response.terminated or response.truncated:
+                    if response.metrics is None:
+                        raise ParallelWorkerError(
+                            f"worker {lane} returned no metrics"
                         )
-                        results.append(
-                            FixedEvaluationRollout(
-                                record_index=start + lane,
-                                metrics=response.metrics,
-                                decisions=decisions[lane],
-                                inference_time_seconds=(
-                                    inference_times[lane]
-                                ),
-                                solve_time_seconds=(
-                                    time.perf_counter() - chunk_start
-                                ),
-                                action_trace_sha256=action_trace_sha256(
-                                    action_traces[lane]
-                                ),
-                                sampling_seed=(
-                                    None if deterministic else int(sampling_seed)
-                                ),
-                                derived_sampling_seed=(
-                                    None
-                                    if deterministic
-                                    else derived_sampling_seeds[lane]
-                                ),
-                                sampling_evaluation_key=evaluation_keys[lane],
-                            )
+                    response.metrics.update(
+                        summarize_policy_decision_diagnostics(
+                            policy_diagnostics[lane]
                         )
-                        active.remove(lane)
-                    else:
-                        states[lane] = response
+                    )
+                    results.append(
+                        FixedEvaluationRollout(
+                            record_index=record_indices[lane],
+                            metrics=response.metrics,
+                            decisions=decisions[lane],
+                            inference_time_seconds=(
+                                inference_times[lane]
+                            ),
+                            solve_time_seconds=(
+                                time.perf_counter() - started_at[lane]
+                            ),
+                            action_trace_sha256=action_trace_sha256(
+                                action_traces[lane]
+                            ),
+                            sampling_seed=(
+                                None if deterministic else int(sampling_seed)
+                            ),
+                            derived_sampling_seed=(
+                                None
+                                if deterministic
+                                else derived_sampling_seeds[lane]
+                            ),
+                            sampling_evaluation_key=evaluation_keys[lane],
+                            **worker_times[lane],
+                        )
+                    )
+                    active.remove(lane)
+                else:
+                    states[lane] = response
+            fill_available([lane for lane in range(parallelism) if lane not in active])
         results.sort(key=lambda value: value.record_index)
         return results
 

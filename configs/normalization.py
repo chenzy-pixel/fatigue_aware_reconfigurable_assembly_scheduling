@@ -14,6 +14,7 @@ from typing import Any
 
 NORMALIZATION_MANIFEST_SCHEMA = "e1_tail_validation_scales_v1"
 SELECTED_VALIDATION_MANIFEST_SCHEMA = "v2_selected_validation_scales_v1"
+EXCESS_MANIFEST_SCHEMA = "proportional_flow_validation_scales_v1"
 OBJECTIVE_FIELDS = {
     "flow": "flow_time_objective",
     "cost": "reconfiguration_cost",
@@ -209,22 +210,48 @@ def load_normalization_manifest(
         raise ValueError("normalization manifest SHA256 mismatch")
     payload = json.loads(source.read_text(encoding="utf-8"))
     schema = payload.get("schema_version")
-    if schema not in {NORMALIZATION_MANIFEST_SCHEMA, SELECTED_VALIDATION_MANIFEST_SCHEMA}:
+    if schema not in {NORMALIZATION_MANIFEST_SCHEMA, SELECTED_VALIDATION_MANIFEST_SCHEMA, EXCESS_MANIFEST_SCHEMA}:
         raise ValueError("unsupported normalization manifest schema")
     content_sha = payload.pop("content_sha256", None)
     if content_sha != canonical_json_sha256(payload):
         raise ValueError("normalization manifest content hash is invalid")
     payload["content_sha256"] = content_sha
+    from environment.types import flow_mode, FLOW_EXCESS
+    manifest_mode = flow_mode(payload)
     if (
         set(payload.get("sources", {})) != set(OBJECTIVE_FIELDS)
         or set(payload.get("scales", {})) != set(OBJECTIVE_FIELDS)
     ):
         raise ValueError("normalization manifest sources or scales are incomplete")
+    if schema == EXCESS_MANIFEST_SCHEMA:
+        if manifest_mode != FLOW_EXCESS:
+            raise ValueError("excess manifest requires proportional Flow mode")
+        flow = payload["sources"]["flow"]
+        if (flow.get("successful_count") != 49 or flow.get("trajectory_count") != 50
+                or not math.isclose(float(payload["scales"]["flow"]),
+                                    round(float(flow["successful_trajectory_mean"]), 4), abs_tol=1e-12)):
+            raise ValueError("excess scale disagrees with frozen validation reference")
+        for key in ("validation_metrics_sha256", "validation_subset_file_sha256"):
+            digest = str(flow.get(key, ""))
+            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ValueError("excess validation source requires SHA256 digests")
+        rows = flow.get("baseline_rows", [])
+        successful = [row for row in rows if row.get("success") is True]
+        if (len(rows) != 50 or len({row.get("instance_id") for row in rows}) != 50
+                or len(successful) != 49
+                or any(not math.isfinite(float(row["flow"])) or not math.isfinite(float(row["flow_lb"]))
+                       or float(row["flow_lb"]) < 0 or float(row["flow"]) < float(row["flow_lb"])
+                       for row in successful)
+                or not math.isclose(statistics.fmean(float(row["flow"])-float(row["flow_lb"]) for row in successful),
+                                    float(flow["successful_trajectory_mean"]),abs_tol=1e-8)):
+            raise ValueError("excess validation rows do not reproduce the selected mean")
     for objective, row in payload["sources"].items():
         scale = float(payload["scales"][objective])
         if not math.isfinite(scale) or scale <= 0:
             raise ValueError("normalization scales must be finite and positive")
-        if schema == SELECTED_VALIDATION_MANIFEST_SCHEMA:
+        if schema == EXCESS_MANIFEST_SCHEMA and objective == "flow":
+            continue
+        if schema in {SELECTED_VALIDATION_MANIFEST_SCHEMA, EXCESS_MANIFEST_SCHEMA}:
             mean = float(row.get("successful_trajectory_mean", math.nan))
             digits = row.get("rounding_digits")
             episode = row.get("validation_episode")
@@ -276,6 +303,10 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     if not path.is_absolute():
         path = project_root / path
     manifest = load_normalization_manifest(path, expected_sha256=str(expected))
+    from environment.types import flow_mode
+    selected_mode = flow_mode(config)
+    if selected_mode != flow_mode(manifest):
+        raise ValueError("flow_mode disagrees with normalization manifest")
     scalarizer["scales"] = {
         name: float(manifest["scales"][name]) for name in OBJECTIVE_FIELDS
     }
@@ -288,4 +319,11 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     network = config.setdefault("network", {})
     if not isinstance(network, dict):
         raise TypeError("network config must be an object")
+    from environment.types import flow_reward_version
+    expected_reward = flow_reward_version(config)
+    if ("flow_mode" in network and network["flow_mode"] != selected_mode
+            or "reward_version" in network and network["reward_version"] != expected_reward):
+        raise ValueError("network Flow identity disagrees with the experiment configuration")
     network["normalization_manifest_sha256"] = str(expected).lower()
+    network["flow_mode"] = selected_mode
+    network["reward_version"] = expected_reward

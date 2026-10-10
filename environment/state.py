@@ -16,6 +16,7 @@ class OperationRuntime:
     machine_id: str | None = None
     start_tick: int | None = None
     end_tick: int | None = None
+    planned_duration_ticks: int | None = None
 
 
 @dataclass

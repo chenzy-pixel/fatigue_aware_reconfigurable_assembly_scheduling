@@ -497,6 +497,7 @@
     "max_grad_norm": 0.5
   },
   "training": {
+    "resource_projection_cache_entries": 1024,
     "online_instances": true,
     "episodes": 2000,
     "smoke_episodes": 2,

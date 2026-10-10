@@ -272,6 +272,12 @@ def aggregate_evaluation_rows(
         values = {str(row.get(field)) for row in rows}
         if len(values) > 1:
             raise ValueError(f"cannot aggregate rows with different {field}")
+    worker_timing_totals = {
+        name: sum(float(row.get(name) or 0.0) for row in rows)
+        for name in ("observation_time_seconds", "environment_step_time_seconds",
+                     "terminal_metrics_time_seconds", "worker_service_time_seconds", "reset_time_seconds")
+        if any(row.get(name) is not None for row in rows)
+    }
     sampling_truncated_count = sum(bool(row.get("sampling_truncated", row.get("truncated", False))) for row in rows)
     if sampling_truncated_count:
         return {
@@ -294,6 +300,7 @@ def aggregate_evaluation_rows(
             "decision_count": sum(int(row["decisions"]) for row in rows),
             "total_inference_time_seconds": sum(float(row["inference_time_seconds"]) for row in rows),
             "total_solve_time_seconds": sum(float(row["solve_time_seconds"]) for row in rows),
+            "worker_timing_totals": worker_timing_totals,
             "completed_metrics": {}, "all_instance_metrics": {},
             "preference_quality_by_key": {}, "preference_balanced_quality_score": None,
             "gap_metrics": {}, "tail_metrics": {},
@@ -347,6 +354,8 @@ def aggregate_evaluation_rows(
         "flow_time_objective": summarize_values(
             row["flow_time_objective"] for row in rows
         ),
+        "flow_excess_objective": summarize_values(row.get("flow_excess_objective") for row in rows),
+        "reward_objective_flow": summarize_values(row.get("reward_objective_flow") for row in rows),
         "reconfiguration_cost": summarize_values(
             row["reconfiguration_cost"] for row in rows
         ),
@@ -468,6 +477,8 @@ def aggregate_evaluation_rows(
             )
         },
     }
+    for field in ("flow_excess_objective", "reward_objective_flow"):
+        completed_metrics[field] = summarize_values(row.get(field) for row in completed)
     gap_metrics = {
         "relative_heuristic_gap_percent": summarize_values(
             row["relative_heuristic_gap_percent"] for row in rows
@@ -560,6 +571,7 @@ def aggregate_evaluation_rows(
         "total_solve_time_seconds": sum(
             float(row["solve_time_seconds"]) for row in rows
         ),
+        "worker_timing_totals": worker_timing_totals,
         "completed_metrics": completed_metrics,
         "all_instance_metrics": all_instance_metrics,
         "preference_quality_by_key": preference_quality_means,

@@ -1,0 +1,5 @@
+{
+  "extends": "../single_flow.json",
+  "experiment_name": "flow_excess_shared_head_flow",
+  "network": {"actor_head_variant": "shared_preference"}
+}
