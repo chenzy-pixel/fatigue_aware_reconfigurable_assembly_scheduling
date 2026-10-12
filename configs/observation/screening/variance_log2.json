@@ -1,0 +1,9 @@
+{
+  "extends": "owa_log2.json",
+  "experiment_name": "schema12_screen_shared_excess_variance_log2",
+  "workload_objective": {"mode": "variance", "q": null},
+  "objective_scalarizer": {
+    "normalization_manifest": "configs/manifests/flow_excess_scales_20261008.json",
+    "normalization_manifest_sha256": "17367f71e7a529ee504feb2b531a6a44fdf7458f323797ca9be33508723ce61b"
+  }
+}

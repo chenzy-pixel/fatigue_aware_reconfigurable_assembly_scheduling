@@ -1,0 +1,12 @@
+{
+  "extends": "../../workload/q05/universal.json",
+  "experiment_name": "schema12_screen_shared_excess_owa_log2",
+  "seed": 11,
+  "workload_objective": {"mode": "geometric_owa", "q": 0.5},
+  "network": {
+    "actor_head_variant": "shared_preference",
+    "observation_schema_version": 12,
+    "global_objective_encoding": "log2_v1"
+  },
+  "training": {"episodes": 2000, "episodes_per_update": 20}
+}
