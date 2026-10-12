@@ -1,13 +1,13 @@
 {
   "extends": "../v8/universal.json",
   "experiment_name": "flow_excess_universal",
-  "experiment_suite_version": "single_stage_progress_quality_failure_v4",
+  "experiment_suite_version": "single_stage_progress_quality_workload_failure_v6",
   "objective_scalarizer": {
     "flow_mode": "excess_proportional_lb_v1",
-    "normalization_manifest": "configs/manifests/flow_excess_scales_20261008.json",
-    "normalization_manifest_sha256": "17367f71e7a529ee504feb2b531a6a44fdf7458f323797ca9be33508723ce61b"
+    "normalization_manifest": "configs/manifests/workload_excess_q50_20261011.json",
+    "normalization_manifest_sha256": "d90a3c93e9458fcff6b7608e856ec5166e009a7cca17695c37a813a470944f19"
   },
   "reward": {
-    "mode": "single_stage_progress_quality_failure_v4"
+    "mode": "single_stage_progress_quality_workload_failure_v6"
   }
 }

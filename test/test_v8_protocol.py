@@ -8,14 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from configs import load_config, validate_latest_only_config
+from configs import load_config, project_path, validate_latest_only_config
 from configs.formal_preferences import formal_preferences
 from configs.runtime import runtime_manifest
 from configs.normalization import (
     NORMALIZATION_MANIFEST_SCHEMA,
     SELECTED_VALIDATION_MANIFEST_SCHEMA,
+    WORKLOAD_MANIFEST_SCHEMA,
     apply_normalization_manifest,
     canonical_json_sha256,
+    file_sha256,
     load_normalization_manifest,
     write_immutable_manifest,
 )
@@ -30,6 +32,7 @@ from utils import configured_formal_evaluation_sampling_seeds
     (
         ("configs/e1/single_flow.json", [1.0, 0.0, 0.0]),
         ("configs/e1/single_cost.json", [0.0, 1.0, 0.0]),
+        ("configs/e1/single_workload.json", [0.0, 0.0, 1.0]),
         ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
     ),
 )
@@ -103,14 +106,15 @@ def test_all_final_grid_preferences_survive_float32_observation_round_trip():
 def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     config = deepcopy(load_config("configs/default.json"))
     config.pop("runtime_manifest")
+    current_suite = config["experiment_suite_version"]
     config["experiment_suite_version"] = "single_stage_progress_quality_v1"
     with pytest.raises(ValueError, match="experiment_suite_version"):
         validate_latest_only_config(config)
-    config["experiment_suite_version"] = "single_stage_progress_quality_failure_v3"
+    config["experiment_suite_version"] = current_suite
     config["reward"]["quality_weights"] = {
         "flow": 1.0,
         "cost": 0.0,
-        "variance": 0.0,
+        "workload": 0.0,
     }
     with pytest.raises(ValueError, match="reward.quality_weights"):
         validate_latest_only_config(config)
@@ -175,22 +179,37 @@ def test_normalization_manifest_round_trip_stays_outside_training_protocol(tmp_p
         load_normalization_manifest(destination, expected_sha256=digest)
 
 
-def test_frozen_scales_match_committed_tail_means_and_config():
-    config = load_config("configs/v8/universal.json")
-    manifest = load_normalization_manifest(
-        config["objective_scalarizer"]["normalization_manifest"],
-        expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
-    )
-    assert config["objective_scalarizer"]["scales"] == manifest["scales"]
+def test_historical_selected_scales_match_committed_validation_means():
+    path = project_path("configs/manifests/v2_selected_scales_20261002.json")
+    manifest = load_normalization_manifest(path, expected_sha256=file_sha256(path))
     assert manifest["schema_version"] == SELECTED_VALIDATION_MANIFEST_SCHEMA
     assert manifest["scales"] == {"flow": 1089.15, "cost": 353.27, "variance": 2.2629}
     for objective, source in manifest["sources"].items():
         assert round(source["successful_trajectory_mean"], source["rounding_digits"]) == manifest["scales"][objective]
 
 
+def test_current_workload_scales_match_their_validation_reference_rows():
+    from environment.workload import workload_config, workload_value
+
+    config = load_config("configs/v8/universal.json")
+    manifest = load_normalization_manifest(
+        project_path(config["objective_scalarizer"]["normalization_manifest"]),
+        expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
+    )
+    assert manifest["schema_version"] == WORKLOAD_MANIFEST_SCHEMA
+    assert config["objective_scalarizer"]["scales"] == manifest["scales"]
+    assert manifest["workload_objective"] == workload_config(config)
+    rows = manifest["workload_source"]["rows"]
+    good = [row for row in rows if row["success"] and row["physical_valid"]]
+    for row in rows:
+        actual = workload_value(tuple(row["worker_loads"].values()), config)
+        assert row["workload_value"] == pytest.approx(actual)
+    assert statistics.fmean(row["workload_value"] for row in good) == pytest.approx(manifest["scales"]["workload"])
+    assert manifest["scales"] == {"flow": 1089.15, "cost": 353.27, "workload": 21.03145448655653}
+
+
 def test_legacy_e1_scales_remain_verifiable():
-    from configs.normalization import file_sha256
-    path = Path("configs/manifests/e1_tail5_scales_20260928.json")
+    path = project_path("configs/manifests/e1_tail5_scales_20260928.json")
     manifest = load_normalization_manifest(path, expected_sha256=file_sha256(path))
     assert manifest["schema_version"] == NORMALIZATION_MANIFEST_SCHEMA
     for objective, source in manifest["sources"].items():
@@ -200,11 +219,8 @@ def test_legacy_e1_scales_remain_verifiable():
 
 @pytest.mark.parametrize("invalid", ["scale", "rounding", "source_hash"])
 def test_selected_scales_reject_inconsistent_signed_payload(tmp_path, invalid):
-    config = load_config("configs/default.json")
-    manifest = load_normalization_manifest(
-        config["objective_scalarizer"]["normalization_manifest"],
-        expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
-    )
+    source = project_path("configs/manifests/v2_selected_scales_20261002.json")
+    manifest = load_normalization_manifest(source, expected_sha256=file_sha256(source))
     manifest.pop("content_sha256")
     if invalid == "scale":
         manifest["scales"]["variance"] *= 2
@@ -223,18 +239,29 @@ def test_current_scales_align_training_reference_quality_and_pareto():
     from analysis.pareto_analysis import normalize_objectives
     from environment.types import bounded_quality_score
     from result.metrics import evaluation_quality_metric, LEGACY_QUALITY_METRIC, quality_metric_sha256
-    expected = {"flow":1089.15, "cost":353.27, "variance":2.2629}
+    expected = {"flow":1089.15, "cost":353.27, "workload":21.03145448655653}
     for path in ("configs/default.json", "configs/v8/universal.json",
-                 "configs/e1/single_flow.json", "configs/e1/single_cost.json", "configs/e1/single_variance.json",
+                 "configs/e1/single_flow.json", "configs/e1/single_cost.json", "configs/e1/single_workload.json",
                  "configs/baselines/mo_alns.json"):
         config = load_config(path)
         assert config["objective_scalarizer"]["scales"] == expected
         reference = evaluation_quality_metric(config)
+        assert reference["flow_mode"] == "raw_v1"
+        assert reference["workload_mode"] == "geometric_owa"
+        assert reference["workload_q"] == 0.5
         assert {name:reference[f"{name}_scale"] for name in expected} == expected
         assert normalize_objectives(list(expected.values()), list(expected.values())) == pytest.approx([.5,.5,.5])
         for preference in ((1,0,0),(0,1,0),(0,0,1)):
             assert bounded_quality_score(*expected.values(), config, preference=preference) == pytest.approx(.5)
-        assert bounded_quality_score(1089.15, 2*353.27, 4*2.2629, reference) == pytest.approx(.61)
+        assert bounded_quality_score(expected["flow"], 2*expected["cost"], 4*expected["workload"], reference) == pytest.approx(.61)
+    control = load_config("configs/e1/single_variance.json")
+    control_expected = {**expected, "workload": 2.2629}
+    assert control["objective_scalarizer"]["scales"] == control_expected
+    assert control["network"]["observation_schema_version"] == 11
+    control_metric = evaluation_quality_metric(control)
+    assert control_metric["workload_mode"] == "variance"
+    assert control_metric["workload_q"] is None
+    assert bounded_quality_score(*control_expected.values(), control) == pytest.approx(.5)
     assert evaluation_quality_metric({"evaluation":{"quality_metric":LEGACY_QUALITY_METRIC}}) == LEGACY_QUALITY_METRIC
     assert quality_metric_sha256(reference) != quality_metric_sha256(LEGACY_QUALITY_METRIC)
 
@@ -261,6 +288,12 @@ def _row(
         "flow_time_objective": 1.0,
         "reconfiguration_cost": 1.0,
         "worker_load_variance": 1.0,
+        "workload_objective_value": 1.0,
+        "workload_mode": "geometric_owa",
+        "workload_q": 0.5,
+        "workload_rule": "normalized_geometric_by_worker_count_v1",
+        "workload_order": "descending",
+        "workload_version": "workload_objective_v1",
         "inference_time_seconds": 0.0,
         "solve_time_seconds": 0.0,
         "inference_time_per_decision_ms": 0.0,

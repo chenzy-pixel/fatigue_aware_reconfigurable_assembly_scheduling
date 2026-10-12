@@ -1,6 +1,6 @@
 {
   "experiment_name": "v8_universal",
-  "experiment_suite_version": "single_stage_progress_quality_failure_v3",
+  "experiment_suite_version": "single_stage_progress_quality_workload_failure_v5",
   "method_version": "M1_hgnn_objective_experts_v8",
   "seed": 11,
   "algorithm_seeds": [
@@ -447,33 +447,23 @@
     "rho": 0.05,
     "scale_source": "frozen_manifest",
     "scales": {
-      "cost": 353.27,
       "flow": 1089.15,
-      "variance": 2.2629
+      "cost": 353.27,
+      "workload": 21.03145448655653
     },
-    "normalization_manifest": "configs/manifests/v2_selected_scales_20261002.json",
-    "normalization_manifest_sha256": "9d4829c467f592d9a319251f0f779e7354cce70e1511d3bc90ab19b78fa4cce3"
+    "normalization_manifest": "configs/manifests/workload_raw_q50_20261011.json",
+    "normalization_manifest_sha256": "d5b8d6eaf17143f540da9e9faa2ee488d5e3bd04f797c5023b938c07f83c654c"
   },
   "reward": {
-    "mode": "single_stage_progress_quality_failure_v3",
+    "mode": "single_stage_progress_quality_workload_failure_v5",
     "terminal_failure_penalty": 2.0,
     "feasibility_shaping": {
       "enabled": false
     }
   },
   "evaluation": {
-    "result_schema_version": "8.0.0",
-    "quality_metric": {
-      "version": "canonical_bounded_quality_v2",
-      "flow_scale": 1089.15,
-      "cost_scale": 353.27,
-      "variance_scale": 2.2629,
-      "quality_weights": {
-        "flow": 0.5,
-        "cost": 0.3,
-        "variance": 0.2
-      }
-    }
+    "result_schema_version": "9.0.0",
+    "quality_metric": null
   },
   "network": {
     "hidden_dim": 128,
@@ -483,7 +473,8 @@
     "residual_gate_initial_logit": 0.0,
     "residual_std_floor": 0.001,
     "worker_flow_time_normalization": "candidate_zscore_v1",
-    "worker_flow_time_std_floor": 0.001
+    "worker_flow_time_std_floor": 0.001,
+    "observation_schema_version": 11
   },
   "ppo": {
     "learning_rate": 0.0001,
@@ -625,5 +616,9 @@
       "representative_instance_index": 0,
       "save_environment": true
     }
+  },
+  "workload_objective": {
+    "mode": "geometric_owa",
+    "q": 0.5
   }
 }

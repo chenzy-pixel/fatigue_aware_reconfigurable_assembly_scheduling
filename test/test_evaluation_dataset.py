@@ -21,6 +21,7 @@ from result.metrics import (
     aggregate_evaluation_rows,
     relative_gap_percent,
     summarize_values,
+    result_schema_version,
 )
 from result.io import write_config, write_csv, write_json
 
@@ -202,7 +203,7 @@ def test_fixed_validation_evaluation_is_read_only_and_reports_zero_gap(
     saved_metrics = json.loads(
         (tmp_path / "metrics.json").read_text(encoding="utf-8")
     )
-    assert saved_metrics["evaluation_schema_version"] == "8.0.0"
+    assert saved_metrics["evaluation_schema_version"] == result_schema_version(config)
     with (tmp_path / "instance_metrics.csv").open(
         "r",
         encoding="utf-8-sig",

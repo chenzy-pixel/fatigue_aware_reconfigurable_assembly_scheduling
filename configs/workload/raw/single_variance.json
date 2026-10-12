@@ -1,0 +1,6 @@
+{
+  "extends": "../../e1/single_variance.json",
+  "experiment_name": "workload_raw_shared_head_variance",
+  "workload_objective": {"mode": "variance", "q": null},
+  "network": {"actor_head_variant": "shared_preference"}
+}

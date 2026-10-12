@@ -1,11 +1,16 @@
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
+import json
 
 import pytest
 
 from analysis.v8_pareto_analysis import analyze_dual_flow_runs
 from configs import load_config
+from environment.workload import objective_names
+from environment import terminal_quality_score
+from result.metrics import evaluation_quality_metric, quality_metric_sha256, result_schema_version
+from data.distribution import protocol_hashes
 from data import load_dataset_split
 from environment import AssemblySchedulingEnv
 from result.io import write_config,write_csv,write_json
@@ -22,7 +27,10 @@ def test_dual_hv_accepts_distinct_training_modes_and_derives_old_success_fields(
     monkeypatch.setattr("data.load_dataset_split",lambda config,name:fake)
     env=AssemblySchedulingEnv(raw); env.reset(fixed_instance,build_observation=False)
     lb=env._total_processing_lower_bound_ticks*env.resolution
-    for row in rows: row["flow_time_objective"]=lb+100
+    for row in rows:
+        row["flow_time_objective"]=lb+100
+        row["preference_quality_score"] = terminal_quality_score(lb+100, row["reconfiguration_cost"], row["workload_objective_value"], raw,
+            preference=tuple(row[f"preference_{name}"] for name in objective_names(raw)), terminal_failure=not row["task_succeeded"])
     write_csv(tmp_path/"raw/instance_metrics.csv",rows)
     excess=load_config("configs/flow_excess/universal.json")
     directory=tmp_path/"excess"; directory.mkdir()
@@ -31,6 +39,14 @@ def test_dual_hv_accepts_distinct_training_modes_and_derives_old_success_fields(
     for row in newrows:
         row["flow_time_objective"]=lb+90
         row["flow_excess_objective"]=90
+        row.update(flow_mode=excess["objective_scalarizer"]["flow_mode"], reward_version=excess["reward"]["mode"],
+            experiment_suite_version=excess["experiment_suite_version"],
+            result_schema_version=result_schema_version(excess), **protocol_hashes(excess),
+            normalization_manifest_sha256=excess["objective_scalarizer"]["normalization_manifest_sha256"],
+            quality_metric_sha256=quality_metric_sha256(evaluation_quality_metric(excess)),
+            **{f"objective_scale_{name}": excess["objective_scalarizer"]["scales"][name] for name in objective_names(excess)})
+        row["preference_quality_score"] = terminal_quality_score(90, row["reconfiguration_cost"], row["workload_objective_value"], excess,
+            preference=tuple(row[f"preference_{name}"] for name in objective_names(excess)), terminal_failure=not row["task_succeeded"])
     write_csv(directory/"instance_metrics.csv",newrows)
     metadata=deepcopy(metadata)
     metadata["provenance"]=build_provenance(excess,dataset_manifest_path=project_path(excess["paths"]["manifests_root"])/"test/manifest.json",formal_evaluation_stage="final_test")
@@ -80,11 +96,12 @@ def test_solver_candidates_use_dual_metrics_and_enforce_matched_budget(tmp_path,
         for row in rows:
             row.update(flow_mode=config["objective_scalarizer"].get("flow_mode","raw_v1"),
                        flow_time_objective=lb+100,flow_excess_objective=100,dataset_manifest_sha256=digest)
-            for name in ("flow","cost","variance"):
+            row["worker_loads"] = json.dumps({worker.id: 3.0 for worker in fixed_instance.workers})
+            for name in objective_names(config):
                 row[f"preference_{name}"]=row[f"w_{name}"]
             row["preference_quality_score"]=bounded_quality_score(
                 100 if label=="excess" else lb+100,300,3,config,
-                preference=tuple(row[f"w_{name}"] for name in ("flow","cost","variance")))
+                preference=tuple(row[f"w_{name}"] for name in objective_names(config)))
         write_csv(directory/"instance_metrics.csv",rows)
     summary=analyze_candidate_flow_runs(runs,tmp_path/"matched")
     assert len(summary["instances"])==2

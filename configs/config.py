@@ -9,6 +9,7 @@ from typing import Any
 from .runtime import attach_runtime_manifest
 from .normalization import apply_normalization_manifest
 from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
+from environment.workload import observation_schema_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +67,19 @@ def _load_config_path(
         parent_path,
         stack=(*stack, resolved),
     )
-    return _deep_merge(base, raw), (*chain, resolved)
+    merged = _deep_merge(base, raw)
+    # A saved schema-10 snapshot keeps its own variance contract even if its
+    # parent now selects the modern workload objective.
+    raw_manifest = raw.get("runtime_manifest")
+    legacy_snapshot = isinstance(raw_manifest, Mapping) and raw_manifest.get("observation_schema") == 10
+    if legacy_snapshot and "workload_objective" not in raw:
+        merged.pop("workload_objective", None)
+        if "observation_schema_version" not in raw.get("network", {}):
+            merged.setdefault("network", {})["observation_schema_version"] = 10
+        for field in ("workload_mode", "workload_q", "workload_order", "workload_weight_rule", "workload_version", "workload_scale", "objective_scales", "objective_names"):
+            if field not in raw.get("network", {}):
+                merged.get("network", {}).pop(field, None)
+    return merged, (*chain, resolved)
 
 
 def load_config(path: str | Path, *, allow_observation_migration: bool = False) -> dict[str, Any]:
@@ -77,8 +90,16 @@ def load_config(path: str | Path, *, allow_observation_migration: bool = False) 
     saved_manifest = config.pop("runtime_manifest", None)
     if saved_manifest is not None and not isinstance(saved_manifest, Mapping):
         raise ValueError("saved runtime_manifest must be an object")
-    if saved_manifest is not None and saved_manifest.get("observation_schema") != OBSERVATION_SCHEMA_VERSION:
+    if saved_manifest is not None and saved_manifest.get("observation_schema") not in {10, OBSERVATION_SCHEMA_VERSION}:
         raise ValueError(f"saved runtime_manifest is incompatible: schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation snapshots cannot be migrated")
+    if "workload_objective" not in config:
+        if (saved_manifest is None or saved_manifest.get("observation_schema") != 10
+                or int(config.get("network", {}).get("observation_schema_version", 10)) != 10):
+            raise ValueError("missing workload_objective is allowed only in a verified saved schema-10 configuration")
+        config.setdefault("network", {}).setdefault("observation_schema_version", 10)
+    selected_schema = observation_schema_version(config)
+    if saved_manifest is not None and saved_manifest.get("observation_schema") != selected_schema:
+        raise ValueError("saved runtime_manifest observation schema disagrees with workload_objective")
     apply_normalization_manifest(config, project_root=PROJECT_ROOT)
     attach_runtime_manifest(config)
     if saved_manifest is not None and config["runtime_manifest"].get("flow_mode") == "raw_v1":

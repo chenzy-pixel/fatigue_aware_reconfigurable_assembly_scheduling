@@ -1,17 +1,17 @@
 # 当前实验协议
 
-更新日期：2026-10-05。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。单目标和 MO-ALNS 配置复用相同环境、奖励与冻结尺度。
+更新日期：2026-10-11。`configs/default.json` 是当前 Universal 协议的主配置，`configs/v8/universal.json` 继承它。主线第三目标采用几何 OWA，q=0.5，observation schema 11、结果 schema 9；原始劳动方差作为诊断和显式对照。配置、尺度、兼容性、评价和命令见[几何 OWA 实际劳动目标](workload_owa_implementation.md)。
 
 2026-10-10 环境性能实现：单次观测/订单链作用域复用有限 DIS→INS 投影缓存，
 `training.resource_projection_cache_entries`默认1024、0关闭；局部绑定resolution，并复用工序索引。
 完整订单链采用延迟资源物化、WAIT活跃订单按需估计及专用时间/疲劳投影；
-能力边按机器、模块、量化释放时刻和实际工序身份分组。物理数据契约、观测schema、
-奖励、网络、checkpoint及正式评估预算沿用原协议。
+能力边按机器、模块、量化释放时刻和实际工序身份分组。这一轮性能实现沿用了当时的物理数据契约、观测schema、
+奖励、网络、checkpoint及正式评估预算；当前目标契约见上述 OWA 文档。
 训练/评估日志分别记录观测、reset、终局指标、worker service、主进程收发及实际batch计时。
 worker service与主进程接收等待会重叠，不能将这些时间相加作为墙钟时间。
 
 2026-10-08 独立实验：新增 `excess_proportional_lb_v1`、Flow 尺度 368.3143 和
-v4 奖励身份；默认 raw/v3 继续使用本协议。主 HV 统一报告原始 Flow，excess HV
+v4 奖励身份；该轮 raw/v3 使用原协议。该轮主 HV 统一报告原始 Flow，excess HV
 作为补充。完整状态、WAIT、checkpoint、尺度出处和验收见
 [Flow 比例抵扣实验契约](flow_excess_experiment.md)。
 

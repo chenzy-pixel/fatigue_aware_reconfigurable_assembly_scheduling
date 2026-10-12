@@ -261,12 +261,14 @@ def _aggregate_reward_vectors(
     totals = {
         name: 0.0
         for name in RewardVector.__dataclass_fields__
-        if name != "preference_key"
+        if name != "preference_key" and (name != "workload" or reward_vectors[0].workload is not None)
     }
     preference_keys = {value.preference_key for value in reward_vectors}
     if len(preference_keys) != 1:
         raise RuntimeError("an aggregated transition changed episode preference")
     for reward_vector in reward_vectors:
+        if (reward_vector.workload is None) != (reward_vectors[0].workload is None):
+            raise RuntimeError("an aggregated transition changed workload reward identity")
         for name in totals:
             totals[name] += float(getattr(reward_vector, name))
     return RewardVector(
@@ -1317,6 +1319,7 @@ class ParallelEpisodeRunner:
                     "flow": 0.0,
                     "cost": 0.0,
                     "variance": 0.0,
+                    **({"workload": 0.0} if "workload_mode" in self.config["network"] else {}),
                     "operation_progress": 0.0,
                     "quality": 0.0,
                     "failure": 0.0,

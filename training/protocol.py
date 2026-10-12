@@ -34,6 +34,7 @@ class LexicographicCheckpointSelector:
     improvement_count: int = 0
     tie_count: int = 0
     last_decision: dict[str, object] = field(default_factory=dict)
+    protocol: str = "single_stage_lexicographic_failure_v3"
 
     @classmethod
     def from_config(cls, config: dict) -> "LexicographicCheckpointSelector":
@@ -43,7 +44,7 @@ class LexicographicCheckpointSelector:
             )
         if not math.isclose(float(config["ppo"]["gamma"]), 1.0):
             raise ValueError("single-stage telescoping training requires ppo.gamma = 1.0")
-        return cls()
+        return cls(protocol=config.get("runtime_manifest", {}).get("training_protocol", "single_stage_lexicographic_failure_v3"))
 
     @property
     def has_best(self) -> bool:
@@ -159,7 +160,7 @@ class LexicographicCheckpointSelector:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "protocol": "single_stage_lexicographic_failure_v3",
+            "protocol": self.protocol,
             "selection_tolerance": SELECTION_TOLERANCE,
             "has_best": self.has_best,
             "best_completion_rate": self.best_completion_rate,

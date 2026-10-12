@@ -59,12 +59,12 @@ def _settings(config, *, budget=10):
 def test_baseline_record_pipeline_uses_current_config_and_schema(config, fixed_instance):
     from data import load_dataset_split
     from scripts.mo_alns import _run_record
-    from result.metrics import EVALUATION_SCHEMA_VERSION
+    from result.metrics import result_schema_version
     record = load_dataset_split(config, "test")[0]
     tiny_record = replace(record, instance=_tiny_instance(fixed_instance))
     result = _run_record(_settings(config, budget=8), tiny_record, "test", 11, (PreferenceVector(1.0, 0.0, 0.0),))
     row = result["rows"][0]
-    assert row["result_schema_version"] == EVALUATION_SCHEMA_VERSION
+    assert row["result_schema_version"] == result_schema_version(config)
     assert row["objective_scale_flow"] == config["objective_scalarizer"]["scales"]["flow"]
     assert row["normalization_manifest_sha256"] == config["objective_scalarizer"]["normalization_manifest_sha256"]
     assert row["arm"] == "mo_alns"

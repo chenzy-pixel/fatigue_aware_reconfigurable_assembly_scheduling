@@ -94,12 +94,12 @@ def test_single_stage_reward_is_unshaped_and_telescopes(config, fixed_instance):
     assert metrics["truncated"] is False
     initial = metrics["initial_objectives"]
     initial_score = bounded_quality_score(
-        initial["flow"], initial["cost"], initial["variance"], config, preference=(7, 2, 1)
+        initial["flow"], initial["cost"], initial["workload"], config, preference=(7, 2, 1)
     )
     terminal_score = bounded_quality_score(
         metrics["flow_time_objective"],
         metrics["reconfiguration_cost"],
-        metrics["worker_load_variance"],
+        metrics["workload_objective_value"],
         config,
         preference=(7, 2, 1),
     )
@@ -137,7 +137,7 @@ def test_sampling_guard_preserves_actual_quality_and_reward(
     initial_score = bounded_quality_score(
         initial["flow"],
         initial["cost"],
-        initial["variance"],
+        initial["workload"],
         truncated_config,
         preference=preference,
     )

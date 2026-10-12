@@ -5,6 +5,7 @@ from .actions import ActionCodec
 from .preference import (
     CANONICAL_PREFERENCE,
     PREFERENCE_NAMES,
+    LEGACY_PREFERENCE_NAMES,
     PreferenceContext,
     PreferenceContextInput,
     PreferenceInput,
@@ -14,6 +15,11 @@ from .preference import (
     normalize_preference,
     quality_preference_for_episode,
     simplex_lattice,
+)
+from .workload import (
+    workload_config, is_modern_workload, observation_schema_version, objective_names,
+    geometric_owa_weights, workload_value, workload_delta, workload_scale,
+    metrics_workload_objective,
 )
 from .types import (
     ASSEMBLY_EDGE_TYPES,
@@ -67,6 +73,7 @@ __all__ = [
     "OPERATION_ORDER_EDGE",
     "ORDER_WAVE_EDGE",
     "PREFERENCE_NAMES",
+    "LEGACY_PREFERENCE_NAMES",
     "PRECEDES_EDGE",
     "PreferenceContext",
     "PreferenceContextInput",
@@ -90,4 +97,13 @@ __all__ = [
     "simplex_lattice",
     "terminal_quality_score",
     "terminal_failure_penalty",
+    "workload_config",
+    "is_modern_workload",
+    "observation_schema_version",
+    "objective_names",
+    "geometric_owa_weights",
+    "workload_value",
+    "workload_delta",
+    "workload_scale",
+    "metrics_workload_objective",
 ]

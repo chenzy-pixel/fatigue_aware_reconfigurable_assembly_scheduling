@@ -9,6 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from environment.types import flow_mode, flow_reward_version
+from environment.workload import workload_config
 from configs.network_contract import (
     MESSAGE_IDENTITY_FIELDS, message_identity, validate_message_identity,
 )
@@ -38,19 +39,20 @@ from environment import (
 
 
 from environment.observation_schema import (
-    OBSERVATION_SCHEMA_VERSION, GLOBAL_FEATURE_NAMES,
+    OBSERVATION_SCHEMA_VERSION, global_feature_names as schema_global_feature_names,
 )
 
 
 NODE_TYPES = ASSEMBLY_NODE_TYPES
-OBJECTIVES = ("flow", "cost", "variance")
+OBJECTIVES = ("flow", "cost", "workload")
+LEGACY_OBJECTIVES = ("flow", "cost", "variance")
 POLICY_HEAD_VERSION = 8
 EXPERT_WEIGHT_PARAMETERIZATION = "simplex_softplus_v8"
 SHARED_HEAD_PARAMETERIZATION = "shared_preference_mlp_v1"
 PREFERENCE_ENCODER_DIM = 32
 RESIDUAL_STD_FLOOR = 1e-3
 
-PRODUCTION_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
+LEGACY_PRODUCTION_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     "flow": (
         ("processing_time_norm", -1),
         ("reconfiguration_time_norm", -1),
@@ -64,7 +66,7 @@ PRODUCTION_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     ),
     "variance": (("estimated_worker_load_variance_delta_norm", -1),),
 }
-WORKER_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
+LEGACY_WORKER_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     "flow": (("stage_duration_norm", -1),),
     "cost": (
         ("fixed_cost_norm", -1),
@@ -73,11 +75,66 @@ WORKER_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     ),
     "variance": (("incremental_load_variance_norm", -1),),
 }
-WAIT_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
+LEGACY_WAIT_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     "flow": (("estimated_flow_objective_delta_if_wait", -1),),
     "cost": (("estimated_cost_objective_delta_if_wait", -1),),
     "variance": (("estimated_load_variance_delta_if_wait", -1),),
 }
+
+
+def direct_feature_schemas(version: int) -> tuple[dict, dict, dict]:
+    if version == 10:
+        return (LEGACY_PRODUCTION_DIRECT_SCHEMA, LEGACY_WORKER_DIRECT_SCHEMA, LEGACY_WAIT_DIRECT_SCHEMA)
+    if version != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError(f"schema {version} is incompatible; older observation schemas require retraining")
+    replacements = {
+        "estimated_worker_load_variance_delta_norm": "estimated_worker_load_objective_delta_norm",
+        "incremental_load_variance_norm": "incremental_workload_objective_norm",
+        "estimated_load_variance_delta_if_wait": "estimated_workload_objective_delta_if_wait",
+    }
+    return tuple({
+        "workload" if objective == "variance" else objective: tuple(
+            (replacements.get(name, name), direction) for name, direction in fields
+        ) for objective, fields in schema.items()
+    } for schema in (LEGACY_PRODUCTION_DIRECT_SCHEMA, LEGACY_WORKER_DIRECT_SCHEMA, LEGACY_WAIT_DIRECT_SCHEMA))
+
+
+PRODUCTION_DIRECT_SCHEMA, WORKER_DIRECT_SCHEMA, WAIT_DIRECT_SCHEMA = direct_feature_schemas(OBSERVATION_SCHEMA_VERSION)
+WORKLOAD_IDENTITY_FIELDS = (
+    "workload_mode", "workload_q", "workload_order", "workload_weight_rule", "workload_version",
+    "workload_scale", "objective_scales", "objective_names",
+)
+
+
+def _network_workload_identity(config: Mapping[str, Any], version: int) -> dict[str, Any]:
+    if version == 10:
+        if config.get("workload_mode", "variance") != "variance":
+            raise ValueError("schema-10 checkpoints require workload_mode='variance'")
+        return {}
+    if "workload_mode" not in config:
+        raise ValueError("schema-11 network config requires workload_mode")
+    selected = workload_config(config)
+    mode, q = selected["mode"], selected["q"]
+    rule = selected["weights"]
+    identity = {
+        "workload_mode": mode, "workload_q": q, "workload_weight_rule": rule,
+        "workload_version": selected["version"], "workload_order": selected["order"], "objective_names": OBJECTIVES,
+    }
+    for field in ("workload_order", "workload_weight_rule", "workload_version", "objective_names"):
+        if field in config:
+            received = tuple(config[field]) if field == "objective_names" else config[field]
+            if received != identity[field]:
+                raise ValueError(f"network {field} disagrees with workload_mode")
+    try:
+        scales = tuple(float(value) for value in config["objective_scales"])
+        scale = float(config["workload_scale"])
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise ValueError("schema-11 network requires workload_scale and objective_scales") from error
+    if len(scales) != 3 or any(not np.isfinite(value) or value <= 0 for value in scales):
+        raise ValueError("network objective_scales must contain three finite positive scales")
+    if not np.isfinite(scale) or scale <= 0 or scale != scales[2]:
+        raise ValueError("network workload_scale disagrees with objective_scales")
+    return {**identity, "workload_scale": scale, "objective_scales": scales}
 
 BIDIRECTIONAL_EDGE_TYPES = frozenset(
     (
@@ -103,7 +160,8 @@ def _relation_key(edge_type: EdgeType) -> str:
 def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(config, Mapping):
         raise TypeError("network config must be a mapping")
-    if int(config.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION)) != OBSERVATION_SCHEMA_VERSION:
+    schema_version = int(config.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION))
+    if schema_version not in {10, OBSERVATION_SCHEMA_VERSION}:
         raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; network observation schema is incompatible")
     hidden_dim = int(config.get("hidden_dim", 128))
     layers = int(config.get("message_passing_layers", 2))
@@ -134,6 +192,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     worker_time_floor = float(config.get("worker_flow_time_std_floor", 0.001))
     if not np.isfinite(worker_time_floor) or worker_time_floor <= 0:
         raise ValueError("network.worker_flow_time_std_floor must be finite and positive")
+    workload_identity = _network_workload_identity(config, schema_version)
     manifest_sha = config.get("normalization_manifest_sha256")
     selected_flow = flow_mode(dict(config))
     expected_reward = flow_reward_version(dict(config))
@@ -154,6 +213,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "message_passing_layers": layers,
         "dropout": dropout,
         "policy_head_version": version,
+        "observation_schema_version": schema_version,
         "preference_embedding_dim": PREFERENCE_ENCODER_DIM,
         "residual_gate_initial_logit": gate,
         "residual_std_floor": floor,
@@ -166,6 +226,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "normalization_manifest_sha256": manifest_sha,
         "flow_mode": selected_flow,
         "reward_version": expected_reward,
+        **workload_identity,
     }
 
 
@@ -194,7 +255,7 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     if int(spec.get("policy_head_version", 0)) != POLICY_HEAD_VERSION:
         raise ValueError("V7 and earlier checkpoints are rejected by V8 runtime")
     schema_version = int(spec.get("observation_schema_version", 0))
-    if schema_version != OBSERVATION_SCHEMA_VERSION:
+    if schema_version not in {10, OBSERVATION_SCHEMA_VERSION}:
         raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation schemas cannot be loaded or migrated")
     validate_message_identity(spec, require=True)
     dimensions = spec.get("edge_feature_dimensions", {})
@@ -206,7 +267,7 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         raise ValueError("checkpoint time context version is incompatible")
     if schema_version >= 6 and spec.get("time_context_feature_schema") != TIME_CONTEXT_FEATURE_SCHEMA:
         raise ValueError("checkpoint time context feature schema is incompatible")
-    expected_globals = GLOBAL_FEATURE_NAMES
+    expected_globals = schema_global_feature_names(schema_version)
     if int(spec.get("feature_dimensions", {}).get("global", 0)) != len(expected_globals):
         raise ValueError("checkpoint global feature dimensions are incompatible")
     if tuple(spec.get("global_feature_names", ())) != expected_globals:
@@ -218,15 +279,21 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         raise ValueError("checkpoint actor head parameterization is incompatible")
     if int(spec.get("preference_embedding_dim", 0)) != PREFERENCE_ENCODER_DIM:
         raise ValueError("checkpoint preference encoder is not V8 3->32->ReLU->32")
-    expected_schemas = {
-        "production_direct_feature_schema": _schema_serializable(PRODUCTION_DIRECT_SCHEMA),
-        "worker_direct_feature_schema": _schema_serializable(WORKER_DIRECT_SCHEMA),
-        "wait_direct_feature_schema": _schema_serializable(WAIT_DIRECT_SCHEMA),
-    }
+    expected_schemas = dict(zip(
+        ("production_direct_feature_schema", "worker_direct_feature_schema", "wait_direct_feature_schema"),
+        map(_schema_serializable, direct_feature_schemas(schema_version)), strict=True,
+    ))
     for name, expected in expected_schemas.items():
         if spec.get(name) != expected:
             raise ValueError(f"checkpoint {name} is incompatible with V8")
+    if schema_version == OBSERVATION_SCHEMA_VERSION:
+        for field in WORKLOAD_IDENTITY_FIELDS:
+            if field not in spec:
+                raise ValueError(f"checkpoint is missing {field}")
     normalized = normalize_network_config(spec)
+    if schema_version == OBSERVATION_SCHEMA_VERSION:
+        for field in WORKLOAD_IDENTITY_FIELDS:
+            spec[field] = normalized[field]
     spec["flow_mode"] = normalized["flow_mode"]
     spec["reward_version"] = normalized["reward_version"]
     for name in ("encoder_variant", "actor_head_variant"):
@@ -243,7 +310,7 @@ def assert_network_config_matches_spec(
 ) -> None:
     configured = normalize_network_config(config)
     saved = infer_checkpoint_network_spec({"network_spec": checkpoint_spec})
-    if saved["observation_schema_version"] != config.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION):
+    if saved["observation_schema_version"] != configured["observation_schema_version"]:
         raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; checkpoint observation schema is incompatible")
     for name in (
         "encoder_variant",
@@ -262,19 +329,17 @@ def assert_network_config_matches_spec(
         "normalization_manifest_sha256",
         "flow_mode",
         "reward_version",
+        *(WORKLOAD_IDENTITY_FIELDS if configured["observation_schema_version"] == OBSERVATION_SCHEMA_VERSION else ()),
     ):
         if configured[name] != saved.get(name):
             raise ValueError(
                 f"checkpoint {name} is incompatible: "
                 f"configured={configured[name]!r}, checkpoint={saved.get(name)!r}"
             )
-    expected_schemas = {
-        "production_direct_feature_schema": _schema_serializable(
-            PRODUCTION_DIRECT_SCHEMA
-        ),
-        "worker_direct_feature_schema": _schema_serializable(WORKER_DIRECT_SCHEMA),
-        "wait_direct_feature_schema": _schema_serializable(WAIT_DIRECT_SCHEMA),
-    }
+    expected_schemas = dict(zip(
+        ("production_direct_feature_schema", "worker_direct_feature_schema", "wait_direct_feature_schema"),
+        map(_schema_serializable, direct_feature_schemas(configured["observation_schema_version"])), strict=True,
+    ))
     for name, expected in expected_schemas.items():
         if saved.get(name) != expected:
             raise ValueError(f"checkpoint {name} is incompatible with V8")
@@ -341,12 +406,13 @@ class ObjectiveExpertSet(nn.Module):
     ):
         super().__init__()
         self.schema = {name: tuple(fields) for name, fields in schema.items()}
+        self.objectives = tuple(self.schema)
         self.experts = nn.ModuleDict(
             {
                 objective: ObjectiveExpert(
                     [direction for _, direction in self.schema[objective]], hidden_dim
                 )
-                for objective in OBJECTIVES
+                for objective in self.objectives
             }
         )
 
@@ -357,7 +423,7 @@ class ObjectiveExpertSet(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         values = [
             self.experts[name](action_embedding, direct[name])
-            for name in OBJECTIVES
+            for name in self.objectives
         ]
         return tuple(torch.stack(parts, dim=-1) for parts in zip(*values, strict=True))
 
@@ -370,8 +436,9 @@ class SharedPreferenceHead(nn.Module):
     ):
         super().__init__()
         self.schema = {name: tuple(fields) for name, fields in schema.items()}
+        self.objectives = tuple(self.schema)
         width = hidden_dim + PREFERENCE_ENCODER_DIM + sum(
-            len(self.schema[name]) for name in OBJECTIVES
+            len(self.schema[name]) for name in self.objectives
         )
         self.score = nn.Sequential(
             nn.Linear(width, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1)
@@ -381,7 +448,7 @@ class SharedPreferenceHead(nn.Module):
         self, action_embedding: torch.Tensor, direct: Mapping[str, torch.Tensor],
         preference_embedding: torch.Tensor,
     ) -> torch.Tensor:
-        features = torch.cat([direct[name] for name in OBJECTIVES], dim=-1)
+        features = torch.cat([direct[name] for name in self.objectives], dim=-1)
         values = torch.cat((action_embedding, preference_embedding, features), dim=-1)
         return 2.0 * torch.tanh(self.score(values).squeeze(-1))
 
@@ -495,6 +562,13 @@ class HeteroGraphActorCritic(nn.Module):
         actor_head_variant: str = "objective_experts",
         global_feature_names: Sequence[str] | None = None,
         observation_schema_version: int = OBSERVATION_SCHEMA_VERSION,
+        workload_mode: str | None = None,
+        workload_q: float | None = None,
+        workload_order: str = "descending",
+        workload_weight_rule: str | None = None,
+        workload_version: str | None = None,
+        workload_scale: float | None = None,
+        objective_scales: Sequence[float] | None = None,
     ):
         super().__init__()
         self.feature_dimensions = {name: int(value) for name, value in feature_dimensions.items()}
@@ -507,35 +581,45 @@ class HeteroGraphActorCritic(nn.Module):
         self.dropout_probability = float(dropout)
         if self.dropout_probability != 0.0:
             raise ValueError("PPO requires network.dropout = 0")
-        if observation_schema_version != OBSERVATION_SCHEMA_VERSION:
+        if observation_schema_version not in {10, OBSERVATION_SCHEMA_VERSION}:
             raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; legacy observations cannot be migrated")
+        expected_globals = schema_global_feature_names(observation_schema_version)
         self.global_feature_names = tuple(
-            GLOBAL_FEATURE_NAMES if global_feature_names is None else global_feature_names
+            expected_globals if global_feature_names is None else global_feature_names
         )
-        if (self.feature_dimensions.get("global") != len(GLOBAL_FEATURE_NAMES)
-                or self.global_feature_names != GLOBAL_FEATURE_NAMES):
+        if (self.feature_dimensions.get("global") != len(expected_globals)
+                or self.global_feature_names != expected_globals):
             raise ValueError("global feature names/order/dimensions are incompatible")
         self.observation_schema_version = observation_schema_version
+        self.production_direct_schema, self.worker_direct_schema, self.wait_direct_schema = direct_feature_schemas(observation_schema_version)
+        self.objectives = tuple(self.production_direct_schema)
         self.policy_head_version = POLICY_HEAD_VERSION
-        variant_config = normalize_network_config({
+        workload_fields = {} if observation_schema_version == 10 else {
+            "workload_mode": workload_mode, "workload_q": workload_q,
+            "workload_order": workload_order,
+            "workload_weight_rule": workload_weight_rule, "workload_version": workload_version,
+            "workload_scale": workload_scale, "objective_scales": objective_scales,
+        }
+        normalized = normalize_network_config({
             "encoder_variant": encoder_variant, "actor_head_variant": actor_head_variant,
+            "observation_schema_version": observation_schema_version,
+            "flow_mode": flow_mode,
+            **({"reward_version": reward_version} if reward_version is not None else {}),
+            "worker_flow_time_normalization": worker_flow_time_normalization,
+            "worker_flow_time_std_floor": worker_flow_time_std_floor,
+            **workload_fields,
         })
-        self.encoder_variant = variant_config["encoder_variant"]
-        self.actor_head_variant = variant_config["actor_head_variant"]
-        self.expert_weight_parameterization = variant_config["expert_weight_parameterization"]
+        self.encoder_variant = normalized["encoder_variant"]
+        self.actor_head_variant = normalized["actor_head_variant"]
+        self.expert_weight_parameterization = normalized["expert_weight_parameterization"]
         self.residual_gate_initial_logit = float(residual_gate_initial_logit)
         self.residual_std_floor = float(residual_std_floor)
         self.normalization_manifest_sha256 = normalization_manifest_sha256
-        identity = normalize_network_config({"flow_mode": flow_mode,
-            **({"reward_version": reward_version} if reward_version is not None else {})})
-        self.flow_mode = identity["flow_mode"]
-        self.reward_version = identity["reward_version"]
-        worker_time_config = normalize_network_config({
-            "worker_flow_time_normalization": worker_flow_time_normalization,
-            "worker_flow_time_std_floor": worker_flow_time_std_floor,
-        })
-        self.worker_flow_time_normalization = worker_time_config["worker_flow_time_normalization"]
-        self.worker_flow_time_std_floor = worker_time_config["worker_flow_time_std_floor"]
+        self.flow_mode = normalized["flow_mode"]
+        self.reward_version = normalized["reward_version"]
+        self.workload_identity = {field: normalized[field] for field in WORKLOAD_IDENTITY_FIELDS if field in normalized}
+        self.worker_flow_time_normalization = normalized["worker_flow_time_normalization"]
+        self.worker_flow_time_std_floor = normalized["worker_flow_time_std_floor"]
         if set(self.feature_dimensions) != set((*NODE_TYPES, "global")):
             raise ValueError("feature dimensions must contain six nodes and global")
         if set(self.edge_feature_dimensions) != set(ASSEMBLY_EDGE_TYPES):
@@ -544,7 +628,7 @@ class HeteroGraphActorCritic(nn.Module):
             raise ValueError("actual resource relations must have zero edge attributes")
         missing_wait = {
             field
-            for fields in WAIT_DIRECT_SCHEMA.values()
+            for fields in self.wait_direct_schema.values()
             for field, _ in fields
             if field not in self.action_set_feature_names
         }
@@ -610,15 +694,15 @@ class HeteroGraphActorCritic(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim), nn.ReLU()
         )
         if self.actor_head_variant == "objective_experts":
-            self.production_experts = ObjectiveExpertSet(PRODUCTION_DIRECT_SCHEMA, hidden_dim)
-            self.worker_experts = ObjectiveExpertSet(WORKER_DIRECT_SCHEMA, hidden_dim)
-            self.production_wait_experts = ObjectiveExpertSet(WAIT_DIRECT_SCHEMA, hidden_dim)
-            self.worker_wait_experts = ObjectiveExpertSet(WAIT_DIRECT_SCHEMA, hidden_dim)
+            self.production_experts = ObjectiveExpertSet(self.production_direct_schema, hidden_dim)
+            self.worker_experts = ObjectiveExpertSet(self.worker_direct_schema, hidden_dim)
+            self.production_wait_experts = ObjectiveExpertSet(self.wait_direct_schema, hidden_dim)
+            self.worker_wait_experts = ObjectiveExpertSet(self.wait_direct_schema, hidden_dim)
         else:
-            self.production_shared = SharedPreferenceHead(PRODUCTION_DIRECT_SCHEMA, hidden_dim)
-            self.worker_shared = SharedPreferenceHead(WORKER_DIRECT_SCHEMA, hidden_dim)
-            self.production_wait_shared = SharedPreferenceHead(WAIT_DIRECT_SCHEMA, hidden_dim)
-            self.worker_wait_shared = SharedPreferenceHead(WAIT_DIRECT_SCHEMA, hidden_dim)
+            self.production_shared = SharedPreferenceHead(self.production_direct_schema, hidden_dim)
+            self.worker_shared = SharedPreferenceHead(self.worker_direct_schema, hidden_dim)
+            self.production_wait_shared = SharedPreferenceHead(self.wait_direct_schema, hidden_dim)
+            self.worker_wait_shared = SharedPreferenceHead(self.wait_direct_schema, hidden_dim)
 
         residual_width = hidden_dim * 2 + PREFERENCE_ENCODER_DIM * 2
         self.action_preference_projector = nn.Linear(hidden_dim, PREFERENCE_ENCODER_DIM)
@@ -665,9 +749,9 @@ class HeteroGraphActorCritic(nn.Module):
             "direct_output_range": [-1.0, 1.0],
             "context_output_range": [-1.0, 1.0],
             "expert_output_range": [-2.0, 2.0],
-            "production_direct_feature_schema": _schema_serializable(PRODUCTION_DIRECT_SCHEMA),
-            "worker_direct_feature_schema": _schema_serializable(WORKER_DIRECT_SCHEMA),
-            "wait_direct_feature_schema": _schema_serializable(WAIT_DIRECT_SCHEMA),
+            "production_direct_feature_schema": _schema_serializable(self.production_direct_schema),
+            "worker_direct_feature_schema": _schema_serializable(self.worker_direct_schema),
+            "wait_direct_feature_schema": _schema_serializable(self.wait_direct_schema),
             "residual_gate_initial_logit": self.residual_gate_initial_logit,
             "residual_std_floor": self.residual_std_floor,
             "worker_flow_time_normalization": self.worker_flow_time_normalization,
@@ -678,6 +762,7 @@ class HeteroGraphActorCritic(nn.Module):
             "normalization_manifest_sha256": self.normalization_manifest_sha256,
             "flow_mode": self.flow_mode,
             "reward_version": self.reward_version,
+            **self.workload_identity,
         }
 
     def encode_graph(
@@ -960,7 +1045,7 @@ class HeteroGraphActorCritic(nn.Module):
                 global_part, self.production_edge_encoder(dense),
             ), dim=-1)
             action_embedding = self.production_action_encoder(action_input)
-            schema = PRODUCTION_DIRECT_SCHEMA
+            schema = self.production_direct_schema
             residual_mlp, gate = self.production_residual, self.production_residual_gate
         else:
             locked = torch.zeros_like(embeddings["machine"])
@@ -979,7 +1064,7 @@ class HeteroGraphActorCritic(nn.Module):
                 global_part, self.worker_edge_encoder(dense),
             ), dim=-1)
             action_embedding = self.worker_action_encoder(action_input)
-            schema = WORKER_DIRECT_SCHEMA
+            schema = self.worker_direct_schema
             residual_mlp, gate = self.worker_residual, self.worker_residual_gate
         names = observations[indices[0]].relations[edge_type].feature_names
         columns = {name: dense[:, names.index(name)] for name in names}
@@ -1021,7 +1106,7 @@ class HeteroGraphActorCritic(nn.Module):
             name: wait_raw[:, observations[indices[0]].action_set_feature_names.index(name)]
             for name in observations[indices[0]].action_set_feature_names
         }
-        wait_direct = self._direct_from_columns(WAIT_DIRECT_SCHEMA, wait_columns)
+        wait_direct = self._direct_from_columns(self.wait_direct_schema, wait_columns)
         wait_d, wait_c, wait_z, wait_base = self._score_head(
             wait_embedding, wait_direct, preference.index_select(0, phase_indices),
             preference_embedding.index_select(0, phase_indices), phase, wait=True)
@@ -1162,7 +1247,7 @@ class HeteroGraphActorCritic(nn.Module):
         columns["fixed_reconfiguration_cost_norm"] = (
             columns["fixed_disassembly_cost_norm"] + columns["fixed_installation_cost_norm"]
         )
-        direct = self._direct_from_columns(PRODUCTION_DIRECT_SCHEMA, columns)
+        direct = self._direct_from_columns(self.production_direct_schema, columns)
         return action, direct
 
     def _worker_candidates(
@@ -1204,7 +1289,7 @@ class HeteroGraphActorCritic(nn.Module):
         )
         names = service.feature_names
         columns = {name: dense[:, names.index(name)] for name in names}
-        direct = self._direct_from_columns(WORKER_DIRECT_SCHEMA, columns)
+        direct = self._direct_from_columns(self.worker_direct_schema, columns)
         if self.worker_flow_time_normalization == "candidate_zscore_v1":
             direct["flow"] = self._relative_worker_flow_time(
                 columns["stage_duration_norm"], ~mask[:pair_count]
@@ -1233,7 +1318,7 @@ class HeteroGraphActorCritic(nn.Module):
     ) -> dict[str, torch.Tensor]:
         names = observation.action_set_feature_names
         columns = {name: features[:, names.index(name)] for name in names}
-        return self._direct_from_columns(WAIT_DIRECT_SCHEMA, columns)
+        return self._direct_from_columns(self.wait_direct_schema, columns)
 
     @staticmethod
     def _direct_from_columns(
@@ -1246,6 +1331,9 @@ class HeteroGraphActorCritic(nn.Module):
             "estimated_worker_load_variance_delta_norm",
             "incremental_load_variance_norm",
             "estimated_load_variance_delta_if_wait",
+            "estimated_worker_load_objective_delta_norm",
+            "incremental_workload_objective_norm",
+            "estimated_workload_objective_delta_if_wait",
         }
         for objective, fields in schema.items():
             transformed = [
@@ -1373,7 +1461,7 @@ class HeteroGraphActorCritic(nn.Module):
         if torch.is_grad_enabled():
             return
         graph_count = preference.shape[0]
-        expert_count = 3 * len(OBJECTIVES) if self.actor_head_variant == "objective_experts" else 0
+        expert_count = 3 * len(self.objectives) if self.actor_head_variant == "objective_experts" else 0
         parts = (direct, context, experts) if expert_count else ()
         values = torch.cat(parts + (base.unsqueeze(-1), residual.unsqueeze(-1)), dim=-1)
         legal = ~mask
@@ -1410,15 +1498,15 @@ class HeteroGraphActorCritic(nn.Module):
             ) / count).sqrt()
             saturation = totals[:, 2 * width:2 * width + expert_count] / count
             for part_index, name in enumerate(("direct", "context", "expert")):
-                for objective_index, objective in enumerate(OBJECTIVES):
-                    column = part_index * len(OBJECTIVES) + objective_index
+                for objective_index, objective in enumerate(self.objectives):
+                    column = part_index * len(self.objectives) + objective_index
                     columns[f"{name}_{objective}_mean"] = means[:, column]
                     columns[f"{name}_{objective}_std"] = std[:, column]
                     columns[f"{name}_{objective}_rms"] = rms[:, column]
                     columns[f"{name}_{objective}_saturation_ratio"] = saturation[:, column]
                     # The reference overwrites this field for each part; its final
                     # value is the preference-weighted expert RMS.
-                    expert_column = 2 * len(OBJECTIVES) + objective_index
+                    expert_column = 2 * len(self.objectives) + objective_index
                     columns[f"contribution_{objective}_rms"] = (
                         rms[:, expert_column] * preference[:, objective_index].abs()
                     )
@@ -1486,7 +1574,7 @@ class HeteroGraphActorCritic(nn.Module):
             if self.actor_head_variant == "objective_experts" else ()
         )
         for name, values in diagnostic_parts:
-            for index, objective in enumerate(OBJECTIVES):
+            for index, objective in enumerate(self.objectives):
                 selected = values[legal, index]
                 row[f"{name}_{objective}_mean"] = selected.mean()
                 row[f"{name}_{objective}_std"] = selected.std(unbiased=False)
@@ -1556,7 +1644,7 @@ class HeteroGraphActorCritic(nn.Module):
             ("production_wait", self.production_wait_experts),
             ("worker_wait", self.worker_wait_experts),
         ):
-            for objective in OBJECTIVES:
+            for objective in self.objectives:
                 expert = expert_set.experts[objective]
                 weights = expert.direct_ranker.normalized_weights().detach().cpu()
                 names = [name for name, _ in expert_set.schema[objective]]
@@ -1628,8 +1716,10 @@ def build_actor_critic(
 ) -> ActorCriticNetwork:
     if not isinstance(observation, HeterogeneousGraphObservation):
         raise TypeError("V8 network construction requires a graph observation")
+    config = normalize_network_config(network_config)
+    selected_schema = config["observation_schema_version"]
     observation.validate()
-    if tuple(observation.global_feature_names) != GLOBAL_FEATURE_NAMES:
+    if tuple(observation.global_feature_names) != schema_global_feature_names(selected_schema):
         raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order are missing or incompatible")
     required = {
         "order": (set(observation.node_feature_names.get("order", ())), {ORDER_TIME_FEATURE}),
@@ -1641,7 +1731,6 @@ def build_actor_critic(
     for kind, (names, expected) in required.items():
         if not expected.issubset(names):
             raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} {kind} time context features are missing")
-    config = normalize_network_config(network_config)
     return HeteroGraphActorCritic(
         observation.feature_dimensions,
         observation.edge_feature_dimensions,
@@ -1659,4 +1748,7 @@ def build_actor_critic(
         encoder_variant=config["encoder_variant"],
         actor_head_variant=config["actor_head_variant"],
         global_feature_names=observation.global_feature_names,
+        observation_schema_version=selected_schema,
+        **{field: config[field] for field in WORKLOAD_IDENTITY_FIELDS
+           if field in config and field != "objective_names"},
     )

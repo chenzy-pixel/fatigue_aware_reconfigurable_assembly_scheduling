@@ -1,5 +1,7 @@
 {
   "extends": "neutral_flow.json",
   "experiment_name": "ablation_full_flow_seed11",
-  "environment": {"fatigue_mode": "full"}
+  "environment": {
+    "fatigue_mode": "full"
+  }
 }

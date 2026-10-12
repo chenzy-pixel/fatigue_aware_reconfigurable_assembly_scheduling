@@ -8,16 +8,18 @@ from typing import Any
 
 import numpy as np
 import torch
+from .workload import LEGACY_OBJECTIVE_NAMES, MODERN_OBJECTIVE_NAMES, objective_names
 
 
-PREFERENCE_NAMES = ("flow", "cost", "variance")
+PREFERENCE_NAMES = MODERN_OBJECTIVE_NAMES
+LEGACY_PREFERENCE_NAMES = LEGACY_OBJECTIVE_NAMES
 CANONICAL_PREFERENCE = (0.5, 0.3, 0.2)
 PREFERENCE_SUM_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
 class PreferenceVector:
-    """Validated flow/cost/variance weights on the probability simplex."""
+    """Validated three-objective weights on the probability simplex."""
 
     flow: float
     cost: float
@@ -43,8 +45,12 @@ class PreferenceVector:
     def as_array(self) -> np.ndarray:
         return np.asarray(self.as_tuple(), dtype=np.float32)
 
-    def as_dict(self) -> dict[str, float]:
-        return dict(zip(PREFERENCE_NAMES, self.as_tuple(), strict=True))
+    @property
+    def workload(self) -> float:
+        return float(self.variance)
+
+    def as_dict(self, names: Sequence[str] = PREFERENCE_NAMES) -> dict[str, float]:
+        return dict(zip(names, self.as_tuple(), strict=True))
 
 
 PreferenceInput = PreferenceVector | Mapping[str, float] | Sequence[float]
@@ -86,9 +92,9 @@ class PreferenceContext:
     def as_array(self) -> np.ndarray:
         return self.preference.as_array()
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self, names: Sequence[str] = PREFERENCE_NAMES) -> dict[str, Any]:
         return {
-            "weights": self.preference.as_dict(),
+            "weights": self.preference.as_dict(names),
             "source": self.source,
             "sample_index": self.sample_index,
             "key": self.key,
@@ -109,11 +115,12 @@ def normalize_preference(value: PreferenceInput) -> PreferenceVector:
     if isinstance(value, PreferenceVector):
         return value
     if isinstance(value, Mapping):
-        if set(value) != set(PREFERENCE_NAMES):
+        names = LEGACY_PREFERENCE_NAMES if set(value) == set(LEGACY_PREFERENCE_NAMES) else PREFERENCE_NAMES
+        if set(value) != set(names):
             raise ValueError(
-                "preference mapping must contain exactly flow/cost/variance"
+                "preference mapping must contain exactly flow/cost/workload or legacy flow/cost/variance"
             )
-        values = tuple(float(value[name]) for name in PREFERENCE_NAMES)
+        values = tuple(float(value[name]) for name in names)
     else:
         if isinstance(value, (str, bytes)):
             raise TypeError("preference must be a numeric sequence or mapping")
@@ -229,7 +236,7 @@ def quality_preference_for_episode(
         weights[objective] = 1.0
         return PreferenceContext(
             normalize_preference(weights),
-            source=f"endpoint_{PREFERENCE_NAMES[objective]}",
+            source=f"endpoint_{objective_names(config)[objective]}",
             sample_index=quality_episode_index,
         )
     sobol_index = (quality_episode_index // block_size) * sobol_count + (

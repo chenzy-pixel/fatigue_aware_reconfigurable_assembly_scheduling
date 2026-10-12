@@ -93,7 +93,7 @@ def test_real_baseline_configs_solve_and_write_current_results(source,tmp_path,f
         '--canonical-only','--instance-limit','1','--parallel-envs','1','--smoke','--run-name','baseline'],tmp_path/'cli.log')
     directory = tmp_path/'runs/baseline'
     metrics = json.loads((directory/'metrics.json').read_text())
-    assert metrics['evaluation_schema_version'] == '8.0.0'
+    assert metrics['evaluation_schema_version'] == '9.0.0'
     assert metrics['candidate_budget_per_preference'] == 8
     assert metrics['search_scalarizer']['scales'] == config['objective_scalarizer']['scales']
     assert metrics['provenance']['objective_scales'] == config['objective_scalarizer']['scales']
@@ -121,7 +121,7 @@ def test_real_baseline_manifest_entrypoint(tmp_path,fixed_instance):
     assert all(row['replay_verified']=='True' for row in rows)
 
 
-def test_real_schema10_training_update_validation_and_final_grid(tmp_path,fixed_instance):
+def test_real_schema11_training_update_validation_and_final_grid(tmp_path,fixed_instance):
     config,tiny = tiny_config(tmp_path,fixed_instance,training_template=True)
     run_cli(['train.py','--config',str(tmp_path/'config.json'),'--smoke','--parallel-envs','1',
         '--episodes-per-update','2','--validation-parallel-envs','1','--run-name','ppo'],tmp_path/'train_cli.log')
@@ -133,13 +133,15 @@ def test_real_schema10_training_update_validation_and_final_grid(tmp_path,fixed_
         assert len(rows) == count and all(int(row['schedule_violation_count'])==0 for row in rows)
     payload = torch.load(directory/'best_checkpoint.pt',weights_only=False)
     assert payload['network_spec']['feature_dimensions']['global'] == 9
-    assert payload['network_spec']['observation_schema_version'] == 10
+    assert payload['network_spec']['observation_schema_version'] == 11
+    assert payload['network_spec']['objective_names'] == ('flow', 'cost', 'workload')
+    assert payload['network_spec']['workload_mode'] == 'geometric_owa'
     env = AssemblySchedulingEnv(config)
     obs = env.reset(tiny)
     agent = PPOAgent(build_actor_critic(obs,config['network']),config['ppo'])
     agent.load(directory/'best_checkpoint.pt')
     agent.load(directory/'last_checkpoint.pt',load_optimizer=True)
-    assert load_config(directory/'config.json')['runtime_manifest']['observation_schema'] == 10
+    assert load_config(directory/'config.json')['runtime_manifest']['observation_schema'] == 11
 
 
 def test_real_training_external_guards_keep_partial_rows_and_last_checkpoint(tmp_path, fixed_instance):

@@ -1,0 +1,15 @@
+{
+  "extends": "../../flow_excess/shared_head/single_workload.json",
+  "experiment_name": "workload_excess_q075_single_workload",
+  "workload_objective": {
+    "mode": "geometric_owa",
+    "q": 0.75
+  },
+  "objective_scalarizer": {
+    "normalization_manifest": "configs/manifests/workload_excess_q75_20261011.json",
+    "normalization_manifest_sha256": "a273d3ac762430d9b64a94873c7005c5250e58a32cba5a4503f8b32d050502af"
+  },
+  "network": {
+    "actor_head_variant": "shared_preference"
+  }
+}

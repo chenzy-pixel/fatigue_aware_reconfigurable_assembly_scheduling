@@ -13,6 +13,7 @@ from agent.ppo.network import build_actor_critic, infer_checkpoint_network_spec
 from agent.ppo.parallel import _worker_roll_forward
 from environment import AssemblySchedulingEnv, ASSEMBLY_EDGE_TYPES, EdgeStore, PROCESSING_ON_EDGE, SERVED_BY_EDGE
 from environment.dynamics import EPSILON, quantize_to_ticks
+from environment.workload import observation_schema_version
 from scripts.audit_observation_reward import build_alias_instance, reachable_histories
 from scripts.audit_state_sufficiency import (
     MODES, effective, worker_alias_instance, worker_histories, virtual_observation,
@@ -35,6 +36,7 @@ def test_actual_relation_lifecycle_and_physical_reconstruction(config, fixed_ins
         assert reconstructed_events(env, obs, physical) == actual_events(env)
         np.testing.assert_allclose(physical["committed"]/env.instance.horizon,
                                    env._committed_worker_loads/env.instance.horizon, atol=1e-6, rtol=1e-6)
+        assert physical["objectives"][2] == pytest.approx(physical["reconstructed_workload_objective"], abs=1e-4)
         saw_processing |= bool(obs.relations[PROCESSING_ON_EDGE].num_edges)
         saw_serving |= bool(obs.relations[SERVED_BY_EDGE].num_edges)
         stages.update(r.stage.value for r in env.reconfigurations.values())
@@ -184,6 +186,17 @@ def test_worker_guard_preserves_actual_service_for_bootstrap(config, fixed_insta
     assert response.action_mask is not None
 
 
+def test_failed_terminal_reconstruction_uses_settled_loads(config, fixed_instance):
+    env = worker_histories(config, worker_alias_instance(fixed_instance))[0][0]
+    assert env._active_committed_worker_tasks
+    env._apply_truncation("horizon")
+    assert env.task_failed
+    observation = env.observe()
+    recovered = reconstructed_quantities(env, observation)
+    np.testing.assert_allclose(recovered["committed"], env._committed_worker_loads, atol=1e-5)
+    assert recovered["objectives"][2] == pytest.approx(recovered["reconstructed_workload_objective"], abs=1e-4)
+
+
 @pytest.mark.parametrize("phase", ["DIS", "INS"])
 def test_partial_real_failure_retains_runtime_relation(config, fixed_instance, phase):
     # Existing legal boundary probes exercise both partial phases and completion precedence.
@@ -199,7 +212,7 @@ def test_partial_real_failure_retains_runtime_relation(config, fixed_instance, p
 def test_checkpoint_spec_requires_actual_relation_contract(config, fixed_instance, corruption):
     obs = AssemblySchedulingEnv(config).reset(fixed_instance)
     spec = build_actor_critic(obs, {**config["network"], "hidden_dim": 16}).network_spec()
-    assert spec["observation_schema_version"] == 10 and len(spec["edge_feature_dimensions"]) == 14
+    assert spec["observation_schema_version"] == observation_schema_version(config) and len(spec["edge_feature_dimensions"]) == 14
     if corruption == "missing":
         del spec["edge_feature_dimensions"][SERVED_BY_EDGE]
     else:

@@ -22,9 +22,11 @@ from configs.config import public_config
 from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from data.dataset import validate_algorithm_seed
-from data.selection import select_validation_subsets, subset_snapshot
+from data.selection import select_validation_subsets, subset_snapshot, resolve_instance_indices
 from collections import Counter
 from result.metrics import grouped_outcomes, successful_row
+from result.metrics import result_schema_version
+from environment.workload import objective_names, is_modern_workload
 from data.models import load_instance_yaml
 from eval import evaluate_dataset_parallel, evaluate_preference_grid_parallel
 from result import (
@@ -64,12 +66,13 @@ def _objective_name(config: dict) -> str | None:
         return None
     fixed = quality.get("fixed")
     if isinstance(fixed, dict):
-        weights = tuple(float(fixed.get(name, 0.0)) for name in ("flow", "cost", "variance"))
+        weights = tuple(float(fixed.get(name, fixed.get("variance", 0.0) if name == "workload" else 0.0)) for name in objective_names(config))
     elif isinstance(fixed, (list, tuple)) and len(fixed) == 3:
         weights = tuple(float(value) for value in fixed)
     else:
         return None
-    return SINGLE_OBJECTIVE_WEIGHTS.get(weights)
+    selected = SINGLE_OBJECTIVE_WEIGHTS.get(weights)
+    return "workload" if selected == "variance" and is_modern_workload(config) else selected
 
 
 def _is_universal(config: dict) -> bool:
@@ -101,6 +104,26 @@ def _validation_manifest_path(config: dict, split: str) -> Path:
     return project_path(config["paths"]["manifests_root"]) / split / "manifest.json"
 
 
+def _select_training_validation_subsets(config, dataset, *, target_count, diagnostic_count):
+    explicit = config["training"].get("validation_instance_indices")
+    if explicit is None:
+        return select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+            target_count=target_count, diagnostic_count=diagnostic_count)
+    if not isinstance(explicit, (list, tuple)) or any(isinstance(index, bool) for index in explicit):
+        raise ValueError("validation_instance_indices must be a list of integer dataset indices")
+    indices = resolve_instance_indices(dataset, instance_indices=explicit)
+    if len(indices) != target_count:
+        raise ValueError("validation_instance_indices count must match the configured validation instance limit")
+    subsets = {"target": subset_snapshot(dataset, indices, role="target")}
+    if diagnostic_count:
+        diagnostic = select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+            target_count=0, diagnostic_count=diagnostic_count)["diagnostic"]
+        if set(indices).intersection(diagnostic["instance_indices"]):
+            raise ValueError("explicit target validation indices overlap the diagnostic subset")
+        subsets["diagnostic"] = diagnostic
+    return subsets
+
+
 def _checkpoint_metadata(
     config: dict,
     *,
@@ -116,8 +139,8 @@ def _checkpoint_metadata(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     if validation_selection is None:
         dataset = load_dataset_split(config, validation_split)
-        validation_selection = select_validation_subsets(
-            dataset, config["generator"]["dataset_pressure_weights"],
+        validation_selection = _select_training_validation_subsets(
+            config, dataset,
             target_count=validation_instance_limit, diagnostic_count=0,
         )["target"]
     files = list(validation_selection["files"])
@@ -134,7 +157,7 @@ def _checkpoint_metadata(
         "runtime_manifest": dict(config["runtime_manifest"]),
         "effective_config": public_config(config),
         "algorithm_seed": int(config["seed"]),
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": result_schema_version(config),
         "selection_decode_mode": "sampled",
         "formal_evaluation_stage": "validation",
         "selection_temperature": float(formal["temperature"]),
@@ -390,6 +413,9 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
         "mean_worker_load_variance": _summary_value(
             completed, "worker_load_variance"
         ),
+        "mean_workload_objective_value": _summary_value(completed, "workload_objective_value"),
+        "mean_worker_load_total": _summary_value(completed, "worker_load_total"),
+        "mean_worker_load_max": _summary_value(completed, "worker_load_max"),
         "mean_operation_progress": _summary_value(
             all_metrics, "operation_progress"
         ),
@@ -445,7 +471,7 @@ class LearningRatePlateauController:
 
 
 def preference_group(preference):
-    for name in ("flow", "cost", "variance"):
+    for name in ("flow", "cost", "workload", "variance"):
         if float(preference.get(name, 0)) >= 1 - 1e-9:
             return name
     return "mixed"
@@ -477,7 +503,7 @@ def _episode_log_row(episode) -> dict[str, Any]:
         "instance_id": episode.instance_id,
         **{name: episode.metadata.get(name) for name in ("seed", "pressure_type", "cost_profile", "severity", "feasibility_status", "diagnostic_status")},
         **{name: episode.metadata.get(name) for name in ("generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256", "training_cache_fingerprint")},
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": "9.0.0" if "workload_mode" in metrics else EVALUATION_SCHEMA_VERSION,
         **{"instance_" + name: value for name, value in (episode.metadata.get("sampled_parameters") or {}).items()},
         "generation_time_seconds": episode.generation_time_seconds,
         **{name: float(getattr(episode, name, 0.0))
@@ -524,6 +550,9 @@ def _episode_log_row(episode) -> dict[str, Any]:
         "flow_mode": metrics.get("flow_mode", "raw_v1"),
         "reconfiguration_cost": float(metrics["reconfiguration_cost"]),
         "worker_load_variance": float(metrics["worker_load_variance"]),
+        **{name: metrics.get(name) for name in ("workload_objective_value", "committed_workload_objective_value",
+            "worker_load_total", "worker_load_max", "worker_loads", "workload_mode", "workload_q", "workload_rule",
+            "workload_order", "workload_version", "reward_objective_workload_value") if name in metrics},
         "maximum_worker_fatigue": float(metrics["maximum_worker_fatigue"]),
         "safe_fatigue_limit": float(metrics["safe_fatigue_limit"]),
         "makespan": float(metrics["time"]),
@@ -539,6 +568,8 @@ def _episode_log_row(episode) -> dict[str, Any]:
             for name, value in episode.reward_components.items()
         }
     )
+    if isinstance(row.get("worker_loads"), dict):
+        row["worker_loads"] = json.dumps(row["worker_loads"], sort_keys=True)
     return row
 
 
@@ -760,8 +791,8 @@ def _train_single_stage(
     validation_pool = load_dataset_split(config, validation_split)
     selection_config = config["training"].get("validation_selection", {})
     diagnostic_limit = 0 if smoke else int(selection_config.get("diagnostic_instance_limit", 49))
-    subsets = select_validation_subsets(validation_pool, config["generator"]["dataset_pressure_weights"],
-                                       target_count=validation_limit, diagnostic_count=diagnostic_limit)
+    subsets = _select_training_validation_subsets(config, validation_pool,
+        target_count=validation_limit, diagnostic_count=diagnostic_limit)
     target_selection = subsets["target"]
     diagnostic_selection = subsets.get("diagnostic")
     write_json(run_directory / "validation_subsets.json", subsets)

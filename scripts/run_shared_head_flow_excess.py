@@ -11,15 +11,16 @@ CONFIGS = {
     "shared_head_flow": "configs/flow_excess/shared_head/single_flow.json",
     "shared_head_cost": "configs/flow_excess/shared_head/single_cost.json",
     "shared_head_variance": "configs/flow_excess/shared_head/single_variance.json",
+    "shared_head_workload": "configs/flow_excess/shared_head/single_workload.json",
     "shared_head_universal": "configs/flow_excess/shared_head/universal.json",
 }
 
 
 def main(*, preflight_only_default=False):
     parser = launch_argument_parser(preflight_only_default=preflight_only_default)
-    parser.add_argument("--experiment", choices=("flow", "cost", "variance", "universal", "all"), default="all")
+    parser.add_argument("--experiment", choices=("flow", "cost", "workload", "variance", "universal", "all"), default="all")
     args = parser.parse_args()
-    roles = tuple(CONFIGS) if args.experiment == "all" else (f"shared_head_{args.experiment}",)
+    roles = tuple(role for role in CONFIGS if role != "shared_head_variance") if args.experiment == "all" else (f"shared_head_{args.experiment}",)
     launch_configurations({role: CONFIGS[role] for role in roles}, args, prefix="shared_head_flow_excess")
 
 

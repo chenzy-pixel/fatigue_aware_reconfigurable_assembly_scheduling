@@ -13,6 +13,7 @@ from environment.time_context import (
     ORDER_TIME_FEATURE, WAIT_TIME_FEATURES, WORKER_WAIT_FEATURE, project_wait_state,
 )
 from environment.types import OperationState, ReconfigurationStage
+from environment.workload import objective_names, observation_schema_version
 
 
 def _chain_instance(fixed_instance, *, mismatch=False, second_release=None):
@@ -258,7 +259,7 @@ def test_new_time_inputs_change_all_expert_contexts_but_not_direct_scores(config
             for item in observations:
                 network(item, mask, device="cpu")
                 captures.append(dict(values))
-        for name in ("flow", "cost", "variance"):
+        for name in objective_names(config):
             torch.testing.assert_close(captures[0][name][0], captures[1][name][0], rtol=0, atol=0)
             assert torch.all(captures[1][name][1] > captures[0][name][1])
         assert len({expert.context[0].weight.data_ptr() for expert in experts.experts.values()}) == 3
@@ -302,9 +303,9 @@ def test_schema5_checkpoint_rejected_for_each_network_variant(config, fixed_inst
         agent.load(path,load_optimizer=True,allow_observation_migration=True)
 
 
-def test_schema10_requires_explicit_time_features(config, fixed_instance):
+def test_current_schema_requires_explicit_time_features(config, fixed_instance):
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
-    with pytest.raises(ValueError, match="schema-10"):
+    with pytest.raises(ValueError, match=f"schema-{observation_schema_version(config)}"):
         build_actor_critic(_schema5_observation(observation), config["network"])
     spec = build_actor_critic(observation, config["network"]).network_spec()
     spec["time_context_feature_schema"]["worker"] = []

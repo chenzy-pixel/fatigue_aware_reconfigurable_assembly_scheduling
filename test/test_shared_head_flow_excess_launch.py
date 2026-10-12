@@ -15,26 +15,31 @@ from scripts.run_shared_head_flow_excess import CONFIGS as SHARED
 
 
 def test_confirmed_remaining_matrix_has_seven_correct_experiments():
-    assert tuple(REMAINING) == ("main_variance", "main_universal", "flow", "shared_head_flow", "shared_head_cost",
-                                "shared_head_variance", "shared_head_universal")
+    assert tuple(REMAINING) == ("main_workload", "main_universal", "flow", "shared_head_flow", "shared_head_cost",
+                                "shared_head_workload", "shared_head_universal")
     configs = {role: load_config(path) for role, path in REMAINING.items()}
     assert [c["training"]["episodes"] for c in configs.values()] == [1000, 2000, 1000, 1000, 1000, 1000, 2000]
-    assert flow_mode(configs["main_variance"]) == FLOW_RAW
+    assert flow_mode(configs["main_workload"]) == FLOW_RAW
     assert flow_mode(configs["main_universal"]) == FLOW_RAW
     assert configs["main_universal"]["objective_scalarizer"]["scales"]["flow"] == 1089.15
-    assert configs["main_universal"]["reward"]["mode"] == "single_stage_progress_quality_failure_v3"
+    assert configs["main_universal"]["reward"]["mode"] == "single_stage_progress_quality_workload_failure_v5"
     assert configs["main_universal"]["runtime_manifest"]["actor_head_variant"] == "objective_experts"
     assert len(formal_preferences(configs["main_universal"], "final_test")) == 66
     assert all(flow_mode(configs[role]) == FLOW_EXCESS for role in tuple(REMAINING)[2:])
-    for role in SHARED:
+    for role in (role for role in SHARED if role != "shared_head_variance"):
         assert configs[role]["network"]["actor_head_variant"] == "shared_preference"
         assert configs[role]["runtime_manifest"]["actor_head_variant"] == "shared_preference"
-        assert configs[role]["reward"]["mode"] == "single_stage_progress_quality_failure_v4"
+        assert configs[role]["reward"]["mode"] == "single_stage_progress_quality_workload_failure_v6"
+        assert configs[role]["network"]["observation_schema_version"] == 11
     for role, weights in (("shared_head_flow", [1, 0, 0]), ("shared_head_cost", [0, 1, 0]),
-                          ("shared_head_variance", [0, 0, 1])):
+                          ("shared_head_workload", [0, 0, 1])):
         assert configs[role]["preference"]["quality"]["fixed"] == weights
         assert len(formal_preferences(configs[role], "final_test")) == 1
     assert len(formal_preferences(configs["shared_head_universal"], "final_test")) == 66
+    control = load_config(SHARED["shared_head_variance"])
+    assert control["network"]["workload_mode"] == "variance"
+    assert control["network"]["workload_q"] is None
+    assert control["network"]["observation_schema_version"] == 11
 
 
 def test_remaining_launcher_saves_and_runs_the_confirmed_order(monkeypatch, tmp_path):

@@ -48,14 +48,19 @@ def save_batch_manifest(path: Path, manifest: dict) -> None:
 
 def protocol_profile(config: dict) -> dict:
     """Compare solver identity and the controlled training/evaluation protocol."""
+    from agent.ppo.network import normalize_network_config
+    from environment.workload import is_modern_workload, workload_config
+
     training = deepcopy(config["training"])
     training.setdefault("episodes_per_update", training["parallel_envs"])
     training.setdefault("initial_checkpoint", None)
     network = deepcopy(config["network"])
-    network.setdefault("encoder_variant", "hetero_gnn")
-    network.setdefault("actor_head_variant", "objective_experts")
+    # Serialized tuples become JSON lists. Canonical network identity preserves
+    # every selected objective/scale while making saved and live profiles equal.
+    network.update(normalize_network_config(network))
     return {
         "network": network,
+        **({"workload_objective": workload_config(config)} if is_modern_workload(config) else {}),
         "fatigue_mode": config.get("environment", {}).get("fatigue_mode", "full"),
         "environment": {k: v for k, v in config["environment"].items() if k != "fatigue_mode"},
         "reward": config["reward"], "ppo": config["ppo"],

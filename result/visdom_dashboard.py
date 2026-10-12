@@ -65,6 +65,12 @@ DISPLAY_LABELS: dict[str, str] = {
     "flow_time_objective": "流经时间目标",
     "reconfiguration_cost": "重构成本",
     "worker_load_variance": "工人负荷方差",
+    "workload": "工人劳动负荷目标",
+    "workload_objective_value": "实际劳动负荷目标",
+    "worker_load_total": "总劳动分钟",
+    "worker_load_max": "最大工人劳动分钟",
+    "mean_workload_objective_value": "当前平均劳动负荷目标",
+    "best_workload_objective_value": "最佳平均劳动负荷目标",
     "policy_loss": "策略损失",
     "value_loss": "价值损失",
     "loss": "总损失",
@@ -478,6 +484,7 @@ class TrainingDashboard:
             return None
 
     def _write_metadata(self) -> None:
+        from environment.workload import objective_names
         ppo = self.config["ppo"]
         network = self.config["network"]
         reward = self.config["reward"]
@@ -497,7 +504,7 @@ class TrainingDashboard:
             {
                 _display_label(name): value
                 for name, value in zip(
-                    ("flow", "cost", "variance"), fixed_preference
+                    objective_names(self.config), fixed_preference
                 )
             }
             if isinstance(fixed_preference, (list, tuple))
@@ -680,6 +687,7 @@ class TrainingDashboard:
                     "flow",
                     "cost",
                     "variance",
+                    "workload",
                     "operation_progress",
                     "quality",
                     "feasibility_shaping",
@@ -700,6 +708,9 @@ class TrainingDashboard:
                 "worker_load_variance": _mean(
                     episode_rows, "worker_load_variance"
                 ),
+                "workload_objective_value": _mean(episode_rows, "workload_objective_value"),
+                "worker_load_total": _mean(episode_rows, "worker_load_total"),
+                "worker_load_max": _mean(episode_rows, "worker_load_max"),
             },
         )
         self._line(
@@ -956,6 +967,8 @@ class TrainingDashboard:
                 "mean_worker_load_variance": validation_row.get(
                     "mean_worker_load_variance"
                 ),
+                "mean_workload_objective_value": validation_row.get("mean_workload_objective_value"),
+                "best_workload_objective_value": best_validation.get("mean_workload_objective_value") if best_validation else None,
                 "best_reconfiguration_cost": (
                     best_validation.get("mean_reconfiguration_cost")
                     if best_validation

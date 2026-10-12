@@ -10,9 +10,10 @@ from environment import PreferenceContext, simplex_lattice
 def objective_scales(config: Mapping[str, Any]) -> tuple[float, float, float]:
     """Return the loaded experiment scales in objective order."""
     from environment.types import objective_scalarizer_config
+    from environment.workload import objective_names
 
     scales = objective_scalarizer_config(dict(config))["scales"]
-    return tuple(scales[name] for name in ("flow", "cost", "variance"))
+    return tuple(scales[name] for name in objective_names(config))
 
 
 def formal_preferences(

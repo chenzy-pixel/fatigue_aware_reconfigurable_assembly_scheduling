@@ -1,0 +1,15 @@
+{
+  "extends": "../../../e1/single_workload.json",
+  "experiment_name": "workload_raw_q05_single_workload",
+  "workload_objective": {
+    "mode": "geometric_owa",
+    "q": 0.5
+  },
+  "objective_scalarizer": {
+    "normalization_manifest": "configs/manifests/workload_raw_q50_20261011.json",
+    "normalization_manifest_sha256": "d5b8d6eaf17143f540da9e9faa2ee488d5e3bd04f797c5023b938c07f83c654c"
+  },
+  "network": {
+    "actor_head_variant": "shared_preference"
+  }
+}

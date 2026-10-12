@@ -11,6 +11,7 @@ from data.generate_orders import InstanceGenerator
 from environment import AssemblySchedulingEnv, CAPABLE_EDGE, DecisionType
 from environment.env import ReconfigurationRuntime
 from environment.types import ReconfigurationStage
+from environment.workload import workload_scale
 
 
 def _metadata_without_counterfactual(metadata):
@@ -39,7 +40,7 @@ def _scalar_capability_features(environment):
         profile = environment._production_resource_profile(mi, environment.operations[oi].spec.required_module)
         start = candidate.processing_start_tick if candidate.processing_start_tick is not None else h+1
         finish = candidate.finish_tick if candidate.finish_tick is not None else h+1
-        dis, ins, labor, downtime, variance = projector.path_costs(mi, path)
+        dis, ins, labor, downtime, load_delta = projector.path_costs(mi, path)
         rows.append([
             np.clip(environment.estimate_processing_ticks(oi, mi)/h, 0, 2),
             float(environment.machines[mi].current_module == environment.operations[oi].spec.required_module),
@@ -49,7 +50,7 @@ def _scalar_capability_features(environment):
             profile.matching_deficit_after_commit/nw, np.clip((h-finish)/h, -1, 1),
             (path.end_tick-path.start_tick)/h if path else 0,
             dis/scales["cost"], ins/scales["cost"], labor/scales["cost"], downtime/scales["cost"],
-            variance/scales["variance"], environment.estimated_order_slack_norm(environment.operations[oi].spec.order_id),
+            load_delta/workload_scale(environment.config), environment.estimated_order_slack_norm(environment.operations[oi].spec.order_id),
         ])
     return np.asarray(rows, dtype=np.float32)
 

@@ -24,6 +24,7 @@ from data.dataset import load_generated_record
 from data.models import OrderSpec, OperationSpec, load_instance_yaml, validate_instance, instance_to_dict
 from environment import AssemblySchedulingEnv, DecisionType, EdgeStore
 from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
+from environment.workload import objective_names, workload_value
 from scripts.verify_resource_relation_behavior import legacy_projection
 from environment.types import OperationState, ReconfigurationStage
 from scripts.audit_observation_reward import (
@@ -448,16 +449,19 @@ def reconstructed_quantities(env, obs):
         assert len(pos) == 1
         elapsed = int(round(float(locked.edge_features[pos[0], elapsed_col])/tick_ratio))
         duration = elapsed + int(machine_remaining[mi])
-        committed[wi] += duration*env.instance.resolution
+        if obs.decision_type != DecisionType.TERMINAL:
+            committed[wi] += duration*env.instance.resolution
         stage_lengths[int(mi)] = duration
         assert worker_remaining[wi] == machine_remaining[mi]
     progress = float(np.mean(column("order", "completion_ratio")))
     scales = env.config["objective_scalarizer"]["scales"]
-    objectives = obs.global_features[6:9].astype(np.float64)*[scales[k] for k in ("flow", "cost", "variance")]
+    objectives = obs.global_features[6:9].astype(np.float64)*[scales[k] for k in objective_names(env.config)]
     active = int(np.sum(column("order", "released") - column("order", "completed")))
     return {"tick": current_tick, "machine_remaining": machine_remaining, "worker_remaining": worker_remaining,
             "loads": loads, "committed": committed, "progress": progress,
-            "objectives": objectives, "active": active, "stage_lengths": stage_lengths}
+            "objectives": objectives, "active": active, "stage_lengths": stage_lengths,
+            "reconstructed_workload_objective": workload_value(committed, env.config),
+            "actual_workload_objective": workload_value(loads, env.config)}
 
 
 def reconstructed_events(env, obs, quantities):

@@ -221,9 +221,12 @@ class GridSearchResult:
 
 def metrics_objectives(metrics: Mapping[str, Any], config: dict | None = None) -> tuple[float, float, float]:
     from environment.types import metrics_flow_objective
+    from environment.workload import metrics_workload_objective
     fields = OBJECTIVE_FIELDS
     values = (metrics_flow_objective(dict(metrics), config),
-              float(metrics[fields[1]]), float(metrics[fields[2]])) if config is not None else tuple(float(metrics[field]) for field in fields)
+              float(metrics[fields[1]]), metrics_workload_objective(dict(metrics), config)) if config is not None else (
+                  float(metrics[fields[0]]), float(metrics[fields[1]]),
+                  float(metrics.get("workload_objective_value", metrics[fields[2]])))
     if any(not math.isfinite(value) or value < 0.0 for value in values):
         raise ValueError("candidate objectives must be finite non-negative values")
     return values  # type: ignore[return-value]

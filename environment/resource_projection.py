@@ -10,6 +10,7 @@ import numpy as np
 from .dynamics import EPSILON, quantize_to_ticks
 from .observation_index import observation_operation_index
 from .types import MachineState, OperationState, ReconfigurationStage
+from .workload import workload_delta
 
 if TYPE_CHECKING:
     from .env import AssemblySchedulingEnv
@@ -465,7 +466,7 @@ class ResourceProjector:
                                    ready, path, path.resources if path else state, baseline, available, source)
 
     def path_costs(self, mi: int, path: ReconfigurationProjection | None) -> tuple[float, float, float, float, float]:
-        """Remaining DIS fixed fee, INS fixed fee, labor, downtime, variance delta."""
+        """Remaining DIS fixed fee, INS fixed fee, labor, downtime, workload delta."""
         if path is None:
             return 0., 0., 0., 0., 0.
         env = self.env
@@ -481,5 +482,5 @@ class ResourceProjector:
                 dis += costs.fixed_disassembly_cost
         downtime = ((path.end_tick-path.start_tick)*env.resolution*env.machines[mi].spec.downtime_cost_per_minute
                     if path.stages else 0.0)
-        delta = float(np.var(path.resources.loads)-np.var(path.baseline_loads))
+        delta = workload_delta(path.baseline_loads, path.resources.loads, env.config)
         return dis, ins, labor, downtime, delta

@@ -9,6 +9,7 @@ import pytest
 from environment import AssemblySchedulingEnv, CAPABLE_EDGE
 from environment.dynamics import quantize_to_ticks
 from environment.resource_projection import ResourceProjector
+from environment.workload import workload_scale, workload_feature_names
 from scripts.audit_state_sufficiency import worker_alias_instance, worker_histories
 
 
@@ -32,7 +33,7 @@ def _edge_by_edge_reference(env):
         key = (mi, id(path))
         if key not in path_costs:
             path_costs[key] = projector.path_costs(mi, path)
-        dis, ins, labor, downtime, variance = path_costs[key]
+        dis, ins, labor, downtime, load_delta = path_costs[key]
         order_id = operation.spec.order_id
         if order_id not in order_slacks:
             order_slacks[order_id] = env.estimated_order_slack_norm(order_id)
@@ -47,7 +48,7 @@ def _edge_by_edge_reference(env):
             (horizon - finish) / horizon,
             (path.end_tick - path.start_tick) / horizon if path else 0,
             dis / scales["cost"], ins / scales["cost"], labor / scales["cost"],
-            downtime / scales["cost"], variance / scales["variance"], order_slacks[order_id],
+            downtime / scales["cost"], load_delta / workload_scale(env.config), order_slacks[order_id],
         ]
     rows[:, (0, 2, 3, 4)] = np.clip(rows[:, (0, 2, 3, 4)], 0, 2)
     rows[:, 8] = np.clip(rows[:, 8], -1, 1)
@@ -62,14 +63,14 @@ def test_grouped_capability_relation_matches_edge_by_edge_reference(config, fixe
     reference_index, reference_features = _edge_by_edge_reference(env)
     np.testing.assert_array_equal(grouped.edge_index, reference_index)
     np.testing.assert_array_equal(grouped.edge_features, reference_features)
-    assert grouped.feature_names == (
+    assert grouped.feature_names == workload_feature_names((
         "processing_time_norm", "configuration_match", "earliest_start_time_norm",
         "resource_ready_time_norm", "predicted_finish_time_norm", "safe_disassembly_worker_ratio",
         "safe_installation_worker_ratio", "matching_deficit_after_commit_norm", "horizon_slack_norm",
         "reconfiguration_time_norm", "fixed_disassembly_cost_norm", "fixed_installation_cost_norm",
         "estimated_labor_cost_norm", "estimated_downtime_cost_norm",
         "estimated_worker_load_variance_delta_norm", "estimated_order_slack_norm",
-    )
+    ), env.observation_schema_version)
 
 
 @pytest.mark.parametrize('prefix', [0, 9, 11, 13, 14])

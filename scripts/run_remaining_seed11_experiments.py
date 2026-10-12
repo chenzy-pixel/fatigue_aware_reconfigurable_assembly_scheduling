@@ -1,4 +1,4 @@
-"""Run the seven experiments following the current remote mainline Cost run."""
+"""Run mainline and shared-head OWA endpoints with matched Flow experiments."""
 from pathlib import Path
 import sys
 
@@ -10,10 +10,10 @@ from scripts.run_flow_excess_training import launch_argument_parser, launch_conf
 from scripts.run_shared_head_flow_excess import CONFIGS as SHARED_CONFIGS
 
 CONFIGS = {
-    "main_variance": "configs/e1/single_variance.json",
+    "main_workload": "configs/e1/single_workload.json",
     "main_universal": "configs/v8/universal.json",
     "flow": "configs/flow_excess/single_flow.json",
-    **SHARED_CONFIGS,
+    **{role: path for role, path in SHARED_CONFIGS.items() if role != "shared_head_variance"},
 }
 
 

@@ -79,7 +79,7 @@ def test_worker_integration_preserves_other_experts_and_wait(config, fixed_insta
     for kind in ("worker_experts", "worker_wait_experts"):
         old, new = captures["old", kind], captures["new", kind]
         torch.testing.assert_close(old[0], new[0], rtol=0, atol=0)
-        for objective in ("cost", "variance"):
+        for objective in ("cost", "workload"):
             torch.testing.assert_close(old[1][objective], new[1][objective], rtol=0, atol=0)
     torch.testing.assert_close(captures["old", "worker_wait_experts"][1]["flow"], captures["new", "worker_wait_experts"][1]["flow"], rtol=0, atol=0)
     assert not torch.equal(captures["old", "worker_experts"][1]["flow"], captures["new", "worker_experts"][1]["flow"])

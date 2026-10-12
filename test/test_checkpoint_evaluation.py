@@ -1,4 +1,4 @@
-"""Real CLI evaluation of a schema-10 checkpoint on a tiny fixed dataset."""
+"""Real CLI evaluation of a modern checkpoint on a tiny fixed dataset."""
 from __future__ import annotations
 
 import csv
@@ -24,7 +24,7 @@ from environment import AssemblySchedulingEnv
 from result.io import write_config, write_json
 
 
-def test_schema10_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path):
+def test_schema11_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path):
     config = load_config("configs/v8/universal.json")
     config["device"] = "cpu"
     config["network"]["hidden_dim"] = 16
@@ -74,10 +74,12 @@ def test_schema10_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path)
                 "files": [{"path": "instance_3000000.json", "seed": 3000000, "sha256": digest}]}
     (tmp_path / "manifests/test").mkdir(parents=True)
     write_json(tmp_path / "manifests/test/manifest.json", manifest)
-    old_network = build_actor_critic(observation, config['network'])
-    checkpoint_path = tmp_path / 'schema10.pt'
-    PPOAgent(old_network, config['ppo'], device='cpu').save(checkpoint_path, metadata={'runtime_manifest': config['runtime_manifest']})
+    network = build_actor_critic(observation, config['network'])
+    checkpoint_path = tmp_path / 'schema11.pt'
+    PPOAgent(network, config['ppo'], device='cpu').save(checkpoint_path, metadata={'runtime_manifest': config['runtime_manifest']})
     checkpoint = torch.load(checkpoint_path, weights_only=False)
+    assert checkpoint['network_spec']['observation_schema_version'] == 11
+    assert checkpoint['network_spec']['workload_mode'] == 'geometric_owa'
     source_hash = checkpoint['metadata']['network_weights_sha256']
     write_config(tmp_path, config)
     command = [sys.executable, str(project_path("eval.py")), "--config", str(tmp_path / "config.json"),
@@ -96,10 +98,12 @@ def test_schema10_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path)
         provenance = saved["provenance"]
         assert provenance["network_weights_sha256"] == source_hash
         assert provenance.get("checkpoint_load_migration") is None
+        assert saved['evaluation_schema_version'] == '9.0.0'
         with (output / "instance_metrics.csv").open(encoding="utf-8-sig") as handle:
             rows = list(csv.DictReader(handle))
         assert len(rows) == cell_count
         assert all(int(row["schedule_violation_count"]) == 0 for row in rows)
+        assert all(row['workload_mode'] == 'geometric_owa' and row['workload_objective_value'] != '' for row in rows)
     from analysis.v8_pareto_analysis import analyze_runs
     summary = analyze_runs({"tiny": tmp_path / "runs/grid"}, tmp_path / "pareto")
     assert summary["preference_count"] == 66 and summary["repeat_count"] == 3

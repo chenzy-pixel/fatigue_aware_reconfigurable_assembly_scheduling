@@ -20,6 +20,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     from agent.ppo.network import normalize_network_config
     from data.dataset import template_sha256
     from data.models import load_instance_yaml
+    from environment.workload import is_modern_workload, workload_config
 
     training = config["training"]
     scalarizer = dict(config["objective_scalarizer"])
@@ -27,6 +28,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     return deepcopy({
         "algorithm_seed": int(config["seed"]),
         "suite": config["experiment_suite_version"],
+        **({"workload_objective": workload_config(config)} if is_modern_workload(config) else {}),
         "template_sha256": template_sha256(load_instance_yaml(project_path(config["paths"]["fixed_instance"]))),
         "dataset": config["dataset"],
         "generator": config["generator"],
@@ -59,7 +61,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
 
 def assert_matching_training_config(saved: Mapping[str, Any], expected: Mapping[str, Any]) -> None:
     first, second = training_contract(saved), training_contract(expected)
-    differences = [key for key in first if first[key] != second[key]]
+    differences = [key for key in sorted(first.keys() | second.keys()) if first.get(key) != second.get(key)]
     if differences:
         raise ValueError("training configuration mismatch: " + ", ".join(differences))
 
@@ -85,7 +87,7 @@ def assert_paired_configs(baseline: Mapping[str, Any], variant: Mapping[str, Any
             second["network"].pop("expert_weight_parameterization")
     else:
         raise ValueError(f"unknown ablation field: {changed_field}")
-    differences = [key for key in first if first[key] != second[key]]
+    differences = [key for key in sorted(first.keys() | second.keys()) if first.get(key) != second.get(key)]
     if differences:
         raise ValueError("unmatched ablation control variables: " + ", ".join(differences))
 
