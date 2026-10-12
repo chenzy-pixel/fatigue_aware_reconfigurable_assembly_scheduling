@@ -124,9 +124,10 @@ def test_graph_observation_static_contract(config, fixed_instance):
         "production_decision",
         "worker_matching_deficit_norm",
         "minimum_worker_alternative_ratio",
-        "objective_flow_norm",
-        "objective_cost_norm",
-        "objective_committed_workload_norm",
+        "objective_flow_log2_norm",
+        "objective_cost_log2_norm",
+        "objective_committed_workload_log2_norm",
+        "minimum_unfinished_order_slack_norm",
     )
     assert observation.global_features.shape == (
         len(observation.global_feature_names),

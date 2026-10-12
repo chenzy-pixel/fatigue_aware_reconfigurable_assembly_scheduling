@@ -56,8 +56,8 @@ def test_reachable_histories_expose_hidden_cumulative_flow(config, fixed_instanc
     np.testing.assert_array_equal(first.global_features[:6], second.global_features[:6])
     np.testing.assert_array_equal(first.action_set_features, second.action_set_features)
     scale = config['objective_scalarizer']['scales']['flow']
-    assert first.global_features[6] == pytest.approx(50/scale)
-    assert second.global_features[6] == pytest.approx(70/scale)
+    assert first.global_features[6] == pytest.approx(np.log2(1+50/scale))
+    assert second.global_features[6] == pytest.approx(np.log2(1+70/scale))
     assert first.global_feature_names == GLOBAL_FEATURE_NAMES
 
 
@@ -69,8 +69,8 @@ def test_global_objectives_and_transport_match_reward_state(config, fixed_instan
         env.step(rule.select_action(env), build_observation=False)
         obs = env.observe()
         scales = config['objective_scalarizer']['scales']
-        np.testing.assert_allclose(obs.global_features[6:9], np.asarray(env._objective_vector()) /
-            [scales[name] for name in objective_names(config)], rtol=1e-6)
+        np.testing.assert_allclose(obs.global_features[6:9], np.log2(1 + np.asarray(env._objective_vector()) /
+            [scales[name] for name in objective_names(config)]), rtol=1e-6)
         buffer = RolloutBuffer(preserve_graph=True)
         buffer.add(obs, env.get_action_mask(), 0, 0, 0, 0, env.terminated)
         for copied in (obs.copy(), pickle.loads(pickle.dumps(obs)), buffer.transitions[0].observation):

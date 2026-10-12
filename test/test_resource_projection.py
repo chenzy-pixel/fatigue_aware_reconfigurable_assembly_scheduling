@@ -66,6 +66,7 @@ def test_sequential_path_replays_time_fatigue_cost_and_load(config, fixed_instan
     if workload_contract == 'legacy_variance':
         config.pop('workload_objective')
         config['network']['observation_schema_version'] = 10
+        config['network'].pop('global_objective_encoding', None)
         scales = config['objective_scalarizer']['scales']
         scales['variance'] = scales.pop('workload')
         config['reward']['mode'] = flow_reward_version(config)

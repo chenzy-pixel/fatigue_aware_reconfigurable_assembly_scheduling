@@ -27,7 +27,7 @@ def _legacy_config():
     config = json.loads(project_path("configs/default.json").read_text(encoding="utf-8"))
     config.pop("workload_objective", None)
     network = config["network"]
-    for field in (*WORKLOAD_IDENTITY_FIELDS, "reward_version", "flow_mode", "normalization_manifest_sha256"):
+    for field in (*WORKLOAD_IDENTITY_FIELDS, "reward_version", "flow_mode", "normalization_manifest_sha256", "global_objective_encoding"):
         network.pop(field, None)
     network.update(observation_schema_version=10, hidden_dim=16)
     manifest = project_path("configs/manifests/v2_selected_scales_20261002.json")
@@ -47,7 +47,7 @@ def _modern_config(mode="geometric_owa", q=0.5):
     config = _legacy_config()
     config.pop("runtime_manifest")
     config["workload_objective"] = {"mode": mode, **({"q": q} if mode == "geometric_owa" else {})}
-    config["network"]["observation_schema_version"] = 11
+    config["network"]["observation_schema_version"] = 12
     identity = workload_config(config)
     scales = config["objective_scalarizer"]["scales"]
     scales["workload"] = scales.pop("variance")
@@ -127,7 +127,7 @@ def test_modern_modes_share_neutral_schema_and_store_full_identity(mode, fixed_i
     spec = infer_checkpoint_network_spec({"network_spec": network.network_spec()})
     assert observation.global_feature_names == GLOBAL_FEATURE_NAMES
     assert network.objectives == ("flow", "cost", "workload")
-    assert spec["observation_schema_version"] == 11
+    assert spec["observation_schema_version"] == 12
     assert spec["objective_names"] == network.objectives
     assert spec["workload_mode"] == mode
     assert spec["workload_q"] == (0.5 if mode == "geometric_owa" else None)

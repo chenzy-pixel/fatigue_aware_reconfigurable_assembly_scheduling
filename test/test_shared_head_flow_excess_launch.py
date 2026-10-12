@@ -30,7 +30,7 @@ def test_confirmed_remaining_matrix_has_seven_correct_experiments():
         assert configs[role]["network"]["actor_head_variant"] == "shared_preference"
         assert configs[role]["runtime_manifest"]["actor_head_variant"] == "shared_preference"
         assert configs[role]["reward"]["mode"] == "single_stage_progress_quality_workload_failure_v6"
-        assert configs[role]["network"]["observation_schema_version"] == 11
+        assert configs[role]["network"]["observation_schema_version"] == 12
     for role, weights in (("shared_head_flow", [1, 0, 0]), ("shared_head_cost", [0, 1, 0]),
                           ("shared_head_workload", [0, 0, 1])):
         assert configs[role]["preference"]["quality"]["fixed"] == weights
@@ -39,7 +39,7 @@ def test_confirmed_remaining_matrix_has_seven_correct_experiments():
     control = load_config(SHARED["shared_head_variance"])
     assert control["network"]["workload_mode"] == "variance"
     assert control["network"]["workload_q"] is None
-    assert control["network"]["observation_schema_version"] == 11
+    assert control["network"]["observation_schema_version"] == 12
 
 
 def test_remaining_launcher_saves_and_runs_the_confirmed_order(monkeypatch, tmp_path):

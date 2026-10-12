@@ -25,7 +25,7 @@ def _verified_schema10_flow_config(tmp_path):
     config = json.loads(project_path("configs/default.json").read_text(encoding="utf-8"))
     config.pop("workload_objective", None)
     for field in tuple(config["network"]):
-        if field.startswith("workload_") or field in {"objective_scales", "objective_names", "reward_version", "flow_mode", "normalization_manifest_sha256"}:
+        if field.startswith("workload_") or field in {"objective_scales", "objective_names", "reward_version", "flow_mode", "normalization_manifest_sha256", "global_objective_encoding"}:
             config["network"].pop(field)
     config["network"]["observation_schema_version"] = 10
     config["preference"]["quality"].update(mode="fixed", fixed=[1.0, 0.0, 0.0])
@@ -137,9 +137,9 @@ def test_modern_workload_and_legacy_variance_preserve_same_physical_trajectory(t
     instance = load_instance_yaml(project_path(modern["paths"]["fixed_instance"]))
     first, second = AssemblySchedulingEnv(legacy), AssemblySchedulingEnv(modern)
     old, new = first.reset(instance), second.reset(instance)
-    assert old.feature_dimensions == new.feature_dimensions
+    assert old.feature_dimensions["global"] == 9 and new.feature_dimensions["global"] == 10
     assert old.global_feature_names[-1] == "objective_committed_variance_norm"
-    assert new.global_feature_names[-1] == "objective_committed_workload_norm"
+    assert new.global_feature_names[-1] == "minimum_unfinished_order_slack_norm"
     policy = HeuristicPolicy()
     while not first.task_done:
         assert first.current_time == second.current_time
@@ -180,7 +180,7 @@ def test_supported_training_and_baseline_configs_are_executable(path):
         config = load_config(raw["config"])
     else:
         config = load_config(path)
-    assert config["runtime_manifest"]["observation_schema"] == 11
+    assert config["runtime_manifest"]["observation_schema"] == 12
     assert config["runtime_manifest"]["objective_names"] == list(objective_names(config))
     assert config["runtime_manifest"]["workload_objective"] == workload_config(config)
     instance = load_instance_yaml(project_path(config["paths"]["fixed_instance"]))

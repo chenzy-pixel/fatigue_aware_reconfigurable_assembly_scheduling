@@ -24,7 +24,7 @@ from environment import AssemblySchedulingEnv
 from result.io import write_config, write_json
 
 
-def test_schema11_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path):
+def test_schema12_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path):
     config = load_config("configs/v8/universal.json")
     config["device"] = "cpu"
     config["network"]["hidden_dim"] = 16
@@ -75,10 +75,10 @@ def test_schema11_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path)
     (tmp_path / "manifests/test").mkdir(parents=True)
     write_json(tmp_path / "manifests/test/manifest.json", manifest)
     network = build_actor_critic(observation, config['network'])
-    checkpoint_path = tmp_path / 'schema11.pt'
+    checkpoint_path = tmp_path / 'schema12.pt'
     PPOAgent(network, config['ppo'], device='cpu').save(checkpoint_path, metadata={'runtime_manifest': config['runtime_manifest']})
     checkpoint = torch.load(checkpoint_path, weights_only=False)
-    assert checkpoint['network_spec']['observation_schema_version'] == 11
+    assert checkpoint['network_spec']['observation_schema_version'] == 12
     assert checkpoint['network_spec']['workload_mode'] == 'geometric_owa'
     source_hash = checkpoint['metadata']['network_weights_sha256']
     write_config(tmp_path, config)

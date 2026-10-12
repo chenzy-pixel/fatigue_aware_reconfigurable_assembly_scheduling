@@ -312,7 +312,7 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     if selected_mode != flow_mode(manifest):
         raise ValueError("flow_mode disagrees with normalization manifest")
     from environment.workload import workload_config, observation_schema_version, objective_names
-    modern = observation_schema_version(config) == 11
+    modern = observation_schema_version(config) >= 11
     names = objective_names(config)
     if manifest["schema_version"] == WORKLOAD_MANIFEST_SCHEMA:
         if not modern or workload_config(config) != manifest["workload_objective"]:
@@ -344,7 +344,7 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
                   "workload_order": identity["order"],
                   "workload_scale": scalarizer["scales"]["workload"],
                   "objective_scales": tuple(scalarizer["scales"][name] for name in names),
-                  "observation_schema_version": 11}
+                  "observation_schema_version": observation_schema_version(config)}
         for key, value in fields.items():
             if key in network and network[key] != value and not (key == "objective_scales" and tuple(network[key]) == value):
                 raise ValueError(f"network {key} disagrees with workload configuration")

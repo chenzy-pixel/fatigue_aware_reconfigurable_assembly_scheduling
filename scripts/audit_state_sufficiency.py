@@ -455,7 +455,17 @@ def reconstructed_quantities(env, obs):
         assert worker_remaining[wi] == machine_remaining[mi]
     progress = float(np.mean(column("order", "completion_ratio")))
     scales = env.config["objective_scalarizer"]["scales"]
-    objectives = obs.global_features[6:9].astype(np.float64)*[scales[k] for k in objective_names(env.config)]
+    encoded = obs.global_features[6:9].astype(np.float64)
+    if env.global_objective_encoding == "log2_v1":
+        normalized = np.expm1(encoded * np.log(2.0))
+    elif env.global_objective_encoding == "bounded_v1":
+        # Finite precision can collapse extreme bounded inputs to exactly one.
+        if (encoded >= 1).any():
+            raise ValueError("bounded global objective saturated; cannot reconstruct a finite value")
+        normalized = encoded / (1.0 - encoded)
+    else:
+        normalized = encoded
+    objectives = normalized * [scales[k] for k in objective_names(env.config)]
     active = int(np.sum(column("order", "released") - column("order", "completed")))
     return {"tick": current_tick, "machine_remaining": machine_remaining, "worker_remaining": worker_remaining,
             "loads": loads, "committed": committed, "progress": progress,

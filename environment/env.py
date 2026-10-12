@@ -13,7 +13,9 @@ from data.models import (
     AssemblyInstance,
 )
 from environment.fatigue_monitor import audit_fatigue
-from environment.observation_schema import global_feature_names
+from environment.observation_schema import (
+    global_feature_names, configured_global_objective_encoding, encode_global_objectives,
+)
 from environment.workload import (
     workload_config, workload_value, workload_delta, workload_scale,
     observation_schema_version, objective_names, workload_feature_names,
@@ -128,6 +130,7 @@ class AssemblySchedulingEnv:
         self.flow_mode = flow_mode(config)
         self.workload_config = workload_config(config)
         self.observation_schema_version = observation_schema_version(config)
+        self.global_objective_encoding = configured_global_objective_encoding(config, self.observation_schema_version)
         self.objective_names = objective_names(config)
         self.fatigue_mode = str(config.get("environment", {}).get("fatigue_mode", "full"))
         if self.fatigue_mode not in {"full", "neutral"}:
@@ -793,6 +796,10 @@ class AssemblySchedulingEnv:
         )
         objectives = self._objective_vector()
         objective_scales = objective_scalarizer_config(self.config)["scales"]
+        encoded_objectives = encode_global_objectives(
+            objectives, [objective_scales["flow"], objective_scales["cost"], active_workload_scale],
+            version=self.observation_schema_version, encoding=self.global_objective_encoding,
+        )
         global_features = np.asarray(
             [
                 self.current_time / self.instance.horizon,
@@ -802,9 +809,8 @@ class AssemblySchedulingEnv:
                 matching_deficit / max(1, len(resource_snapshot.tasks)),
                 resource_snapshot.minimum_worker_alternatives
                 / max(1, len(self.workers)),
-                objectives[0] / objective_scales["flow"],
-                objectives[1] / objective_scales["cost"],
-                objectives[2] / active_workload_scale,
+                *encoded_objectives,
+                *([self.minimum_unfinished_order_slack_norm()] if self.observation_schema_version >= 12 else []),
             ],
             dtype=np.float32,
         )
@@ -832,7 +838,7 @@ class AssemblySchedulingEnv:
                 "module": module_feature_names,
                 "wave": wave_feature_names,
             },
-            global_feature_names=global_feature_names(self.observation_schema_version),
+            global_feature_names=global_feature_names(self.observation_schema_version, self.global_objective_encoding),
             node_ids={
                 "operation": tuple(
                     operation.spec.id for operation in self.operations
@@ -873,6 +879,17 @@ class AssemblySchedulingEnv:
             # with this subset: order nodes may subsequently request future orders.
             finishes = OrderTimeEstimator(self).finish_ticks(active)
         return min((self.horizon_tick - finishes[order]) / max(1, self.horizon_tick) for order in active)
+
+    def minimum_unfinished_order_slack_norm(self) -> float:
+        """Soft slack for all unfinished orders, including future releases."""
+        unfinished = [order.id for order in self.instance.orders
+                      if order.id not in self._order_completion_tick]
+        if not unfinished:
+            return 0.0
+        if self._order_finish_tick_cache is None:
+            self._order_finish_tick_cache = OrderTimeEstimator(self).finish_ticks()
+        return min((self.horizon_tick - self._order_finish_tick_cache[order])
+                   / max(1, self.horizon_tick) for order in unfinished)
 
     def _build_static_edge_indices(self) -> dict[EdgeType, np.ndarray]:
         self._require_instance()
@@ -1589,7 +1606,7 @@ class AssemblySchedulingEnv:
         }
         flow_delta = len(active_orders) * wait_minutes
         wait_projection = None
-        if (self.flow_mode == FLOW_EXCESS or self.observation_schema_version == 11) and certificate.get("allowed"):
+        if (self.flow_mode == FLOW_EXCESS or self.observation_schema_version >= 11) and certificate.get("allowed"):
             wait_projection = project_wait_state(
                 self, wait_ticks, settle_terminal=True, certificate=certificate)
             if self.flow_mode == FLOW_EXCESS:
@@ -1645,7 +1662,7 @@ class AssemblySchedulingEnv:
                 cost_delta / scalarizer["scales"]["cost"],
                 (workload_delta(self._committed_worker_loads, wait_projection._committed_worker_loads, self.config)
                  / workload_scale(self.config)
-                 if self.observation_schema_version == 11 and wait_projection is not None else 0.0),
+                 if self.observation_schema_version >= 11 and wait_projection is not None else 0.0),
                 wait_ticks / max(1, self.horizon_tick),
                 wait_ticks / max(1, self.horizon_tick),
                 len(active_orders) / max(1, len(self.instance.orders)),
@@ -2132,7 +2149,7 @@ class AssemblySchedulingEnv:
             flow=-(after[0] - before[0]),
             cost=-(after[1] - before[1]),
             variance=-(self._committed_load_variance() - variance_before),
-            workload=-(after[2] - before[2]) if self.observation_schema_version == 11 else None,
+            workload=-(after[2] - before[2]) if self.observation_schema_version >= 11 else None,
             operation_progress=progress_after - progress_before,
             quality=-(quality_after - quality_before),
             failure=failure_reward,
@@ -2553,7 +2570,7 @@ class AssemblySchedulingEnv:
                 "workload_rule": self.workload_config["weights"],
                 "workload_order": self.workload_config["order"],
                 "workload_version": self.workload_config["version"]}
-               if self.observation_schema_version == 11 else {}),
+               if self.observation_schema_version >= 11 else {}),
             "maximum_worker_fatigue": self._maximum_fatigue_seen,
             "safe_fatigue_limit": self.instance.fatigue.maximum_safe_fatigue,
             "worker_peak_fatigue": {

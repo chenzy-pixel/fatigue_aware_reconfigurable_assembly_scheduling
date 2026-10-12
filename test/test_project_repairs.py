@@ -24,7 +24,7 @@ def test_saved_effective_config_round_trip_and_runtime_validation(tmp_path):
     saved = json.loads((tmp_path / "config.json").read_text())
     saved["runtime_manifest"]["observation_schema"] = 5
     (tmp_path / "config.json").write_text(json.dumps(saved), encoding="utf-8")
-    with pytest.raises(ValueError, match="schema 11"):
+    with pytest.raises(ValueError, match="schema 12"):
         load_config(tmp_path / "config.json")
 
 
@@ -127,7 +127,7 @@ def test_fatigue_training_launcher_dispatches_all_six_arms(monkeypatch):
         objective = role.split("_", 1)[1]
         expected = load_config(f"configs/e1/single_{objective}.json")
         assert config["objective_scalarizer"] == expected["objective_scalarizer"]
-        assert config["network"]["observation_schema_version"] == 11
+        assert config["network"]["observation_schema_version"] == 12
 
 
 @pytest.mark.parametrize("corruption", (None, "partial", "checkpoint_config", "weights", "validation_manifest"))
@@ -170,5 +170,5 @@ def test_saved_older_observation_contract_requires_retraining(tmp_path, saved_sc
     config["runtime_manifest"]["observation_schema"] = saved_schema
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config), encoding="utf-8")
-    with pytest.raises(ValueError, match="schema 11.*retraining"):
+    with pytest.raises(ValueError, match="schema 12.*retraining"):
         load_config(path, allow_observation_migration=allow_migration)

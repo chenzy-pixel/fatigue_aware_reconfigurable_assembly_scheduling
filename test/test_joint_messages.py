@@ -82,7 +82,8 @@ def test_legal_resource_pair_witness_is_distinguishable(config, fixed_instance, 
     network = build_actor_critic(observations[0], config["network"]).double().eval()
     reference = _linear_reference(network)
     assert tuple(network.state_dict()) == tuple(reference.state_dict())
-    assert sum(p.numel() for p in network.parameters()) == 1197796
+    # One additional global input contributes 128 weights to the global encoder.
+    assert sum(p.numel() for p in network.parameters()) == 1197924
     for name, value in network.state_dict().items():
         torch.testing.assert_close(value, reference.state_dict()[name], atol=0, rtol=0)
     with torch.no_grad():

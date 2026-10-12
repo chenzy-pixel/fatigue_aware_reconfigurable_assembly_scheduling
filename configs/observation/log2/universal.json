@@ -1,0 +1,5 @@
+{
+  "extends": "../../v8/universal.json",
+  "experiment_name": "schema12_log2_universal",
+  "network": {"global_objective_encoding": "log2_v1"}
+}

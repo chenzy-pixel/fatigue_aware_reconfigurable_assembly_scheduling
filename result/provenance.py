@@ -277,6 +277,9 @@ def build_provenance(
             "preference_count": len(preferences),
             "ordered_preference_set": [point.preference.as_dict() for point in preferences],
         })
+    if config.get("runtime_manifest", {}).get("observation_schema", 0) >= 12:
+        provenance["observation_schema_version"] = config["runtime_manifest"]["observation_schema"]
+        provenance["global_objective_encoding"] = config["runtime_manifest"]["global_objective_encoding"]
     fingerprint_components = {
         key: value
         for key, value in provenance.items()

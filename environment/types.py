@@ -4,7 +4,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
-from .observation_schema import GLOBAL_FEATURE_NAMES, LEGACY_GLOBAL_FEATURE_NAMES, OBSERVATION_SCHEMA_VERSION
+from .observation_schema import (
+    GLOBAL_FEATURE_NAMES, LEGACY_GLOBAL_FEATURE_NAMES,
+    infer_global_observation_contract, OBSERVATION_SCHEMA_VERSION,
+)
 from .workload import objective_names, observation_schema_version, metrics_workload_objective, workload_config
 
 from .preference import (
@@ -37,7 +40,7 @@ def flow_mode(config: dict) -> str:
 
 
 def flow_reward_version(config: dict) -> str:
-    if observation_schema_version(config) == 11:
+    if observation_schema_version(config) >= 11:
         return (WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS
                 else WORKLOAD_FAILURE_PENALTY_REWARD)
     return EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS else FAILURE_PENALTY_REWARD
@@ -576,9 +579,10 @@ class HeterogeneousGraphObservation:
             raise ValueError(
                 "global feature width must match the number of feature names"
             )
-        if self.relations and (self.global_features.shape != (len(GLOBAL_FEATURE_NAMES),)
-                               or tuple(self.global_feature_names) not in (GLOBAL_FEATURE_NAMES, LEGACY_GLOBAL_FEATURE_NAMES)):
-            raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order/dimensions are incompatible")
+        if self.relations:
+            infer_global_observation_contract(self.global_feature_names)
+            if self.global_features.shape != (len(self.global_feature_names),):
+                raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order/dimensions are incompatible")
         expected_node_types = set(ASSEMBLY_NODE_TYPES)
         if set(node_features) != expected_node_types:
             raise ValueError(

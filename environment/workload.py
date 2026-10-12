@@ -6,6 +6,7 @@ from functools import lru_cache
 import math
 
 import numpy as np
+from .observation_schema import OBSERVATION_SCHEMA_VERSION, SUPPORTED_OBSERVATION_SCHEMAS
 
 WORKLOAD_VERSION = "workload_objective_v1"
 GEOMETRIC_WEIGHT_RULE = "normalized_geometric_by_worker_count_v1"
@@ -78,22 +79,22 @@ def workload_config(config: Mapping) -> dict:
 
 
 def observation_schema_version(config: Mapping) -> int:
-    """Resolve schema 10 legacy variance or schema 11 neutral workload features."""
+    """Resolve legacy variance or modern workload observation contracts."""
     network = _network(config)
-    value = network.get("observation_schema_version", 11 if is_modern_workload(config) else 10)
-    if isinstance(value, bool) or value not in {10, 11}:
-        raise ValueError("observation schema must be 10 or 11; older models require retraining")
+    value = network.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION if is_modern_workload(config) else 10)
+    if isinstance(value, bool) or value not in SUPPORTED_OBSERVATION_SCHEMAS:
+        raise ValueError("observation schema must be 10, 11 or 12; older models require retraining")
     version = int(value)
     definition = workload_config(config)
     if version == 10 and definition["mode"] != "variance":
         raise ValueError("schema 10 supports only the legacy variance workload objective")
-    if version == 11 and not is_modern_workload(config):
-        raise ValueError("schema 11 requires an explicit workload_objective")
+    if version >= 11 and not is_modern_workload(config):
+        raise ValueError("schema 11/12 requires an explicit workload_objective")
     return version
 
 
 def objective_names(config: Mapping) -> tuple[str, str, str]:
-    return MODERN_OBJECTIVE_NAMES if observation_schema_version(config) == 11 else LEGACY_OBJECTIVE_NAMES
+    return MODERN_OBJECTIVE_NAMES if observation_schema_version(config) >= 11 else LEGACY_OBJECTIVE_NAMES
 
 
 @lru_cache(maxsize=256)

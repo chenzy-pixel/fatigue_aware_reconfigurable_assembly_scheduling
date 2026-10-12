@@ -8,7 +8,7 @@ from typing import Any
 
 from .runtime import attach_runtime_manifest
 from .normalization import apply_normalization_manifest
-from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION, SUPPORTED_OBSERVATION_SCHEMAS
 from environment.workload import observation_schema_version
 
 
@@ -72,6 +72,13 @@ def _load_config_path(
     # parent now selects the modern workload objective.
     raw_manifest = raw.get("runtime_manifest")
     legacy_snapshot = isinstance(raw_manifest, Mapping) and raw_manifest.get("observation_schema") == 10
+    if isinstance(raw_manifest, Mapping) and raw_manifest.get("observation_schema") in {10, 11}:
+        merged.setdefault("network", {}).setdefault("observation_schema_version", raw_manifest["observation_schema"])
+        # A saved snapshot must not acquire the new parent's encoding or version.
+        if "observation_schema_version" not in raw.get("network", {}):
+            merged["network"]["observation_schema_version"] = raw_manifest["observation_schema"]
+        if "global_objective_encoding" not in raw.get("network", {}):
+            merged["network"].pop("global_objective_encoding", None)
     if legacy_snapshot and "workload_objective" not in raw:
         merged.pop("workload_objective", None)
         if "observation_schema_version" not in raw.get("network", {}):
@@ -90,8 +97,10 @@ def load_config(path: str | Path, *, allow_observation_migration: bool = False) 
     saved_manifest = config.pop("runtime_manifest", None)
     if saved_manifest is not None and not isinstance(saved_manifest, Mapping):
         raise ValueError("saved runtime_manifest must be an object")
-    if saved_manifest is not None and saved_manifest.get("observation_schema") not in {10, OBSERVATION_SCHEMA_VERSION}:
+    if saved_manifest is not None and saved_manifest.get("observation_schema") not in SUPPORTED_OBSERVATION_SCHEMAS:
         raise ValueError(f"saved runtime_manifest is incompatible: schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation snapshots cannot be migrated")
+    if saved_manifest is not None and saved_manifest.get("observation_schema") in {10, 11}:
+        config.setdefault("network", {}).setdefault("observation_schema_version", saved_manifest["observation_schema"])
     if "workload_objective" not in config:
         if (saved_manifest is None or saved_manifest.get("observation_schema") != 10
                 or int(config.get("network", {}).get("observation_schema_version", 10)) != 10):

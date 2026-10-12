@@ -474,7 +474,8 @@
     "residual_std_floor": 0.001,
     "worker_flow_time_normalization": "candidate_zscore_v1",
     "worker_flow_time_std_floor": 0.001,
-    "observation_schema_version": 11
+    "observation_schema_version": 12,
+    "global_objective_encoding": "log2_v1"
   },
   "ppo": {
     "learning_rate": 0.0001,

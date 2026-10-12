@@ -1,4 +1,4 @@
-"""Nine-global observation, external sampling boundaries and bootstrap contracts."""
+"""Current global observation, external sampling boundaries and bootstrap contracts."""
 from copy import deepcopy
 from dataclasses import replace
 import pickle
@@ -22,9 +22,9 @@ from training.protocol import LexicographicCheckpointSelector
 def test_nine_features_keep_order_information_and_objectives(config, fixed_instance):
     env = AssemblySchedulingEnv(config)
     obs = env.reset(fixed_instance)
-    assert OBSERVATION_SCHEMA_VERSION == 11
+    assert OBSERVATION_SCHEMA_VERSION == 12
     assert obs.global_feature_names == GLOBAL_FEATURE_NAMES
-    assert len(obs.global_features) == 9
+    assert len(obs.global_features) == 10
     assert obs.global_features[4] == 0 and obs.global_features[5] == 1
     policy = HeuristicPolicy()
     for _ in range(100):
@@ -37,14 +37,14 @@ def test_nine_features_keep_order_information_and_objectives(config, fixed_insta
             obs.action_set_feature_names.index('active_order_ratio')])
         assert obs.global_features[3] == float(env.decision_type == DecisionType.PRODUCTION)
         scales = config['objective_scalarizer']['scales']
-        np.testing.assert_allclose(obs.global_features[6:9], np.asarray(env._objective_vector()) /
-                                   [scales[k] for k in objective_names(config)], rtol=1e-6)
+        np.testing.assert_allclose(obs.global_features[6:9], np.log2(1 + np.asarray(env._objective_vector()) /
+                                   [scales[k] for k in objective_names(config)]), rtol=1e-6)
         for copied in (obs.copy(), pickle.loads(pickle.dumps(obs))):
             np.testing.assert_array_equal(copied.global_features, obs.global_features)
         if env.task_done:
             break
     net = build_actor_critic(obs, {**config['network'], 'hidden_dim': 16})
-    assert net.global_encoder[0].in_features == 9
+    assert net.global_encoder[0].in_features == 10
 
 
 @pytest.mark.parametrize('guard,reason', [('max_decisions','decision_limit'),

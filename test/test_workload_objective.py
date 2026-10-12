@@ -34,7 +34,7 @@ def _modern(config, mode="geometric_owa", q=0.5):
     effective = deepcopy(config)
     definition = {"mode": mode, "q": q if mode == "geometric_owa" else None}
     effective["workload_objective"] = definition
-    effective["network"]["observation_schema_version"] = 11
+    effective["network"]["observation_schema_version"] = 12
     for key in tuple(effective["network"]):
         if key.startswith("workload_"):
             effective["network"].pop(key)
@@ -58,6 +58,7 @@ def _legacy(config):
         if key.startswith("workload_"):
             effective["network"].pop(key)
     effective["network"]["observation_schema_version"] = 10
+    effective["network"].pop("global_objective_encoding", None)
     effective["objective_scalarizer"]["scales"] = {"flow": 1000.0, "cost": 300.0, "variance": 2.0}
     effective["reward"]["mode"] = flow_reward_version(effective)
     quality = dict(effective["evaluation"].get("quality_metric") or {})
@@ -148,7 +149,7 @@ def test_variance_mode_is_population_variance_and_never_an_owa_fallback():
     with pytest.raises(KeyError, match="workload_objective_value"):
         metrics_workload_objective({"worker_load_variance": 3.0},
                                    {"workload_objective": {"mode": "geometric_owa", "q": 0.5}})
-    assert observation_schema_version(cfg) == 11
+    assert observation_schema_version(cfg) == 12
     assert objective_names(cfg) == ("flow", "cost", "workload")
     legacy = {**cfg, "network": {"observation_schema_version": 10}}
     assert objective_names(legacy) == ("flow", "cost", "variance")
@@ -177,7 +178,7 @@ def test_worker_production_global_and_wait_features_share_active_objective(confi
     env = AssemblySchedulingEnv(effective)
     env.reset(_single_reconfiguration(fixed_instance), preference=[0, 0, 1])
     observation = env.observe()
-    assert observation.global_feature_names == global_feature_names(11)
+    assert observation.global_feature_names == global_feature_names(12)
     relation = observation.relations[CAPABLE_EDGE]
     position = relation.feature_names.index("estimated_worker_load_objective_delta_norm")
     oi, mi = map(int, relation.edge_index[:, 0])
@@ -200,7 +201,7 @@ def test_worker_production_global_and_wait_features_share_active_objective(confi
     assert reward.workload == pytest.approx(-metrics["committed_workload_objective_value"])
     assert reward.variance == pytest.approx(-metrics["committed_worker_load_variance"])
     observed = env.observe()
-    assert observed.global_features[-1] == pytest.approx(metrics["committed_workload_objective_value"] / 20, abs=1e-6)
+    assert observed.global_features[8] == pytest.approx(np.log2(1 + metrics["committed_workload_objective_value"] / 20), abs=1e-6)
     assert "estimated_workload_objective_delta_if_wait" in observed.action_set_feature_names
     assert metrics["training_cumulative_reward"] == pytest.approx(proxy_return_from_metrics(metrics, effective, preference=[0, 0, 1]))
     derived = dict(metrics)
@@ -305,6 +306,8 @@ def test_direct_modern_quality_metric_and_legacy_variance_names(config):
 def test_schema11_variance_renames_contract_without_changing_initial_numbers(config, fixed_instance):
     legacy = _legacy(config)
     modern = _modern(config, mode="variance")
+    modern["network"]["observation_schema_version"] = 11
+    modern["network"].pop("global_objective_encoding", None)
     modern["objective_scalarizer"]["scales"]["workload"] = legacy["objective_scalarizer"]["scales"]["variance"]
     envs = [AssemblySchedulingEnv(effective) for effective in (legacy, modern)]
     observations = [env.reset(_single_reconfiguration(fixed_instance)) for env in envs]

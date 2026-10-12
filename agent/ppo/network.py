@@ -40,6 +40,7 @@ from environment import (
 
 from environment.observation_schema import (
     OBSERVATION_SCHEMA_VERSION, global_feature_names as schema_global_feature_names,
+    SUPPORTED_OBSERVATION_SCHEMAS, normalize_global_objective_encoding,
 )
 
 
@@ -85,7 +86,7 @@ LEGACY_WAIT_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
 def direct_feature_schemas(version: int) -> tuple[dict, dict, dict]:
     if version == 10:
         return (LEGACY_PRODUCTION_DIRECT_SCHEMA, LEGACY_WORKER_DIRECT_SCHEMA, LEGACY_WAIT_DIRECT_SCHEMA)
-    if version != OBSERVATION_SCHEMA_VERSION:
+    if version not in {11, 12}:
         raise ValueError(f"schema {version} is incompatible; older observation schemas require retraining")
     replacements = {
         "estimated_worker_load_variance_delta_norm": "estimated_worker_load_objective_delta_norm",
@@ -161,8 +162,9 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(config, Mapping):
         raise TypeError("network config must be a mapping")
     schema_version = int(config.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION))
-    if schema_version not in {10, OBSERVATION_SCHEMA_VERSION}:
+    if schema_version not in SUPPORTED_OBSERVATION_SCHEMAS:
         raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; network observation schema is incompatible")
+    global_encoding = normalize_global_objective_encoding(schema_version, config.get("global_objective_encoding"))
     hidden_dim = int(config.get("hidden_dim", 128))
     layers = int(config.get("message_passing_layers", 2))
     encoder_variant = str(config.get("encoder_variant", "hetero_gnn"))
@@ -214,6 +216,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "dropout": dropout,
         "policy_head_version": version,
         "observation_schema_version": schema_version,
+        **({"global_objective_encoding": global_encoding} if schema_version >= 12 else {}),
         "preference_embedding_dim": PREFERENCE_ENCODER_DIM,
         "residual_gate_initial_logit": gate,
         "residual_std_floor": floor,
@@ -255,7 +258,7 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     if int(spec.get("policy_head_version", 0)) != POLICY_HEAD_VERSION:
         raise ValueError("V7 and earlier checkpoints are rejected by V8 runtime")
     schema_version = int(spec.get("observation_schema_version", 0))
-    if schema_version not in {10, OBSERVATION_SCHEMA_VERSION}:
+    if schema_version not in SUPPORTED_OBSERVATION_SCHEMAS:
         raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation schemas cannot be loaded or migrated")
     validate_message_identity(spec, require=True)
     dimensions = spec.get("edge_feature_dimensions", {})
@@ -267,7 +270,10 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         raise ValueError("checkpoint time context version is incompatible")
     if schema_version >= 6 and spec.get("time_context_feature_schema") != TIME_CONTEXT_FEATURE_SCHEMA:
         raise ValueError("checkpoint time context feature schema is incompatible")
-    expected_globals = schema_global_feature_names(schema_version)
+    if schema_version >= 12 and "global_objective_encoding" not in spec:
+        raise ValueError("checkpoint is missing global_objective_encoding")
+    encoding = normalize_global_objective_encoding(schema_version, spec.get("global_objective_encoding"))
+    expected_globals = schema_global_feature_names(schema_version, encoding)
     if int(spec.get("feature_dimensions", {}).get("global", 0)) != len(expected_globals):
         raise ValueError("checkpoint global feature dimensions are incompatible")
     if tuple(spec.get("global_feature_names", ())) != expected_globals:
@@ -286,12 +292,12 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     for name, expected in expected_schemas.items():
         if spec.get(name) != expected:
             raise ValueError(f"checkpoint {name} is incompatible with V8")
-    if schema_version == OBSERVATION_SCHEMA_VERSION:
+    if schema_version >= 11:
         for field in WORKLOAD_IDENTITY_FIELDS:
             if field not in spec:
                 raise ValueError(f"checkpoint is missing {field}")
     normalized = normalize_network_config(spec)
-    if schema_version == OBSERVATION_SCHEMA_VERSION:
+    if schema_version >= 11:
         for field in WORKLOAD_IDENTITY_FIELDS:
             spec[field] = normalized[field]
     spec["flow_mode"] = normalized["flow_mode"]
@@ -329,7 +335,8 @@ def assert_network_config_matches_spec(
         "normalization_manifest_sha256",
         "flow_mode",
         "reward_version",
-        *(WORKLOAD_IDENTITY_FIELDS if configured["observation_schema_version"] == OBSERVATION_SCHEMA_VERSION else ()),
+        *(("global_objective_encoding",) if configured["observation_schema_version"] >= 12 else ()),
+        *(WORKLOAD_IDENTITY_FIELDS if configured["observation_schema_version"] >= 11 else ()),
     ):
         if configured[name] != saved.get(name):
             raise ValueError(
@@ -562,6 +569,7 @@ class HeteroGraphActorCritic(nn.Module):
         actor_head_variant: str = "objective_experts",
         global_feature_names: Sequence[str] | None = None,
         observation_schema_version: int = OBSERVATION_SCHEMA_VERSION,
+        global_objective_encoding: str | None = None,
         workload_mode: str | None = None,
         workload_q: float | None = None,
         workload_order: str = "descending",
@@ -581,9 +589,10 @@ class HeteroGraphActorCritic(nn.Module):
         self.dropout_probability = float(dropout)
         if self.dropout_probability != 0.0:
             raise ValueError("PPO requires network.dropout = 0")
-        if observation_schema_version not in {10, OBSERVATION_SCHEMA_VERSION}:
+        if observation_schema_version not in SUPPORTED_OBSERVATION_SCHEMAS:
             raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; legacy observations cannot be migrated")
-        expected_globals = schema_global_feature_names(observation_schema_version)
+        self.global_objective_encoding = normalize_global_objective_encoding(observation_schema_version, global_objective_encoding)
+        expected_globals = schema_global_feature_names(observation_schema_version, self.global_objective_encoding)
         self.global_feature_names = tuple(
             expected_globals if global_feature_names is None else global_feature_names
         )
@@ -603,6 +612,7 @@ class HeteroGraphActorCritic(nn.Module):
         normalized = normalize_network_config({
             "encoder_variant": encoder_variant, "actor_head_variant": actor_head_variant,
             "observation_schema_version": observation_schema_version,
+            **({"global_objective_encoding": self.global_objective_encoding} if observation_schema_version >= 12 else {}),
             "flow_mode": flow_mode,
             **({"reward_version": reward_version} if reward_version is not None else {}),
             "worker_flow_time_normalization": worker_flow_time_normalization,
@@ -740,6 +750,7 @@ class HeteroGraphActorCritic(nn.Module):
             "policy_head_version": POLICY_HEAD_VERSION,
             "observation_schema_version": self.observation_schema_version,
             "global_feature_names": self.global_feature_names,
+            **({"global_objective_encoding": self.global_objective_encoding} if self.observation_schema_version >= 12 else {}),
             "time_context_version": TIME_CONTEXT_VERSION,
             "time_context_feature_schema": {
                 name: list(fields) for name, fields in TIME_CONTEXT_FEATURE_SCHEMA.items()
@@ -1719,7 +1730,7 @@ def build_actor_critic(
     config = normalize_network_config(network_config)
     selected_schema = config["observation_schema_version"]
     observation.validate()
-    if tuple(observation.global_feature_names) != schema_global_feature_names(selected_schema):
+    if tuple(observation.global_feature_names) != schema_global_feature_names(selected_schema, config.get("global_objective_encoding")):
         raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order are missing or incompatible")
     required = {
         "order": (set(observation.node_feature_names.get("order", ())), {ORDER_TIME_FEATURE}),
@@ -1749,6 +1760,7 @@ def build_actor_critic(
         actor_head_variant=config["actor_head_variant"],
         global_feature_names=observation.global_feature_names,
         observation_schema_version=selected_schema,
+        global_objective_encoding=config.get("global_objective_encoding"),
         **{field: config[field] for field in WORKLOAD_IDENTITY_FIELDS
            if field in config and field != "objective_names"},
     )

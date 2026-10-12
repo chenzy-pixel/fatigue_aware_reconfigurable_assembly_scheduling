@@ -4,7 +4,7 @@ from copy import deepcopy
 import math
 from typing import Any, Mapping
 
-from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION, configured_global_objective_encoding
 from environment.time_context import TIME_CONTEXT_VERSION
 from .network_contract import message_identity, validate_message_identity
 from environment.types import flow_mode, flow_reward_version, FLOW_EXCESS
@@ -59,6 +59,8 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     manifest.update(message_identity())
     if config is not None:
         manifest["observation_schema"] = observation_schema_version(config)
+        if manifest["observation_schema"] >= 12:
+            manifest["global_objective_encoding"] = configured_global_objective_encoding(config, manifest["observation_schema"])
         manifest["flow_mode"] = flow_mode(dict(config))
         manifest["reward"] = flow_reward_version(dict(config))
         manifest["normalization_manifest_sha256"] = config.get("objective_scalarizer", {}).get("normalization_manifest_sha256")
@@ -114,6 +116,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
     if int(network.get("policy_head_version", 8)) != 8:
         raise ValueError("latest-only runtime accepts only policy_head_version=8")
     selected_schema = observation_schema_version(config)
+    configured_global_objective_encoding(config, selected_schema)
     if int(network.get("observation_schema_version", selected_schema)) != selected_schema:
         raise ValueError(f"schema {OBSERVATION_SCHEMA_VERSION} requires retraining; network observation schema is incompatible")
     workload_config(config)
@@ -189,6 +192,8 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
 
 def attach_runtime_manifest(config: dict[str, Any]) -> dict[str, Any]:
     validate_latest_only_config(config)
+    if observation_schema_version(config) >= 12:
+        config.setdefault("network", {})["global_objective_encoding"] = configured_global_objective_encoding(config, 12)
     config["runtime_manifest"] = runtime_manifest(config)
     return config
 

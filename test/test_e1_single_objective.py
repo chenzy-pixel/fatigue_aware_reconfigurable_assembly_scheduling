@@ -86,7 +86,7 @@ def test_variance_control_uses_modern_neutral_schema_and_its_own_scale():
     control = load_config("configs/e1/single_variance.json")
     primary = load_config("configs/e1/single_workload.json")
     assert control["workload_objective"]["mode"] == "variance"
-    assert control["network"]["observation_schema_version"] == 11
+    assert control["network"]["observation_schema_version"] == 12
     assert control["network"]["workload_mode"] == "variance"
     assert control["network"]["workload_q"] is None
     assert control["preference"]["quality"]["fixed"] == [0.0, 0.0, 1.0]

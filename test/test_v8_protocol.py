@@ -257,7 +257,7 @@ def test_current_scales_align_training_reference_quality_and_pareto():
     control = load_config("configs/e1/single_variance.json")
     control_expected = {**expected, "workload": 2.2629}
     assert control["objective_scalarizer"]["scales"] == control_expected
-    assert control["network"]["observation_schema_version"] == 11
+    assert control["network"]["observation_schema_version"] == 12
     control_metric = evaluation_quality_metric(control)
     assert control_metric["workload_mode"] == "variance"
     assert control_metric["workload_q"] is None

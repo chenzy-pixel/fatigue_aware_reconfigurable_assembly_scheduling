@@ -72,14 +72,19 @@ The full training commands are long-running and can be launched separately.
 This repository trains a preference-conditioned HGNN policy with PPO for
 fatigue-aware reconfigurable assembly scheduling. Production and worker
 decisions use pair-plus-WAIT actions, exact action masks, deterministic event
-simulation, and schema-10 heterogeneous graph observations. Order slack, worker-task
+simulation, and schema-12 heterogeneous graph observations. Order slack, worker-task
 waiting age, and event-projected WAIT slack enter each objective expert's context
 score through the action encoder. See [the time-context definition](docs/order_time_context.md).
 
-The nine global features encode time, pending reconfigurations, completed
+The ten global features encode time, pending reconfigurations, completed
 operations, decision phase, worker matching deficit, minimum worker alternatives,
-and cumulative Flow, cost and committed-load variance divided by their frozen
-scales. PPO requires `network.dropout=0`.
+three cumulative objectives, and minimum estimated slack across all unfinished
+orders, including future releases. Objective inputs default to `log2(1+J/s)`;
+`network.global_objective_encoding=bounded_v1` selects `J/(s+J)` as an observation
+encoding. Reward scalarization and frozen scales remain independent of this
+setting. See [the schema12 contract and paired presets](docs/schema12_global_observation.md).
+Saved schema10/11 models retain their original nine-dimensional linear inputs
+and require retraining to use schema12. PPO requires `network.dropout=0`.
 
 Attributed HGNN messages apply `ReLU(Linear([neighbor, edge]))` before
 aggregation in both directions. Messages are averaged over the total incoming

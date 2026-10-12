@@ -121,8 +121,10 @@ def test_real_baseline_manifest_entrypoint(tmp_path,fixed_instance):
     assert all(row['replay_verified']=='True' for row in rows)
 
 
-def test_real_schema11_training_update_validation_and_final_grid(tmp_path,fixed_instance):
-    config,tiny = tiny_config(tmp_path,fixed_instance,training_template=True)
+@pytest.mark.parametrize("encoding", ["log2_v1", "bounded_v1"])
+def test_real_schema12_training_update_validation_and_final_grid(tmp_path,fixed_instance,encoding):
+    source=f"configs/observation/{'log2' if encoding=='log2_v1' else 'bounded'}/universal.json"
+    config,tiny = tiny_config(tmp_path,fixed_instance,source=source,training_template=True)
     run_cli(['train.py','--config',str(tmp_path/'config.json'),'--smoke','--parallel-envs','1',
         '--episodes-per-update','2','--validation-parallel-envs','1','--run-name','ppo'],tmp_path/'train_cli.log')
     directory = tmp_path/'runs/ppo'
@@ -132,8 +134,9 @@ def test_real_schema11_training_update_validation_and_final_grid(tmp_path,fixed_
             rows = list(csv.DictReader(handle))
         assert len(rows) == count and all(int(row['schedule_violation_count'])==0 for row in rows)
     payload = torch.load(directory/'best_checkpoint.pt',weights_only=False)
-    assert payload['network_spec']['feature_dimensions']['global'] == 9
-    assert payload['network_spec']['observation_schema_version'] == 11
+    assert payload['network_spec']['feature_dimensions']['global'] == 10
+    assert payload['network_spec']['observation_schema_version'] == 12
+    assert payload['network_spec']['global_objective_encoding'] == encoding
     assert payload['network_spec']['objective_names'] == ('flow', 'cost', 'workload')
     assert payload['network_spec']['workload_mode'] == 'geometric_owa'
     env = AssemblySchedulingEnv(config)
@@ -141,7 +144,11 @@ def test_real_schema11_training_update_validation_and_final_grid(tmp_path,fixed_
     agent = PPOAgent(build_actor_critic(obs,config['network']),config['ppo'])
     agent.load(directory/'best_checkpoint.pt')
     agent.load(directory/'last_checkpoint.pt',load_optimizer=True)
-    assert load_config(directory/'config.json')['runtime_manifest']['observation_schema'] == 11
+    assert load_config(directory/'config.json')['runtime_manifest']['observation_schema'] == 12
+    summary = json.loads((directory/'summary.json').read_text())
+    final = summary['final_sampled']
+    assert summary['provenance']['global_objective_encoding'] == encoding
+    assert final['provenance']['global_objective_encoding'] == encoding
 
 
 def test_real_training_external_guards_keep_partial_rows_and_last_checkpoint(tmp_path, fixed_instance):
