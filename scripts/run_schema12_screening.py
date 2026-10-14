@@ -13,6 +13,7 @@ CONFIGS = {
     "owa_log2": "configs/observation/screening/owa_log2.json",
     "variance_bounded": "configs/observation/screening/variance_bounded.json",
     "owa_bounded": "configs/observation/screening/owa_bounded.json",
+    "owa_log2_lambda099": "configs/observation/screening/owa_log2_lambda099.json",
 }
 INITIAL_PAIR = ("variance_log2", "owa_log2")
 
