@@ -1,4 +1,4 @@
-"""Launch the initial Variance/OWA pair or one selected encoding control."""
+"""Launch the initial Variance/OWA pair or a selected encoding/GAE control."""
 from pathlib import Path
 import sys
 
@@ -14,13 +14,14 @@ CONFIGS = {
     "variance_bounded": "configs/observation/screening/variance_bounded.json",
     "owa_bounded": "configs/observation/screening/owa_bounded.json",
     "owa_log2_lambda099": "configs/observation/screening/owa_log2_lambda099.json",
+    "owa_log2_lambda097": "configs/observation/screening/owa_log2_lambda097.json",
 }
 INITIAL_PAIR = ("variance_log2", "owa_log2")
 
 
 def main():
     parser = launch_argument_parser()
-    parser.description = "Schema12 shared-head excess screening: two initial Universal runs, then one selected encoding control."
+    parser.description = "Schema12 shared-head excess screening: initial Universal pair or one encoding/GAE control."
     parser.add_argument("--experiment", choices=("pair", *CONFIGS), default="pair",
                         help="pair runs Variance/log2 and OWA/log2 sequentially")
     args = parser.parse_args()

@@ -41,6 +41,8 @@ def startup_preflight(configs, *, probe_network=False, config_paths=None,
         datasets = {split: load_dataset_split(config, split) for split in ("validation", "test")}
         formal = config["training"]["formal_evaluation"]
         reports[label] = {
+            "seed": config["seed"], "gamma": config["ppo"]["gamma"],
+            "gae_lambda": config["ppo"]["gae_lambda"],
             "config": (config_paths or CONFIGS)[label], "flow_mode": flow_mode(config), "reward_version": config["reward"]["mode"],
             "actor_head_variant": config["network"].get("actor_head_variant", "objective_experts"),
             "scales": config["objective_scalarizer"]["scales"], "device": str(device),
