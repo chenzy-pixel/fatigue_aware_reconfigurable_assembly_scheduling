@@ -80,9 +80,23 @@ foreach ($name in $Experiment) {
 }
 
 if (-not $Python) {
-    $Python = Join-Path $experimentRoot '.venv/Scripts/python.exe'
+    $pythonCandidates = @()
+    if ($env:VIRTUAL_ENV) {
+        $pythonCandidates += Join-Path $env:VIRTUAL_ENV 'Scripts/python.exe'
+    }
+    if ($env:CONDA_PREFIX) {
+        $pythonCandidates += Join-Path $env:CONDA_PREFIX 'python.exe'
+    }
+    $pythonCandidates += Join-Path $experimentRoot '.venv/Scripts/python.exe'
+    foreach ($candidate in $pythonCandidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $Python = $candidate
+            break
+        }
+    }
+    if (-not $Python) { $Python = 'python' }
 }
-$pythonCommand = Get-Command $Python -CommandType Application -ErrorAction Stop
+$pythonCommand = Get-Command $Python -CommandType Application -ErrorAction Stop | Select-Object -First 1
 $pythonExecutable = $pythonCommand.Source
 
 Push-Location -LiteralPath $experimentRoot

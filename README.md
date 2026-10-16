@@ -49,6 +49,8 @@
 
 该脚本先后执行三个种子，任一失败停止；`-PreflightOnly`只预检，`-DryRun`只打印命令，`-List`列出26个实验。每个实验的单独命令见[三种子逐项清单](docs/experiment_three_seeds.md)。
 
+脚本优先使用已激活的 virtualenv/Conda 环境，其次使用项目`.venv`，最后查找 PATH 中的`python`；`-Python`可显式指定解释器路径或命令名。
+
 一次Universal训练示例：
 
 ```powershell

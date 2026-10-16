@@ -50,7 +50,7 @@
 .\scripts\run_three_seeds.ps1 -Experiment universal -Device cuda -ParallelEnvs 20 -ValidationParallelEnvs 20
 ```
 
-默认Python为项目`.venv/Scripts/python.exe`；其他环境可用`-Python C:\path\to\python.exe`。资源参数省略时沿用配置。可用`-List`查看实验名和配置映射。
+默认优先使用已激活的 virtualenv 或 Conda 环境，其次使用项目`.venv/Scripts/python.exe`，最后查找 PATH 中的`python`。可用`-Python C:\path\to\python.exe`或`-Python python`显式指定；同名命令有多个匹配时使用第一个。资源参数省略时沿用配置。可用`-List`查看实验名和配置映射。
 
 ## 其他实验逐项清单
 
