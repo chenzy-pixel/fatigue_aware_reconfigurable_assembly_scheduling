@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from environment.observation_schema import OBSERVATION_SCHEMA_VERSION, configured_global_objective_encoding
 from environment.time_context import TIME_CONTEXT_VERSION
 from .network_contract import message_identity, validate_message_identity
+from .evaluation_sampling import BEST_OF_THREE, sample_aggregation, validate_sample_aggregation
 from environment.types import flow_mode, flow_reward_version, FLOW_EXCESS
 from environment.workload import (
     is_modern_workload, objective_names, observation_schema_version, workload_config,
@@ -18,7 +19,7 @@ _RUNTIME_MANIFEST: dict[str, Any] = {
     "production_action": "pair_plus_wait_v1",
     "worker_action": "pair_plus_wait_v1",
     "policy_head": 8,
-    "candidate_ranker": "simplex_softplus_objective_experts_v8",
+    "candidate_ranker": "shared_preference_mlp_v1",
     "worker_feasibility": "instant_physical_pair_mask_v1",
     "wait_mask": "progress_certified_wait_v2",
     "observation_schema": OBSERVATION_SCHEMA_VERSION,
@@ -78,10 +79,8 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         network = config.get("network", {})
         manifest["encoder_variant"] = network.get("encoder_variant", "hetero_gnn")
         manifest.update(validate_message_identity(network))
-        manifest["actor_head_variant"] = network.get("actor_head_variant", "objective_experts")
+        manifest["actor_head_variant"] = network.get("actor_head_variant", "shared_preference")
         manifest["fatigue_mode"] = config.get("environment", {}).get("fatigue_mode", "full")
-        if manifest["actor_head_variant"] == "shared_preference":
-            manifest["candidate_ranker"] = "shared_preference_mlp_v1"
         if manifest["fatigue_mode"] == "neutral":
             manifest["worker_feasibility"] = "qualification_and_availability_no_fatigue_v1"
         manifest["terminal_failure_penalty"] = float(
@@ -89,6 +88,10 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
                 "terminal_failure_penalty", manifest["terminal_failure_penalty"]
             )
         )
+        if sample_aggregation(config) == BEST_OF_THREE:
+            manifest["training_protocol"] += "_best_of_3_v1"
+            manifest["sample_aggregation"] = BEST_OF_THREE
+            manifest["sampling_budget"] = 3
     return manifest
 
 
@@ -125,7 +128,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
     if network.get("encoder_variant", "hetero_gnn") not in {"hetero_gnn", "node_mlp_pool"}:
         raise ValueError("unknown network.encoder_variant")
     validate_message_identity(network)
-    if network.get("actor_head_variant", "objective_experts") not in {"objective_experts", "shared_preference"}:
+    if network.get("actor_head_variant", "shared_preference") != "shared_preference":
         raise ValueError("unknown network.actor_head_variant")
     scalarizer = config.get("objective_scalarizer", {})
     if scalarizer.get("type") != "normalized_augmented_tchebycheff_v1":
@@ -167,6 +170,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
     training = config.get("training", {})
     if not isinstance(training, Mapping):
         raise TypeError("training config must be a mapping")
+    validate_sample_aggregation(config)
     if "two_stage" in training:
         raise ValueError("single-stage runtime rejects training.two_stage")
     environment = config.get("environment", {})

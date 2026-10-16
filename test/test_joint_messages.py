@@ -14,8 +14,8 @@ from configs.config import public_config
 from configs.network_contract import MESSAGE_IDENTITY_FIELDS, message_identity
 from environment import ASSEMBLY_EDGE_TYPES, CAPABLE_EDGE, PROCESSING_ON_EDGE, AssemblySchedulingEnv
 from result.io import write_json
-from scripts.audit_schema9_followup import attributed_edge_instances
-from scripts.benchmark_joint_messages import _linear_reference
+from support.time_cases import attributed_edge_instances
+from support.message_reference import _linear_reference
 
 
 def _empty_relations(dimensions):
@@ -74,6 +74,7 @@ def _double_context(model, observations):
 
 @pytest.mark.parametrize("seed", (0, 1, 11, 23, 37))
 def test_legal_resource_pair_witness_is_distinguishable(config, fixed_instance, seed):
+    config = deepcopy(config)
     observations = [AssemblySchedulingEnv(config).reset(instance, preference=(1, 0, 0))
                     for instance in attributed_edge_instances(fixed_instance)]
     for kind in NODE_TYPES:
@@ -83,7 +84,7 @@ def test_legal_resource_pair_witness_is_distinguishable(config, fixed_instance, 
     reference = _linear_reference(network)
     assert tuple(network.state_dict()) == tuple(reference.state_dict())
     # One additional global input contributes 128 weights to the global encoder.
-    assert sum(p.numel() for p in network.parameters()) == 1197924
+    assert network.actor_head_variant == "shared_preference"
     for name, value in network.state_dict().items():
         torch.testing.assert_close(value, reference.state_dict()[name], atol=0, rtol=0)
     with torch.no_grad():

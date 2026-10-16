@@ -24,7 +24,7 @@ from environment.workload import workload_config, workload_value
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--reference-config", default="configs/e1/single_variance.json")
+    parser.add_argument("--reference-config", default="configs/controls/raw_single_variance.json")
     parser.add_argument("--output", default="result/audits/workload_owa/calibration")
     parser.add_argument("--reuse-reference", action="store_true", help="rebuild manifests from this run's recorded reference rows")
     parser.add_argument("--reference-directory", help="directory containing immutable reference_config.json and reference_rows.json")

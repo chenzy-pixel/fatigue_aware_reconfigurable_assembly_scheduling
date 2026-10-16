@@ -40,6 +40,7 @@ def test_reachable_histories_expose_hidden_cumulative_flow(config, fixed_instanc
         waves={'audit': {'dominant_module': module, 'order_ids': ['A','B','C'], 'release_interval': [0.0,50.0]}})
     validate_instance(instance)
     observations = []
+    credits = []
     for sequence in [(0,1), (1,0)]:
         env = AssemblySchedulingEnv(config)
         env.reset(instance, preference=(1,0,0))
@@ -48,6 +49,7 @@ def test_reachable_histories_expose_hidden_cumulative_flow(config, fixed_instanc
             env.step(env.wait_action)
         env.step(env.wait_action)
         observations.append(env.observe())
+        credits.append(env.flow_lower_bound_credit())
     first, second = observations
     for name in first.node_features:
         np.testing.assert_array_equal(first.node_features[name], second.node_features[name])
@@ -56,8 +58,9 @@ def test_reachable_histories_expose_hidden_cumulative_flow(config, fixed_instanc
     np.testing.assert_array_equal(first.global_features[:6], second.global_features[:6])
     np.testing.assert_array_equal(first.action_set_features, second.action_set_features)
     scale = config['objective_scalarizer']['scales']['flow']
-    assert first.global_features[6] == pytest.approx(np.log2(1+50/scale))
-    assert second.global_features[6] == pytest.approx(np.log2(1+70/scale))
+    assert credits[0] == credits[1]
+    assert first.global_features[6] == pytest.approx(np.log2(1+(50-credits[0])/scale))
+    assert second.global_features[6] == pytest.approx(np.log2(1+(70-credits[1])/scale))
     assert first.global_feature_names == GLOBAL_FEATURE_NAMES
 
 

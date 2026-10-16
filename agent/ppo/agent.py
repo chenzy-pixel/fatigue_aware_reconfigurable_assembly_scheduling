@@ -76,10 +76,6 @@ def summarize_policy_decision_diagnostics(
         ),
     }
     component_prefixes = (
-        "direct_",
-        "context_",
-        "expert_",
-        "contribution_",
         "residual_base_rms_ratio",
     )
     for phase, phase_rows in (("production", production), ("worker", worker)):

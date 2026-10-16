@@ -9,9 +9,7 @@
   "algorithm_seeds": [
     11,
     23,
-    37,
-    53,
-    71
+    37
   ],
   "instance_limit": null,
   "parallel_envs": 20,

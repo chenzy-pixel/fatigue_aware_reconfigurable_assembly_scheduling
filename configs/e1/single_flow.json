@@ -1,6 +1,6 @@
 {
   "extends": "../default.json",
-  "experiment_name": "e1_single_flow",
+  "experiment_name": "single_flow",
   "preference": {
     "quality": {
       "mode": "fixed",
@@ -12,10 +12,7 @@
     }
   },
   "training": {
-    "validation_interval_episodes": 40,
     "episodes": 1000,
-    "parallel_envs": 20,
-    "validation_parallel_envs": 20,
-    "episodes_per_update": 20
+    "validation_interval_episodes": 40
   }
 }

@@ -1,0 +1,16 @@
+{
+  "experiment_name": "raw_owa_q025",
+  "experiment_suite_version": "single_stage_progress_quality_workload_failure_v5",
+  "objective_scalarizer": {
+    "normalization_manifest": "configs/manifests/workload_raw_q25_20261011.json",
+    "normalization_manifest_sha256": "d787d4559cf2509f496bda20eb2fb21e979f59a8f252d66efcc5df8901ac6220",
+    "flow_mode": "raw_v1"
+  },
+  "reward": {
+    "mode": "single_stage_progress_quality_workload_failure_v5"
+  },
+  "workload_objective": {
+    "q": 0.25
+  },
+  "extends": "../default.json"
+}

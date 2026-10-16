@@ -21,7 +21,7 @@ schema12 使用十维全局观测。前六维结构特征沿用原顺序，第6�
 
 仅编码全局累计目标，不变换候选特征、裕量或奖励Q。实现使用float64及数值稳定公式，要求有限非负目标和有限正尺度，输出转为float32观测。对数实现避免先计算极大比值而溢出；有界实现避免大目标与大尺度求和溢出。
 
-对照配置为 `configs/observation/log2/universal.json` 与 `configs/observation/bounded/universal.json`，继承同一Universal主线，仅编码与实验名称不同。两种编码需要各自训练。默认的第三目标与Flow模式由主线继承，可按既有配置机制选择其他协议。
+对照配置为 `configs/default.json` 与 `configs/controls/bounded.json`，继承同一Universal主线，仅编码与实验名称不同。两种编码需要各自训练。默认的第三目标与Flow模式由主线继承，可按既有配置机制选择其他协议。
 
 ## 身份与兼容
 

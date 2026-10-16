@@ -11,8 +11,8 @@ from environment.resource_projection import ResourceProjector, ProjectedResource
 from environment.time_context import OrderTimeEstimator, _Resources
 from environment.workload import workload_delta
 from environment.types import flow_reward_version
-from scripts.audit_state_sufficiency import worker_alias_instance, worker_histories
-from scripts.audit_schema9_followup import edge_times
+from support.state_cases import worker_alias_instance, worker_histories
+from support.time_cases import edge_times
 
 
 def sequential_instance(template):

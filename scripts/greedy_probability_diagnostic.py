@@ -1,8 +1,6 @@
 """Replay a PPO checkpoint and inspect production-action probability rankings.
 
-Example:
-    python -m scripts.greedy_probability_diagnostic \
-        --run result/runs/flow_failure_v2_seed11_500
+Use --run to select a saved shared-head training run.
 """
 
 from __future__ import annotations

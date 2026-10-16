@@ -1,0 +1,25 @@
+{
+  "experiment_name": "single_owa_q025",
+  "preference": {
+    "quality": {
+      "mode": "fixed",
+      "fixed": [
+        0,
+        0,
+        1
+      ]
+    }
+  },
+  "objective_scalarizer": {
+    "normalization_manifest": "configs/manifests/workload_excess_q25_20261011.json",
+    "normalization_manifest_sha256": "e86a6214b20b1833121150689d42a710c4c45aeac8bd622d3ee5110630262ff3"
+  },
+  "training": {
+    "episodes": 1000,
+    "validation_interval_episodes": 40
+  },
+  "workload_objective": {
+    "q": 0.25
+  },
+  "extends": "../default.json"
+}

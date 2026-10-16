@@ -60,6 +60,15 @@ def _load_config_path(
         raise TypeError(
             f"configuration extends must be one non-empty string: {resolved}"
         )
+    snapshot_fields = {
+        "paths", "dataset", "generator", "environment", "network", "ppo",
+        "reward", "training", "objective_scalarizer", "preference", "evaluation",
+    }
+    if isinstance(raw.get("runtime_manifest"), Mapping) and snapshot_fields <= raw.keys():
+        # Training writes complete effective snapshots. An old `extends` is
+        # provenance, not permission to import new defaults (or a dependency on
+        # an experimental preset that has since been retired).
+        return raw, (resolved,)
     parent_path = Path(parent)
     if not parent_path.is_absolute():
         parent_path = resolved.parent / parent_path
@@ -71,6 +80,19 @@ def _load_config_path(
     # A saved schema-10 snapshot keeps its own variance contract even if its
     # parent now selects the modern workload objective.
     raw_manifest = raw.get("runtime_manifest")
+    if isinstance(raw_manifest, Mapping):
+        # Preserve a saved architecture identity before inheriting new defaults.
+        if "actor_head_variant" not in raw.get("network", {}) and "actor_head_variant" in raw_manifest:
+            merged.setdefault("network", {})["actor_head_variant"] = raw_manifest["actor_head_variant"]
+        if "flow_mode" not in raw.get("objective_scalarizer", {}):
+            if raw_manifest.get("flow_mode", "raw_v1") == "raw_v1":
+                merged.setdefault("objective_scalarizer", {}).pop("flow_mode", None)
+            else:
+                merged.setdefault("objective_scalarizer", {})["flow_mode"] = raw_manifest["flow_mode"]
+    # Historical snapshots may still extend a parent whose new default changed.
+    # Do not add even an explicit legacy field: historical effective hashes stay valid.
+    if isinstance(raw_manifest, Mapping) and "sample_aggregation" not in raw.get("training", {}).get("formal_evaluation", {}):
+        merged.get("training", {}).get("formal_evaluation", {}).pop("sample_aggregation", None)
     legacy_snapshot = isinstance(raw_manifest, Mapping) and raw_manifest.get("observation_schema") == 10
     if isinstance(raw_manifest, Mapping) and raw_manifest.get("observation_schema") in {10, 11}:
         merged.setdefault("network", {}).setdefault("observation_schema_version", raw_manifest["observation_schema"])

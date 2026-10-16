@@ -12,7 +12,7 @@ from configs.normalization import apply_normalization_manifest, canonical_json_s
 @pytest.mark.parametrize("q,folder",[(.25,"q025"),(.5,"q05"),(.75,"q075")])
 @pytest.mark.parametrize("raw", [False, True])
 def test_frozen_workload_scale(q, folder, raw):
-    path = f"configs/workload/{'raw/' if raw else ''}{folder}/single_workload.json"
+    path = "configs/e1/single_workload.json" if not raw and folder == "q05" else f"configs/controls/{'raw_' if raw else ''}single_owa_{folder}.json"
     config = load_config(path)
     scalarizer = config["objective_scalarizer"]
     manifest = load_normalization_manifest(PROJECT_ROOT / scalarizer["normalization_manifest"], expected_sha256=scalarizer["normalization_manifest_sha256"])

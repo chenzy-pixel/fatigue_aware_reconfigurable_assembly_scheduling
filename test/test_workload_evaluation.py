@@ -14,7 +14,7 @@ from result.metrics import evaluation_quality_metric, quality_metric_sha256, res
 
 
 def _modern(q="q05"):
-    return load_config(f"configs/workload/raw/{q}/universal.json")
+    return load_config("configs/controls/raw.json" if q == "q05" else f"configs/controls/raw_owa_{q}.json")
 
 
 def _row(candidate, loads, **changes):

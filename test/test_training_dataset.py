@@ -52,8 +52,10 @@ def test_unspecified_update_budget_keeps_previous_worker_cadence(config, monkeyp
         return tmp_path
 
     monkeypatch.setattr(training_module, "_train_single_stage", fake_train)
+    unspecified = deepcopy(config)
+    unspecified["training"].pop("episodes_per_update", None)
     result = training_module.TrainingEngine(
-        deepcopy(config), smoke=True, worker_count=2,
+        unspecified, smoke=True, worker_count=2,
     ).run()
     assert result == tmp_path
     assert captured["parallel_envs"] == 2
@@ -72,8 +74,8 @@ def test_update_budget_and_validation_thresholds_with_refilled_workers(tmp_path)
         "torch_num_threads": 2,
         "validation_parallel_envs": 2,
     })
-    effective["training"]["formal_evaluation"]["validation_repeats"] = 1
-    effective["training"]["formal_evaluation"]["final_test_repeats"] = 1
+    effective["training"]["formal_evaluation"]["validation_repeats"] = 3
+    effective["training"]["formal_evaluation"]["final_test_repeats"] = 3
     run_directory = training_module.train(
         effective, smoke=True, run_name="update_budget_smoke",
         parallel_envs=2, episodes_per_update=4, validation_parallel_envs=2,

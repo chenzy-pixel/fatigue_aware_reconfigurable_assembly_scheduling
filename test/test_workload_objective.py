@@ -32,6 +32,7 @@ def fixed_instance(config):
 
 def _modern(config, mode="geometric_owa", q=0.5):
     effective = deepcopy(config)
+    effective["objective_scalarizer"]["flow_mode"] = "raw_v1"
     definition = {"mode": mode, "q": q if mode == "geometric_owa" else None}
     effective["workload_objective"] = definition
     effective["network"]["observation_schema_version"] = 12
@@ -53,6 +54,7 @@ def _modern(config, mode="geometric_owa", q=0.5):
 
 def _legacy(config):
     effective = deepcopy(config)
+    effective["objective_scalarizer"]["flow_mode"] = "raw_v1"
     effective.pop("workload_objective", None)
     for key in tuple(effective["network"]):
         if key.startswith("workload_"):

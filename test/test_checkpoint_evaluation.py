@@ -25,7 +25,7 @@ from result.io import write_config, write_json
 
 
 def test_schema12_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path):
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     config["device"] = "cpu"
     config["network"]["hidden_dim"] = 16
     config["training"]["torch_num_threads"] = 2
@@ -96,6 +96,8 @@ def test_schema12_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path)
         output = tmp_path / "runs" / label
         saved = json.loads((output / "metrics.json").read_text())
         provenance = saved["provenance"]
+        assert provenance['sample_aggregation'] == 'best_of_3_v1'
+        assert provenance['sampling_budget'] == 3
         assert provenance["network_weights_sha256"] == source_hash
         assert provenance.get("checkpoint_load_migration") is None
         assert saved['evaluation_schema_version'] == '9.0.0'

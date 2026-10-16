@@ -1,8 +1,0 @@
-{
-  "extends": "owa_log2.json",
-  "experiment_name": "schema12_screen_shared_excess_owa_log2_lambda097",
-  "ppo": {
-    "gamma": 1.0,
-    "gae_lambda": 0.97
-  }
-}

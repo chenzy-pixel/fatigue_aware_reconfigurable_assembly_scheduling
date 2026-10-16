@@ -27,8 +27,8 @@ def test_bounded_normalization_is_monotone() -> None:
 
 
 def test_explicit_evaluation_config_selects_flow_without_training_override():
-    training = load_config("configs/workload/q05/universal.json")
-    scoring = load_config("configs/workload/raw/q05/universal.json")
+    training = load_config("configs/default.json")
+    scoring = load_config("configs/controls/raw.json")
     rows = _formal_candidates(training, "validation")
     for row in rows:
         row.update(flow_mode="excess_proportional_lb_v1", flow_excess_objective=400.,
@@ -67,7 +67,9 @@ def _formal_candidates(config, stage="validation", arm="ppo"):
                 "arm": arm, "dataset": "test", "algorithm_seed": 11, "instance_id": "matrix_instance",
                 "terminated": True, "task_succeeded": True, "task_failed": False, "truncated": False, "schedule_violation_count": 0,
                 "maximum_worker_fatigue": 0.5, "safe_fatigue_limit": 0.75,
-                "flow_time_objective": 1000.0, "reconfiguration_cost": 300.0, "worker_load_variance": 0.0,
+                "flow_time_objective": 1000.0, "flow_excess_objective": 1000.0,
+                "flow_mode": scalarizer.get("flow_mode", "raw_v1"),
+                "reconfiguration_cost": 300.0, "worker_load_variance": 0.0,
                 "worker_loads": {"a": 3.0, "b": 3.0, "c": 3.0, "d": 3.0},
                 "workload_objective_value": 3.0,
                 **workload_identity(config),

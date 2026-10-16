@@ -133,7 +133,8 @@ def test_fixed_instance_schema10_golden_observation_mask_and_trajectory(tmp_path
 
 def test_modern_workload_and_legacy_variance_preserve_same_physical_trajectory(tmp_path):
     legacy = _verified_schema10_flow_config(tmp_path)
-    modern = load_config("configs/e1/single_flow.json")
+    modern = load_config("configs/controls/raw.json")
+    modern["preference"]["quality"].update(mode="fixed", fixed=[1.0, 0.0, 0.0])
     instance = load_instance_yaml(project_path(modern["paths"]["fixed_instance"]))
     first, second = AssemblySchedulingEnv(legacy), AssemblySchedulingEnv(modern)
     old, new = first.reset(instance), second.reset(instance)

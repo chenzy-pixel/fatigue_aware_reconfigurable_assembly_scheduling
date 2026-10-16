@@ -200,6 +200,7 @@ def build_provenance(
     checkpoint_metadata: Mapping[str, Any] | None = None,
     executed_network_state: Mapping[str, torch.Tensor] | None = None,
     formal_evaluation_stage: str | None = None,
+    sampled_aggregation: str | None = None,
     evaluation_subset_sha256: str | None = None,
     root: str | Path = PROJECT_ROOT,
 ) -> dict[str, Any]:
@@ -270,9 +271,18 @@ def build_provenance(
         "validation_preference_set": [point.preference.as_dict() for point in formal_preferences(config, "validation")],
         "final_test_preference_set": [point.preference.as_dict() for point in formal_preferences(config, "final_test")],
     }
+    if sampled_aggregation is not None:
+        from configs.evaluation_sampling import BEST_OF_THREE, sample_aggregation
+        if sampled_aggregation != sample_aggregation(config) or sampled_aggregation != BEST_OF_THREE:
+            raise ValueError("executed sampled aggregation disagrees with configuration")
+        provenance.update(sample_aggregation=sampled_aggregation, sampling_budget=3)
     if formal_evaluation_stage is not None:
+        from configs.evaluation_sampling import sample_aggregation
         preferences = formal_preferences(config, formal_evaluation_stage)
         provenance.update({
+            "sample_aggregation": sample_aggregation(config),
+            "sampling_budget": int(config["training"]["formal_evaluation"][
+                "validation_repeats" if formal_evaluation_stage == "validation" else "final_test_repeats"]),
             "formal_evaluation_stage": formal_evaluation_stage,
             "preference_count": len(preferences),
             "ordered_preference_set": [point.preference.as_dict() for point in preferences],

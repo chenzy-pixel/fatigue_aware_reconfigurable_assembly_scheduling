@@ -244,6 +244,11 @@ def project_wait_state(env: "AssemblySchedulingEnv", wait_ticks: int, *,
                     for record in records] if settle_terminal else []
         setattr(projected, name, isolated)
     projected._committed_worker_loads = env._committed_worker_loads.copy()
+    if projected.sampling_truncated:
+        # The collector guard ends sampling, not the physical continuation used
+        # to construct the critic's bootstrap observation and WAIT features.
+        projected.truncated = False
+        projected.terminal_reason = None
     projected._invalidate_resource_snapshot()
     if settle_terminal:
         certified = dict(certificate) if certificate is not None else dict(projected._wait_certificate())

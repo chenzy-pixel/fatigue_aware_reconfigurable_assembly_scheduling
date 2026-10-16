@@ -20,7 +20,7 @@ from train import _rows_are_physically_safe, _rows_satisfy_active_constraints
 @pytest.mark.parametrize("role", VARIANTS)
 def test_ablations_share_current_parent_budgets_and_benchmark(role):
     config = load_config(ROLE_CONFIGS[role])
-    parent = load_config("configs/v8/universal.json" if role in ("no_graph", "shared_head") else ROLE_CONFIGS[role.replace("neutral", "full")])
+    parent = load_config("configs/default.json" if role in ("no_graph",) else ROLE_CONFIGS[role.replace("neutral", "full")])
     assert protocol_hashes(config) == protocol_hashes(parent)
     assert config["reward"] == parent["reward"]
     assert config["reward"]["terminal_failure_penalty"] == 2.0
@@ -104,7 +104,7 @@ def test_discovery_rejects_wrong_penalty_or_variant(tmp_path):
     wrong["reward"]["terminal_failure_penalty"] = 1.0
     _fake_run(tmp_path, "wrong_penalty", wrong)
     wrong = deepcopy(current)
-    wrong["network"]["actor_head_variant"] = "shared_preference"
+    wrong["network"]["encoder_variant"] = "node_mlp_pool"
     _fake_run(tmp_path, "wrong_head", wrong)
     assert discover_training_run("full_cost", 11, tmp_path) == good
     (good / "best_checkpoint.pt").write_bytes(b"corrupt fixture")
@@ -145,7 +145,7 @@ def test_pairing_rejects_missing_metadata_and_duplicate_cells():
 
 
 @pytest.mark.parametrize("role", ROLE_CONFIGS)
-def test_discovery_normalizes_update_default_for_all_nine_roles(tmp_path, role):
+def test_discovery_normalizes_update_default_for_all_eight_roles(tmp_path, role):
     config = load_config(ROLE_CONFIGS[role])
     saved = deepcopy(config)
     saved["training"].setdefault("episodes_per_update", saved["training"]["parallel_envs"])
@@ -187,7 +187,7 @@ def _evaluation_fixture(tmp_path, role):
         (directory / "config.json").write_text(json.dumps(public_config(config)), encoding="utf-8")
     checkpoint = training / "best_checkpoint.pt"
     selectors = {"encoder_variant": config["network"].get("encoder_variant", "hetero_gnn"),
-                 "actor_head_variant": config["network"].get("actor_head_variant", "objective_experts"),
+                 "actor_head_variant": config["network"].get("actor_head_variant", "shared_preference"),
                  "fatigue_mode": config["environment"].get("fatigue_mode", "full")}
     torch.save({"network": {"test.weight": torch.zeros(2)},
                 "network_spec": {"observation_schema_version": OBSERVATION_SCHEMA_VERSION, **selectors},
@@ -221,7 +221,7 @@ def _evaluation_fixture(tmp_path, role):
     for record in dataset:
         for repeat, seed in enumerate(seeds):
             for point in preferences:
-                key = point.key if role in ("universal", "no_graph", "shared_head") else None
+                key = point.key if role in ("universal", "no_graph") else None
                 rows.append({**controls, "instance_id": record.instance.instance_id, "sampling_repeat": str(repeat),
                              "preference_key": point.key, "sampling_seed": str(seed),
                              "derived_sampling_seed": str(derive_evaluation_sampling_seed(seed, record.instance.instance_id, key))})
@@ -288,7 +288,7 @@ def test_summary_accepts_undefined_optional_metrics_on_failed_rows(tmp_path):
     validate_role_evaluation("neutral_cost", entry, rows, metrics, 11)
 
 
-def test_summary_exports_five_source_backed_comparisons(tmp_path):
+def test_summary_exports_four_source_backed_comparisons(tmp_path):
     import csv
     from analysis.ablation_analysis import summarize
     manifest = {"schema": "matched_ablation_evaluation_v1", "status": "complete", "seed": 11, "runs": {}}
@@ -308,7 +308,7 @@ def test_summary_exports_five_source_backed_comparisons(tmp_path):
     output = summarize(path, tmp_path / "report")
     with (output / "summary.csv").open(encoding="utf-8", newline="") as handle:
         summaries = list(csv.DictReader(handle))
-    assert len(summaries) == 5
+    assert len(summaries) == 4
     assert all(int(row["baseline_parameters"]) == int(row["variant_parameters"]) == 2 for row in summaries)
     sources = json.loads((output / "manifest.json").read_text(encoding="utf-8"))["sources"]
     assert set(sources) == set(ROLE_CONFIGS)

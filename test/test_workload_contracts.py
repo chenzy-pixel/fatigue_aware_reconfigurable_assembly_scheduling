@@ -29,7 +29,7 @@ def _legacy_config():
     network = config["network"]
     for field in (*WORKLOAD_IDENTITY_FIELDS, "reward_version", "flow_mode", "normalization_manifest_sha256", "global_objective_encoding"):
         network.pop(field, None)
-    network.update(observation_schema_version=10, hidden_dim=16)
+    network.update(observation_schema_version=10, hidden_dim=16, actor_head_variant="shared_preference")
     manifest = project_path("configs/manifests/v2_selected_scales_20261002.json")
     config["objective_scalarizer"].update(
         flow_mode="raw_v1", normalization_manifest=str(manifest),
@@ -77,7 +77,7 @@ def test_saved_schema10_config_missing_mode_and_schema_keeps_legacy_contract(tmp
     assert observation.global_feature_names == LEGACY_GLOBAL_FEATURE_NAMES
     network = build_actor_critic(observation, restored["network"])
     assert network.objectives == ("flow", "cost", "variance")
-    assert any("experts.variance." in name for name in network.state_dict())
+    assert "variance" in network.production_shared.schema
     assert not any("workload" in name for name in network.state_dict())
     assert not set(WORKLOAD_IDENTITY_FIELDS).intersection(network.network_spec())
 
@@ -132,7 +132,7 @@ def test_modern_modes_share_neutral_schema_and_store_full_identity(mode, fixed_i
     assert spec["workload_mode"] == mode
     assert spec["workload_q"] == (0.5 if mode == "geometric_owa" else None)
     assert spec["objective_scales"][2] == spec["workload_scale"]
-    assert any("experts.workload." in name for name in network.state_dict())
+    assert "workload" in network.production_shared.schema
     assert not any("variance" in name for name in network.state_dict())
     logits, value = network(observation, env.get_action_mask(), device="cpu")
     assert torch.isfinite(value)

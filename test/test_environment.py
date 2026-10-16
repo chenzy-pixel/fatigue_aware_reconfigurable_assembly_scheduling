@@ -36,7 +36,7 @@ def test_heuristic_schedule_is_safe_and_reward_components_telescope(config, fixe
     assert environment.terminated and not environment.truncated
     assert environment.validate_schedule() == []
     assert sum(reward.flow for reward in rewards) == pytest.approx(
-        -metrics["flow_time_objective"]
+        -metrics["flow_excess_objective"]
     )
     assert sum(reward.cost for reward in rewards) == pytest.approx(
         -metrics["reconfiguration_cost"]

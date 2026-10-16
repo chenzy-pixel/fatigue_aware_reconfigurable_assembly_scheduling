@@ -155,7 +155,7 @@ def resolve_workload_evaluation_config(config: Mapping[str, Any], *, evaluation_
     mode = config_flow_mode(dict(config)) if flow_mode is None else flow_mode
     if mode not in {FLOW_RAW, FLOW_EXCESS}:
         raise ValueError("unknown evaluation Flow mode")
-    path = "configs/workload/raw/q05/universal.json" if mode == FLOW_RAW else "configs/workload/q05/universal.json"
+    path = "configs/controls/raw.json" if mode == FLOW_RAW else "configs/default.json"
     return load_config(path)
 
 
@@ -286,7 +286,7 @@ def analyze_workload_pool(rows: Sequence[Mapping[str, Any]], *, evaluation_confi
     from configs import load_config
     from configs.formal_preferences import objective_scales
     from analysis.pareto_analysis import valid_candidate, _validate_row_protocol, normalize_objectives, hypervolume_3d, nondominated_indices
-    scoring = (load_config("configs/workload/raw/q05/universal.json") if evaluation_config is None
+    scoring = (load_config("configs/controls/raw.json") if evaluation_config is None
                else dict(evaluation_config))
     metric = evaluation_quality_metric(scoring)
     grouped = defaultdict(list)

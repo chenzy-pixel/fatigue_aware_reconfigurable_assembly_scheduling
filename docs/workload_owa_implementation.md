@@ -6,7 +6,7 @@
 
 ## 运行与指标契约
 
-新训练使用 observation schema 11 和 `flow/cost/workload` 偏好。raw Flow 对应
+新训练使用 observation schema 12 和 `flow/cost/workload` 偏好。raw Flow 对应
 workload v5 奖励，Flow excess 对应 workload v6 奖励；累计训练回报仍为
 `Delta progress - Delta quality - failure penalty`，gamma=1。
 
@@ -16,7 +16,7 @@ workload v5 奖励，Flow excess 对应 workload v6 奖励；累计训练回报�
 负荷。成功终局两个向量和目标值一致。`worker_load_variance` 始终是真实方差。
 结果另保存带工人身份的 `worker_loads`、`worker_load_total`、`worker_load_max`。
 
-`variance` 模式作为显式对照保留，使用原方差尺度。当前 schema 10 checkpoint
+`variance` 模式作为显式对照保留，使用原方差尺度。当前 schema 10 shared-head checkpoint
 通过保存配置及原契约运行；缺少目标模式只能在经过验证的 schema 10 快照中
 解释为 variance。schema 11 与 schema 10、不同模式、q、尺度均不能相互加载或续训。
 网络参数维度相同不代表目标或观测兼容。
@@ -46,34 +46,18 @@ raw/excess 使用各自的原 Flow 尺度1089.15/368.3143，Cost均为353.27。
 
 ## 正式实验命令
 
-以下 PowerShell 命令在仓库根目录执行。先运行启动检查：
+默认 q=.5、excess Flow，配置和验证协议见 [主线实验](experiment_protocol.md)。
 
 ```powershell
-& .\.venv\Scripts\python.exe scripts/run_workload_training.py --preflight-only --device cuda
+python -m scripts.run_experiments --config configs/e1/single_workload.json configs/default.json configs/controls/single_variance.json --seed 11 --preflight-only
+python -m scripts.run_experiments --config configs/e1/single_workload.json configs/default.json configs/controls/single_variance.json --seed 11
+python -m scripts.run_experiments --config configs/controls/single_owa_q025.json configs/e1/single_workload.json configs/controls/single_owa_q075.json --seed 11
 ```
 
-默认 q=0.5、Flow excess，顺序训练 workload 单目标、Universal 和方差对照：
+多种子逐个启动并在失败时停止：
 
 ```powershell
-& .\.venv\Scripts\python.exe scripts/run_workload_training.py --device cuda --seed 11
-```
-
-单目标 q 敏感性实验：
-
-```powershell
-& .\.venv\Scripts\python.exe scripts/run_workload_training.py --experiment workload --q 0.25 --device cuda --seed 11; if ($LASTEXITCODE -eq 0) { & .\.venv\Scripts\python.exe scripts/run_workload_training.py --experiment workload --q 0.5 --device cuda --seed 11 }; if ($LASTEXITCODE -eq 0) { & .\.venv\Scripts\python.exe scripts/run_workload_training.py --experiment workload --q 0.75 --device cuda --seed 11 }
-```
-
-`--experiment universal` 运行指定q的Universal；`--flow-mode raw` 选择原始Flow。
-两种 Flow 启动路径的 OWA 与方差对照均采用 shared head；原 `e1/single_variance`
-配置仍保留其原网络头，raw 启动器使用新增的 shared head 方差对照配置。
-`--seed` 支持既有算法种子11/23/37/53/71。启动器在子实验失败时停止并保存状态。
-workload单目标及方差对照沿用1000 episode预算，Universal沿用其原配置预算。
-
-五种子正式实验（q=0.5，每个种子均运行三个实验，任一失败即停止）：
-
-```powershell
-foreach ($experimentSeed in 11,23,37,53,71) { & .\.venv\Scripts\python.exe scripts/run_workload_training.py --device cuda --seed $experimentSeed; if ($LASTEXITCODE -ne 0) { throw "workload experiment failed: seed $experimentSeed" } }
+foreach ($experimentSeed in 11,23,37,53,71) { python -m scripts.run_experiments --config configs/default.json --seed $experimentSeed; if ($LASTEXITCODE -ne 0) { throw "experiment failed: seed $experimentSeed" } }
 ```
 
 ## 统一评价与支配诊断
@@ -90,10 +74,9 @@ foreach ($experimentSeed in 11,23,37,53,71) { & .\.venv\Scripts\python.exe scrip
 
 ## 回归与冒烟入口
 
-`scripts/check_workload_legacy.py --verify` 验证真实schema10 checkpoint的旧轨迹。
 `scripts/audit_workload_history.py` 使用生产目标模块重建174条成功轨迹及5536次阶段增量，
 重现82对支配见证，保存源文件哈希及完整见证标识。
-`scripts/run_workload_smoke.py --device cuda` 运行五组40 episode集成实验，并校验
+历史 OWA 集成检查运行了五组40 episode实验（原源码见[整理快照](project_cleanup.md)），并校验
 每组两次PPO更新、固定验证子集、checkpoint重载和回报恒等式。
 冒烟产物为 `result/audits/workload_owa/smoke/runs.json` 及对应运行目录。
 冒烟的失败和完成率作为覆盖证据保存，不能用于策略收敛或参数优劣结论。
@@ -128,7 +111,7 @@ MO-ALNS使用一个固定验证实例及8次评价预算完成小规模接入验
 这是HEAD已有的数据清单不一致，本轮未修改数据或归档哈希表。
 测试XML、标定、冒烟与代码状态汇总位于`result/audits/workload_owa/verification.json`。
 
-真实schema10checkpoint在两实例上的110/158次决策、每步观测/掩码/奖励哈希、
+归档的schema10兼容性验收记录中，两实例上的110/158次决策、每步观测/掩码/奖励哈希、
 动作及终局三指标与修改前记录完全一致。独立评价产物还校验保存的
 `evaluation_config.json`、评价尺度和配置哈希，保留原训练身份及质量；重复评分
 仍保留首次`training_*`，旧/新模型可在同一冻结OWA坐标下分析。

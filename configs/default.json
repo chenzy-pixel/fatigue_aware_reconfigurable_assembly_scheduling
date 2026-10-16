@@ -1,7 +1,7 @@
 {
-  "experiment_name": "v8_universal",
-  "experiment_suite_version": "single_stage_progress_quality_workload_failure_v5",
-  "method_version": "M1_hgnn_objective_experts_v8",
+  "experiment_name": "universal",
+  "experiment_suite_version": "single_stage_progress_quality_workload_failure_v6",
+  "method_version": "M1_hgnn_shared_preference_v8",
   "seed": 11,
   "algorithm_seeds": [
     11,
@@ -447,15 +447,16 @@
     "rho": 0.05,
     "scale_source": "frozen_manifest",
     "scales": {
-      "flow": 1089.15,
+      "flow": 368.3143,
       "cost": 353.27,
       "workload": 21.03145448655653
     },
-    "normalization_manifest": "configs/manifests/workload_raw_q50_20261011.json",
-    "normalization_manifest_sha256": "d5b8d6eaf17143f540da9e9faa2ee488d5e3bd04f797c5023b938c07f83c654c"
+    "normalization_manifest": "configs/manifests/workload_excess_q50_20261011.json",
+    "normalization_manifest_sha256": "d90a3c93e9458fcff6b7608e856ec5166e009a7cca17695c37a813a470944f19",
+    "flow_mode": "excess_proportional_lb_v1"
   },
   "reward": {
-    "mode": "single_stage_progress_quality_workload_failure_v5",
+    "mode": "single_stage_progress_quality_workload_failure_v6",
     "terminal_failure_penalty": 2.0,
     "feasibility_shaping": {
       "enabled": false
@@ -475,7 +476,8 @@
     "worker_flow_time_normalization": "candidate_zscore_v1",
     "worker_flow_time_std_floor": 0.001,
     "observation_schema_version": 12,
-    "global_objective_encoding": "log2_v1"
+    "global_objective_encoding": "log2_v1",
+    "actor_head_variant": "shared_preference"
   },
   "ppo": {
     "learning_rate": 0.0001,
@@ -504,6 +506,7 @@
     "forced_action_compression": false,
     "worker_local_physical_forced_actions": true,
     "formal_evaluation": {
+      "sample_aggregation": "best_of_3_v1",
       "decode_mode": "sampled",
       "temperature": 1.0,
       "validation_seed_offset": 100000,
@@ -597,7 +600,8 @@
       "mode": "stratified_v2",
       "diagnostic_instance_limit": 49,
       "diagnostic_interval_validations": 5
-    }
+    },
+    "episodes_per_update": 20
   },
   "logging": {
     "worker_progress": {

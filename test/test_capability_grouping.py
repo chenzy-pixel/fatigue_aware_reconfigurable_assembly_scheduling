@@ -10,7 +10,7 @@ from environment import AssemblySchedulingEnv, CAPABLE_EDGE
 from environment.dynamics import quantize_to_ticks
 from environment.resource_projection import ResourceProjector
 from environment.workload import workload_scale, workload_feature_names
-from scripts.audit_state_sufficiency import worker_alias_instance, worker_histories
+from support.state_cases import worker_alias_instance, worker_histories
 
 
 def _edge_by_edge_reference(env):

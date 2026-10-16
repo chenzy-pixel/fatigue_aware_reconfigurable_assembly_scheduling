@@ -565,7 +565,7 @@ def _evaluation_row(
     return {
         "experiment_name": config.get("experiment_name"),
         "encoder_variant": metrics.get("encoder_variant", config.get("network", {}).get("encoder_variant", "hetero_gnn")),
-        "actor_head_variant": metrics.get("actor_head_variant", config.get("network", {}).get("actor_head_variant", "objective_experts")),
+        "actor_head_variant": metrics.get("actor_head_variant", config.get("network", {}).get("actor_head_variant", "shared_preference")),
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
         "generator_version": record.metadata.get("generator_version"),
@@ -1406,6 +1406,8 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         write_json(run_directory / "evaluation_config.json", load_config(args.evaluation_config))
     write_json(run_directory / "metrics.json", metrics)
     write_csv(run_directory / "instance_metrics.csv", rows)
+    from result.sample_selection import write_selected_samples
+    write_selected_samples(run_directory / "selected_instance_metrics.csv", rows)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"results: {run_directory}")
 
@@ -1417,7 +1419,10 @@ def _apply_evaluation_goal(rows, metrics, evaluation_config_path):
     from analysis.workload_dominance import rescore_workload_row, workload_identity, labelled_workload_dominance
     scoring = load_config(evaluation_config_path)
     rescored = [rescore_workload_row(row, scoring) for row in rows]
-    score_summary = aggregate_evaluation_rows(rescored, dataset=metrics["dataset"], policy=metrics["policy"],
+    from configs.evaluation_sampling import BEST_OF_THREE
+    scored_rows = ([row for row in rescored if row.get("selected_for_aggregation")]
+                   if metrics.get("sample_aggregation") == BEST_OF_THREE else rescored)
+    score_summary = aggregate_evaluation_rows(scored_rows, dataset=metrics["dataset"], policy=metrics["policy"],
         manifest=metrics["manifest"], quality_metric=evaluation_quality_metric(scoring))
     result = dict(metrics)
     result.setdefault("training_goal_quality", {name: metrics.get(name) for name in ("quality_metric", "quality_metric_sha256", "preference_balanced_quality_score", "completed_metrics")})
@@ -1568,6 +1573,19 @@ def main() -> None:
                 "subset_sha256": reference["subset_sha256"],
             }
         )
+    from configs.evaluation_sampling import BEST_OF_THREE, sample_aggregation
+    if decode_mode == "sampled" and sample_aggregation(config) == BEST_OF_THREE:
+        from train import _aggregate_formal_rows
+        reference = per_repeat_metrics[0]
+        metadata = {key: metrics[key] for key in (
+            "sampling_seeds", "sampling_rng_version", "dataset_manifest_sha256",
+            "instance_indices", "subset_sha256", "per_repeat_metrics") if key in metrics}
+        count = len({str(row["instance_id"]) for row in rows})
+        metrics = _aggregate_formal_rows(
+            config, rows=rows, dataset_name=args.dataset, manifest=str(reference["manifest"]),
+            unique_instance_count=count, repeat_count=len(sampling_seeds), universal=False,
+            stage="final_test", strict_counts=True)
+        metrics.update(metadata)
     metrics["result_role"] = (
         "formal_sampled" if decode_mode == "sampled" else "greedy_diagnostic"
     )
@@ -1578,6 +1596,7 @@ def main() -> None:
         checkpoint_metadata=checkpoint_metadata,
         evaluation_subset_sha256=metrics["subset_sha256"],
         executed_network_state=(prepared_agent.network.state_dict() if prepared_agent is not None else None),
+        sampled_aggregation=metrics.get("sample_aggregation"),
     )
     for row in rows:
         row["checkpoint_sha256"] = metrics["provenance"].get("checkpoint_sha256")
@@ -1597,6 +1616,8 @@ def main() -> None:
         write_json(run_directory / "evaluation_config.json", load_config(args.evaluation_config))
     write_json(run_directory / "metrics.json", metrics)
     write_csv(run_directory / "instance_metrics.csv", rows)
+    from result.sample_selection import write_selected_samples
+    write_selected_samples(run_directory / "selected_instance_metrics.csv", rows)
     write_csv(run_directory / "schedule.csv", schedules)
     write_csv(
         run_directory / "reconfigurations.csv",

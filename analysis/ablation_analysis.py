@@ -26,10 +26,9 @@ from scripts.ablation_protocol import ROLE_CONFIGS, latest_evaluation_manifest, 
 
 PAIRS = (
     ("graph_propagation", "universal", "no_graph"),
-    ("objective_experts", "universal", "shared_head"),
     ("fatigue_flow", "full_flow", "neutral_flow"),
     ("fatigue_cost", "full_cost", "neutral_cost"),
-    ("fatigue_variance", "full_variance", "neutral_variance"),
+    ("fatigue_workload", "full_workload", "neutral_workload"),
 )
 FIELDS = (
     "flow_time_objective", "reconfiguration_cost", "worker_load_variance",
@@ -141,10 +140,10 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
     require(protocol_profile(metadata["effective_config"]) == protocol_profile(expected)
             and int(metadata["algorithm_seed"]) == seed, "checkpoint protocol mismatch")
     selectors = {"encoder_variant": expected["network"].get("encoder_variant", "hetero_gnn"),
-                 "actor_head_variant": expected["network"].get("actor_head_variant", "objective_experts"),
+                 "actor_head_variant": expected["network"].get("actor_head_variant", "shared_preference"),
                  "fatigue_mode": expected["environment"].get("fatigue_mode", "full")}
     require(all(payload["network_spec"].get(key, default) == selectors[key] for key, default in
-                (("encoder_variant", "hetero_gnn"), ("actor_head_variant", "objective_experts")))
+                (("encoder_variant", "hetero_gnn"), ("actor_head_variant", "shared_preference")))
             and payload["network_spec"]["observation_schema_version"] == OBSERVATION_SCHEMA_VERSION
             and metadata["runtime_manifest"].get("fatigue_mode", "full") == selectors["fatigue_mode"],
             "checkpoint variant mismatch")
@@ -201,7 +200,7 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
         require(all(row.get(key) not in (None, "") and math.isfinite(float(row[key])) for key in finite_fields),
                 "nonfinite objective or monitor fields")
         require(int(row["sampling_seed"]) == sampling_seeds[int(row["sampling_repeat"])], "row sampling seed mismatch")
-        key = row["preference_key"] if role in ("universal", "no_graph", "shared_head") else None
+        key = row["preference_key"] if role in ("universal", "no_graph") else None
         require(int(row["derived_sampling_seed"]) == derive_evaluation_sampling_seed(
             int(row["sampling_seed"]), row["instance_id"], key), "derived sampling seed mismatch")
     return {"evaluation_run": str(directory), "checkpoint": str(checkpoint),
@@ -231,8 +230,7 @@ def summarize(manifest_path: Path, output: Path) -> Path:
         for field in ("dataset_manifest_sha256", "subset_sha256", "quality_metric_sha256", "normalization_manifest_sha256"):
             if old_metrics.get(field) != new_metrics.get(field):
                 raise ValueError(f"aggregate {field} mismatch: {experiment}")
-        changed_field = ("encoder_variant" if experiment == "graph_propagation" else
-                         "actor_head_variant" if experiment == "objective_experts" else "fatigue_mode")
+        changed_field = ("encoder_variant" if experiment == "graph_propagation" else "fatigue_mode")
         assert_paired_configs(load_config(ROLE_CONFIGS[baseline]), load_config(ROLE_CONFIGS[variant]), changed_field)
         cells, row = paired_rows(left, right, experiment)
         for cell in cells:
@@ -265,7 +263,7 @@ def summarize(manifest_path: Path, output: Path) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Summarize five paired ablation comparisons")
+    parser = argparse.ArgumentParser(description="Summarize matched ablation comparisons")
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output-dir", type=Path)

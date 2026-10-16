@@ -109,14 +109,14 @@ def test_processing_and_locked_orders_use_existing_estimates(config,fixed_instan
 
 
 @pytest.mark.parametrize('encoding',GLOBAL_OBJECTIVE_ENCODINGS)
-@pytest.mark.parametrize('head',['objective_experts','shared_preference'])
+@pytest.mark.parametrize('head',['shared_preference'])
 @pytest.mark.parametrize('mode',['variance','geometric_owa'])
 @pytest.mark.parametrize('flow',['raw','excess'])
 def test_schema11_and_12_fixed_actions_preserve_physics(encoding,head,mode,flow,fixed_instance):
-    paths={('raw','variance'):'configs/e1/single_variance.json',
-        ('excess','variance'):'configs/flow_excess/shared_head/single_variance.json',
-        ('raw','geometric_owa'):'configs/workload/raw/q05/universal.json',
-        ('excess','geometric_owa'):'configs/workload/q05/universal.json'}
+    paths={('raw','variance'):'configs/controls/raw_single_variance.json',
+        ('excess','variance'):'configs/controls/single_variance.json',
+        ('raw','geometric_owa'):'configs/controls/raw.json',
+        ('excess','geometric_owa'):'configs/default.json'}
     c=load_config(paths[flow,mode]);c['network'].update(global_objective_encoding=encoding,actor_head_variant=head,hidden_dim=16)
     old=deepcopy(c);old['network']['observation_schema_version']=11;old['network'].pop('global_objective_encoding')
     a,b=AssemblySchedulingEnv(old),AssemblySchedulingEnv(c);oa,ob=a.reset(fixed_instance),b.reset(fixed_instance)
@@ -182,7 +182,7 @@ def test_old_schema11_snapshot_extending_default_keeps_linear(config,fixed_insta
 
 
 def test_presets_differ_only_in_encoding_and_name():
-    a=load_config('configs/observation/log2/universal.json');b=load_config('configs/observation/bounded/universal.json')
+    a=load_config('configs/controls/raw.json');b=load_config('configs/controls/raw_bounded.json')
     for c in [a,b]:
         for key in ['_config_path','_config_chain','experiment_name']:c.pop(key)
         c['network'].pop('global_objective_encoding');c['runtime_manifest'].pop('global_objective_encoding')
@@ -192,7 +192,7 @@ def test_presets_differ_only_in_encoding_and_name():
 @pytest.mark.parametrize('encoding',GLOBAL_OBJECTIVE_ENCODINGS)
 @pytest.mark.parametrize('flow',['raw','excess'])
 def test_complete_trajectory_preserves_terminal_objectives(encoding,flow,fixed_instance):
-    path='configs/workload/raw/q05/universal.json' if flow=='raw' else 'configs/workload/q05/universal.json'
+    path='configs/controls/raw.json' if flow=='raw' else 'configs/default.json'
     c=load_config(path);c['network']['global_objective_encoding']=encoding
     old=deepcopy(c);old['network']['observation_schema_version']=11;old['network'].pop('global_objective_encoding')
     instance=_chain_instance(fixed_instance,mismatch=True,second_release=20)
@@ -218,7 +218,7 @@ def test_both_encodings_preserve_serial_and_parallel_sampling(encoding,tmp_path,
     from environment import PreferenceContext
     from eval import EvaluationPolicy, evaluate_instance
     from test_module_entrypoints import tiny_config
-    source=f"configs/observation/{'log2' if encoding=='log2_v1' else 'bounded'}/universal.json"
+    source="configs/default.json" if encoding=="log2_v1" else "configs/controls/raw_bounded.json"
     c,tiny=tiny_config(tmp_path,fixed_instance,source=source)
     record=load_dataset_split(c,'validation')[0]
     env=AssemblySchedulingEnv(c);obs=env.reset(record.instance)

@@ -78,7 +78,6 @@ ENTRIES = ("policy", "dataset", "diagnostic", "parallel_dataset", "parallel_grid
 @pytest.mark.parametrize("entry", ENTRIES)
 @pytest.mark.parametrize("field,value", [
     ("encoder_variant", "node_mlp_pool"),
-    ("actor_head_variant", "shared_preference"),
     ("hidden_dim", 32),
     ("worker_flow_time_normalization", "absolute_v1"),
     ("normalization_manifest_sha256", "a" * 64),
@@ -98,9 +97,11 @@ def test_memory_agent_rejects_wrong_network_before_inference(evaluation_case, en
     _assert_equal(rng, capture_global_rng_state())
 
 
-@pytest.mark.parametrize("field,value", [("encoder_variant", "node_mlp_pool"), ("actor_head_variant", "shared_preference")])
+@pytest.mark.parametrize("field,value", [("encoder_variant", "node_mlp_pool")])
 def test_actual_variant_cannot_be_reported_as_implicit_default(evaluation_case, field, value, monkeypatch):
     config, instance, observation, _ = evaluation_case
+    config = deepcopy(config)
+    config["network"].pop(field, None)
     network_config = {**config["network"], field: value}
     agent = PPOAgent(build_actor_critic(observation, network_config), config["ppo"], device="cpu")
     assert field not in config["network"]
@@ -144,7 +145,7 @@ def test_loaded_agent_checks_fatigue_metadata(evaluation_case, entry, source, ta
     _assert_equal(rng, capture_global_rng_state())
 
 
-@pytest.mark.parametrize("change", ["encoder_variant", "actor_head_variant", "fatigue_mode"])
+@pytest.mark.parametrize("change", ["encoder_variant", "fatigue_mode"])
 def test_prepared_policy_cannot_be_reused_with_changed_config(evaluation_case, change, monkeypatch):
     config, instance, observation, agent = evaluation_case
     policy = evaluation.EvaluationPolicy(config, policy_name="ppo", bootstrap_observation=observation,
@@ -178,10 +179,9 @@ def test_prepared_policy_rechecks_checkpoint_loaded_after_preparation(evaluation
 
 
 @pytest.mark.parametrize("encoder,head,mode,loaded", [
-    ("hetero_gnn", "objective_experts", "full", False),
-    ("node_mlp_pool", "objective_experts", "full", False),
     ("hetero_gnn", "shared_preference", "full", False),
-    ("hetero_gnn", "objective_experts", "neutral", False),
+    ("node_mlp_pool", "shared_preference", "full", False),
+    ("hetero_gnn", "shared_preference", "neutral", False),
     ("node_mlp_pool", "shared_preference", "neutral", True),
 ])
 def test_matching_memory_agent_runs_and_reports_actual_identity(evaluation_case, encoder, head, mode, loaded, tmp_path):
@@ -206,7 +206,7 @@ def test_matching_memory_agent_runs_and_reports_actual_identity(evaluation_case,
 
 
 @pytest.mark.parametrize("encoder,head,mode", [
-    ("node_mlp_pool", "objective_experts", "full"),
+    ("node_mlp_pool", "shared_preference", "full"),
     ("hetero_gnn", "shared_preference", "neutral"),
 ])
 def test_matching_loaded_agent_runs_in_actual_parallel_workers(evaluation_case, encoder, head, mode, tmp_path):

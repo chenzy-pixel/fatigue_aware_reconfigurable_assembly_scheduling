@@ -32,7 +32,7 @@ def test_dual_hv_accepts_distinct_training_modes_and_derives_old_success_fields(
         row["preference_quality_score"] = terminal_quality_score(lb+100, row["reconfiguration_cost"], row["workload_objective_value"], raw,
             preference=tuple(row[f"preference_{name}"] for name in objective_names(raw)), terminal_failure=not row["task_succeeded"])
     write_csv(tmp_path/"raw/instance_metrics.csv",rows)
-    excess=load_config("configs/flow_excess/universal.json")
+    excess=load_config("configs/default.json")
     directory=tmp_path/"excess"; directory.mkdir()
     write_config(directory,excess)
     newrows=deepcopy(rows)
@@ -79,8 +79,8 @@ def test_solver_candidates_use_dual_metrics_and_enforce_matched_budget(tmp_path,
     from test_pareto_analysis import _formal_candidates
     from environment.types import bounded_quality_score
     from result.provenance import dataset_manifest_snapshot
-    raw=load_config("configs/baselines/mo_alns.json")
-    excess=load_config("configs/flow_excess/mo_alns.json")
+    raw=load_config("configs/baselines/mo_alns_raw.json")
+    excess=load_config("configs/baselines/mo_alns.json")
     dataset=load_dataset_split(raw,"test")
     fake=type("Dataset",(list,),{})([SimpleNamespace(instance=replace(fixed_instance,instance_id="matrix_instance"))])
     fake.manifest_path=dataset.manifest_path

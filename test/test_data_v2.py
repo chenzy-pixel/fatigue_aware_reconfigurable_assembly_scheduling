@@ -213,7 +213,7 @@ def test_legacy_data_is_preserved_and_loadable():
 def test_run_audit_loads_saved_runtime_config(config, tmp_path):
     from configs.config import public_config
     from result.io import write_json
-    from scripts.audit_data_v2_runs import load_run_config
+    from support.data_v2_cases import load_run_config
     saved = public_config(config)
     path = tmp_path / "config.json"
     write_json(path, saved)

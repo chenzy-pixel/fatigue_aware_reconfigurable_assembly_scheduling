@@ -1,5 +1,0 @@
-{
-  "extends": "owa_log2.json",
-  "experiment_name": "schema12_screen_shared_excess_owa_bounded",
-  "network": {"global_objective_encoding": "bounded_v1"}
-}

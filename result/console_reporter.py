@@ -86,6 +86,7 @@ class TrainingConsoleReporter:
             f"× prefs={self.preference_count} | sampled T={float(formal['temperature']):.1f}",
             f"reward=ΔP-ΔQ | gamma={float(self.config['ppo']['gamma']):.1f} "
             f"| lr={float(self.config['ppo']['learning_rate']):.1e}",
+            f"formal aggregation={formal.get('sample_aggregation', 'per_sample_v1')}",
             SEPARATOR,
         )
 
@@ -115,7 +116,7 @@ class TrainingConsoleReporter:
         selector_state: Mapping[str, Any],
     ) -> None:
         self._block(
-            f"[val] ep {int(row['episode'])} | sampled complete "
+            f"[val] ep {int(row['episode'])} | {row.get('sample_aggregation', 'sampled')} complete "
             f"{_percent(row.get('completion_rate'))} | quality "
             f"{_metric(row.get('preference_balanced_quality_score'), 6)} "
             f"| progress {_metric(row.get('mean_operation_progress'))}",
@@ -123,6 +124,11 @@ class TrainingConsoleReporter:
             f"| event={row.get('checkpoint_event', 'n/a')} "
             f"| best_ep={selector_state.get('best_episode')}",
         )
+        if "request_count" in row:
+            self._block(
+                f"      requests={row['request_count']} | deliveries={row['delivery_count']} "
+                f"| raw complete={_percent(row.get('raw_overall_completion_rate'))} "
+                f"| raw Q={_metric(row.get('raw_preference_balanced_quality_score'), 6)}")
 
     def done(
         self,

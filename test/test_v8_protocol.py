@@ -23,7 +23,8 @@ from configs.normalization import (
 )
 from environment import PreferenceContext, normalize_preference, quality_preference_for_episode, simplex_lattice
 from result import build_provenance, source_state_snapshot
-from train import _aggregate_formal_rows, _checkpoint_metadata
+# Preserve regression coverage for the historical per-request aggregation.
+from train import _aggregate_per_sample_rows as _aggregate_formal_rows, _checkpoint_metadata
 from utils import configured_formal_evaluation_sampling_seeds
 
 
@@ -33,7 +34,7 @@ from utils import configured_formal_evaluation_sampling_seeds
         ("configs/e1/single_flow.json", [1.0, 0.0, 0.0]),
         ("configs/e1/single_cost.json", [0.0, 1.0, 0.0]),
         ("configs/e1/single_workload.json", [0.0, 0.0, 1.0]),
-        ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
+        ("configs/controls/raw_single_variance.json", [0.0, 0.0, 1.0]),
     ),
 )
 def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
@@ -52,7 +53,7 @@ def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
 
 
 def test_universal_uses_13_validation_and_66_final_preferences_with_training_sequence():
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     assert config["reward"]["terminal_failure_penalty"] == 2.0
     assert config["runtime_manifest"]["terminal_failure_penalty"] == 2.0
     assert len(formal_preferences(config, "validation")) == 13
@@ -91,7 +92,7 @@ def test_universal_uses_13_validation_and_66_final_preferences_with_training_seq
 
 
 def test_all_final_grid_preferences_survive_float32_observation_round_trip():
-    for point in formal_preferences(load_config("configs/v8/universal.json"), "final_test"):
+    for point in formal_preferences(load_config("configs/controls/raw.json"), "final_test"):
         normalized = normalize_preference(point.as_array())
         assert normalized.as_tuple() == pytest.approx(point.as_tuple(), abs=5e-8)
         assert all(value >= 0.0 for value in normalized.as_tuple())
@@ -191,7 +192,7 @@ def test_historical_selected_scales_match_committed_validation_means():
 def test_current_workload_scales_match_their_validation_reference_rows():
     from environment.workload import workload_config, workload_value
 
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     manifest = load_normalization_manifest(
         project_path(config["objective_scalarizer"]["normalization_manifest"]),
         expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
@@ -239,14 +240,14 @@ def test_current_scales_align_training_reference_quality_and_pareto():
     from analysis.pareto_analysis import normalize_objectives
     from environment.types import bounded_quality_score
     from result.metrics import evaluation_quality_metric, LEGACY_QUALITY_METRIC, quality_metric_sha256
-    expected = {"flow":1089.15, "cost":353.27, "workload":21.03145448655653}
-    for path in ("configs/default.json", "configs/v8/universal.json",
+    expected = {"flow":368.3143, "cost":353.27, "workload":21.03145448655653}
+    for path in ("configs/default.json",
                  "configs/e1/single_flow.json", "configs/e1/single_cost.json", "configs/e1/single_workload.json",
                  "configs/baselines/mo_alns.json"):
         config = load_config(path)
         assert config["objective_scalarizer"]["scales"] == expected
         reference = evaluation_quality_metric(config)
-        assert reference["flow_mode"] == "raw_v1"
+        assert reference["flow_mode"] == "excess_proportional_lb_v1"
         assert reference["workload_mode"] == "geometric_owa"
         assert reference["workload_q"] == 0.5
         assert {name:reference[f"{name}_scale"] for name in expected} == expected
@@ -254,8 +255,8 @@ def test_current_scales_align_training_reference_quality_and_pareto():
         for preference in ((1,0,0),(0,1,0),(0,0,1)):
             assert bounded_quality_score(*expected.values(), config, preference=preference) == pytest.approx(.5)
         assert bounded_quality_score(expected["flow"], 2*expected["cost"], 4*expected["workload"], reference) == pytest.approx(.61)
-    control = load_config("configs/e1/single_variance.json")
-    control_expected = {**expected, "workload": 2.2629}
+    control = load_config("configs/controls/raw_single_variance.json")
+    control_expected = {**expected, "flow": 1089.15, "workload": 2.2629}
     assert control["objective_scalarizer"]["scales"] == control_expected
     assert control["network"]["observation_schema_version"] == 12
     control_metric = evaluation_quality_metric(control)
@@ -352,7 +353,7 @@ def test_universal_any_preference_without_success_has_infinite_quality():
 
 
 def test_universal_validation_uses_only_configured_13_preferences():
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     keys = [point.key for point in formal_preferences(config, "validation")]
     rows = [_row(key, 0.25) for key in keys]
     aggregate = _aggregate_formal_rows(
@@ -371,7 +372,7 @@ def test_universal_validation_uses_only_configured_13_preferences():
 
 
 def test_universal_checkpoint_metadata_records_all_fixed_preferences():
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     metadata = _checkpoint_metadata(
         config,
         role="best",
@@ -390,7 +391,7 @@ def test_universal_checkpoint_metadata_records_all_fixed_preferences():
 
 @pytest.mark.parametrize(("stage", "preference_count"), (("validation", 13), ("final_test", 66)))
 def test_formal_aggregation_rejects_duplicate_cells_even_when_counts_match(stage, preference_count):
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     rows = [
         {**_row(point.key, 0.25, index=index), "sampling_repeat": repeat}
         for point in formal_preferences(config, stage)
@@ -421,7 +422,7 @@ def test_formal_aggregation_rejects_duplicate_cells_even_when_counts_match(stage
 
 @pytest.mark.parametrize(("stage", "preference_count"), (("validation", 13), ("final_test", 66)))
 def test_provenance_records_the_evaluated_stage_and_moved_sources(stage, preference_count):
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     provenance = build_provenance(config, formal_evaluation_stage=stage)
     assert provenance["formal_evaluation_stage"] == stage
     assert provenance["preference_count"] == preference_count

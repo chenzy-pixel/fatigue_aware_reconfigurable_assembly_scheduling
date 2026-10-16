@@ -20,12 +20,14 @@ from agent.ppo.parallel import EVALUATION_WORKER_TIMING_FIELDS, ParallelEpisodeR
 from configs import load_config, project_path
 from configs.config import public_config
 from configs.formal_preferences import formal_preferences
+from configs.evaluation_sampling import BEST_OF_THREE, sample_aggregation
 from data import load_dataset_split
 from data.dataset import validate_algorithm_seed
 from data.selection import select_validation_subsets, subset_snapshot, resolve_instance_indices
 from collections import Counter
 from result.metrics import grouped_outcomes, successful_row
 from result.metrics import result_schema_version
+from result.sample_selection import select_best_of_three, write_selected_samples
 from environment.workload import objective_names, is_modern_workload
 from data.models import load_instance_yaml
 from eval import evaluate_dataset_parallel, evaluate_preference_grid_parallel
@@ -82,7 +84,8 @@ def _is_universal(config: dict) -> bool:
 
 def _rows_are_physically_safe(rows: list[dict], tolerance: float = 1e-9) -> bool:
     return bool(rows) and all(
-        int(row.get("schedule_violation_count", 0)) == 0
+        bool(row.get("physical_safety_pass", True))
+        and int(row.get("schedule_violation_count", 0)) == 0
         and float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
         <= float(row.get("safe_fatigue_limit", -math.inf)) + tolerance
         for row in rows
@@ -92,10 +95,12 @@ def _rows_are_physically_safe(rows: list[dict], tolerance: float = 1e-9) -> bool
 def _rows_satisfy_active_constraints(rows: list[dict], tolerance: float = 1e-9) -> bool:
     """Use each ablation's active constraints for checkpoint eligibility."""
     return bool(rows) and all(
-        int(row.get("schedule_violation_count", 0)) == 0
+        bool(row.get("active_constraint_pass", True))
+        and int(row.get("schedule_violation_count", 0)) == 0
         and (row.get("fatigue_mode", "full") == "neutral"
-             or float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
-             <= float(row.get("safe_fatigue_limit", -math.inf)) + tolerance)
+             or (bool(row.get("physical_safety_pass", True))
+                 and float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
+                 <= float(row.get("safe_fatigue_limit", -math.inf)) + tolerance))
         for row in rows
     )
 
@@ -159,6 +164,8 @@ def _checkpoint_metadata(
         "algorithm_seed": int(config["seed"]),
         "result_schema_version": result_schema_version(config),
         "selection_decode_mode": "sampled",
+        "sample_aggregation": sample_aggregation(config),
+        "sampling_budget": int(formal["validation_repeats"]),
         "formal_evaluation_stage": "validation",
         "selection_temperature": float(formal["temperature"]),
         "validation_split": validation_split,
@@ -185,7 +192,7 @@ def _checkpoint_metadata(
     }
 
 
-def _aggregate_formal_rows(
+def _aggregate_per_sample_rows(
     config: dict,
     *,
     rows: list[dict[str, Any]],
@@ -291,6 +298,55 @@ def _aggregate_formal_rows(
     return aggregate
 
 
+def _aggregate_formal_rows(
+    config: dict, *, rows: list[dict[str, Any]], dataset_name: str,
+    manifest: str, unique_instance_count: int, repeat_count: int,
+    universal: bool, stage: str = "validation", strict_counts: bool = False,
+) -> dict[str, Any]:
+    mode = sample_aggregation(config)
+    if mode == BEST_OF_THREE and repeat_count != 3:
+        raise ValueError("best_of_3_v1 requires exactly three formal sampling repeats")
+    arguments = dict(config=config, dataset_name=dataset_name, manifest=manifest,
+                     unique_instance_count=unique_instance_count, universal=universal, stage=stage)
+    raw = _aggregate_per_sample_rows(**arguments, rows=rows, repeat_count=repeat_count,
+                                     strict_counts=strict_counts or mode == BEST_OF_THREE)
+    if mode != BEST_OF_THREE:
+        return raw
+    if universal:
+        keys = [point.key for point in formal_preferences(config, stage)]
+    else:
+        from environment import PreferenceContext
+        keys = [PreferenceContext.from_input(config["preference"]["quality"]["fixed"]).key]
+    chosen, success_counts = select_best_of_three(
+        rows, unique_instance_count=unique_instance_count, preference_keys=keys)
+    aggregate = _aggregate_per_sample_rows(**arguments, rows=chosen, repeat_count=1)
+    # Eligibility and the solve budget cover ALL requests, even when a bad row loses selection.
+    for field in ("evaluation_complete", "selection_eligible", "completion_coverage",
+                  "sampling_truncated_count", "schedule_violation_count", "decision_count",
+                  "total_inference_time_seconds", "total_solve_time_seconds", "worker_timing_totals"):
+        aggregate[field] = raw[field]
+    aggregate.update(
+        sample_aggregation=mode, aggregation_protocol_version=mode, sampling_budget=3,
+        repeat_count=3, request_count=len(rows), delivery_count=len(chosen),
+        cell_count=len(chosen), completed_cell_count=sum(successful_row(row) for row in chosen),
+        overall_completion_rate=sum(successful_row(row) for row in chosen) / len(chosen),
+        raw_overall_completion_rate=sum(successful_row(row) for row in rows) / len(rows),
+        raw_minimum_preference_completion_rate=raw.get("minimum_preference_completion_rate", raw["completion_rate"]),
+        raw_preference_balanced_quality_score=raw["preference_balanced_quality_score"],
+        success_count_distribution=success_counts, raw_sampled=raw,
+        physical_safety_pass=_rows_are_physically_safe(rows),
+        active_constraint_pass=_rows_satisfy_active_constraints(rows),
+    )
+    if not aggregate["active_constraint_pass"]:
+        aggregate["selection_eligible"] = False
+    if not aggregate["evaluation_complete"]:
+        aggregate.update(completion_rate=None, overall_completion_rate=None,
+                         completion_rate_by_preference={}, minimum_preference_completion_rate=None,
+                         preference_quality_by_key={}, preference_balanced_quality_score=None,
+                         completed_metrics={}, all_instance_metrics={}, gap_metrics={}, tail_metrics={})
+    return aggregate
+
+
 def _evaluate_policy(
     config: dict,
     *,
@@ -376,6 +432,11 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
     all_metrics = aggregate["all_instance_metrics"]
     return {
         "episode": int(episode),
+        **{field: (json.dumps(aggregate[field], sort_keys=True) if field == "success_count_distribution" else aggregate[field]) for field in (
+            "sample_aggregation", "sampling_budget", "request_count", "delivery_count",
+            "overall_completion_rate", "raw_overall_completion_rate",
+            "raw_minimum_preference_completion_rate", "raw_preference_balanced_quality_score",
+            "success_count_distribution") if field in aggregate},
         "subset_sha256": aggregate.get("subset_sha256"),
         "dataset_manifest_sha256": aggregate.get("dataset_manifest_sha256"),
         "instance_indices": aggregate.get("instance_indices"),
@@ -940,6 +1001,7 @@ def _train_single_stage(
                 run_directory / "sampled_validation_instance_metrics.csv",
                 sampled_validation_rows,
             )
+            write_selected_samples(run_directory / "selected_validation_instance_metrics.csv", sampled_validation_rows)
             dashboard.log_validation(
                 validation_row,
                 best_validation=best_validation_row,
@@ -962,6 +1024,7 @@ def _train_single_stage(
                 diagnostic_log.append(_validation_log_row(current, episode=completed_episodes))
                 current.update(validation_episode=completed_episodes, evaluated_model_role="current")
                 write_csv(run_directory / "sampled_diagnostic_instance_metrics.csv", diagnostic_rows)
+                write_selected_samples(run_directory / "selected_diagnostic_instance_metrics.csv", diagnostic_rows)
                 write_csv(run_directory / "diagnostic_log.csv", diagnostic_log)
                 write_json(run_directory / "diagnostic_summary.json", current)
 
@@ -1014,6 +1077,7 @@ def _train_single_stage(
             run_directory / "final_sampled_instance_metrics.csv",
             final_sampled_rows,
         )
+        write_selected_samples(run_directory / "final_selected_instance_metrics.csv", final_sampled_rows)
     checkpoint = best_checkpoint if selector.has_best else None
     provenance = build_provenance(
         config,

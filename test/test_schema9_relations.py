@@ -14,8 +14,8 @@ from agent.ppo.parallel import _worker_roll_forward
 from environment import AssemblySchedulingEnv, ASSEMBLY_EDGE_TYPES, EdgeStore, PROCESSING_ON_EDGE, SERVED_BY_EDGE
 from environment.dynamics import EPSILON, quantize_to_ticks
 from environment.workload import observation_schema_version
-from scripts.audit_observation_reward import build_alias_instance, reachable_histories
-from scripts.audit_state_sufficiency import (
+from support.observation_cases import build_alias_instance, reachable_histories
+from support.state_cases import (
     MODES, effective, worker_alias_instance, worker_histories, virtual_observation,
     reconstructed_quantities, reconstructed_events, actual_events, encoding_checks, boundary_checks,
 )
@@ -157,7 +157,15 @@ def test_relation_aware_encoding_distinguishes_both_counterexamples(config, fixe
         results = encoding_checks(config, fixtures)
     finally:
         torch.set_num_threads(previous_threads)
-    assert len(results) == 60
+    expected_cases = {
+        (kind, mode, variant, seed)
+        for kind in fixtures
+        for mode in MODES
+        for variant in ("hetero_gnn", "node_mlp_pool")
+        for seed in (0, 1, 11, 23, 37)
+    }
+    assert len(results) == len(expected_cases)
+    assert {(row["kind"], row["mode"], row["variant"], row["seed"]) for row in results} == expected_cases
     for row in results:
         if row["variant"] == "node_mlp_pool":
             assert row["graph_difference_float64"] < 1e-12

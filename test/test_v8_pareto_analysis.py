@@ -24,7 +24,11 @@ from utils import configured_formal_evaluation_sampling_seeds, derive_evaluation
 
 
 def _write_run(path, *, factor=1.0, seed=11, all_failed=False, training=False, config=None, instance_ids=("test_a", "test_b")):
-    config = load_config("configs/v8/universal.json") if config is None else deepcopy(config)
+    config = load_config("configs/controls/raw.json") if config is None else deepcopy(config)
+    # This fixture emits historical per-request output, including one-repeat cases.
+    from configs.runtime import runtime_manifest
+    config["training"]["formal_evaluation"]["sample_aggregation"] = "per_sample_v1"
+    config["runtime_manifest"] = runtime_manifest(config)
     config["seed"] = seed
     path.mkdir(parents=True)
     write_config(path, config)
@@ -223,11 +227,11 @@ def _explicit_scored_run(path, *, legacy=True):
     from eval import _apply_evaluation_goal
     from test_workload_contracts import _legacy_config
 
-    config = _legacy_config() if legacy else load_config("configs/workload/raw/q075/universal.json")
+    config = _legacy_config() if legacy else load_config("configs/controls/raw_owa_q075.json")
     config["evaluation"].update(result_schema_version="8.0.0" if legacy else "9.0.0", quality_metric=None)
     config["training"]["formal_evaluation"]["final_test_repeats"] = 1
     config, metrics, rows = _write_run(path, config=config, instance_ids=("test_a",))
-    scoring_path = project_path("configs/workload/raw/q075/universal.json")
+    scoring_path = project_path("configs/controls/raw_owa_q075.json")
     rescored, scored_metrics = _apply_evaluation_goal(rows, metrics, scoring_path)
     write_json(path / "evaluation_config.json", load_config(scoring_path))
     write_json(path / "metrics.json", scored_metrics)
@@ -315,7 +319,7 @@ def test_repeated_scoring_preserves_first_training_metadata_and_row_scores(tmp_p
     from eval import _apply_evaluation_goal
 
     config, once_metrics, once_rows, original = _explicit_scored_run(tmp_path / "run")
-    next_path = project_path("configs/workload/raw/q05/universal.json")
+    next_path = project_path("configs/controls/raw.json")
     twice_rows, twice_metrics = _apply_evaluation_goal(once_rows, once_metrics, next_path)
     assert twice_metrics["training_goal_quality"] == once_metrics["training_goal_quality"]
     assert twice_metrics["training_evaluation_schema_version"] == result_schema_version(config)

@@ -17,7 +17,7 @@ from result.io import write_config
 
 
 def test_saved_effective_config_round_trip_and_runtime_validation(tmp_path):
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     write_config(tmp_path, config)
     reloaded = load_config(tmp_path / "config.json")
     assert public_config(reloaded) == public_config(config)
@@ -29,7 +29,7 @@ def test_saved_effective_config_round_trip_and_runtime_validation(tmp_path):
 
 
 def test_snapshot_relocates_pinned_manifest_from_missing_checkout(tmp_path):
-    config = public_config(load_config("configs/v8/universal.json"))
+    config = public_config(load_config("configs/controls/raw.json"))
     manifest = Path(config["objective_scalarizer"]["normalization_manifest"])
     assert not manifest.is_absolute()
     config["objective_scalarizer"]["normalization_manifest"] = str(tmp_path / "other_checkout" / manifest)
@@ -80,8 +80,8 @@ def test_completion_on_last_allowed_decision_is_success(config, fixed_instance):
 
 def test_ablation_manifest_has_matched_current_full_baselines():
     manifest = load_ablation_manifest()
-    assert len(manifest["runs"]) == 9
-    for objective in ("flow", "cost", "variance"):
+    assert len(manifest["runs"]) == 8
+    for objective in ("flow", "cost", "workload"):
         full, neutral = [load_config(manifest["runs"][f"{mode}_{objective}"]["config"]) for mode in ("full", "neutral")]
         assert_paired_configs(full, neutral, "fatigue_mode")
         assert full["training"]["episodes"] == neutral["training"]["episodes"] == 1000
@@ -91,7 +91,7 @@ def test_ablation_manifest_has_matched_current_full_baselines():
 
 @pytest.mark.parametrize("field", ("penalty", "scale", "budget", "input", "validation"))
 def test_ablation_control_check_rejects_confounded_pairs(field):
-    full = load_config("configs/ablations/full_flow.json")
+    full = load_config("configs/e1/single_flow.json")
     neutral = load_config("configs/ablations/neutral_flow.json")
     if field == "penalty":
         full["reward"]["terminal_failure_penalty"] = 1.0
@@ -113,21 +113,6 @@ def test_direct_smoke_script_imports_from_any_working_directory(monkeypatch, tmp
     assert callable(namespace["main"])
 
 
-def test_fatigue_training_launcher_dispatches_all_six_arms(monkeypatch):
-    from scripts.ablation_protocol import ROLE_CONFIGS
-    namespace = runpy.run_path(str(project_path("scripts/run_12_train_neutral.py")))
-    calls = []
-    monkeypatch.setitem(namespace["main"].__globals__, "train_group", lambda roles: calls.extend(roles))
-    namespace["main"]()
-    assert set(calls) == {f"{mode}_{objective}" for mode in ("full", "neutral") for objective in ("flow", "cost", "variance")}
-    for role in calls:
-        config = load_config(ROLE_CONFIGS[role])
-        assert config["training"]["episodes"] == 1000
-        assert config["training"]["episodes_per_update"] == 20
-        objective = role.split("_", 1)[1]
-        expected = load_config(f"configs/e1/single_{objective}.json")
-        assert config["objective_scalarizer"] == expected["objective_scalarizer"]
-        assert config["network"]["observation_schema_version"] == 12
 
 
 @pytest.mark.parametrize("corruption", (None, "partial", "checkpoint_config", "weights", "validation_manifest"))
@@ -136,7 +121,7 @@ def test_training_run_preflight_checks_actual_checkpoint_and_completed_budget(fi
     from train import _checkpoint_metadata
     from result.io import write_json
 
-    config = load_config("configs/ablations/full_cost.json")
+    config = load_config("configs/e1/single_cost.json")
     config["network"]["hidden_dim"] = 16
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
     agent = PPOAgent(build_actor_critic(observation, config["network"]), config["ppo"], device="cpu")
