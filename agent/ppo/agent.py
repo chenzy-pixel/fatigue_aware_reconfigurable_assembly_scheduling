@@ -19,9 +19,7 @@ from agent.ppo.network import (
 )
 from configs.runtime import assert_checkpoint_fatigue_mode
 from environment import Observation
-from environment.workload import (
-    is_modern_workload, objective_names, observation_schema_version, workload_config,
-)
+from environment.workload import objective_names, observation_schema_version, workload_config
 from result.provenance import (
     network_weights_sha256,
     provenance_with_network_weights,
@@ -154,13 +152,12 @@ class PPOAgent:
         normalized = normalize_network_config(config["network"])
         if normalized["observation_schema_version"] != selected_schema:
             raise ValueError("network observation_schema_version differs from workload_objective")
-        if is_modern_workload(config):
-            scales = config.get("objective_scalarizer", {}).get("scales", {})
-            expected = tuple(float(scales[name]) for name in objective_names(config))
-            if normalized["objective_scales"] != expected:
-                raise ValueError("network objective_scales differs from objective_scalarizer.scales")
-            if normalized["workload_scale"] != expected[2]:
-                raise ValueError("network workload_scale differs from objective_scalarizer.scales")
+        scales = config.get("objective_scalarizer", {}).get("scales", {})
+        expected = tuple(float(scales[name]) for name in objective_names(config))
+        if normalized["objective_scales"] != expected:
+            raise ValueError("network objective_scales differs from objective_scalarizer.scales")
+        if normalized["workload_scale"] != expected[2]:
+            raise ValueError("network workload_scale differs from objective_scalarizer.scales")
         configured_spec = {**spec, **normalized}
         assert_network_config_matches_spec(configured_spec, spec)
         if hasattr(self, "loaded_checkpoint_metadata"):
@@ -488,8 +485,7 @@ class PPOAgent:
             output,
         )
 
-    def load(self, path: str | Path, *, load_optimizer: bool = False,
-             allow_observation_migration: bool = False) -> dict[str, Any]:
+    def load(self, path: str | Path, *, load_optimizer: bool = False) -> dict[str, Any]:
         checkpoint = torch.load(
             Path(path), map_location=self.device, weights_only=False
         )

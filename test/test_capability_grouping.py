@@ -9,7 +9,7 @@ import pytest
 from environment import AssemblySchedulingEnv, CAPABLE_EDGE
 from environment.dynamics import quantize_to_ticks
 from environment.resource_projection import ResourceProjector
-from environment.workload import workload_scale, workload_feature_names
+from environment.workload import workload_scale
 from support.state_cases import worker_alias_instance, worker_histories
 
 
@@ -63,14 +63,14 @@ def test_grouped_capability_relation_matches_edge_by_edge_reference(config, fixe
     reference_index, reference_features = _edge_by_edge_reference(env)
     np.testing.assert_array_equal(grouped.edge_index, reference_index)
     np.testing.assert_array_equal(grouped.edge_features, reference_features)
-    assert grouped.feature_names == workload_feature_names((
+    assert grouped.feature_names == (
         "processing_time_norm", "configuration_match", "earliest_start_time_norm",
         "resource_ready_time_norm", "predicted_finish_time_norm", "safe_disassembly_worker_ratio",
         "safe_installation_worker_ratio", "matching_deficit_after_commit_norm", "horizon_slack_norm",
         "reconfiguration_time_norm", "fixed_disassembly_cost_norm", "fixed_installation_cost_norm",
         "estimated_labor_cost_norm", "estimated_downtime_cost_norm",
-        "estimated_worker_load_variance_delta_norm", "estimated_order_slack_norm",
-    ), env.observation_schema_version)
+        "estimated_worker_load_objective_delta_norm", "estimated_order_slack_norm",
+    )
 
 
 @pytest.mark.parametrize('prefix', [0, 9, 11, 13, 14])

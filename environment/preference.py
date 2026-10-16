@@ -8,11 +8,10 @@ from typing import Any
 
 import numpy as np
 import torch
-from .workload import LEGACY_OBJECTIVE_NAMES, MODERN_OBJECTIVE_NAMES, objective_names
+from .workload import MODERN_OBJECTIVE_NAMES, objective_names
 
 
 PREFERENCE_NAMES = MODERN_OBJECTIVE_NAMES
-LEGACY_PREFERENCE_NAMES = LEGACY_OBJECTIVE_NAMES
 CANONICAL_PREFERENCE = (0.5, 0.3, 0.2)
 PREFERENCE_SUM_TOLERANCE = 1e-6
 
@@ -23,7 +22,7 @@ class PreferenceVector:
 
     flow: float
     cost: float
-    variance: float
+    workload: float
 
     def __post_init__(self) -> None:
         values = self.as_tuple()
@@ -40,14 +39,10 @@ class PreferenceVector:
             raise ValueError("preference weights must sum to 1")
 
     def as_tuple(self) -> tuple[float, float, float]:
-        return (float(self.flow), float(self.cost), float(self.variance))
+        return (float(self.flow), float(self.cost), float(self.workload))
 
     def as_array(self) -> np.ndarray:
         return np.asarray(self.as_tuple(), dtype=np.float32)
-
-    @property
-    def workload(self) -> float:
-        return float(self.variance)
 
     def as_dict(self, names: Sequence[str] = PREFERENCE_NAMES) -> dict[str, float]:
         return dict(zip(names, self.as_tuple(), strict=True))
@@ -115,10 +110,10 @@ def normalize_preference(value: PreferenceInput) -> PreferenceVector:
     if isinstance(value, PreferenceVector):
         return value
     if isinstance(value, Mapping):
-        names = LEGACY_PREFERENCE_NAMES if set(value) == set(LEGACY_PREFERENCE_NAMES) else PREFERENCE_NAMES
+        names = PREFERENCE_NAMES
         if set(value) != set(names):
             raise ValueError(
-                "preference mapping must contain exactly flow/cost/workload or legacy flow/cost/variance"
+                "preference mapping must contain exactly flow/cost/workload"
             )
         values = tuple(float(value[name]) for name in names)
     else:

@@ -10,10 +10,9 @@ import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "8.0.0"
-MODERN_EVALUATION_SCHEMA_VERSION = "9.0.0"
+EVALUATION_SCHEMA_VERSION = "9.0.0"
 WORKLOAD_QUALITY_METRIC_VERSION = "canonical_bounded_workload_quality_v1"
-QUALITY_METRIC_VERSION = "canonical_bounded_quality_v2"
+QUALITY_METRIC_VERSION = WORKLOAD_QUALITY_METRIC_VERSION
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
     "maximum_worker_matching_deficit",
@@ -28,9 +27,11 @@ CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
 
 
 def result_schema_version(config: Mapping[str, Any]) -> str:
-    """Keep schema-10 artifacts legible while versioning modern workload rows."""
-    from environment.workload import is_modern_workload
-    expected = MODERN_EVALUATION_SCHEMA_VERSION if is_modern_workload(dict(config)) else EVALUATION_SCHEMA_VERSION
+    """Validate the workload result protocol used by the current runtime."""
+
+    from environment.workload import observation_schema_version
+    observation_schema_version(config)
+    expected = EVALUATION_SCHEMA_VERSION
     evaluation = config.get("evaluation", {})
     if not isinstance(evaluation, Mapping):
         raise TypeError("config.evaluation must be an object")
@@ -41,22 +42,14 @@ def result_schema_version(config: Mapping[str, Any]) -> str:
         )
     return expected
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
-    "version": QUALITY_METRIC_VERSION,
-    "flow_scale": 1089.15,
-    "cost_scale": 353.27,
-    "variance_scale": 2.2629,
-    "quality_weights": {
-        "flow": 0.5,
-        "cost": 0.3,
-        "variance": 0.2,
-    },
-}
-LEGACY_QUALITY_METRIC: dict[str, Any] = {
-    **CANONICAL_QUALITY_METRIC,
-    "version": "canonical_bounded_quality_v1",
-    "flow_scale": 1200.0,
-    "cost_scale": 1000.0,
-    "variance_scale": 50.0,
+    "version": WORKLOAD_QUALITY_METRIC_VERSION,
+    "flow_scale": 368.3143, "cost_scale": 353.27, "workload_scale": 21.03145448655653,
+    "flow_mode": "excess_proportional_lb_v1",
+    "quality_weights": {"flow": 0.5, "cost": 0.3, "workload": 0.2},
+    "workload_mode": "geometric_owa", "workload_q": 0.5,
+    "workload_rule": "normalized_geometric_by_worker_count_v1",
+    "workload_order": "descending", "workload_version": "workload_objective_v1",
+    "normalization_manifest_sha256": "d90a3c93e9458fcff6b7608e856ec5166e009a7cca17695c37a813a470944f19",
 }
 
 
@@ -76,86 +69,31 @@ def _canonical_json_bytes(value: Any) -> bytes:
 def evaluation_quality_metric(config: Mapping[str, Any]) -> dict[str, Any]:
     """Return the immutable paper-quality metric, with canonical reference defaults."""
 
-    from environment.workload import is_modern_workload, workload_config
-    if is_modern_workload(dict(config)):
-        from configs.formal_preferences import objective_scales
-        from environment.types import flow_mode
-        flow, cost, workload = objective_scales(config)
-        definition = workload_config(dict(config))
-        metric = {
-            "version": WORKLOAD_QUALITY_METRIC_VERSION,
-            "flow_scale": flow, "cost_scale": cost, "workload_scale": workload,
-            "flow_mode": flow_mode(dict(config)),
-            "quality_weights": {"flow": 0.5, "cost": 0.3, "workload": 0.2},
-            "workload_mode": definition["mode"], "workload_q": definition["q"],
-            "workload_rule": definition["weights"],
-            "workload_order": definition["order"], "workload_version": definition["version"],
-            "normalization_manifest_sha256": config["objective_scalarizer"].get("normalization_manifest_sha256"),
-        }
-        supplied = config.get("evaluation", {}).get("quality_metric")
-        if supplied is not None and dict(supplied) != metric:
-            raise ValueError("modern quality metric must match its frozen workload definition and scales")
-        return metric
+    if not config:
+        return deepcopy(CANONICAL_QUALITY_METRIC)
+    if set(config) == {"evaluation"}:
+        return _validate_workload_quality_metric(config["evaluation"]["quality_metric"])
 
-    evaluation = config.get("evaluation")
-    if evaluation is None:
-        return deepcopy(CANONICAL_QUALITY_METRIC)
-    if not isinstance(evaluation, Mapping):
-        raise TypeError("config.evaluation must be an object")
-    raw = evaluation.get("quality_metric")
-    if raw is None:
-        return deepcopy(CANONICAL_QUALITY_METRIC)
-    if not isinstance(raw, Mapping):
-        raise TypeError("config.evaluation.quality_metric must be an object")
-    metric = deepcopy(dict(raw))
-    if metric.get("version") == WORKLOAD_QUALITY_METRIC_VERSION:
-        return _validate_workload_quality_metric(metric)
-    expected_keys = set(CANONICAL_QUALITY_METRIC)
-    if set(metric) != expected_keys:
-        raise ValueError(
-            "evaluation.quality_metric must contain exactly "
-            f"{sorted(expected_keys)}"
-        )
-    weights = metric.get("quality_weights")
-    if not isinstance(weights, Mapping) or set(weights) != {
-        "flow",
-        "cost",
-        "variance",
-    }:
-        raise ValueError(
-            "evaluation.quality_metric.quality_weights must contain exactly "
-            "flow/cost/variance"
-        )
-    normalized = {
-        "version": str(metric["version"]),
-        "flow_scale": float(metric["flow_scale"]),
-        "cost_scale": float(metric["cost_scale"]),
-        "variance_scale": float(metric["variance_scale"]),
-        "quality_weights": {
-            name: float(weights[name])
-            for name in ("flow", "cost", "variance")
-        },
+    from environment.workload import workload_config
+    from configs.formal_preferences import objective_scales
+    from environment.types import flow_mode
+    flow, cost, workload = objective_scales(config)
+    definition = workload_config(dict(config))
+    metric = {
+        "version": WORKLOAD_QUALITY_METRIC_VERSION,
+        "flow_scale": flow, "cost_scale": cost, "workload_scale": workload,
+        "flow_mode": flow_mode(dict(config)),
+        "quality_weights": {"flow": 0.5, "cost": 0.3, "workload": 0.2},
+        "workload_mode": definition["mode"], "workload_q": definition["q"],
+        "workload_rule": definition["weights"],
+        "workload_order": definition["order"], "workload_version": definition["version"],
+        "normalization_manifest_sha256": config["objective_scalarizer"].get("normalization_manifest_sha256"),
     }
-    scales = tuple(
-        normalized[name]
-        for name in ("flow_scale", "cost_scale", "variance_scale")
-    )
-    weight_values = tuple(normalized["quality_weights"].values())
-    if any(not math.isfinite(value) or value <= 0.0 for value in scales):
-        raise ValueError("evaluation quality scales must be finite and positive")
-    if any(not math.isfinite(value) or value < 0.0 for value in weight_values):
-        raise ValueError("evaluation quality weights must be finite and nonnegative")
-    if sum(weight_values) <= 0.0:
-        raise ValueError("evaluation quality weights must have a positive sum")
-    reference = (LEGACY_QUALITY_METRIC if normalized["version"] == LEGACY_QUALITY_METRIC["version"]
-                 else CANONICAL_QUALITY_METRIC)
-    if normalized != reference:
-        raise ValueError(
-            f"{reference['version']} is immutable and must use "
-            f"flow/cost/variance scales {reference['flow_scale']}/{reference['cost_scale']}/{reference['variance_scale']} "
-            "and weights 0.5/0.3/0.2"
-        )
-    return normalized
+    supplied = config.get("evaluation", {}).get("quality_metric")
+    if supplied is not None and dict(supplied) != metric:
+        raise ValueError("modern quality metric must match its frozen workload definition and scales")
+    return metric
+
 
 
 def _validate_workload_quality_metric(metric: Mapping[str, Any]) -> dict[str, Any]:
@@ -210,7 +148,7 @@ def compare_lexicographic(
     fields = (
         "flow_time_objective",
         "reconfiguration_cost",
-        "workload_objective_value" if "workload_objective_value" in first and "workload_objective_value" in second else "worker_load_variance",
+        "workload_objective_value",
     )
     for field in fields:
         difference = float(first[field]) - float(second[field])
@@ -304,8 +242,7 @@ def aggregate_evaluation_rows(
         else {"evaluation": {"quality_metric": dict(quality_metric)}}
     )
     metric_hash = quality_metric_sha256(normalized_metric)
-    schema = (MODERN_EVALUATION_SCHEMA_VERSION if normalized_metric["version"] == WORKLOAD_QUALITY_METRIC_VERSION
-              else EVALUATION_SCHEMA_VERSION)
+    schema = EVALUATION_SCHEMA_VERSION
     if any(row.get("result_schema_version") not in {None, schema} for row in rows):
         raise ValueError(f"only result schema {schema} can be aggregated with this metric")
     row_hashes = {
@@ -319,7 +256,7 @@ def aggregate_evaluation_rows(
         raise ValueError(
             "row quality metric hash does not match the aggregate metric"
         )
-    if schema == MODERN_EVALUATION_SCHEMA_VERSION:
+    if schema == EVALUATION_SCHEMA_VERSION:
         for row in rows:
             prefix = "evaluation_" if row.get("evaluation_workload_mode") is not None else ""
             for name in ("workload_mode", "workload_q", "workload_rule", "workload_order", "workload_version"):

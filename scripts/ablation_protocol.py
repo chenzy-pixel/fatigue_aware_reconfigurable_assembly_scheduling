@@ -46,7 +46,7 @@ def save_batch_manifest(path: Path, manifest: dict) -> None:
 def protocol_profile(config: dict) -> dict:
     """Compare solver identity and the controlled training/evaluation protocol."""
     from agent.ppo.network import normalize_network_config
-    from environment.workload import is_modern_workload, workload_config
+    from environment.workload import workload_config
 
     training = deepcopy(config["training"])
     training.setdefault("episodes_per_update", training["parallel_envs"])
@@ -57,7 +57,7 @@ def protocol_profile(config: dict) -> dict:
     network.update(normalize_network_config(network))
     return {
         "network": network,
-        **({"workload_objective": workload_config(config)} if is_modern_workload(config) else {}),
+        **({"workload_objective": workload_config(config)}),
         "fatigue_mode": config.get("environment", {}).get("fatigue_mode", "full"),
         "environment": {k: v for k, v in config["environment"].items() if k != "fatigue_mode"},
         "reward": config["reward"], "ppo": config["ppo"],

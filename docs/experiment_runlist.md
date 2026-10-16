@@ -31,7 +31,7 @@
 .\.venv\Scripts\python.exe -m pytest -q --basetemp=.t
 ```
 
-已知完整测试基线有一处旧V1 OOD归档哈希不一致，路径为 `data/manifests/ood/manifest.json`；`scripts.prepare_data_v2`先检查这一归档，因此当前会在该门槛报错。既有V2文件已可正常读取，不需要为本轮实验重新生成。归档差异应作为数据溯源问题核实，不能改写原哈希来制造通过。
+旧V1四份清单按 `.gitattributes` 保持CRLF换行，565个历史文件通过原归档哈希校验。既有V2文件可直接读取，本轮实验不需要重新生成数据；`scripts.prepare_data_v2`仍保留归档校验。
 
 ## 3．P1：核心训练矩阵
 

@@ -5,7 +5,7 @@ from enum import Enum
 
 import numpy as np
 from .observation_schema import (
-    GLOBAL_FEATURE_NAMES, LEGACY_GLOBAL_FEATURE_NAMES,
+    GLOBAL_FEATURE_NAMES,
     infer_global_observation_contract, OBSERVATION_SCHEMA_VERSION,
 )
 from .workload import objective_names, observation_schema_version, metrics_workload_objective, workload_config
@@ -19,16 +19,12 @@ from .preference import (
 
 EdgeType = tuple[str, str, str]
 
-LEGACY_PROGRESS_QUALITY_REWARD = "single_stage_progress_quality_v1"
-FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v3"
-EXCESS_FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v4"
 WORKLOAD_FAILURE_PENALTY_REWARD = "single_stage_progress_quality_workload_failure_v5"
 WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD = "single_stage_progress_quality_workload_failure_v6"
 FLOW_RAW = "raw_v1"
 FLOW_EXCESS = "excess_proportional_lb_v1"
 SUPPORTED_REWARD_MODES = frozenset(
-    {FAILURE_PENALTY_REWARD, EXCESS_FAILURE_PENALTY_REWARD,
-     WORKLOAD_FAILURE_PENALTY_REWARD, WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD}
+    {WORKLOAD_FAILURE_PENALTY_REWARD, WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD}
 )
 
 
@@ -40,10 +36,9 @@ def flow_mode(config: dict) -> str:
 
 
 def flow_reward_version(config: dict) -> str:
-    if observation_schema_version(config) >= 11:
-        return (WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS
-                else WORKLOAD_FAILURE_PENALTY_REWARD)
-    return EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS else FAILURE_PENALTY_REWARD
+    observation_schema_version(config)
+    return (WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS
+            else WORKLOAD_FAILURE_PENALTY_REWARD)
 
 
 def metrics_flow_objective(metrics: dict, config: dict) -> float:
@@ -171,7 +166,7 @@ class RewardVector:
     def base_scalarize(self, config: dict) -> float:
         """Return progress increment plus preference-conditioned quality delta."""
 
-        mode = str(config.get("mode", FAILURE_PENALTY_REWARD))
+        mode = str(config.get("mode", WORKLOAD_FAILURE_PENALTY_REWARD))
         if mode not in SUPPORTED_REWARD_MODES:
             raise ValueError(f"unknown reward mode {mode!r}")
         return self.operation_progress + self.quality + self.failure
@@ -264,7 +259,6 @@ def bounded_quality_score(
 ) -> float:
     """Score Flow, cost, and the active workload objective (smaller is better).
 
-    The third positional argument retains its legacy keyword for API stability.
     """
     names = objective_names(config)
     values = dict(zip(names, (float(flow), float(cost), float(variance)), strict=True))
@@ -335,7 +329,7 @@ def proxy_return_from_metrics(
     """Rebuild the versioned undiscounted training return from metrics."""
 
     reward = reward_config(config)
-    mode = str(reward.get("mode", FAILURE_PENALTY_REWARD))
+    mode = str(reward.get("mode", WORKLOAD_FAILURE_PENALTY_REWARD))
     if mode not in SUPPORTED_REWARD_MODES:
         raise ValueError(f"unknown reward mode {mode!r}")
     initial_progress = float(metrics.get("initial_progress", 0.0))

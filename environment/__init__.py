@@ -5,7 +5,6 @@ from .actions import ActionCodec
 from .preference import (
     CANONICAL_PREFERENCE,
     PREFERENCE_NAMES,
-    LEGACY_PREFERENCE_NAMES,
     PreferenceContext,
     PreferenceContextInput,
     PreferenceInput,
@@ -16,11 +15,7 @@ from .preference import (
     quality_preference_for_episode,
     simplex_lattice,
 )
-from .workload import (
-    workload_config, is_modern_workload, observation_schema_version, objective_names,
-    geometric_owa_weights, workload_value, workload_delta, workload_scale,
-    metrics_workload_objective,
-)
+from .workload import workload_config, observation_schema_version, objective_names, geometric_owa_weights, workload_value, workload_delta, workload_scale, metrics_workload_objective
 from .types import (
     ASSEMBLY_EDGE_TYPES,
     ASSEMBLY_NODE_TYPES,
@@ -41,7 +36,7 @@ from .types import (
     DecisionType,
     EdgeStore,
     EdgeType,
-    FAILURE_PENALTY_REWARD,
+    WORKLOAD_FAILURE_PENALTY_REWARD,
     HeterogeneousGraphObservation,
     Observation,
     RewardVector,
@@ -65,7 +60,7 @@ __all__ = [
     "DecisionType",
     "EdgeStore",
     "EdgeType",
-    "FAILURE_PENALTY_REWARD",
+    "WORKLOAD_FAILURE_PENALTY_REWARD",
     "HeterogeneousGraphObservation",
     "LOCKED_EDGE",
     "MACHINE_MODULE_EDGE",
@@ -73,7 +68,6 @@ __all__ = [
     "OPERATION_ORDER_EDGE",
     "ORDER_WAVE_EDGE",
     "PREFERENCE_NAMES",
-    "LEGACY_PREFERENCE_NAMES",
     "PRECEDES_EDGE",
     "PreferenceContext",
     "PreferenceContextInput",
@@ -98,7 +92,6 @@ __all__ = [
     "terminal_quality_score",
     "terminal_failure_penalty",
     "workload_config",
-    "is_modern_workload",
     "observation_schema_version",
     "objective_names",
     "geometric_owa_weights",

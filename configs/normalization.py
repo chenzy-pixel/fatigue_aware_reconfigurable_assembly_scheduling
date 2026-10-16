@@ -312,12 +312,12 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     if selected_mode != flow_mode(manifest):
         raise ValueError("flow_mode disagrees with normalization manifest")
     from environment.workload import workload_config, observation_schema_version, objective_names
-    modern = observation_schema_version(config) >= 11
+    observation_schema_version(config)
     names = objective_names(config)
     if manifest["schema_version"] == WORKLOAD_MANIFEST_SCHEMA:
-        if not modern or workload_config(config) != manifest["workload_objective"]:
+        if workload_config(config) != manifest["workload_objective"]:
             raise ValueError("workload identity disagrees with normalization manifest")
-    elif modern and workload_config(config)["mode"] != "variance":
+    elif workload_config(config)["mode"] != "variance":
         raise ValueError("OWA requires its own frozen workload normalization manifest")
     scalarizer["scales"] = {name: float(manifest["scales"]["variance" if name == "workload" and "workload" not in manifest["scales"] else name]) for name in names}
     try:
@@ -337,18 +337,17 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     network["normalization_manifest_sha256"] = str(expected).lower()
     network["flow_mode"] = selected_mode
     network["reward_version"] = expected_reward
-    if modern:
-        identity = workload_config(config)
-        fields = {"workload_mode": identity["mode"], "workload_q": identity["q"],
-                  "workload_weight_rule": identity["weights"], "workload_version": identity["version"],
-                  "workload_order": identity["order"],
-                  "workload_scale": scalarizer["scales"]["workload"],
-                  "objective_scales": tuple(scalarizer["scales"][name] for name in names),
-                  "observation_schema_version": observation_schema_version(config)}
-        for key, value in fields.items():
-            if key in network and network[key] != value and not (key == "objective_scales" and tuple(network[key]) == value):
-                raise ValueError(f"network {key} disagrees with workload configuration")
-            network[key] = value
+    identity = workload_config(config)
+    fields = {"workload_mode": identity["mode"], "workload_q": identity["q"],
+              "workload_weight_rule": identity["weights"], "workload_version": identity["version"],
+              "workload_order": identity["order"],
+              "workload_scale": scalarizer["scales"]["workload"],
+              "objective_scales": tuple(scalarizer["scales"][name] for name in names),
+              "observation_schema_version": observation_schema_version(config)}
+    for key, value in fields.items():
+        if key in network and network[key] != value and not (key == "objective_scales" and tuple(network[key]) == value):
+            raise ValueError(f"network {key} disagrees with workload configuration")
+        network[key] = value
 
 
 def _validate_workload_manifest(payload: Mapping[str, Any], project_root: Path) -> None:

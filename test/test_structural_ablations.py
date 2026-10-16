@@ -291,12 +291,11 @@ def test_legacy_schema_rejection_preserves_variant_weights_and_adam_state(
 
     target = PPOAgent(build_actor_critic(observations[0], settings), config["ppo"], device="cpu")
     original_state = {name: value.detach().clone() for name, value in target.network.state_dict().items()}
-    for allow in (False, True):
-        with pytest.raises(ValueError, match="requires retraining"):
-            target.load(path, load_optimizer=True, allow_observation_migration=allow)
-        for name, value in target.network.state_dict().items():
-            torch.testing.assert_close(value, original_state[name], atol=0, rtol=0)
-        assert not target.optimizer.state
+    with pytest.raises(ValueError, match="requires retraining"):
+        target.load(path, load_optimizer=True)
+    for name, value in target.network.state_dict().items():
+        torch.testing.assert_close(value, original_state[name], atol=0, rtol=0)
+    assert not target.optimizer.state
     assert target.network.network_spec()["encoder_variant"] == encoder_variant
     assert target.network.network_spec()["actor_head_variant"] == actor_head_variant
 

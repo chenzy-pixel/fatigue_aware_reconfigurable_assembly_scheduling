@@ -83,8 +83,7 @@ def test_schema12_checkpoint_cli_saves_executed_hashes(fixed_instance, tmp_path)
     source_hash = checkpoint['metadata']['network_weights_sha256']
     write_config(tmp_path, config)
     command = [sys.executable, str(project_path("eval.py")), "--config", str(tmp_path / "config.json"),
-               "--policy", "ppo", "--checkpoint", str(checkpoint_path), "--dataset", "test", "--device", "cpu",
-               "--allow-observation-migration"]
+               "--policy", "ppo", "--checkpoint", str(checkpoint_path), "--dataset", "test", "--device", "cpu"]
     environment = {**os.environ, "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
     for label, extra, cell_count in (
         ("grid", ["--preference-set", "final_test"], 198),

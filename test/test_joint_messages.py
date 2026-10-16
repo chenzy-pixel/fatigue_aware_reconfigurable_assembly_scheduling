@@ -158,9 +158,8 @@ def _assert_nested_equal(actual, expected):
 
 @pytest.mark.parametrize("field", MESSAGE_IDENTITY_FIELDS)
 @pytest.mark.parametrize("corruption", ("missing", "wrong"))
-@pytest.mark.parametrize("allow_migration", (False, True))
 def test_incompatible_identity_rejected_before_network_and_optimizer_mutation(
-    config, fixed_instance, tmp_path, field, corruption, allow_migration,
+    config, fixed_instance, tmp_path, field, corruption,
 ):
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
     settings = {**config["network"], "hidden_dim": 16}
@@ -181,7 +180,7 @@ def test_incompatible_identity_rejected_before_network_and_optimizer_mutation(
     weights_before = deepcopy(destination.network.state_dict())
     optimizer_before = deepcopy(destination.optimizer.state_dict())
     with pytest.raises(ValueError, match=field):
-        destination.load(path, load_optimizer=True, allow_observation_migration=allow_migration)
+        destination.load(path, load_optimizer=True)
     _assert_nested_equal(destination.network.state_dict(), weights_before)
     _assert_nested_equal(destination.optimizer.state_dict(), optimizer_before)
 

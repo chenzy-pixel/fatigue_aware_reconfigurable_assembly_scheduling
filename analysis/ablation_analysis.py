@@ -70,12 +70,7 @@ def paired_rows(baseline: list[dict], variant: list[dict], experiment: str) -> t
     rows = []
     for key in sorted(left):
         first, second = left[key], right[key]
-        modern = any("objective_scale_workload" in row or "workload_mode" in row for row in (first, second))
-        controls = CONTROL_FIELDS if modern else tuple(
-            "objective_scale_variance" if field == "objective_scale_workload" else field
-            for field in CONTROL_FIELDS
-        )
-        for field in controls:
+        for field in CONTROL_FIELDS:
             if first.get(field) in (None, "") or second.get(field) in (None, ""):
                 raise ValueError(f"missing {field}: {experiment}, {key}")
             if first.get(field) != second.get(field):
@@ -184,8 +179,8 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
     require(provenance.get("normalization_manifest_sha256") == controls["normalization_manifest_sha256"]
             and metrics.get("quality_metric_sha256") == provenance.get("quality_metric_sha256") == controls["quality_metric_sha256"], "aggregate protocol mismatch")
     required = ("task_succeeded", "active_constraint_pass", "physical_safety_pass")
-    from environment.workload import is_modern_workload
-    objective_fields = ("workload_objective_value", "worker_load_total", "worker_load_max") if is_modern_workload(expected) else ()
+
+    objective_fields = ("workload_objective_value", "worker_load_total", "worker_load_max")
     finite_fields = ("flow_time_objective", "reconfiguration_cost", "worker_load_variance", *objective_fields,
                      "fatigue_monitor_peak", "fatigue_monitor_over_limit_minutes", "fatigue_monitor_over_limit_area")
     for row in rows:

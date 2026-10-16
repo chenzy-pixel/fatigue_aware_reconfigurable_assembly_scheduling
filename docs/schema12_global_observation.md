@@ -27,10 +27,10 @@ schema12 使用十维全局观测。前六维结构特征沿用原顺序，第6�
 
 累计目标特征名称包含log2/bounded标识，两种编码均为10维但名称不同。编码写入网络规格、runtime manifest和评估provenance，并随有效配置参与哈希。网络加载、观测校验与rollout buffer拒绝跨编码混用。
 
-schema10与schema11继续读取原九维线性观测；旧保存配置继承新版默认时，不继承新编码或新版本。旧schema11保留workload身份，旧schema10保留Variance身份。它们可以在各自原协议中评估，但不能迁移或补零加载到schema12。更早不受支持的模型仍要求重训。
+当前配置、观测、checkpoint 和 rollout buffer 统一使用 schema12。旧版本在配置继承或参数加载前拒绝，避免九维观测被静默改为十维输入。历史模型复核使用原代码版本。
 
 ## 验收
 
-`test/test_schema12_observation.py`覆盖编码数学、极值与非法输入，订单集合、有符号裕量、缓存、加工和锁定状态、机器候选以及独立订单估计的限制；同动作对照覆盖raw/excess、两种评分头、Variance/OWA，检查mask、奖励、物理日志、节点和关系一致性。
+`test/test_schema12_observation.py`覆盖编码数学、极值与非法输入，订单集合、有符号裕量、缓存、加工和锁定状态、机器候选以及独立订单估计的限制；同动作对照覆盖raw/excess、shared-head、Variance/OWA，检查mask、奖励、物理日志、节点和关系一致性。
 
 `test/test_module_entrypoints.py`对两种编码分别运行两轮训练、PPO更新、13偏好验证、66偏好最终评估和best/last模型重载，核对编码身份与provenance。短程验收不用于证明质量或完成率提高。

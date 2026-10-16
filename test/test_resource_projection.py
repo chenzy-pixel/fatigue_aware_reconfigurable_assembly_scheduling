@@ -54,7 +54,7 @@ def test_running_installation_uses_fixed_finish(config, fixed_instance, mode):
     assert future.resources.loads.tolist() == env._committed_worker_loads.tolist()
 
 
-@pytest.mark.parametrize('workload_contract', ['geometric_owa', 'variance', 'legacy_variance'])
+@pytest.mark.parametrize('workload_contract', ['geometric_owa', 'variance'])
 def test_sequential_path_replays_time_fatigue_cost_and_load(config, fixed_instance, workload_contract):
     config = deepcopy(config)
     if workload_contract != 'geometric_owa':
@@ -63,13 +63,6 @@ def test_sequential_path_replays_time_fatigue_cost_and_load(config, fixed_instan
             if key.startswith('workload_'):
                 config['network'].pop(key)
         config['objective_scalarizer']['scales']['workload'] = 2.2629
-    if workload_contract == 'legacy_variance':
-        config.pop('workload_objective')
-        config['network']['observation_schema_version'] = 10
-        config['network'].pop('global_objective_encoding', None)
-        scales = config['objective_scalarizer']['scales']
-        scales['variance'] = scales.pop('workload')
-        config['reward']['mode'] = flow_reward_version(config)
     instance = sequential_instance(fixed_instance)
     env = AssemblySchedulingEnv(config)
     env.reset(instance)

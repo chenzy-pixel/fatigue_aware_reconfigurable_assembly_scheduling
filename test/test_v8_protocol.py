@@ -163,16 +163,17 @@ def test_normalization_manifest_round_trip_stays_outside_training_protocol(tmp_p
     digest = write_immutable_manifest(destination, manifest)
     loaded = load_normalization_manifest(destination, expected_sha256=digest)
     config = {
+        "workload_objective": {"mode": "variance", "q": None},
         "objective_scalarizer": {
             "scale_source": "frozen_manifest",
             "normalization_manifest": destination.name,
             "normalization_manifest_sha256": digest,
         },
-        "network": {},
+        "network": {"observation_schema_version": 12},
         "training": {},
     }
     apply_normalization_manifest(config, project_root=tmp_path)
-    assert config["objective_scalarizer"]["scales"] == loaded["scales"]
+    assert config["objective_scalarizer"]["scales"] == {"flow": loaded["scales"]["flow"], "cost": loaded["scales"]["cost"], "workload": loaded["scales"]["variance"]}
     assert config["network"]["normalization_manifest_sha256"] == digest
     assert "two_stage" not in config["training"]
     destination.write_text(destination.read_text(encoding="utf-8") + " ", encoding="utf-8")
@@ -239,7 +240,7 @@ def test_selected_scales_reject_inconsistent_signed_payload(tmp_path, invalid):
 def test_current_scales_align_training_reference_quality_and_pareto():
     from analysis.pareto_analysis import normalize_objectives
     from environment.types import bounded_quality_score
-    from result.metrics import evaluation_quality_metric, LEGACY_QUALITY_METRIC, quality_metric_sha256
+    from result.metrics import evaluation_quality_metric, quality_metric_sha256
     expected = {"flow":368.3143, "cost":353.27, "workload":21.03145448655653}
     for path in ("configs/default.json",
                  "configs/e1/single_flow.json", "configs/e1/single_cost.json", "configs/e1/single_workload.json",
@@ -263,8 +264,9 @@ def test_current_scales_align_training_reference_quality_and_pareto():
     assert control_metric["workload_mode"] == "variance"
     assert control_metric["workload_q"] is None
     assert bounded_quality_score(*control_expected.values(), control) == pytest.approx(.5)
-    assert evaluation_quality_metric({"evaluation":{"quality_metric":LEGACY_QUALITY_METRIC}}) == LEGACY_QUALITY_METRIC
-    assert quality_metric_sha256(reference) != quality_metric_sha256(LEGACY_QUALITY_METRIC)
+    assert evaluation_quality_metric({"evaluation":{"quality_metric":control_metric}}) == control_metric
+    assert quality_metric_sha256(reference) != quality_metric_sha256(control_metric)
+
 
 
 def _row(

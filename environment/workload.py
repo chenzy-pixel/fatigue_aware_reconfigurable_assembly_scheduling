@@ -12,7 +12,6 @@ WORKLOAD_VERSION = "workload_objective_v1"
 GEOMETRIC_WEIGHT_RULE = "normalized_geometric_by_worker_count_v1"
 VARIANCE_WEIGHT_RULE = "population_variance_v1"
 MODERN_OBJECTIVE_NAMES = ("flow", "cost", "workload")
-LEGACY_OBJECTIVE_NAMES = ("flow", "cost", "variance")
 
 
 def _network(config: Mapping) -> Mapping:
@@ -20,13 +19,6 @@ def _network(config: Mapping) -> Mapping:
     if not isinstance(value, Mapping):
         raise TypeError("network must be an object")
     return value
-
-
-def is_modern_workload(config: Mapping) -> bool:
-    """Identify an explicit workload contract, including a network-only spec."""
-    if _network(config).get("observation_schema_version") == 10:
-        return False
-    return "workload_objective" in config or "workload_mode" in _network(config)
 
 
 def workload_config(config: Mapping) -> dict:
@@ -48,7 +40,7 @@ def workload_config(config: Mapping) -> dict:
             "weights": network.get("workload_weight_rule", network.get("workload_rule")),
         }
     else:
-        raw = {"mode": "variance"}
+        raise ValueError("an explicit workload_objective or network workload_mode is required")
     mode = str(raw["mode"])
     if mode not in {"variance", "geometric_owa"}:
         raise ValueError("workload_objective.mode must be variance or geometric_owa")
@@ -79,22 +71,18 @@ def workload_config(config: Mapping) -> dict:
 
 
 def observation_schema_version(config: Mapping) -> int:
-    """Resolve legacy variance or modern workload observation contracts."""
+    """Validate the current observation and explicit workload contracts."""
     network = _network(config)
-    value = network.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION if is_modern_workload(config) else 10)
+    value = network.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION)
     if isinstance(value, bool) or value not in SUPPORTED_OBSERVATION_SCHEMAS:
-        raise ValueError("observation schema must be 10, 11 or 12; older models require retraining")
-    version = int(value)
-    definition = workload_config(config)
-    if version == 10 and definition["mode"] != "variance":
-        raise ValueError("schema 10 supports only the legacy variance workload objective")
-    if version >= 11 and not is_modern_workload(config):
-        raise ValueError("schema 11/12 requires an explicit workload_objective")
-    return version
+        raise ValueError("only observation schema 12 is supported; older models require retraining")
+    workload_config(config)
+    return OBSERVATION_SCHEMA_VERSION
 
 
 def objective_names(config: Mapping) -> tuple[str, str, str]:
-    return MODERN_OBJECTIVE_NAMES if observation_schema_version(config) >= 11 else LEGACY_OBJECTIVE_NAMES
+    observation_schema_version(config)
+    return MODERN_OBJECTIVE_NAMES
 
 
 @lru_cache(maxsize=256)
@@ -135,9 +123,9 @@ def workload_delta(before: Sequence[float], after: Sequence[float], config: Mapp
 def workload_scale(config: Mapping) -> float:
     scalarizer = config.get("objective_scalarizer", config)
     scales = scalarizer.get("scales", {})
-    value = scales.get("workload", scales.get("variance"))
+    value = scales.get("workload")
     if value is None:
-        value = scalarizer.get("workload_scale", scalarizer.get("variance_scale"))
+        value = scalarizer.get("workload_scale")
     if value is None:
         raise ValueError("a workload objective scale is required")
     scale = float(value)
@@ -152,16 +140,3 @@ def metrics_workload_objective(metrics: Mapping, config: Mapping) -> float:
     if workload_config(config)["mode"] == "variance":
         return float(metrics["worker_load_variance"])
     raise KeyError("geometric_owa metrics require workload_objective_value")
-
-
-def workload_feature_names(names: Sequence[str], version: int) -> tuple[str, ...]:
-    """Neutralize feature labels while preserving their dimensions and order."""
-    if version == 10:
-        return tuple(names)
-    replacements = {
-        "estimated_worker_load_variance_delta_norm": "estimated_worker_load_objective_delta_norm",
-        "incremental_load_variance_norm": "incremental_workload_objective_norm",
-        "estimated_load_variance_delta_if_wait": "estimated_workload_objective_delta_if_wait",
-        "objective_committed_variance_norm": "objective_committed_workload_norm",
-    }
-    return tuple(replacements.get(name, name) for name in names)

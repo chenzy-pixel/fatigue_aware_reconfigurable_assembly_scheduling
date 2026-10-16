@@ -15,7 +15,7 @@ from data import load_dataset_split
 from environment import (
     AssemblySchedulingEnv,
     DecisionType,
-    FAILURE_PENALTY_REWARD,
+    WORKLOAD_FAILURE_PENALTY_REWARD,
     proxy_return_from_metrics,
     terminal_failure_penalty,
 )
@@ -602,7 +602,7 @@ def _reward_audit(
             )
         ),
         "recomputed_versions": {
-            FAILURE_PENALTY_REWARD: {
+            WORKLOAD_FAILURE_PENALTY_REWARD: {
                 "terminal_quality": actual_final_quality,
                 "failure_penalty": penalty,
                 "base_cumulative_reward": failure_v2_base_identity,

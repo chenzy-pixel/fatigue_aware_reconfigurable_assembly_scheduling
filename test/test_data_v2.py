@@ -205,9 +205,8 @@ def test_legacy_data_is_preserved_and_loadable():
     # Archived instance bytes remain readable under their recorded data contract.
     legacy = json.loads(Path("configs/archive/data_v1.json").read_text(encoding="utf-8"))
     assert load_dataset_split(legacy, "validation").manifest["schema_version"] == "1.2.0"
-    for allow in (False, True):
-        with pytest.raises(ValueError, match="failure-v3 reward contract"):
-            load_config("configs/archive/data_v1.json", allow_observation_migration=allow)
+    with pytest.raises(ValueError, match="schema 12"):
+        load_config("configs/archive/data_v1.json")
 
 
 def test_run_audit_loads_saved_runtime_config(config, tmp_path):
