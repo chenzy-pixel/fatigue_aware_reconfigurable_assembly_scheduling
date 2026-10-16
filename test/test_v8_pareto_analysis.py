@@ -223,12 +223,13 @@ def test_v8_analysis_rejects_external_sampling_truncation(tmp_path, partial_sour
         analyze_runs({"run": tmp_path / "run"}, tmp_path / "out")
 
 
-def _explicit_scored_run(path, *, legacy=True):
+def _explicit_scored_run(path, *, variance_control=True):
     from eval import _apply_evaluation_goal
-    from test_workload_contracts import _legacy_config
+    from test_workload_contracts import _modern_config
 
-    config = _legacy_config() if legacy else load_config("configs/controls/raw_owa_q075.json")
-    config["evaluation"].update(result_schema_version="8.0.0" if legacy else "9.0.0", quality_metric=None)
+    config = load_config("configs/controls/raw_single_variance.json") if variance_control else load_config("configs/controls/raw_owa_q075.json")
+    config["preference"] = load_config("configs/controls/raw.json")["preference"]
+    config["evaluation"].update(result_schema_version="9.0.0", quality_metric=None)
     config["training"]["formal_evaluation"]["final_test_repeats"] = 1
     config, metrics, rows = _write_run(path, config=config, instance_ids=("test_a",))
     scoring_path = project_path("configs/controls/raw_owa_q075.json")
@@ -239,10 +240,10 @@ def _explicit_scored_run(path, *, legacy=True):
     return config, scored_metrics, rescored, rows
 
 
-@pytest.mark.parametrize("legacy", [True, False])
-def test_explicit_scored_formal_outputs_reenter_unified_analysis_preserving_training_scores(tmp_path, legacy):
-    config, metrics, _, original = _explicit_scored_run(tmp_path / "rescored", legacy=legacy)
-    assert result_schema_version(config) == ("8.0.0" if legacy else "9.0.0")
+@pytest.mark.parametrize("variance_control", [True, False])
+def test_explicit_scored_formal_outputs_reenter_unified_analysis_preserving_training_scores(tmp_path, variance_control):
+    config, metrics, _, original = _explicit_scored_run(tmp_path / "rescored", variance_control=variance_control)
+    assert result_schema_version(config) == "9.0.0"
     assert metrics["evaluation_schema_version"] == "9.0.0"
     assert metrics["evaluation_workload_q"] == .75
     summary = analyze_runs({"rescored": tmp_path / "rescored"}, tmp_path / "out")
@@ -285,7 +286,7 @@ def test_explicit_scored_output_rejects_tampered_scoring_or_training_identity(tm
     elif corruption == "evaluation_quality_hash":
         metrics["quality_metric_sha256"] = "wrong"
     elif corruption == "training_schema":
-        metrics["training_evaluation_schema_version"] = "9.0.0"
+        metrics["training_evaluation_schema_version"] = "8.0.0"
     elif corruption == "training_metric":
         metrics["training_goal_quality"]["quality_metric_sha256"] = "wrong"
     elif corruption == "training_preference":
@@ -304,10 +305,10 @@ def test_explicit_scored_output_rejects_tampered_scoring_or_training_identity(tm
         analyze_runs({"run": directory}, tmp_path / "out")
 
 
-def test_legacy_and_modern_explicit_scoring_outputs_share_one_unified_analysis(tmp_path):
-    _explicit_scored_run(tmp_path / "legacy", legacy=True)
-    _explicit_scored_run(tmp_path / "modern", legacy=False)
-    summary = analyze_runs({"legacy": tmp_path / "legacy", "modern": tmp_path / "modern"}, tmp_path / "out")
+def test_variance_and_owa_scoring_outputs_share_one_unified_analysis(tmp_path):
+    _explicit_scored_run(tmp_path / "variance_control", variance_control=True)
+    _explicit_scored_run(tmp_path / "modern", variance_control=False)
+    summary = analyze_runs({"variance_control": tmp_path / "variance_control", "modern": tmp_path / "modern"}, tmp_path / "out")
     assert summary["candidate_count"] == 132
     assert summary["evaluation_workload_q"] == .5
     assert summary["objective_scales"]["workload"] == 21.03145448655653

@@ -18,6 +18,6 @@
 完整逐路径迁移表、清理前工作区 patch、产物哈希清单和检查日志位于 `result/analysis/project_cleanup_20261016/`。旧协议的远端队列须在其原代码与配置下完成；此次整理只影响本地项目。
 
 
-当前 actor 统一为 shared-head，旧参数化分支已从训练、评估和消融矩阵中移除。历史模型与原始结果继续保留；当前运行时只加载 shared-head checkpoint。已有 shared-head 模型的旧元数据字段在读取时转为通用字段，权重不变。
+当前 actor 统一为 shared-head，旧参数化分支已从训练、评估和消融矩阵中移除。历史模型与原始结果继续保留；当前运行时只加载 schema12 shared-head checkpoint。已有 shared-head 模型的旧元数据字段在读取时转为通用字段，权重不变。
 
 本次删减前源码、历史消融清单及验证记录保存在忽略目录 `result/analysis/shared_head_cleanup_20261016/`，清单可在原实验代码中复核。

@@ -52,26 +52,8 @@ def _modern(config, mode="geometric_owa", q=0.5):
     return effective
 
 
-def _legacy(config):
-    effective = deepcopy(config)
-    effective["objective_scalarizer"]["flow_mode"] = "raw_v1"
-    effective.pop("workload_objective", None)
-    for key in tuple(effective["network"]):
-        if key.startswith("workload_"):
-            effective["network"].pop(key)
-    effective["network"]["observation_schema_version"] = 10
-    effective["network"].pop("global_objective_encoding", None)
-    effective["objective_scalarizer"]["scales"] = {"flow": 1000.0, "cost": 300.0, "variance": 2.0}
-    effective["reward"]["mode"] = flow_reward_version(effective)
-    quality = dict(effective["evaluation"].get("quality_metric") or {})
-    effective["evaluation"]["quality_metric"] = quality
-    for key in tuple(quality):
-        if key.startswith("workload_"):
-            quality.pop(key)
-    quality.update(version="canonical_bounded_quality_v1", variance_scale=2.0,
-                   flow_scale=1000.0, cost_scale=300.0,
-                   quality_weights={"flow": 0.5, "cost": 0.3, "variance": 0.2})
-    return effective
+def _variance(config):
+    return _modern(config, mode="variance")
 
 
 def _single_reconfiguration(instance):
@@ -115,7 +97,7 @@ def test_invalid_geometric_q_rejected(q):
 def test_full_geometric_default_and_flattened_identity_requirements():
     assert workload_config({"workload_objective": {"mode": "geometric_owa"}})["q"] == 0.5
     with pytest.raises(ValueError, match="q"):
-        workload_config({"workload_mode": "geometric_owa", "observation_schema_version": 11})
+        workload_config({"workload_mode": "geometric_owa", "observation_schema_version": 12})
 
 
 def test_underflow_and_invalid_loads_fail_instead_of_zero_weight_approximation():
@@ -153,11 +135,6 @@ def test_variance_mode_is_population_variance_and_never_an_owa_fallback():
                                    {"workload_objective": {"mode": "geometric_owa", "q": 0.5}})
     assert observation_schema_version(cfg) == 12
     assert objective_names(cfg) == ("flow", "cost", "workload")
-    legacy = {**cfg, "network": {"observation_schema_version": 10}}
-    assert objective_names(legacy) == ("flow", "cost", "variance")
-    with pytest.raises(ValueError, match="schema 10"):
-        observation_schema_version({"workload_objective": {"mode": "geometric_owa", "q": 0.5},
-                                    "network": {"observation_schema_version": 10}})
 
 
 @pytest.mark.parametrize("q", [.25, .5, .75])
@@ -214,8 +191,8 @@ def test_worker_production_global_and_wait_features_share_active_objective(confi
     assert proxy_return_from_metrics(derived, effective, preference=[0, 0, 1]) == pytest.approx(metrics["training_cumulative_reward"])
 
 
-def test_success_telescope_actual_logs_and_legacy_physics(config, fixed_instance):
-    configs = [_legacy(config), _modern(config)]
+def test_success_telescope_actual_logs_and_variance_control_physics(config, fixed_instance):
+    configs = [_variance(config), _modern(config)]
     envs = [AssemblySchedulingEnv(effective) for effective in configs]
     for env in envs:
         env.reset(fixed_instance, preference=[0, 0, 1], build_observation=False)
@@ -295,33 +272,14 @@ def test_wait_terminal_projection_matches_commitment_rollback(config, fixed_inst
     assert env._committed_workload_objective() == pytest.approx(env._workload_objective())
 
 
-def test_direct_modern_quality_metric_and_legacy_variance_names(config):
+def test_direct_quality_metric_and_variance_control_names(config):
     effective = _modern(config)
     metric = effective["evaluation"]["quality_metric"]
     assert bounded_quality_score(0, 0, 20, metric, preference=[0, 0, 1]) == 0.5
-    old = _legacy(config)
-    assert objective_names(old) == ("flow", "cost", "variance")
-    assert flow_reward_version(old).endswith("v3")
+    old = _variance(config)
+    assert objective_names(old) == ("flow", "cost", "workload")
+    assert flow_reward_version(old).endswith("v5")
     assert flow_reward_version(effective).endswith("v5")
-
-
-def test_schema11_variance_renames_contract_without_changing_initial_numbers(config, fixed_instance):
-    legacy = _legacy(config)
-    modern = _modern(config, mode="variance")
-    modern["network"]["observation_schema_version"] = 11
-    modern["network"].pop("global_objective_encoding", None)
-    modern["objective_scalarizer"]["scales"]["workload"] = legacy["objective_scalarizer"]["scales"]["variance"]
-    envs = [AssemblySchedulingEnv(effective) for effective in (legacy, modern)]
-    observations = [env.reset(_single_reconfiguration(fixed_instance)) for env in envs]
-    np.testing.assert_array_equal(observations[0].global_features, observations[1].global_features)
-    np.testing.assert_array_equal(observations[0].action_set_features, observations[1].action_set_features)
-    for node_type in observations[0].node_features:
-        np.testing.assert_array_equal(observations[0].node_features[node_type], observations[1].node_features[node_type])
-    for edge_type in observations[0].relations:
-        np.testing.assert_array_equal(observations[0].relations[edge_type].edge_features,
-                                      observations[1].relations[edge_type].edge_features)
-    assert observations[0].global_feature_names[-1] == "objective_committed_variance_norm"
-    assert observations[1].global_feature_names[-1] == "objective_committed_workload_norm"
 
 
 def test_modern_raw_wait_reuses_projection_and_preserves_order_slack(config, fixed_instance, monkeypatch):

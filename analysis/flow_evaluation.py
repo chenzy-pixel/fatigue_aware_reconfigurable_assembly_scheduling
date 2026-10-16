@@ -9,7 +9,7 @@ from configs import load_config
 from configs.formal_preferences import formal_preferences
 from data import load_dataset_split
 from environment import AssemblySchedulingEnv, PreferenceContext
-from environment.workload import objective_names, is_modern_workload, workload_value
+from environment.workload import objective_names, workload_value
 from configs.formal_preferences import objective_scales
 from analysis.workload_dominance import (actual_worker_loads, resolve_workload_evaluation_config,
     historical_load_sources, workload_identity, labelled_workload_dominance)
@@ -27,7 +27,6 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
     import csv
     groups=defaultdict(list); identity=None; sources=[]; budgets={}; configs_by_method={}; sampling_cells={}
     loaded_configs = {method: load_config(Path(directory)/"config.json") for method, directory in runs.items()}
-    workload_comparison = evaluation_config is not None or any(is_modern_workload(config) for config in loaded_configs.values())
     if not runs or stage not in {"validation", "final_test"}:
         raise ValueError("candidate evaluation requires runs and a known evaluation stage")
     for method,directory in runs.items():
@@ -56,7 +55,7 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
         elif identity!=current: raise ValueError("unmatched physical instances or environment")
         observed=set(); bounds={}; env=AssemblySchedulingEnv(config)
         load_sources = {}
-        if workload_comparison and any(row.get("worker_loads") in {None, ""} for row in rows if _flag(row["task_succeeded"])):
+        if any(row.get("worker_loads") in {None, ""} for row in rows if _flag(row["task_succeeded"])):
             load_sources=historical_load_sources(directory,config,dataset_name,[row for row in rows if _flag(row["task_succeeded"])])
         for iid in ids:
             if iid not in instances: raise ValueError("candidate references unverified instance")
@@ -79,9 +78,8 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
                 if row.get("flow_excess_objective") not in {None,""} and abs(float(row["flow_excess_objective"])-excess)>1e-7:
                     raise ValueError("candidate excess disagrees with verified LB")
                 row["flow_excess_objective"]=max(0,excess)
-                if workload_comparison:
-                    loads=actual_worker_loads(row, **load_sources.get((row["instance_id"],str(row.get("candidate_id","")),str(row.get("sampling_repeat",0))),{}))
-                    row["worker_loads"]=json.dumps(loads,sort_keys=True)
+                loads=actual_worker_loads(row, **load_sources.get((row["instance_id"],str(row.get("candidate_id","")),str(row.get("sampling_repeat",0))),{}))
+                row["worker_loads"]=json.dumps(loads,sort_keys=True)
             groups[(method,int(row["algorithm_seed"]),row["instance_id"])].append(row)
         repeats=int(config["training"]["formal_evaluation"]["final_test_repeats" if stage=="final_test" else "validation_repeats"]) if rows[0]["arm"]=="ppo" else 1
         arm=rows[0]["arm"]
@@ -111,7 +109,7 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
     summaries=[]
     from environment.types import flow_mode
     requested_modes = {flow_mode(evaluation_config)} if evaluation_config is not None else {"raw_v1", "excess_proportional_lb_v1"}
-    if workload_comparison and require_matched_sampling_budget:
+    if require_matched_sampling_budget:
         cells=list(sampling_cells.values())
         if any(candidate_cells != cells[0] for candidate_cells in cells[1:]):
             raise ValueError("methods use unmatched preference/repeat candidate sampling budgets")
@@ -119,18 +117,16 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
         safe=[row for row in rows if valid_candidate(row)]
         record={"method":method,"algorithm_seed":seed,"instance_id":iid,"candidate_count":len(rows),
                 "successful_safe_count":len(safe),"completion_rate":len(safe)/len(rows)}
-        for name,field,scales in (("raw_primary","flow_time_objective",(1089.15,353.27,2.2629)),
-                                  ("excess_supplementary","flow_excess_objective",(368.3143,353.27,2.2629))):
+        for name,field in (("raw_primary","flow_time_objective"),
+                           ("excess_supplementary","flow_excess_objective")):
             mode = "raw_v1" if name=="raw_primary" else "excess_proportional_lb_v1"
             if mode not in requested_modes or own_goal and mode != flow_mode(configs_by_method[method]):
                 continue
-            scoring=None
-            if workload_comparison:
-                scoring=resolve_workload_evaluation_config(configs_by_method[method],evaluation_config=evaluation_config,
-                    own_goal=own_goal,flow_mode=mode)
-                scales=objective_scales(scoring)
+            scoring=resolve_workload_evaluation_config(configs_by_method[method],evaluation_config=evaluation_config,
+                own_goal=own_goal,flow_mode=mode)
+            scales=objective_scales(scoring)
             points=[normalize_objectives((float(r[field]),float(r["reconfiguration_cost"]),
-                workload_value(list(actual_worker_loads(r).values()),scoring) if scoring else float(r["worker_load_variance"])),scales) for r in safe]
+                workload_value(list(actual_worker_loads(r).values()),scoring)),scales) for r in safe]
             record[f"{name}_hypervolume"]=hypervolume_3d(points)
             record[f"{name}_front_size"]=len(nondominated_indices(points))
         summaries.append(record)
@@ -143,14 +139,13 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
         summary.update(primary_flow_mode=flow_mode(evaluation_config), supplementary_flow_mode=None)
     elif own_goal:
         summary.update(primary_flow_mode="per_source_training_goal", supplementary_flow_mode=None)
-    if workload_comparison:
-        summary.update(evaluation_goal="own_training_goals_separate" if own_goal else "explicit_frozen_goal" if evaluation_config is not None else "unified_q05",
-            matched_sampling_budget_required=require_matched_sampling_budget,
-            labelled_worker_dominance=labelled_workload_dominance([row for group in groups.values() for row in group]))
-        summary["evaluation_metrics"]={mode: {"scales":objective_scales(resolve_workload_evaluation_config(next(iter(configs_by_method.values())),
-            evaluation_config=evaluation_config,own_goal=own_goal,flow_mode=mode)),
-            **workload_identity(resolve_workload_evaluation_config(next(iter(configs_by_method.values())),
-            evaluation_config=evaluation_config,own_goal=own_goal,flow_mode=mode))} for mode in requested_modes
-            if not own_goal or mode == flow_mode(next(iter(configs_by_method.values())))}
+    summary.update(evaluation_goal="own_training_goals_separate" if own_goal else "explicit_frozen_goal" if evaluation_config is not None else "unified_q05",
+        matched_sampling_budget_required=require_matched_sampling_budget,
+        labelled_worker_dominance=labelled_workload_dominance([row for group in groups.values() for row in group]))
+    summary["evaluation_metrics"]={mode: {"scales":objective_scales(resolve_workload_evaluation_config(next(iter(configs_by_method.values())),
+        evaluation_config=evaluation_config,own_goal=own_goal,flow_mode=mode)),
+        **workload_identity(resolve_workload_evaluation_config(next(iter(configs_by_method.values())),
+        evaluation_config=evaluation_config,own_goal=own_goal,flow_mode=mode))} for mode in requested_modes
+        if not own_goal or mode == flow_mode(next(iter(configs_by_method.values())))}
     write_json(output/"summary.json",summary)
     return summary

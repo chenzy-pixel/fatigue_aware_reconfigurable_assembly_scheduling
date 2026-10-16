@@ -112,13 +112,13 @@ def test_processing_and_locked_orders_use_existing_estimates(config,fixed_instan
 @pytest.mark.parametrize('head',['shared_preference'])
 @pytest.mark.parametrize('mode',['variance','geometric_owa'])
 @pytest.mark.parametrize('flow',['raw','excess'])
-def test_schema11_and_12_fixed_actions_preserve_physics(encoding,head,mode,flow,fixed_instance):
+def test_both_encodings_fixed_actions_preserve_physics(encoding,head,mode,flow,fixed_instance):
     paths={('raw','variance'):'configs/controls/raw_single_variance.json',
         ('excess','variance'):'configs/controls/single_variance.json',
         ('raw','geometric_owa'):'configs/controls/raw.json',
         ('excess','geometric_owa'):'configs/default.json'}
     c=load_config(paths[flow,mode]);c['network'].update(global_objective_encoding=encoding,actor_head_variant=head,hidden_dim=16)
-    old=deepcopy(c);old['network']['observation_schema_version']=11;old['network'].pop('global_objective_encoding')
+    old=deepcopy(c);old['network']['global_objective_encoding']='bounded_v1' if encoding=='log2_v1' else 'log2_v1'
     a,b=AssemblySchedulingEnv(old),AssemblySchedulingEnv(c);oa,ob=a.reset(fixed_instance),b.reset(fixed_instance)
     rule=HeuristicPolicy();seen=set()
     for _ in range(65):
@@ -163,22 +163,6 @@ def test_checkpoint_and_buffer_encoding_identity(encoding,config,fixed_instance,
     second=RolloutBuffer();second.add(other_obs,other_env.get_action_mask(),0,0,0,0,False)
     with pytest.raises(ValueError,match='encodings'):buffer.extend(second)
     with pytest.raises(ValueError,match='global feature'):build_actor_critic(other_obs,c['network'])
-    legacy=deepcopy(c);legacy['network']['observation_schema_version']=11;legacy['network'].pop('global_objective_encoding')
-    old_env=AssemblySchedulingEnv(legacy);old_obs=old_env.reset(fixed_instance)
-    old_agent=PPOAgent(build_actor_critic(old_obs,legacy['network']),legacy['ppo'])
-    with pytest.raises(ValueError,match='requires retraining'):old_agent.load(path,load_optimizer=False)
-    old_path=tmp_path/'old.pt';old_agent.save(old_path)
-    with pytest.raises(ValueError,match='requires retraining'):agent.load(old_path,load_optimizer=False)
-
-
-def test_old_schema11_snapshot_extending_default_keeps_linear(config,fixed_instance,tmp_path):
-    old=deepcopy(config);old['network']['observation_schema_version']=11;old['network'].pop('global_objective_encoding')
-    old['runtime_manifest']=runtime_manifest(old);old['extends']=str(project_path('configs/default.json'))
-    path=tmp_path/'old.json';path.write_text(json.dumps(old))
-    restored=load_config(path);assert restored['runtime_manifest']==old['runtime_manifest']
-    assert 'global_objective_encoding' not in restored['network']
-    env=AssemblySchedulingEnv(restored);obs=env.reset(fixed_instance)
-    assert len(obs.global_features)==9 and obs.global_feature_names==global_feature_names(11)
 
 
 def test_presets_differ_only_in_encoding_and_name():
@@ -194,7 +178,7 @@ def test_presets_differ_only_in_encoding_and_name():
 def test_complete_trajectory_preserves_terminal_objectives(encoding,flow,fixed_instance):
     path='configs/controls/raw.json' if flow=='raw' else 'configs/default.json'
     c=load_config(path);c['network']['global_objective_encoding']=encoding
-    old=deepcopy(c);old['network']['observation_schema_version']=11;old['network'].pop('global_objective_encoding')
+    old=deepcopy(c);old['network']['global_objective_encoding']='bounded_v1' if encoding=='log2_v1' else 'log2_v1'
     instance=_chain_instance(fixed_instance,mismatch=True,second_release=20)
     a,b=AssemblySchedulingEnv(old),AssemblySchedulingEnv(c);a.reset(instance);b.reset(instance)
     rule=HeuristicPolicy()

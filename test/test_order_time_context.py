@@ -294,7 +294,7 @@ def test_schema5_checkpoint_rejected_for_each_network_variant(config, fixed_inst
     payload['network_spec']['observation_schema_version'] = 5
     torch.save(payload,path)
     with pytest.raises(ValueError,match='requires retraining'):
-        agent.load(path,load_optimizer=True,allow_observation_migration=True)
+        agent.load(path,load_optimizer=True)
 
 
 def test_current_schema_requires_explicit_time_features(config, fixed_instance):

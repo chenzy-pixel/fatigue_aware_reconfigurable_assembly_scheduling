@@ -11,7 +11,7 @@ from agent.baselines import HeuristicPolicy
 from scripts.deadlock_replay import _reward_audit
 from environment import (
     AssemblySchedulingEnv,
-    FAILURE_PENALTY_REWARD,
+    WORKLOAD_FAILURE_PENALTY_REWARD,
     proxy_return_from_metrics,
 )
 from environment.types import OperationState
@@ -189,7 +189,7 @@ def test_terminal_boundaries_preserve_quality_and_failure_rewards(
         metrics["training_cumulative_reward"], abs=1e-8
     )
     assert audit["configured_identity_residual"] == pytest.approx(0.0, abs=1e-8)
-    assert audit["recomputed_versions"][FAILURE_PENALTY_REWARD][
+    assert audit["recomputed_versions"][WORKLOAD_FAILURE_PENALTY_REWARD][
         "training_cumulative_reward"
     ] == pytest.approx(reward_sum, abs=1e-8)
 

@@ -37,7 +37,7 @@
 .\.venv\Scripts\python.exe -m pytest -q --basetemp=.t
 ```
 
-当前已知回归基线含一处旧V1 OOD清单与归档哈希不一致，位置为 `data/manifests/ood/manifest.json`；V2运行目录为 `data/manifests/v2`。原始数据和归档哈希需保留，不以改写哈希消除失败。
+旧V1清单按 `.gitattributes` 使用CRLF换行，原归档哈希保持不变；当前实验使用 `data/manifests/v2`。运行时只接受schema12配置与模型。
 
 ## 训练
 

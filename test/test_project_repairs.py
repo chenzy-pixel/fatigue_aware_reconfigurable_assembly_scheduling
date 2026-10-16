@@ -149,11 +149,10 @@ def test_training_run_preflight_checks_actual_checkpoint_and_completed_budget(fi
 
 
 @pytest.mark.parametrize("saved_schema", range(5, 10))
-@pytest.mark.parametrize("allow_migration", (False, True))
-def test_saved_older_observation_contract_requires_retraining(tmp_path, saved_schema, allow_migration):
+def test_saved_older_observation_contract_requires_retraining(tmp_path, saved_schema):
     config = public_config(load_config("configs/default.json"))
     config["runtime_manifest"]["observation_schema"] = saved_schema
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="schema 12.*retraining"):
-        load_config(path, allow_observation_migration=allow_migration)
+        load_config(path)

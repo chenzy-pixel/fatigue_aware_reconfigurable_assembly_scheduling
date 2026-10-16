@@ -28,7 +28,7 @@ from collections import Counter
 from result.metrics import grouped_outcomes, successful_row
 from result.metrics import result_schema_version
 from result.sample_selection import select_best_of_three, write_selected_samples
-from environment.workload import objective_names, is_modern_workload
+from environment.workload import objective_names
 from data.models import load_instance_yaml
 from eval import evaluate_dataset_parallel, evaluate_preference_grid_parallel
 from result import (
@@ -74,7 +74,7 @@ def _objective_name(config: dict) -> str | None:
     else:
         return None
     selected = SINGLE_OBJECTIVE_WEIGHTS.get(weights)
-    return "workload" if selected == "variance" and is_modern_workload(config) else selected
+    return "workload" if selected == "variance" else selected
 
 
 def _is_universal(config: dict) -> bool:
@@ -681,7 +681,6 @@ class TrainingEngine:
         validation_parallel_envs: int | None = None,
         visdom_enabled: bool | None = None,
         initial_checkpoint: str | Path | None = None,
-        allow_observation_migration: bool = False,
     ) -> None:
         self.config = deepcopy(config)
         self.smoke = bool(smoke)
@@ -692,7 +691,7 @@ class TrainingEngine:
         self.validation_parallel_envs = validation_parallel_envs
         self.visdom_enabled = visdom_enabled
         self.initial_checkpoint = initial_checkpoint
-        self.allow_observation_migration = bool(allow_observation_migration)
+
 
     def run(self) -> Path:
         config = self.config
@@ -750,8 +749,7 @@ class TrainingEngine:
             parallel_envs=min(workers, episodes),
             episodes_per_update=update_size,
             initial_checkpoint=self.initial_checkpoint,
-            allow_observation_migration=self.allow_observation_migration,
-        )
+                    )
 
 
 def train(
@@ -766,7 +764,6 @@ def train(
     validation_parallel_envs: int | None = None,
     visdom_enabled: bool | None = None,
     initial_checkpoint: str | Path | None = None,
-    allow_observation_migration: bool = False,
 ) -> Path:
     if online_instances is False:
         raise ValueError("latest-only training uses the online instance collector")
@@ -780,8 +777,7 @@ def train(
         validation_parallel_envs=validation_parallel_envs,
         visdom_enabled=visdom_enabled,
         initial_checkpoint=initial_checkpoint,
-        allow_observation_migration=allow_observation_migration,
-    ).run()
+            ).run()
 
 
 def _train_single_stage(
@@ -793,7 +789,6 @@ def _train_single_stage(
     parallel_envs: int,
     episodes_per_update: int,
     initial_checkpoint: str | Path | None,
-    allow_observation_migration: bool = False,
 ) -> Path:
     started_at = time.perf_counter()
     template = load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
@@ -805,8 +800,7 @@ def _train_single_stage(
     agent = PPOAgent(network, config["ppo"], device=config["device"])
     if initial_checkpoint is not None:
         from configs.runtime import assert_checkpoint_fatigue_mode
-        initial_metadata = agent.load(initial_checkpoint, load_optimizer=False,
-                                      allow_observation_migration=allow_observation_migration)
+        initial_metadata = agent.load(initial_checkpoint, load_optimizer=False)
         assert_checkpoint_fatigue_mode(initial_metadata, config)
         from data.dataset import sha256_file
         config["training"]["initial_checkpoint_identity"] = {
@@ -1144,8 +1138,7 @@ def main() -> int:
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--episodes", type=int)
     parser.add_argument("--initial-checkpoint")
-    parser.add_argument("--allow-observation-migration", action="store_true",
-                        help="Compatibility flag; current observation schema requires retraining of older models")
+
     parser.add_argument("--run-name")
     parser.add_argument("--algorithm-seed", type=int)
     parser.add_argument("--parallel-envs", type=int)
@@ -1162,7 +1155,7 @@ def main() -> int:
         default=None,
     )
     args = parser.parse_args()
-    config = load_config(args.config, allow_observation_migration=args.allow_observation_migration)
+    config = load_config(args.config)
     if args.episodes is not None:
         if args.episodes <= 0:
             parser.error("--episodes must be positive")
@@ -1188,8 +1181,7 @@ def main() -> int:
                     validation_parallel_envs=args.validation_parallel_envs,
                     visdom_enabled=args.visdom_enabled,
                     initial_checkpoint=args.initial_checkpoint,
-                    allow_observation_migration=args.allow_observation_migration,
-                )
+                                    )
             except KeyboardInterrupt as error:
                 exit_code = 130
                 report_training_failure(

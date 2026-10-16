@@ -16,10 +16,7 @@ workload v5 奖励，Flow excess 对应 workload v6 奖励；累计训练回报�
 负荷。成功终局两个向量和目标值一致。`worker_load_variance` 始终是真实方差。
 结果另保存带工人身份的 `worker_loads`、`worker_load_total`、`worker_load_max`。
 
-`variance` 模式作为显式对照保留，使用原方差尺度。当前 schema 10 shared-head checkpoint
-通过保存配置及原契约运行；缺少目标模式只能在经过验证的 schema 10 快照中
-解释为 variance。schema 11 与 schema 10、不同模式、q、尺度均不能相互加载或续训。
-网络参数维度相同不代表目标或观测兼容。
+`variance` 模式作为 schema12 下的显式对照保留，使用冻结方差尺度。运行时要求明确的 workload 定义，配置和 checkpoint 只能使用 schema12。不同模式、q、尺度和全局编码不能交叉加载或续训；网络参数维度相同不代表目标或观测兼容。
 
 ## 冻结尺度
 
@@ -104,14 +101,4 @@ MO-ALNS使用一个固定验证实例及8次评价预算完成小规模接入验
 
 2026-10-12全量回归为830 passed、2 skipped、1 failed；收尾改动的补充回归为
 219 passed、1 skipped（与全量测试有重叠，不作去重总数相加）。
-唯一失败是`test_legacy_data_is_preserved_and_loadable`：现有
-`data/manifests/ood/manifest.json`与HEAD字节相同，其SHA256为
-`e1dd636df2fb71be56bff50392366351eb5850a77ff041c0a3450d24c5c62689`，
-原归档预期为`dda85d56609cf6dd69087ad9e79251b854cb3193cff106b9a1e481b7272209b6`。
-这是HEAD已有的数据清单不一致，本轮未修改数据或归档哈希表。
-测试XML、标定、冒烟与代码状态汇总位于`result/audits/workload_owa/verification.json`。
-
-归档的schema10兼容性验收记录中，两实例上的110/158次决策、每步观测/掩码/奖励哈希、
-动作及终局三指标与修改前记录完全一致。独立评价产物还校验保存的
-`evaluation_config.json`、评价尺度和配置哈希，保留原训练身份及质量；重复评分
-仍保留首次`training_*`，旧/新模型可在同一冻结OWA坐标下分析。
+旧V1四份清单的换行已恢复为归档约定的CRLF，565个历史文件通过原哈希校验。归档数据读取与当前模型契约分别检查；当前运行时明确拒绝非schema12配置。

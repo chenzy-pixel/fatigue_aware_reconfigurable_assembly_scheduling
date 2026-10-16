@@ -18,7 +18,7 @@ from environment.observation_schema import (
 )
 from environment.workload import (
     workload_config, workload_value, workload_delta, workload_scale,
-    observation_schema_version, objective_names, workload_feature_names,
+    observation_schema_version, objective_names,
 )
 from environment.actions import ActionCodec
 from environment.resource_projection import ResourceProjector, CandidateProjection, projection_cache_scope
@@ -63,7 +63,6 @@ from environment.types import (
     EdgeStore,
     EdgeType,
     EventType,
-    FAILURE_PENALTY_REWARD,
     FLOW_EXCESS,
     SUPPORTED_REWARD_MODES,
     flow_mode,
@@ -810,7 +809,7 @@ class AssemblySchedulingEnv:
                 resource_snapshot.minimum_worker_alternatives
                 / max(1, len(self.workers)),
                 *encoded_objectives,
-                *([self.minimum_unfinished_order_slack_norm()] if self.observation_schema_version >= 12 else []),
+                self.minimum_unfinished_order_slack_norm(),
             ],
             dtype=np.float32,
         )
@@ -1112,14 +1111,14 @@ class AssemblySchedulingEnv:
     def _build_capability_relation(self) -> EdgeStore:
         """Build candidate features from one sequential service path per edge."""
         edge_index = self._static_edge_indices[CAPABLE_EDGE]
-        feature_names = workload_feature_names((
+        feature_names = (
             "processing_time_norm", "configuration_match", "earliest_start_time_norm",
             "resource_ready_time_norm", "predicted_finish_time_norm", "safe_disassembly_worker_ratio",
             "safe_installation_worker_ratio", "matching_deficit_after_commit_norm", "horizon_slack_norm",
             "reconfiguration_time_norm", "fixed_disassembly_cost_norm", "fixed_installation_cost_norm",
             "estimated_labor_cost_norm", "estimated_downtime_cost_norm",
-            "estimated_worker_load_variance_delta_norm", ORDER_TIME_FEATURE,
-        ), self.observation_schema_version)
+            "estimated_worker_load_objective_delta_norm", ORDER_TIME_FEATURE,
+        )
         group_rows = np.empty(
             (len(self._capability_candidate_groups), len(feature_names)),
             dtype=np.float64,
@@ -1437,7 +1436,7 @@ class AssemblySchedulingEnv:
                 ]
                 service_pairs.append((machine_index, worker_index))
                 service_features.append(values)
-        service_feature_names = workload_feature_names((
+        service_feature_names = (
             "stage_dis",
             "stage_ins",
             "stage_duration_norm",
@@ -1445,10 +1444,10 @@ class AssemblySchedulingEnv:
             "fixed_cost_norm",
             "incremental_labor_cost_norm",
             "incremental_downtime_cost_norm",
-            "incremental_load_variance_norm",
+            "incremental_workload_objective_norm",
             ORDER_TIME_FEATURE,
             WORKER_WAIT_FEATURE,
-        ), self.observation_schema_version)
+        )
         service_candidate = EdgeStore(
             edge_index=_as_edge_index(service_pairs),
             edge_features=np.asarray(
@@ -1606,7 +1605,7 @@ class AssemblySchedulingEnv:
         }
         flow_delta = len(active_orders) * wait_minutes
         wait_projection = None
-        if (self.flow_mode == FLOW_EXCESS or self.observation_schema_version >= 11) and certificate.get("allowed"):
+        if certificate.get("allowed"):
             wait_projection = project_wait_state(
                 self, wait_ticks, settle_terminal=True, certificate=certificate)
             if self.flow_mode == FLOW_EXCESS:
@@ -1623,10 +1622,10 @@ class AssemblySchedulingEnv:
                 if worker.state in {WorkerState.DIS, WorkerState.INS}
             )
         )
-        names = workload_feature_names((
+        names = (
             "estimated_flow_objective_delta_if_wait",
             "estimated_cost_objective_delta_if_wait",
-            "estimated_load_variance_delta_if_wait",
+            "estimated_workload_objective_delta_if_wait",
             "wait_duration_norm",
             "next_event_delta_norm",
             "active_order_ratio",
@@ -1637,7 +1636,7 @@ class AssemblySchedulingEnv:
             "worker_recovery_gain",
             "future_wave_release_delta_norm",
             "configuration_reuse_gain",
-        ) + WAIT_TIME_FEATURES, self.observation_schema_version)
+        ) + WAIT_TIME_FEATURES
         current_slack = self.minimum_active_order_slack_norm()
         if self.flow_mode == FLOW_EXCESS:
             if wait_projection is None or wait_projection.task_done:
@@ -1662,7 +1661,7 @@ class AssemblySchedulingEnv:
                 cost_delta / scalarizer["scales"]["cost"],
                 (workload_delta(self._committed_worker_loads, wait_projection._committed_worker_loads, self.config)
                  / workload_scale(self.config)
-                 if self.observation_schema_version >= 11 and wait_projection is not None else 0.0),
+                 if wait_projection is not None else 0.0),
                 wait_ticks / max(1, self.horizon_tick),
                 wait_ticks / max(1, self.horizon_tick),
                 len(active_orders) / max(1, len(self.instance.orders)),
@@ -2149,7 +2148,7 @@ class AssemblySchedulingEnv:
             flow=-(after[0] - before[0]),
             cost=-(after[1] - before[1]),
             variance=-(self._committed_load_variance() - variance_before),
-            workload=-(after[2] - before[2]) if self.observation_schema_version >= 11 else None,
+            workload=-(after[2] - before[2]),
             operation_progress=progress_after - progress_before,
             quality=-(quality_after - quality_before),
             failure=failure_reward,
@@ -2569,8 +2568,7 @@ class AssemblySchedulingEnv:
                 "workload_q": self.workload_config["q"],
                 "workload_rule": self.workload_config["weights"],
                 "workload_order": self.workload_config["order"],
-                "workload_version": self.workload_config["version"]}
-               if self.observation_schema_version >= 11 else {}),
+                "workload_version": self.workload_config["version"]}),
             "maximum_worker_fatigue": self._maximum_fatigue_seen,
             "safe_fatigue_limit": self.instance.fatigue.maximum_safe_fatigue,
             "worker_peak_fatigue": {

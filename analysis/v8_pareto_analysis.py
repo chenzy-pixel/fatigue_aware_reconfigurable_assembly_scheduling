@@ -16,7 +16,7 @@ from data.dataset import sha256_file
 from environment import PreferenceContext
 from result.io import write_csv, write_json
 from result.metrics import evaluation_quality_metric, quality_metric_sha256, result_schema_version
-from environment.workload import objective_names, is_modern_workload, metrics_workload_objective
+from environment.workload import objective_names, metrics_workload_objective
 from .workload_dominance import resolve_workload_evaluation_config, rescore_workload_row, workload_identity, labelled_workload_dominance
 from result.provenance import effective_config_snapshot
 from utils import derive_evaluation_sampling_seed
@@ -73,8 +73,6 @@ def _validate_explicit_scoring(directory: Path, config: dict, metrics: dict, row
         raise ValueError("explicit evaluation requires its saved evaluation_config.json")
     raw = json.loads(path.read_text(encoding="utf-8"))
     scoring = load_config(path)
-    if not is_modern_workload(scoring):
-        raise ValueError("explicit workload evaluation requires a modern workload config")
     digest = effective_config_snapshot(raw)["sha256"]
     if metrics.get("evaluation_config_sha256") != digest:
         raise ValueError("evaluation scoring configuration hash mismatch")
@@ -109,8 +107,6 @@ def _validate_explicit_scoring(directory: Path, config: dict, metrics: dict, row
         for name in ("result_schema_version", "quality_metric_sha256", "preference_quality_score"):
             if f"training_{name}" not in row:
                 raise ValueError(f"evaluation row is missing its original training_{name}")
-        if not is_modern_workload(config):
-            training_row["workload_objective_value"] = row["worker_load_variance"]
         _validate_row_protocol(training_row, config)
         if row.get("result_schema_version") != result_schema_version(scoring):
             raise ValueError("evaluation row scoring result schema mismatch")
@@ -195,7 +191,7 @@ def _load_run(directory: Path) -> tuple[dict, dict, list[dict[str, str]], dict]:
         "flow_mode": flow_mode(config),
         "training_scales": config["objective_scalarizer"]["scales"],
         "reward_version": config["reward"]["mode"],
-        "training_workload": workload_identity(config) if is_modern_workload(config) else {"workload_mode": "variance"},
+        "training_workload": workload_identity(config),
         **scoring_source,
     }
     return config, metrics, rows, source
@@ -232,10 +228,6 @@ def analyze_runs(
     for method, directories in runs.items():
         for path in ([directories] if isinstance(directories, (str, Path)) else list(directories)):
             prepared_runs[(method, str(path))] = _load_run(Path(path))
-    workload_comparison = evaluation_config is not None or any(
-        is_modern_workload(loaded[0]) or "evaluation_workload" in loaded[3]
-        for loaded in prepared_runs.values()
-    )
     shared_scoring_config = None
     for method, directories in runs.items():
         paths = [directories] if isinstance(directories, (str, Path)) else list(directories)
@@ -244,7 +236,7 @@ def analyze_runs(
         for raw_path in paths:
             config, metrics, rows, source = prepared_runs[(method, str(raw_path))]
             scoring_config = (resolve_workload_evaluation_config(config, evaluation_config=evaluation_config,
-                own_goal=own_goal, flow_mode=evaluation_flow_mode) if workload_comparison else config)
+                own_goal=own_goal, flow_mode=evaluation_flow_mode))
             seed = int(config["seed"])
             if (method, seed) in seen_runs:
                 raise ValueError(f"duplicate method/training seed: {method}/{seed}")
@@ -281,22 +273,21 @@ def analyze_runs(
                         if record.instance.instance_id in ids:
                             env.reset(record.instance,build_observation=False)
                             lower_bounds[record.instance.instance_id] = env._total_processing_lower_bound_ticks*env.resolution
-            if workload_comparison:
-                identity = (*identity[:5], objective_scales(scoring_config),
-                    (json.dumps(workload_identity(scoring_config), sort_keys=True),
-                     scoring_config["objective_scalarizer"].get("normalization_manifest_sha256"),
-                     json.dumps(config.get("environment", {}), sort_keys=True)))
-                if flow_mode(scoring_config) == FLOW_EXCESS and not lower_bounds:
-                    from data import load_dataset_split
-                    from environment import AssemblySchedulingEnv
-                    dataset = load_dataset_split(config, metrics["dataset"])
-                    if dataset_manifest_snapshot_hash(dataset) != source["dataset_manifest_sha256"]:
-                        raise ValueError("cannot derive excess from an unverified instance manifest")
-                    environment = AssemblySchedulingEnv(config)
-                    for record in dataset:
-                        if record.instance.instance_id in ids:
-                            environment.reset(record.instance, build_observation=False)
-                            lower_bounds[record.instance.instance_id] = environment._total_processing_lower_bound_ticks * environment.resolution
+            identity = (*identity[:5], objective_scales(scoring_config),
+                (json.dumps(workload_identity(scoring_config), sort_keys=True),
+                 scoring_config["objective_scalarizer"].get("normalization_manifest_sha256"),
+                 json.dumps(config.get("environment", {}), sort_keys=True)))
+            if flow_mode(scoring_config) == FLOW_EXCESS and not lower_bounds:
+                from data import load_dataset_split
+                from environment import AssemblySchedulingEnv
+                dataset = load_dataset_split(config, metrics["dataset"])
+                if dataset_manifest_snapshot_hash(dataset) != source["dataset_manifest_sha256"]:
+                    raise ValueError("cannot derive excess from an unverified instance manifest")
+                environment = AssemblySchedulingEnv(config)
+                for record in dataset:
+                    if record.instance.instance_id in ids:
+                        environment.reset(record.instance, build_observation=False)
+                        lower_bounds[record.instance.instance_id] = environment._total_processing_lower_bound_ticks * environment.resolution
             if shared_identity is None:
                 shared_identity, shared_config = identity, config
                 shared_scoring_config = scoring_config
@@ -308,7 +299,7 @@ def analyze_runs(
                 raise ValueError("duplicate or incomplete instance/preference/repeat cells")
             scales = identity[5]
             load_sources = {}
-            if workload_comparison and any(row.get("worker_loads") in {None, ""} for row in rows if _flag(row["task_succeeded"])):
+            if any(row.get("worker_loads") in {None, ""} for row in rows if _flag(row["task_succeeded"])):
                 from .workload_dominance import historical_load_sources
                 load_sources = historical_load_sources(raw_path, config, metrics["dataset"],
                     [row for row in rows if _flag(row["task_succeeded"])])
@@ -337,7 +328,7 @@ def analyze_runs(
                 if raw.get("fatigue_mode", "full") != "full":
                     raise ValueError("neutral row in full-fatigue evaluation")
                 objectives = [_finite(raw[name], name) for name in OBJECTIVE_FIELDS]
-                selected_flow_mode = flow_mode(scoring_config) if workload_comparison else evaluation_flow_mode
+                selected_flow_mode = flow_mode(scoring_config)
                 if selected_flow_mode == FLOW_EXCESS and succeeded:
                     lb = lower_bounds.get(raw["instance_id"])
                     if lb is None or objectives[0] < lb-1e-8:
@@ -348,15 +339,14 @@ def analyze_runs(
                         raise ValueError("excess report disagrees with verified instance lower bound")
                     raw = {**raw, "flow_excess_objective": expected_excess}
                     objectives[0] = expected_excess
-                if workload_comparison and succeeded and safe:
-                    if is_modern_workload(config):
-                        from .pareto_analysis import _validate_row_protocol
-                        _validate_row_protocol(raw, config)
+                if succeeded and safe:
+                    from .pareto_analysis import _validate_row_protocol
+                    _validate_row_protocol(raw, config)
                     raw = rescore_workload_row(raw, scoring_config,
                         **load_sources.get((raw["instance_id"], str(raw.get("candidate_id", "")), str(raw.get("sampling_repeat", 0))), {}))
                     objectives[2] = metrics_workload_objective(raw, scoring_config)
                     objectives[0] = _finite(raw["flow_excess_objective"] if flow_mode(scoring_config) == FLOW_EXCESS else raw["flow_time_objective"], "evaluation Flow")
-                point = normalize_objectives(objectives, scales) if not workload_comparison or succeeded and safe else (None, None, None)
+                point = normalize_objectives(objectives, scales) if succeeded and safe else (None, None, None)
                 row = {**raw, "method": method, "algorithm_seed": seed,
                        "sampling_repeat": repeat, "candidate_feasible": succeeded and safe,
                        "is_pareto": False,
@@ -418,16 +408,15 @@ def analyze_runs(
         "preference_count": len(shared_identity[3]), "repeat_count": shared_identity[4],
         "normalization": "J/(scale+J)", "objective_scales": dict(zip(objective_names(shared_scoring_config),shared_identity[5])),
         "evaluation_flow_mode": evaluation_flow_mode or flow_mode(shared_scoring_config),
-        "evaluation_goal": "own_training_goal" if own_goal else "unified_q05" if workload_comparison and evaluation_config is None else "explicit_goal" if workload_comparison else "legacy_variance",
+        "evaluation_goal": "own_training_goal" if own_goal else "unified_q05" if evaluation_config is None else "explicit_goal",
         "reference_point": [1.0, 1.0, 1.0], "methods": method_summary,
         "coverage_definition": "fraction of unique front points weakly dominated by the other method",
         "candidate_count": len(candidates), "front_row_count": sum(r["is_pareto"] for r in candidates),
         "sources": sources,
     }
-    if workload_comparison:
-        summary.update(workload_identity(shared_scoring_config, prefix="evaluation_"))
-        summary["evaluation_normalization_manifest_sha256"] = shared_scoring_config["objective_scalarizer"].get("normalization_manifest_sha256")
-        summary["labelled_worker_dominance"] = labelled_workload_dominance(candidates)
+    summary.update(workload_identity(shared_scoring_config, prefix="evaluation_"))
+    summary["evaluation_normalization_manifest_sha256"] = shared_scoring_config["objective_scalarizer"].get("normalization_manifest_sha256")
+    summary["labelled_worker_dominance"] = labelled_workload_dominance(candidates)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     for row in candidates:

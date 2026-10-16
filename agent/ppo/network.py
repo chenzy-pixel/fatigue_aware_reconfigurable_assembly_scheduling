@@ -46,73 +46,46 @@ from environment.observation_schema import (
 
 NODE_TYPES = ASSEMBLY_NODE_TYPES
 OBJECTIVES = ("flow", "cost", "workload")
-LEGACY_OBJECTIVES = ("flow", "cost", "variance")
 POLICY_HEAD_VERSION = 8
 SHARED_HEAD_PARAMETERIZATION = "shared_preference_mlp_v1"
 PREFERENCE_ENCODER_DIM = 32
 RESIDUAL_STD_FLOOR = 1e-3
 
-LEGACY_PRODUCTION_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
-    "flow": (
-        ("processing_time_norm", -1),
-        ("reconfiguration_time_norm", -1),
-        ("predicted_finish_time_norm", -1),
-        ("horizon_slack_norm", 1),
-    ),
-    "cost": (
-        ("fixed_reconfiguration_cost_norm", -1),
-        ("estimated_labor_cost_norm", -1),
-        ("estimated_downtime_cost_norm", -1),
-    ),
-    "variance": (("estimated_worker_load_variance_delta_norm", -1),),
+PRODUCTION_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
+    "flow": (("processing_time_norm", -1), ("reconfiguration_time_norm", -1),
+             ("predicted_finish_time_norm", -1), ("horizon_slack_norm", 1)),
+    "cost": (("fixed_reconfiguration_cost_norm", -1), ("estimated_labor_cost_norm", -1),
+             ("estimated_downtime_cost_norm", -1)),
+    "workload": (("estimated_worker_load_objective_delta_norm", -1),),
 }
-LEGACY_WORKER_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
+WORKER_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     "flow": (("stage_duration_norm", -1),),
-    "cost": (
-        ("fixed_cost_norm", -1),
-        ("incremental_labor_cost_norm", -1),
-        ("incremental_downtime_cost_norm", -1),
-    ),
-    "variance": (("incremental_load_variance_norm", -1),),
+    "cost": (("fixed_cost_norm", -1), ("incremental_labor_cost_norm", -1),
+             ("incremental_downtime_cost_norm", -1)),
+    "workload": (("incremental_workload_objective_norm", -1),),
 }
-LEGACY_WAIT_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
+WAIT_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     "flow": (("estimated_flow_objective_delta_if_wait", -1),),
     "cost": (("estimated_cost_objective_delta_if_wait", -1),),
-    "variance": (("estimated_load_variance_delta_if_wait", -1),),
+    "workload": (("estimated_workload_objective_delta_if_wait", -1),),
 }
 
 
 def direct_feature_schemas(version: int) -> tuple[dict, dict, dict]:
-    if version == 10:
-        return (LEGACY_PRODUCTION_DIRECT_SCHEMA, LEGACY_WORKER_DIRECT_SCHEMA, LEGACY_WAIT_DIRECT_SCHEMA)
-    if version not in {11, 12}:
-        raise ValueError(f"schema {version} is incompatible; older observation schemas require retraining")
-    replacements = {
-        "estimated_worker_load_variance_delta_norm": "estimated_worker_load_objective_delta_norm",
-        "incremental_load_variance_norm": "incremental_workload_objective_norm",
-        "estimated_load_variance_delta_if_wait": "estimated_workload_objective_delta_if_wait",
-    }
-    return tuple({
-        "workload" if objective == "variance" else objective: tuple(
-            (replacements.get(name, name), direction) for name, direction in fields
-        ) for objective, fields in schema.items()
-    } for schema in (LEGACY_PRODUCTION_DIRECT_SCHEMA, LEGACY_WORKER_DIRECT_SCHEMA, LEGACY_WAIT_DIRECT_SCHEMA))
+    if version != OBSERVATION_SCHEMA_VERSION:
+        raise ValueError("only observation schema 12 is supported; older models require retraining")
+    return PRODUCTION_DIRECT_SCHEMA, WORKER_DIRECT_SCHEMA, WAIT_DIRECT_SCHEMA
 
 
-PRODUCTION_DIRECT_SCHEMA, WORKER_DIRECT_SCHEMA, WAIT_DIRECT_SCHEMA = direct_feature_schemas(OBSERVATION_SCHEMA_VERSION)
 WORKLOAD_IDENTITY_FIELDS = (
     "workload_mode", "workload_q", "workload_order", "workload_weight_rule", "workload_version",
     "workload_scale", "objective_scales", "objective_names",
 )
 
 
-def _network_workload_identity(config: Mapping[str, Any], version: int) -> dict[str, Any]:
-    if version == 10:
-        if config.get("workload_mode", "variance") != "variance":
-            raise ValueError("schema-10 checkpoints require workload_mode='variance'")
-        return {}
+def _network_workload_identity(config: Mapping[str, Any]) -> dict[str, Any]:
     if "workload_mode" not in config:
-        raise ValueError("schema-11 network config requires workload_mode")
+        raise ValueError("schema-12 network config requires workload_mode")
     selected = workload_config(config)
     mode, q = selected["mode"], selected["q"]
     rule = selected["weights"]
@@ -129,7 +102,7 @@ def _network_workload_identity(config: Mapping[str, Any], version: int) -> dict[
         scales = tuple(float(value) for value in config["objective_scales"])
         scale = float(config["workload_scale"])
     except (KeyError, TypeError, ValueError, OverflowError) as error:
-        raise ValueError("schema-11 network requires workload_scale and objective_scales") from error
+        raise ValueError("schema-12 network requires workload_scale and objective_scales") from error
     if len(scales) != 3 or any(not np.isfinite(value) or value <= 0 for value in scales):
         raise ValueError("network objective_scales must contain three finite positive scales")
     if not np.isfinite(scale) or scale <= 0 or scale != scales[2]:
@@ -193,7 +166,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     worker_time_floor = float(config.get("worker_flow_time_std_floor", 0.001))
     if not np.isfinite(worker_time_floor) or worker_time_floor <= 0:
         raise ValueError("network.worker_flow_time_std_floor must be finite and positive")
-    workload_identity = _network_workload_identity(config, schema_version)
+    workload_identity = _network_workload_identity(config)
     manifest_sha = config.get("normalization_manifest_sha256")
     selected_flow = flow_mode(dict(config))
     expected_reward = flow_reward_version(dict(config))
@@ -215,7 +188,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "dropout": dropout,
         "policy_head_version": version,
         "observation_schema_version": schema_version,
-        **({"global_objective_encoding": global_encoding} if schema_version >= 12 else {}),
+        "global_objective_encoding": global_encoding,
         "preference_embedding_dim": PREFERENCE_ENCODER_DIM,
         "residual_gate_initial_logit": gate,
         "residual_std_floor": floor,
@@ -262,11 +235,11 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         raise ValueError(f"checkpoint edge feature dimensions must contain all schema-{OBSERVATION_SCHEMA_VERSION} relations")
     if any(dimensions[kind] != 0 for kind in (PROCESSING_ON_EDGE, SERVED_BY_EDGE)):
         raise ValueError("checkpoint actual resource relations must have zero edge attributes")
-    if schema_version >= 6 and spec.get("time_context_version") != TIME_CONTEXT_VERSION:
+    if spec.get("time_context_version") != TIME_CONTEXT_VERSION:
         raise ValueError("checkpoint time context version is incompatible")
-    if schema_version >= 6 and spec.get("time_context_feature_schema") != TIME_CONTEXT_FEATURE_SCHEMA:
+    if spec.get("time_context_feature_schema") != TIME_CONTEXT_FEATURE_SCHEMA:
         raise ValueError("checkpoint time context feature schema is incompatible")
-    if schema_version >= 12 and "global_objective_encoding" not in spec:
+    if "global_objective_encoding" not in spec:
         raise ValueError("checkpoint is missing global_objective_encoding")
     encoding = normalize_global_objective_encoding(schema_version, spec.get("global_objective_encoding"))
     expected_globals = schema_global_feature_names(schema_version, encoding)
@@ -292,14 +265,12 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
     for name, expected in expected_schemas.items():
         if spec.get(name) != expected:
             raise ValueError(f"checkpoint {name} is incompatible with V8")
-    if schema_version >= 11:
-        for field in WORKLOAD_IDENTITY_FIELDS:
-            if field not in spec:
-                raise ValueError(f"checkpoint is missing {field}")
+    for field in WORKLOAD_IDENTITY_FIELDS:
+        if field not in spec:
+            raise ValueError(f"checkpoint is missing {field}")
     normalized = normalize_network_config(spec)
-    if schema_version >= 11:
-        for field in WORKLOAD_IDENTITY_FIELDS:
-            spec[field] = normalized[field]
+    for field in WORKLOAD_IDENTITY_FIELDS:
+        spec[field] = normalized[field]
     spec["flow_mode"] = normalized["flow_mode"]
     spec["reward_version"] = normalized["reward_version"]
     for name in ("encoder_variant", "actor_head_variant"):
@@ -335,8 +306,8 @@ def assert_network_config_matches_spec(
         "normalization_manifest_sha256",
         "flow_mode",
         "reward_version",
-        *(("global_objective_encoding",) if configured["observation_schema_version"] >= 12 else ()),
-        *(WORKLOAD_IDENTITY_FIELDS if configured["observation_schema_version"] >= 11 else ()),
+        "global_objective_encoding",
+        *WORKLOAD_IDENTITY_FIELDS,
     ):
         if configured[name] != saved.get(name):
             raise ValueError(
@@ -531,7 +502,7 @@ class HeteroGraphActorCritic(nn.Module):
         self.production_direct_schema, self.worker_direct_schema, self.wait_direct_schema = direct_feature_schemas(observation_schema_version)
         self.objectives = tuple(self.production_direct_schema)
         self.policy_head_version = POLICY_HEAD_VERSION
-        workload_fields = {} if observation_schema_version == 10 else {
+        workload_fields = {
             "workload_mode": workload_mode, "workload_q": workload_q,
             "workload_order": workload_order,
             "workload_weight_rule": workload_weight_rule, "workload_version": workload_version,
@@ -540,7 +511,7 @@ class HeteroGraphActorCritic(nn.Module):
         normalized = normalize_network_config({
             "encoder_variant": encoder_variant, "actor_head_variant": actor_head_variant,
             "observation_schema_version": observation_schema_version,
-            **({"global_objective_encoding": self.global_objective_encoding} if observation_schema_version >= 12 else {}),
+            "global_objective_encoding": self.global_objective_encoding,
             "flow_mode": flow_mode,
             **({"reward_version": reward_version} if reward_version is not None else {}),
             "worker_flow_time_normalization": worker_flow_time_normalization,
@@ -672,7 +643,7 @@ class HeteroGraphActorCritic(nn.Module):
             "policy_head_version": POLICY_HEAD_VERSION,
             "observation_schema_version": self.observation_schema_version,
             "global_feature_names": self.global_feature_names,
-            **({"global_objective_encoding": self.global_objective_encoding} if self.observation_schema_version >= 12 else {}),
+            "global_objective_encoding": self.global_objective_encoding,
             "time_context_version": TIME_CONTEXT_VERSION,
             "time_context_feature_schema": {
                 name: list(fields) for name, fields in TIME_CONTEXT_FEATURE_SCHEMA.items()
@@ -1244,9 +1215,6 @@ class HeteroGraphActorCritic(nn.Module):
         result: dict[str, torch.Tensor] = {}
         signed = {
             "horizon_slack_norm",
-            "estimated_worker_load_variance_delta_norm",
-            "incremental_load_variance_norm",
-            "estimated_load_variance_delta_if_wait",
             "estimated_worker_load_objective_delta_norm",
             "incremental_workload_objective_norm",
             "estimated_workload_objective_delta_if_wait",

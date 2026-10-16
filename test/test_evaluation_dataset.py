@@ -34,7 +34,11 @@ def _aggregate_row(
     total_flow_time: float | None,
     flow_time_objective: float,
 ) -> dict:
+    from result.metrics import CANONICAL_QUALITY_METRIC
     return {
+        **{name: CANONICAL_QUALITY_METRIC[name] for name in ("workload_mode", "workload_q", "workload_rule", "workload_order", "workload_version")},
+        "result_schema_version": "9.0.0",
+        "workload_objective_value": 2.0,
         "terminated": True,
         "task_succeeded": task_succeeded,
         "task_failed": task_failed,
@@ -108,9 +112,9 @@ def test_aggregate_uses_completed_and_all_instance_populations():
         policy="ppo",
         manifest="manifest.json",
     )
-    assert aggregate["evaluation_schema_version"] == "8.0.0"
+    assert aggregate["evaluation_schema_version"] == "9.0.0"
     assert aggregate["quality_metric_version"] == (
-        "canonical_bounded_quality_v2"
+        "canonical_bounded_workload_quality_v1"
     )
     assert aggregate["completed_count"] == 1
     assert aggregate["completion_rate"] == 0.5
@@ -292,15 +296,14 @@ def test_ppo_checkpoint_loads_once_and_validation_preserves_rng(
     load_count = 0
     original_load = PPOAgent.load
 
-    def counting_load(self, path, *, load_optimizer=False, allow_observation_migration=False):
+    def counting_load(self, path, *, load_optimizer=False):
         nonlocal load_count
         load_count += 1
         return original_load(
             self,
             path,
             load_optimizer=load_optimizer,
-            allow_observation_migration=allow_observation_migration,
-        )
+                    )
 
     monkeypatch.setattr(PPOAgent, "load", counting_load)
 

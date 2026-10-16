@@ -20,7 +20,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     from agent.ppo.network import normalize_network_config
     from data.dataset import template_sha256
     from data.models import load_instance_yaml
-    from environment.workload import is_modern_workload, workload_config
+    from environment.workload import workload_config
 
     training = config["training"]
     scalarizer = dict(config["objective_scalarizer"])
@@ -28,7 +28,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     return deepcopy({
         "algorithm_seed": int(config["seed"]),
         "suite": config["experiment_suite_version"],
-        **({"workload_objective": workload_config(config)} if is_modern_workload(config) else {}),
+        **({"workload_objective": workload_config(config)}),
         "template_sha256": template_sha256(load_instance_yaml(project_path(config["paths"]["fixed_instance"]))),
         "dataset": config["dataset"],
         "generator": config["generator"],

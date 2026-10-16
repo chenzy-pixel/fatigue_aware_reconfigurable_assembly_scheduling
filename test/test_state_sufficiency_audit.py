@@ -15,7 +15,7 @@ def test_reachable_processing_alias_is_reward_relevant(config, fixed_instance, m
     instance = build_alias_instance(fixed_instance)
     states, paths = reachable_histories(effective(config, mode), instance)
     result = pair_comparison(states)
-    # Schema 10 also exposes actual starts/ends and sequential fatigue via derived edges.
+    # The observation also exposes actual starts/ends and sequential fatigue via derived edges.
     assert not result["original_equal"]
     assert not result["current_observation_equal"]
     wait = next(item for item in result["outcomes"] if item["is_wait"])

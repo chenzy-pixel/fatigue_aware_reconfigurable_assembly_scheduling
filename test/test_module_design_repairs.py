@@ -123,7 +123,7 @@ def test_dropout_rejected_at_each_boundary(config, fixed_instance, dropout, tmp_
     payload['network_spec']['dropout'] = dropout
     torch.save(payload, path)
     with pytest.raises(ValueError, match='dropout = 0'):
-        agent.load(path, allow_observation_migration=True)
+        agent.load(path)
 
 
 def test_unchanged_policy_probabilities_and_values_match(config, fixed_instance):
@@ -147,9 +147,8 @@ def test_legacy_schema_rejected_with_optimizer_and_migration_flags(config, fixed
     payload = torch.load(path, weights_only=False)
     payload['network_spec']['observation_schema_version'] = 6
     torch.save(payload,path)
-    for allow in (False,True):
-        with pytest.raises(ValueError,match='requires retraining'):
-            agent.load(path,load_optimizer=True,allow_observation_migration=allow)
+    with pytest.raises(ValueError,match='requires retraining'):
+        agent.load(path,load_optimizer=True)
 
 
 def test_global_schema_rejects_reordering_and_nonfinite_values(config,fixed_instance):
@@ -174,9 +173,8 @@ def test_config_snapshot_requires_current_schema_and_retraining(config,tmp_path)
     for schema in (5,6,7,8,9):
         snapshot['runtime_manifest']['observation_schema'] = schema
         path.write_text(json.dumps(snapshot),encoding='utf-8')
-        for allow in (False,True):
-            with pytest.raises(ValueError,match=f'schema {observation_schema_version(config)}'):
-                load_config(path,allow_observation_migration=allow)
+        with pytest.raises(ValueError,match=f'schema {observation_schema_version(config)}'):
+            load_config(path)
 
 
 @pytest.mark.parametrize('boundary', ['zero','partial','complete'])

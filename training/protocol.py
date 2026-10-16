@@ -34,7 +34,7 @@ class LexicographicCheckpointSelector:
     improvement_count: int = 0
     tie_count: int = 0
     last_decision: dict[str, object] = field(default_factory=dict)
-    protocol: str = "single_stage_lexicographic_failure_v3"
+    protocol: str = "single_stage_lexicographic_workload_failure_v6"
     sample_aggregation: str = "per_sample_v1"
 
     @classmethod
@@ -46,7 +46,7 @@ class LexicographicCheckpointSelector:
         if not math.isclose(float(config["ppo"]["gamma"]), 1.0):
             raise ValueError("single-stage telescoping training requires ppo.gamma = 1.0")
         from configs.evaluation_sampling import sample_aggregation
-        return cls(protocol=config.get("runtime_manifest", {}).get("training_protocol", "single_stage_lexicographic_failure_v3"),
+        return cls(protocol=config.get("runtime_manifest", {}).get("training_protocol", "single_stage_lexicographic_workload_failure_v6"),
                    sample_aggregation=sample_aggregation(config))
 
     @property

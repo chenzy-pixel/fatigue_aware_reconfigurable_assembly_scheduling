@@ -14,13 +14,13 @@ from configs import load_config, project_path
 from configs.formal_preferences import formal_preferences, objective_scales
 from environment import PreferenceContext, terminal_quality_score
 from environment.types import metrics_flow_objective
-from environment.workload import metrics_workload_objective, workload_config, objective_names, is_modern_workload
+from environment.workload import metrics_workload_objective, workload_config, objective_names
 from result.io import write_csv, write_json
 from result.metrics import EVALUATION_SCHEMA_VERSION, evaluation_quality_metric, quality_metric_sha256, result_schema_version
 
 RELATIVE_TOLERANCE = 1e-9
 REFERENCE_POINT = (1.0, 1.0, 1.0)
-OBJECTIVE_FIELDS = ("flow_time_objective", "reconfiguration_cost", "worker_load_variance")
+OBJECTIVE_FIELDS = ("flow_time_objective", "reconfiguration_cost", "workload_objective_value")
 PROTOCOL_VERSION = "sampled_multiobjective_analysis_v2"
 
 def _relative_slack(first: float, second: float, tolerance: float) -> float:
@@ -200,23 +200,22 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
             raise ValueError("candidate policy execution does not match the current experiment")
         if row.get("policy_precision") != config["training"]["policy_precision"]:
             raise ValueError("candidate policy precision does not match the current experiment")
-    if is_modern_workload(config):
-        from analysis.workload_dominance import actual_worker_loads, workload_identity
-        from environment.workload import workload_value
-        for name, expected in workload_identity(config).items():
-            actual = row.get(name)
-            if name == "workload_q" and actual in {"", "None", "null"}:
-                actual = None
-            if name == "workload_q" and actual is not None:
-                actual = float(actual)
-            if actual != expected:
-                raise ValueError(f"candidate {name} does not match its training workload identity")
-        loads = actual_worker_loads(row)
-        actual_variance = workload_value(list(loads.values()), {"workload_objective": {"mode": "variance"}})
-        if not math.isclose(actual_variance, float(row["worker_load_variance"]), rel_tol=1e-9, abs_tol=1e-9):
-            raise ValueError("candidate actual variance disagrees with labelled-worker loads")
-        if not math.isclose(workload_value(list(loads.values()), config), metrics_workload_objective(dict(row), dict(config)), rel_tol=1e-9, abs_tol=1e-9):
-            raise ValueError("candidate workload objective disagrees with actual labelled-worker loads")
+    from analysis.workload_dominance import actual_worker_loads, workload_identity
+    from environment.workload import workload_value
+    for name, expected in workload_identity(config).items():
+        actual = row.get(name)
+        if name == "workload_q" and actual in {"", "None", "null"}:
+            actual = None
+        if name == "workload_q" and actual is not None:
+            actual = float(actual)
+        if actual != expected:
+            raise ValueError(f"candidate {name} does not match its training workload identity")
+    loads = actual_worker_loads(row)
+    actual_variance = workload_value(list(loads.values()), {"workload_objective": {"mode": "variance"}})
+    if not math.isclose(actual_variance, float(row["worker_load_variance"]), rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError("candidate actual variance disagrees with labelled-worker loads")
+    if not math.isclose(workload_value(list(loads.values()), config), metrics_workload_objective(dict(row), dict(config)), rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError("candidate workload objective disagrees with actual labelled-worker loads")
     normalize_objectives([float(row["flow_time_objective"]), float(row["reconfiguration_cost"]),
                           metrics_workload_objective(dict(row), dict(config))], objective_scales(config))
     quality = terminal_quality_score(
@@ -244,12 +243,10 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
     if evaluation_flow_mode is not None:
         scales = (1089.15,353.27,2.2629) if selected_evaluation_mode==FLOW_RAW else (368.3143,353.27,2.2629)
     scoring_config = config
-    rescore = is_modern_workload(config) or evaluation_config is not None
-    if rescore:
-        from analysis.workload_dominance import resolve_workload_evaluation_config, rescore_workload_row
-        scoring_config = resolve_workload_evaluation_config(config, evaluation_config=evaluation_config,
-            own_goal=own_goal, flow_mode=selected_evaluation_mode)
-        scales = objective_scales(scoring_config)
+    from analysis.workload_dominance import resolve_workload_evaluation_config, rescore_workload_row
+    scoring_config = resolve_workload_evaluation_config(config, evaluation_config=evaluation_config,
+        own_goal=own_goal, flow_mode=selected_evaluation_mode)
+    scales = objective_scales(scoring_config)
     groups = defaultdict(list)
     for original in rows:
         row = dict(original)
@@ -260,8 +257,7 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
         if _flag(row.get("sampling_truncated", row.get("truncated", False))) or row.get("evaluation_complete") is False:
             raise ValueError("externally truncated evaluations cannot enter Pareto/HV analysis")
         _validate_row_protocol(row, config)
-        if rescore:
-            row = rescore_workload_row(row, scoring_config)
+        row = rescore_workload_row(row, scoring_config)
         row["preference_key"] = _preference(row).key
         for name, value in zip(objective_names(config), _preference(row).as_tuple()):
             row[f"w_{name}"] = value
@@ -345,17 +341,16 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
         "ppo_repeats": ppo_repeats,
         "objective_scales": dict(zip(objective_names(scoring_config), scales)),
         "normalization_manifest_sha256": scoring_config["objective_scalarizer"]["normalization_manifest_sha256"],
-        "evaluation_goal": "own_training_goal" if own_goal else "unified_q05" if rescore and evaluation_config is None else "explicit_goal" if rescore else "legacy_variance",
+        "evaluation_goal": "own_training_goal" if own_goal else "unified_q05" if evaluation_config is None else "explicit_goal",
         "arms": list(required_arms),
         "candidate_count": len(annotated),
         "instance_seed_count": len(instance_summary),
         "dataset_seed_count": len(seed_summary),
         "budget_note": "PPO uses the configured sampled repeats per preference; MO-ALNS selects one endpoint after its configured search budget per preference.",
     }
-    if rescore:
-        from analysis.workload_dominance import workload_identity, labelled_workload_dominance
-        summary.update(workload_identity(scoring_config, prefix="evaluation_"))
-        summary["labelled_worker_dominance"] = labelled_workload_dominance(annotated)
+    from analysis.workload_dominance import workload_identity, labelled_workload_dominance
+    summary.update(workload_identity(scoring_config, prefix="evaluation_"))
+    summary["labelled_worker_dominance"] = labelled_workload_dominance(annotated)
     return annotated, instance_summary, seed_summary, summary
 
 

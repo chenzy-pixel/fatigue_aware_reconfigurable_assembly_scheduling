@@ -123,8 +123,7 @@ def test_guard_precedence_completion_and_failure(config, fixed_instance):
 
 
 @pytest.mark.parametrize('schema', [5,6,7,8,9])
-@pytest.mark.parametrize('allow', [False,True])
-def test_old_checkpoints_rejected_even_with_migration_flag(config, fixed_instance, tmp_path, schema, allow):
+def test_old_checkpoints_rejected_even_with_migration_flag(config, fixed_instance, tmp_path, schema):
     obs = AssemblySchedulingEnv(config).reset(fixed_instance)
     agent = PPOAgent(build_actor_critic(obs, {**config['network'], 'hidden_dim':16}), config['ppo'])
     path = tmp_path/'old.pt'
@@ -133,16 +132,19 @@ def test_old_checkpoints_rejected_even_with_migration_flag(config, fixed_instanc
     payload['network_spec']['observation_schema_version'] = schema
     torch.save(payload,path)
     with pytest.raises(ValueError, match='requires retraining'):
-        agent.load(path, allow_observation_migration=allow, load_optimizer=True)
+        agent.load(path, load_optimizer=True)
     with pytest.raises(ValueError, match='requires retraining'):
         infer_checkpoint_network_spec(payload)
 
 
 def test_incomplete_evaluation_cannot_select_or_report_formal_quality(config):
+    from result.metrics import evaluation_quality_metric
+    metric = evaluation_quality_metric(config)
     row = dict(terminated=False, truncated=True, sampling_truncated=True,
                task_succeeded=False, task_failed=False, schedule_violation_count=0,
                decisions=1, inference_time_seconds=0, solve_time_seconds=0)
-    result = aggregate_evaluation_rows([row], dataset='test', policy='ppo', manifest='test')
+    row.update({name: metric[name] for name in ('workload_mode', 'workload_q', 'workload_rule', 'workload_order', 'workload_version')})
+    result = aggregate_evaluation_rows([row], dataset='test', policy='ppo', manifest='test', quality_metric=metric)
     assert not result['evaluation_complete'] and result['completion_coverage'] == 0
     assert result['completion_rate'] is None
     assert result['completed_metrics'] == {} and result['all_instance_metrics'] == {}

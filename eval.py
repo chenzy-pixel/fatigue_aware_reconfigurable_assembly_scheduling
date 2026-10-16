@@ -52,7 +52,7 @@ from result import (
 from result.io import write_config, write_csv, write_json
 from result.provenance import effective_config_snapshot
 from result.metrics import EVALUATION_SCHEMA_VERSION, result_schema_version
-from environment.workload import metrics_workload_objective, is_modern_workload, workload_config, objective_names
+from environment.workload import metrics_workload_objective, workload_config, objective_names
 from utils import (
     SAMPLED_EVALUATION_RNG_VERSION,
     action_trace_sha256,
@@ -67,7 +67,7 @@ _HEURISTIC_LOAD_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDic
 
 
 def _heuristic_actual_metrics(record, config: dict[str, Any]) -> dict[str, Any]:
-    """Recover exact reference loads for frozen metadata written before schema 11."""
+    """Recover exact reference loads missing from frozen dataset metadata."""
     key = (hashlib.sha256(pickle.dumps(record.instance)).hexdigest(),
            json.dumps(config.get("environment", {}), sort_keys=True))
     cached = _HEURISTIC_LOAD_CACHE.get(key)
@@ -148,7 +148,6 @@ class EvaluationPolicy:
         ppo_agent: PPOAgent | None = None,
         decode_mode: str | None = None,
         sampling_seed: int | None = None,
-        allow_observation_migration: bool = False,
     ):
         self.policy_name = policy_name
         self.fatigue_mode = config.get("environment", {}).get("fatigue_mode", "full")
@@ -204,8 +203,7 @@ class EvaluationPolicy:
                     config["ppo"],
                     device=config["device"],
                 )
-                ppo_agent.load(checkpoint_path,
-                    allow_observation_migration=allow_observation_migration)
+                ppo_agent.load(checkpoint_path)
             ppo_agent.assert_evaluation_config(config)
             self.ppo_agent = ppo_agent
             self.device = ppo_agent.device
@@ -533,18 +531,17 @@ def _evaluation_row(
     active_workload = metrics_workload_objective(metrics, config)
     definition = workload_config(config)
     heuristic_workload = heuristic_variance
-    if is_modern_workload(config):
-        from environment.workload import workload_value
-        loads = heuristic.get("worker_loads")
-        if not isinstance(loads, dict) and heuristic.get("heuristic_completed"):
-            reference = _heuristic_actual_metrics(record, config)
-            if (reference["task_succeeded"] and not reference.get("schedule_violations")
-                and all(value is not None and math.isclose(float(reference[field]), float(value), rel_tol=1e-9, abs_tol=1e-9)
-                        for field, value in (("flow_time_objective", heuristic_flow_time),
-                                             ("reconfiguration_cost", heuristic_cost), ("worker_load_variance", heuristic_variance)))):
-                loads = reference["worker_loads"]
-        # Frozen historical metadata without loads cannot identify OWA.
-        heuristic_workload = workload_value(list(loads.values()), config) if isinstance(loads, dict) else None
+    from environment.workload import workload_value
+    loads = heuristic.get("worker_loads")
+    if not isinstance(loads, dict) and heuristic.get("heuristic_completed"):
+        reference = _heuristic_actual_metrics(record, config)
+        if (reference["task_succeeded"] and not reference.get("schedule_violations")
+            and all(value is not None and math.isclose(float(reference[field]), float(value), rel_tol=1e-9, abs_tol=1e-9)
+                    for field, value in (("flow_time_objective", heuristic_flow_time),
+                                         ("reconfiguration_cost", heuristic_cost), ("worker_load_variance", heuristic_variance)))):
+            loads = reference["worker_loads"]
+    # Frozen historical metadata without loads cannot identify OWA.
+    heuristic_workload = workload_value(list(loads.values()), config) if isinstance(loads, dict) else None
     reference_valid = bool(heuristic.get("heuristic_completed")) and not bool(heuristic.get("heuristic_truncated", True)) and not heuristic.get("schedule_violations", [])
     reference_valid = reference_valid and float(heuristic.get("heuristic_makespan", math.inf)) <= record.instance.horizon + 1e-9
     reference_valid = reference_valid and float(heuristic.get("maximum_worker_fatigue", math.inf)) <= record.instance.fatigue.maximum_safe_fatigue + 1e-9
@@ -594,8 +591,7 @@ def _evaluation_row(
             "reward_objective_workload_value": metrics.get("reward_objective_workload_value", active_workload),
             "heuristic_workload_objective_value": heuristic_workload,
             "heuristic_worker_loads": json.dumps(loads, ensure_ascii=False, sort_keys=True) if isinstance(loads, dict) else None,
-            "workload_objective_value_heuristic_gap_percent": comparison_gap(active_workload, heuristic_workload)}
-           if is_modern_workload(config) else {}),
+            "workload_objective_value_heuristic_gap_percent": comparison_gap(active_workload, heuristic_workload)}),
         "candidate_id": f"{metrics.get('preference_key', '')}:{metrics.get('sampling_repeat', metrics.get('sampling_seed', 0))}",
         "candidate_source": metrics.get("decode_mode", "sampled"),
         "pressure_type": record.metadata["pressure_type"],
@@ -682,13 +678,13 @@ def _evaluation_row(
             )
         },
         "quality_score": bounded_quality_score(
-            reward_flow if is_modern_workload(config) else metrics["flow_time_objective"],
+            reward_flow,
             metrics["reconfiguration_cost"],
             active_workload,
             quality_metric,
         ),
         "heuristic_quality_score": bounded_quality_score(
-            heuristic_reward_flow if is_modern_workload(config) else heuristic_flow_time,
+            heuristic_reward_flow,
             heuristic_cost,
             heuristic_workload,
             quality_metric,
@@ -1318,8 +1314,7 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         device=config["device"],
     )
     checkpoint_path = project_path(args.checkpoint)
-    metadata = agent.load(checkpoint_path, load_optimizer=False,
-                          allow_observation_migration=args.allow_observation_migration)
+    metadata = agent.load(checkpoint_path, load_optimizer=False)
     from configs.runtime import assert_checkpoint_fatigue_mode
     assert_checkpoint_fatigue_mode(metadata, config)
     seeds = (
@@ -1447,8 +1442,7 @@ def main() -> None:
         "--policy", choices=("heuristic", "random", "ppo"), default="heuristic"
     )
     parser.add_argument("--checkpoint")
-    parser.add_argument("--allow-observation-migration", action="store_true",
-                        help="Compatibility flag; current observation schema requires retraining of older models")
+
     parser.add_argument(
         "--decode-mode",
         choices=("greedy", "sampled"),
@@ -1471,7 +1465,7 @@ def main() -> None:
     if args.instance_indices is not None and (args.instance_limit is not None or args.instance_offset is not None):
         parser.error("--instance-indices and --instance-offset/--instance-limit are mutually exclusive")
 
-    config = deepcopy(load_config(args.config, allow_observation_migration=args.allow_observation_migration))
+    config = deepcopy(load_config(args.config))
     if args.device is not None:
         config["device"] = args.device
     config["seed"] = validate_algorithm_seed(
@@ -1497,8 +1491,7 @@ def main() -> None:
             build_actor_critic(bootstrap, config["network"]),
             config["ppo"], device=config["device"],
         )
-        checkpoint_metadata = prepared_agent.load(checkpoint_path,
-            allow_observation_migration=args.allow_observation_migration)
+        checkpoint_metadata = prepared_agent.load(checkpoint_path)
         from configs.runtime import assert_checkpoint_fatigue_mode
         assert_checkpoint_fatigue_mode(checkpoint_metadata, config)
     sampling_seeds: list[int | None]

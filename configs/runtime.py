@@ -9,9 +9,7 @@ from environment.time_context import TIME_CONTEXT_VERSION
 from .network_contract import message_identity, validate_message_identity
 from .evaluation_sampling import BEST_OF_THREE, sample_aggregation, validate_sample_aggregation
 from environment.types import flow_mode, flow_reward_version, FLOW_EXCESS
-from environment.workload import (
-    is_modern_workload, objective_names, observation_schema_version, workload_config,
-)
+from environment.workload import objective_names, observation_schema_version, workload_config
 
 
 _RUNTIME_MANIFEST: dict[str, Any] = {
@@ -24,9 +22,9 @@ _RUNTIME_MANIFEST: dict[str, Any] = {
     "wait_mask": "progress_certified_wait_v2",
     "observation_schema": OBSERVATION_SCHEMA_VERSION,
     "time_context": TIME_CONTEXT_VERSION,
-    "reward": "single_stage_progress_quality_failure_v3",
+    "reward": "single_stage_progress_quality_workload_failure_v6",
     "terminal_failure_penalty": 2.0,
-    "training_protocol": "single_stage_lexicographic_failure_v3",
+    "training_protocol": "single_stage_lexicographic_workload_failure_v6",
 }
 
 _REMOVED_NETWORK_FIELDS = frozenset(
@@ -60,22 +58,18 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     manifest.update(message_identity())
     if config is not None:
         manifest["observation_schema"] = observation_schema_version(config)
-        if manifest["observation_schema"] >= 12:
-            manifest["global_objective_encoding"] = configured_global_objective_encoding(config, manifest["observation_schema"])
+        manifest["global_objective_encoding"] = configured_global_objective_encoding(config, manifest["observation_schema"])
         manifest["flow_mode"] = flow_mode(dict(config))
         manifest["reward"] = flow_reward_version(dict(config))
         manifest["normalization_manifest_sha256"] = config.get("objective_scalarizer", {}).get("normalization_manifest_sha256")
-        if manifest["flow_mode"] == FLOW_EXCESS:
-            manifest["training_protocol"] = "single_stage_lexicographic_failure_v4"
-        if is_modern_workload(config):
-            manifest["workload_objective"] = workload_config(config)
-            manifest["objective_names"] = list(objective_names(config))
-            scales = config["objective_scalarizer"]["scales"]
-            manifest["objective_scales"] = [float(scales[name]) for name in objective_names(config)]
-            manifest["training_protocol"] = (
-                "single_stage_lexicographic_workload_failure_v6"
-                if manifest["flow_mode"] == FLOW_EXCESS else "single_stage_lexicographic_workload_failure_v5"
-            )
+        manifest["workload_objective"] = workload_config(config)
+        manifest["objective_names"] = list(objective_names(config))
+        scales = config["objective_scalarizer"]["scales"]
+        manifest["objective_scales"] = [float(scales[name]) for name in objective_names(config)]
+        manifest["training_protocol"] = (
+            "single_stage_lexicographic_workload_failure_v6"
+            if manifest["flow_mode"] == FLOW_EXCESS else "single_stage_lexicographic_workload_failure_v5"
+        )
         network = config.get("network", {})
         manifest["encoder_variant"] = network.get("encoder_variant", "hetero_gnn")
         manifest.update(validate_message_identity(network))
@@ -103,9 +97,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
     expected_reward = flow_reward_version(dict(config))
     if str(config.get("experiment_suite_version", "")) != expected_reward:
         raise ValueError(
-            "experiment_suite_version must match the failure-v3 reward contract"
-            if expected_reward == "single_stage_progress_quality_failure_v3"
-            else "experiment_suite_version must match the Flow reward contract"
+            "experiment_suite_version must match the Flow reward contract"
         )
     network = config.get("network", {})
     if not isinstance(network, Mapping):
@@ -161,7 +153,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
     if not isinstance(shaping, Mapping):
         raise TypeError("reward.feasibility_shaping must be a mapping")
     if bool(shaping.get("enabled", False)):
-        raise ValueError("single-stage failure-v3 requires feasibility shaping disabled")
+        raise ValueError("single-stage workload reward requires feasibility shaping disabled")
     ppo = config.get("ppo", {})
     if not isinstance(ppo, Mapping):
         raise TypeError("ppo config must be a mapping")
@@ -196,8 +188,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
 
 def attach_runtime_manifest(config: dict[str, Any]) -> dict[str, Any]:
     validate_latest_only_config(config)
-    if observation_schema_version(config) >= 12:
-        config.setdefault("network", {})["global_objective_encoding"] = configured_global_objective_encoding(config, 12)
+    config.setdefault("network", {})["global_objective_encoding"] = configured_global_objective_encoding(config, 12)
     config["runtime_manifest"] = runtime_manifest(config)
     return config
 
