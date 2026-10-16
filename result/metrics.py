@@ -11,6 +11,8 @@ from typing import Any
 
 
 EVALUATION_SCHEMA_VERSION = "8.0.0"
+MODERN_EVALUATION_SCHEMA_VERSION = "9.0.0"
+WORKLOAD_QUALITY_METRIC_VERSION = "canonical_bounded_workload_quality_v1"
 QUALITY_METRIC_VERSION = "canonical_bounded_quality_v2"
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "current_worker_matching_deficit",
@@ -26,16 +28,18 @@ CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
 
 
 def result_schema_version(config: Mapping[str, Any]) -> str:
-    """Return the sole active result schema and reject per-run overrides."""
+    """Keep schema-10 artifacts legible while versioning modern workload rows."""
+    from environment.workload import is_modern_workload
+    expected = MODERN_EVALUATION_SCHEMA_VERSION if is_modern_workload(dict(config)) else EVALUATION_SCHEMA_VERSION
     evaluation = config.get("evaluation", {})
     if not isinstance(evaluation, Mapping):
         raise TypeError("config.evaluation must be an object")
     configured = evaluation.get("result_schema_version")
-    if configured is not None and str(configured) != EVALUATION_SCHEMA_VERSION:
+    if configured is not None and str(configured) != expected:
         raise ValueError(
-            f"only result schema {EVALUATION_SCHEMA_VERSION} is supported"
+            f"this objective definition requires result schema {expected}"
         )
-    return EVALUATION_SCHEMA_VERSION
+    return expected
 CANONICAL_QUALITY_METRIC: dict[str, Any] = {
     "version": QUALITY_METRIC_VERSION,
     "flow_scale": 1089.15,
@@ -72,6 +76,27 @@ def _canonical_json_bytes(value: Any) -> bytes:
 def evaluation_quality_metric(config: Mapping[str, Any]) -> dict[str, Any]:
     """Return the immutable paper-quality metric, with canonical reference defaults."""
 
+    from environment.workload import is_modern_workload, workload_config
+    if is_modern_workload(dict(config)):
+        from configs.formal_preferences import objective_scales
+        from environment.types import flow_mode
+        flow, cost, workload = objective_scales(config)
+        definition = workload_config(dict(config))
+        metric = {
+            "version": WORKLOAD_QUALITY_METRIC_VERSION,
+            "flow_scale": flow, "cost_scale": cost, "workload_scale": workload,
+            "flow_mode": flow_mode(dict(config)),
+            "quality_weights": {"flow": 0.5, "cost": 0.3, "workload": 0.2},
+            "workload_mode": definition["mode"], "workload_q": definition["q"],
+            "workload_rule": definition["weights"],
+            "workload_order": definition["order"], "workload_version": definition["version"],
+            "normalization_manifest_sha256": config["objective_scalarizer"].get("normalization_manifest_sha256"),
+        }
+        supplied = config.get("evaluation", {}).get("quality_metric")
+        if supplied is not None and dict(supplied) != metric:
+            raise ValueError("modern quality metric must match its frozen workload definition and scales")
+        return metric
+
     evaluation = config.get("evaluation")
     if evaluation is None:
         return deepcopy(CANONICAL_QUALITY_METRIC)
@@ -83,6 +108,8 @@ def evaluation_quality_metric(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise TypeError("config.evaluation.quality_metric must be an object")
     metric = deepcopy(dict(raw))
+    if metric.get("version") == WORKLOAD_QUALITY_METRIC_VERSION:
+        return _validate_workload_quality_metric(metric)
     expected_keys = set(CANONICAL_QUALITY_METRIC)
     if set(metric) != expected_keys:
         raise ValueError(
@@ -131,6 +158,31 @@ def evaluation_quality_metric(config: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _validate_workload_quality_metric(metric: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a serialized scoring identity without loading its source files."""
+    expected = {"version", "flow_scale", "cost_scale", "workload_scale", "flow_mode", "quality_weights",
+                "workload_mode", "workload_q", "workload_rule", "workload_order", "workload_version",
+                "normalization_manifest_sha256"}
+    if set(metric) != expected:
+        raise ValueError("modern quality metric has incomplete workload identity")
+    normalized = deepcopy(dict(metric))
+    for name in ("flow_scale", "cost_scale", "workload_scale"):
+        normalized[name] = float(metric[name])
+        if not math.isfinite(normalized[name]) or normalized[name] <= 0:
+            raise ValueError("evaluation quality scales must be finite and positive")
+    weights = metric["quality_weights"]
+    if dict(weights) != {"flow": 0.5, "cost": 0.3, "workload": 0.2}:
+        raise ValueError("modern paper quality weights must be 0.5/0.3/0.2")
+    from environment.workload import workload_config
+    from environment.types import flow_mode
+    flow_mode(dict(metric))
+    definition = workload_config({"workload_objective": {
+        "mode": metric["workload_mode"], "q": metric["workload_q"], "weights": metric["workload_rule"],
+        "order": metric["workload_order"], "version": metric["workload_version"]}})
+    normalized["workload_q"] = definition["q"]
+    return normalized
+
+
 def quality_metric_sha256(metric: Mapping[str, Any]) -> str:
     normalized = evaluation_quality_metric(
         {"evaluation": {"quality_metric": dict(metric)}}
@@ -158,7 +210,7 @@ def compare_lexicographic(
     fields = (
         "flow_time_objective",
         "reconfiguration_cost",
-        "worker_load_variance",
+        "workload_objective_value" if "workload_objective_value" in first and "workload_objective_value" in second else "worker_load_variance",
     )
     for field in fields:
         difference = float(first[field]) - float(second[field])
@@ -252,8 +304,10 @@ def aggregate_evaluation_rows(
         else {"evaluation": {"quality_metric": dict(quality_metric)}}
     )
     metric_hash = quality_metric_sha256(normalized_metric)
-    if any(row.get("result_schema_version") not in {None, EVALUATION_SCHEMA_VERSION} for row in rows):
-        raise ValueError(f"only result schema {EVALUATION_SCHEMA_VERSION} can be aggregated by this evaluator")
+    schema = (MODERN_EVALUATION_SCHEMA_VERSION if normalized_metric["version"] == WORKLOAD_QUALITY_METRIC_VERSION
+              else EVALUATION_SCHEMA_VERSION)
+    if any(row.get("result_schema_version") not in {None, schema} for row in rows):
+        raise ValueError(f"only result schema {schema} can be aggregated with this metric")
     row_hashes = {
         str(row["quality_metric_sha256"])
         for row in rows
@@ -265,10 +319,24 @@ def aggregate_evaluation_rows(
         raise ValueError(
             "row quality metric hash does not match the aggregate metric"
         )
+    if schema == MODERN_EVALUATION_SCHEMA_VERSION:
+        for row in rows:
+            prefix = "evaluation_" if row.get("evaluation_workload_mode") is not None else ""
+            for name in ("workload_mode", "workload_q", "workload_rule", "workload_order", "workload_version"):
+                actual = row.get(f"{prefix}{name}")
+                if name == "workload_q" and actual not in {None, "", "None", "null"}:
+                    actual = float(actual)
+                elif name == "workload_q":
+                    actual = None
+                if actual != normalized_metric[name]:
+                    raise ValueError(f"row {prefix}{name} does not match the aggregate scoring metric")
     for field in ("result_schema_version", "generator_version", "dataset_manifest_sha256", "subset_sha256",
                   "generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256",
                   "normalization_manifest_sha256", "experiment_suite_version", "objective_scalarizer_type",
-                  "objective_scalarizer_rho", "objective_scale_flow", "objective_scale_cost", "objective_scale_variance"):
+                  "objective_scalarizer_rho", "objective_scale_flow", "objective_scale_cost", "objective_scale_variance",
+                  "objective_scale_workload", "workload_mode", "workload_q", "workload_rule",
+                  "evaluation_workload_mode", "evaluation_workload_q", "evaluation_workload_rule",
+                  "evaluation_normalization_manifest_sha256"):
         values = {str(row.get(field)) for row in rows}
         if len(values) > 1:
             raise ValueError(f"cannot aggregate rows with different {field}")
@@ -281,7 +349,7 @@ def aggregate_evaluation_rows(
     sampling_truncated_count = sum(bool(row.get("sampling_truncated", row.get("truncated", False))) for row in rows)
     if sampling_truncated_count:
         return {
-            "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+            "evaluation_schema_version": schema,
             "evaluation_complete": False,
             "selection_eligible": False,
             "quality_metric_version": normalized_metric["version"],
@@ -515,6 +583,15 @@ def aggregate_evaluation_rows(
             tail_fraction=0.05,
         ),
     }
+    for name in ("workload_objective_value", "committed_workload_objective_value", "worker_load_total", "worker_load_max"):
+        if any(row.get(name) is not None for row in rows):
+            completed_metrics[name] = summarize_values(row.get(name) for row in completed)
+            all_instance_metrics[name] = summarize_values(row.get(name) for row in rows)
+    if any(row.get("workload_objective_value") is not None for row in rows):
+        tail_metrics["workload_objective_value"] = summarize_upper_tail(
+            (row.get("workload_objective_value") for row in rows), tail_fraction=0.10)
+        gap_metrics["workload_objective_value_heuristic_gap_percent"] = summarize_values(
+            row.get("workload_objective_value_heuristic_gap_percent") for row in rows)
     preference_keys = sorted(
         {
             str(row["preference_key"])
@@ -542,7 +619,7 @@ def aggregate_evaluation_rows(
     )
 
     return {
-        "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+        "evaluation_schema_version": schema,
         "evaluation_complete": True,
         "selection_eligible": True,
         "completion_coverage": 1.0 if rows else 0.0,
@@ -627,7 +704,7 @@ def grouped_outcomes(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
             "count": len(selected), "completed_count": len(successful),
             "completion_rate": len(successful) / len(selected),
             "completed_metrics": {name: summarize_values(row.get(name) for row in successful)
-                                  for name in ("flow_time_objective", "reconfiguration_cost", "worker_load_variance", "preference_quality_score")},
+                                  for name in ("flow_time_objective", "reconfiguration_cost", "worker_load_variance", "workload_objective_value", "worker_load_total", "worker_load_max", "preference_quality_score")},
             "failure_reasons": dict(Counter(failure_reason(row) for row in failures)),
             "failure_progress": summarize_values(row.get("operation_progress") for row in failures),
         }

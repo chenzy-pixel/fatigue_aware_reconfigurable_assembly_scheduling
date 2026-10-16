@@ -124,9 +124,10 @@ def test_graph_observation_static_contract(config, fixed_instance):
         "production_decision",
         "worker_matching_deficit_norm",
         "minimum_worker_alternative_ratio",
-        "objective_flow_norm",
-        "objective_cost_norm",
-        "objective_committed_variance_norm",
+        "objective_flow_log2_norm",
+        "objective_cost_log2_norm",
+        "objective_committed_workload_log2_norm",
+        "minimum_unfinished_order_slack_norm",
     )
     assert observation.global_features.shape == (
         len(observation.global_feature_names),
@@ -162,7 +163,7 @@ def test_graph_observation_static_contract(config, fixed_instance):
         "fixed_installation_cost_norm",
         "estimated_labor_cost_norm",
         "estimated_downtime_cost_norm",
-        "estimated_worker_load_variance_delta_norm",
+        "estimated_worker_load_objective_delta_norm",
         "estimated_order_slack_norm",
     )
     assert np.all(capability.edge_features[:, [0, 2, 3, 4]] >= 0.0)

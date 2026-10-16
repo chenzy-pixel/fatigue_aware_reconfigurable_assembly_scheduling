@@ -1,5 +1,0 @@
-{
-  "extends": "../e1/single_variance.json",
-  "experiment_name": "ablation_neutral_variance",
-  "environment": {"fatigue_mode": "neutral"}
-}

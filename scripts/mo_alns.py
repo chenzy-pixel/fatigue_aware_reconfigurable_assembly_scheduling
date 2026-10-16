@@ -22,6 +22,7 @@ from data.dataset import PERSISTED_SPLITS, validate_algorithm_seed
 from data.selection import resolve_instance_indices, subset_snapshot
 from environment import CANONICAL_PREFERENCE, PreferenceVector, simplex_lattice
 from environment.types import proxy_return_from_metrics
+from environment.workload import objective_names, is_modern_workload
 from eval import build_evaluation_row
 from result import (
     aggregate_evaluation_rows,
@@ -188,10 +189,15 @@ def _run_record(
             "reward_objective_flow": candidate.objectives[0],
             "flow_mode": candidate.metrics.get("flow_mode", "raw_v1"),
             "reconfiguration_cost": candidate.objectives[1],
-            "worker_load_variance": candidate.objectives[2],
+            "worker_load_variance": candidate.metrics["worker_load_variance"],
+            **({"workload_objective_value": candidate.objectives[2],
+                "worker_loads": json.dumps(candidate.metrics["worker_loads"], sort_keys=True),
+                **{name: candidate.metrics.get(name) for name in ("worker_load_total", "worker_load_max",
+                    "workload_mode", "workload_q", "workload_rule", "workload_order", "workload_version")}}
+               if is_modern_workload(worker_config) else {}),
             "w_flow": candidate.preference.flow,
             "w_cost": candidate.preference.cost,
-            "w_variance": candidate.preference.variance,
+            f"w_{objective_names(worker_config)[2]}": candidate.preference.variance,
             "source_preference_key": preference_key(candidate.preference),
         }
         for candidate in grid.archive

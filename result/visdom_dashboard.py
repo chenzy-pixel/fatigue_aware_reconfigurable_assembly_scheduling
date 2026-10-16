@@ -65,6 +65,12 @@ DISPLAY_LABELS: dict[str, str] = {
     "flow_time_objective": "流经时间目标",
     "reconfiguration_cost": "重构成本",
     "worker_load_variance": "工人负荷方差",
+    "workload": "工人劳动负荷目标",
+    "workload_objective_value": "实际劳动负荷目标",
+    "worker_load_total": "总劳动分钟",
+    "worker_load_max": "最大工人劳动分钟",
+    "mean_workload_objective_value": "当前平均劳动负荷目标",
+    "best_workload_objective_value": "最佳平均劳动负荷目标",
     "policy_loss": "策略损失",
     "value_loss": "价值损失",
     "loss": "总损失",
@@ -99,6 +105,11 @@ DISPLAY_LABELS: dict[str, str] = {
     "generation_time_seconds": "实例生成耗时（秒）",
     "environment_step_time_seconds": "环境推进耗时（秒）",
     "sampled_completion_rate": "采样完成率",
+    "best_of_3_completion_rate": "三次取优完成率",
+    "raw_overall_completion_rate": "原始请求整体完成率",
+    "raw_minimum_preference_completion_rate": "原始请求最差偏好完成率",
+    "best_of_3_Q": "三次取优质量代价",
+    "raw_sampled_Q": "原始请求质量代价",
     "sampled_truncated_count": "采样截断数",
     "sampled_mean_unfinished_orders": "采样平均未完成订单数",
     "schedule_violation_count": "调度违规数",
@@ -478,6 +489,7 @@ class TrainingDashboard:
             return None
 
     def _write_metadata(self) -> None:
+        from environment.workload import objective_names
         ppo = self.config["ppo"]
         network = self.config["network"]
         reward = self.config["reward"]
@@ -497,7 +509,7 @@ class TrainingDashboard:
             {
                 _display_label(name): value
                 for name, value in zip(
-                    ("flow", "cost", "variance"), fixed_preference
+                    objective_names(self.config), fixed_preference
                 )
             }
             if isinstance(fixed_preference, (list, tuple))
@@ -680,6 +692,7 @@ class TrainingDashboard:
                     "flow",
                     "cost",
                     "variance",
+                    "workload",
                     "operation_progress",
                     "quality",
                     "feasibility_shaping",
@@ -700,6 +713,9 @@ class TrainingDashboard:
                 "worker_load_variance": _mean(
                     episode_rows, "worker_load_variance"
                 ),
+                "workload_objective_value": _mean(episode_rows, "workload_objective_value"),
+                "worker_load_total": _mean(episode_rows, "worker_load_total"),
+                "worker_load_max": _mean(episode_rows, "worker_load_max"),
             },
         )
         self._line(
@@ -893,6 +909,13 @@ class TrainingDashboard:
     ) -> None:
         self.validation_count += 1
         completed_episodes = int(validation_row["episode"])
+        if validation_row.get("sample_aggregation") == "best_of_3_v1":
+            self._line(
+                win="68_validation_delivery_quality", title="68 三次取优与原始采样质量",
+                x=completed_episodes,
+                series={"best_of_3_Q": validation_row.get("preference_balanced_quality_score"),
+                        "raw_sampled_Q": validation_row.get("raw_preference_balanced_quality_score")},
+            )
         self._status_text(
             phase_state,
             completed_episodes=completed_episodes,
@@ -902,9 +925,13 @@ class TrainingDashboard:
             title="60 验证集可行性",
             x=completed_episodes,
             series={
-                "sampled_completion_rate": validation_row.get(
+                ("best_of_3_completion_rate" if validation_row.get("sample_aggregation") == "best_of_3_v1"
+                 else "sampled_completion_rate"): validation_row.get(
                     "completion_rate"
                 ),
+                **{key: validation_row[key] for key in (
+                    "raw_overall_completion_rate", "raw_minimum_preference_completion_rate")
+                    if key in validation_row},
                 "sampled_truncated_count": validation_row.get(
                     "truncated_count"
                 ),
@@ -956,6 +983,8 @@ class TrainingDashboard:
                 "mean_worker_load_variance": validation_row.get(
                     "mean_worker_load_variance"
                 ),
+                "mean_workload_objective_value": validation_row.get("mean_workload_objective_value"),
+                "best_workload_objective_value": best_validation.get("mean_workload_objective_value") if best_validation else None,
                 "best_reconfiguration_cost": (
                     best_validation.get("mean_reconfiguration_cost")
                     if best_validation

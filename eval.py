@@ -4,6 +4,9 @@ import argparse
 import json
 import math
 import time
+import hashlib
+import pickle
+from collections import OrderedDict
 from copy import deepcopy
 from functools import wraps
 from typing import Any, Sequence
@@ -47,7 +50,9 @@ from result import (
     relative_gap_percent,
 )
 from result.io import write_config, write_csv, write_json
-from result.metrics import EVALUATION_SCHEMA_VERSION
+from result.provenance import effective_config_snapshot
+from result.metrics import EVALUATION_SCHEMA_VERSION, result_schema_version
+from environment.workload import metrics_workload_objective, is_modern_workload, workload_config, objective_names
 from utils import (
     SAMPLED_EVALUATION_RNG_VERSION,
     action_trace_sha256,
@@ -57,6 +62,28 @@ from utils import (
     restore_global_rng_state,
     set_seed,
 )
+
+_HEURISTIC_LOAD_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+
+
+def _heuristic_actual_metrics(record, config: dict[str, Any]) -> dict[str, Any]:
+    """Recover exact reference loads for frozen metadata written before schema 11."""
+    key = (hashlib.sha256(pickle.dumps(record.instance)).hexdigest(),
+           json.dumps(config.get("environment", {}), sort_keys=True))
+    cached = _HEURISTIC_LOAD_CACHE.get(key)
+    if cached is not None:
+        _HEURISTIC_LOAD_CACHE.move_to_end(key)
+        return cached
+    env = AssemblySchedulingEnv(config)
+    env.reset(record.instance, build_observation=False)
+    policy = HeuristicPolicy()
+    while not (env.terminated or env.truncated):
+        env.step(policy.select_action(env), build_observation=False)
+    actual = env.metrics()
+    _HEURISTIC_LOAD_CACHE[key] = actual
+    if len(_HEURISTIC_LOAD_CACHE) > 256:
+        _HEURISTIC_LOAD_CACHE.popitem(last=False)
+    return actual
 
 
 def _resolve_decode_mode(policy_name: str, decode_mode: str | None) -> str:
@@ -503,6 +530,21 @@ def _evaluation_row(
     heuristic_variance = heuristic.get(
         "worker_workload_variance"
     )
+    active_workload = metrics_workload_objective(metrics, config)
+    definition = workload_config(config)
+    heuristic_workload = heuristic_variance
+    if is_modern_workload(config):
+        from environment.workload import workload_value
+        loads = heuristic.get("worker_loads")
+        if not isinstance(loads, dict) and heuristic.get("heuristic_completed"):
+            reference = _heuristic_actual_metrics(record, config)
+            if (reference["task_succeeded"] and not reference.get("schedule_violations")
+                and all(value is not None and math.isclose(float(reference[field]), float(value), rel_tol=1e-9, abs_tol=1e-9)
+                        for field, value in (("flow_time_objective", heuristic_flow_time),
+                                             ("reconfiguration_cost", heuristic_cost), ("worker_load_variance", heuristic_variance)))):
+                loads = reference["worker_loads"]
+        # Frozen historical metadata without loads cannot identify OWA.
+        heuristic_workload = workload_value(list(loads.values()), config) if isinstance(loads, dict) else None
     reference_valid = bool(heuristic.get("heuristic_completed")) and not bool(heuristic.get("heuristic_truncated", True)) and not heuristic.get("schedule_violations", [])
     reference_valid = reference_valid and float(heuristic.get("heuristic_makespan", math.inf)) <= record.instance.horizon + 1e-9
     reference_valid = reference_valid and float(heuristic.get("maximum_worker_fatigue", math.inf)) <= record.instance.fatigue.maximum_safe_fatigue + 1e-9
@@ -523,7 +565,7 @@ def _evaluation_row(
     return {
         "experiment_name": config.get("experiment_name"),
         "encoder_variant": metrics.get("encoder_variant", config.get("network", {}).get("encoder_variant", "hetero_gnn")),
-        "actor_head_variant": metrics.get("actor_head_variant", config.get("network", {}).get("actor_head_variant", "objective_experts")),
+        "actor_head_variant": metrics.get("actor_head_variant", config.get("network", {}).get("actor_head_variant", "shared_preference")),
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
         "generator_version": record.metadata.get("generator_version"),
@@ -536,12 +578,24 @@ def _evaluation_row(
         "algorithm_seed": int(config["seed"]),
         "arm": metrics.get("arm", "ppo"),
         "dataset": record.metadata.get("split", ""),
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": result_schema_version(config),
         "experiment_suite_version": config["experiment_suite_version"],
         "normalization_manifest_sha256": config["objective_scalarizer"]["normalization_manifest_sha256"],
         "objective_scalarizer_type": config["objective_scalarizer"]["type"],
         "objective_scalarizer_rho": config["objective_scalarizer"]["rho"],
-        **{f"objective_scale_{name}": config["objective_scalarizer"]["scales"][name] for name in ("flow", "cost", "variance")},
+        **{f"objective_scale_{name}": config["objective_scalarizer"]["scales"][name] for name in objective_names(config)},
+        **({"workload_mode": definition["mode"], "workload_q": definition["q"],
+            "workload_rule": definition["weights"], "workload_order": definition["order"],
+            "workload_version": definition["version"],
+            "workload_objective_value": active_workload,
+            "committed_workload_objective_value": metrics.get("committed_workload_objective_value"),
+            "worker_loads": json.dumps(metrics["worker_loads"], ensure_ascii=False, sort_keys=True),
+            "worker_load_total": metrics["worker_load_total"], "worker_load_max": metrics["worker_load_max"],
+            "reward_objective_workload_value": metrics.get("reward_objective_workload_value", active_workload),
+            "heuristic_workload_objective_value": heuristic_workload,
+            "heuristic_worker_loads": json.dumps(loads, ensure_ascii=False, sort_keys=True) if isinstance(loads, dict) else None,
+            "workload_objective_value_heuristic_gap_percent": comparison_gap(active_workload, heuristic_workload)}
+           if is_modern_workload(config) else {}),
         "candidate_id": f"{metrics.get('preference_key', '')}:{metrics.get('sampling_repeat', metrics.get('sampling_seed', 0))}",
         "candidate_source": metrics.get("decode_mode", "sampled"),
         "pressure_type": record.metadata["pressure_type"],
@@ -578,6 +632,8 @@ def _evaluation_row(
         "flow_mode": flow_mode(config),
         "reconfiguration_cost": metrics["reconfiguration_cost"],
         "worker_load_variance": metrics["worker_load_variance"],
+        "worker_loads": json.dumps(metrics["worker_loads"], ensure_ascii=False, sort_keys=True),
+        "worker_load_total": metrics["worker_load_total"], "worker_load_max": metrics["worker_load_max"],
         "preference": metrics.get("preference"),
         "preference_key": metrics.get("preference_key"),
         "preference_quality_score": metrics.get("preference_quality_score"),
@@ -596,7 +652,7 @@ def _evaluation_row(
         ),
         "preference_flow": preference.get("flow"),
         "preference_cost": preference.get("cost"),
-        "preference_variance": preference.get("variance"),
+        f"preference_{objective_names(config)[2]}": preference.get("workload", preference.get("variance")),
         **{
             name: metrics.get(name, 0)
             for name in (
@@ -626,21 +682,21 @@ def _evaluation_row(
             )
         },
         "quality_score": bounded_quality_score(
-            metrics["flow_time_objective"],
+            reward_flow if is_modern_workload(config) else metrics["flow_time_objective"],
             metrics["reconfiguration_cost"],
-            metrics["worker_load_variance"],
+            active_workload,
             quality_metric,
         ),
         "heuristic_quality_score": bounded_quality_score(
-            heuristic_flow_time,
+            heuristic_reward_flow if is_modern_workload(config) else heuristic_flow_time,
             heuristic_cost,
-            heuristic_variance,
+            heuristic_workload,
             quality_metric,
-        ) if reference_valid else None,
+        ) if reference_valid and heuristic_workload is not None else None,
         "reward_quality_score": terminal_quality_score(
             reward_flow,
             metrics["reconfiguration_cost"],
-            metrics["worker_load_variance"],
+            active_workload,
             config,
             preference=preference,
             terminal_failure=bool(metrics["task_failed"]),
@@ -648,10 +704,10 @@ def _evaluation_row(
         "heuristic_reward_quality_score": bounded_quality_score(
             heuristic_reward_flow,
             heuristic_cost,
-            heuristic_variance,
+            heuristic_workload,
             config,
             preference=preference,
-        ) if reference_valid else None,
+        ) if reference_valid and heuristic_workload is not None else None,
         "quality_metric_version": quality_metric["version"],
         "quality_metric_sha256": metric_hash,
         "decode_mode": metrics.get("decode_mode"),
@@ -1339,21 +1395,54 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         row["effective_config_sha256"] = metrics["provenance"]["effective_config_sha256"]
     metrics["active_constraint_pass"] = bool(rows) and all(row["active_constraint_pass"] for row in rows)
     metrics["physical_safety_pass"] = bool(rows) and all(row["physical_safety_pass"] for row in rows)
+    rows, metrics = _apply_evaluation_goal(rows, metrics, args.evaluation_config)
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label=f"eval_ppo_{decode_mode}_{args.dataset}_{args.preference_set}",
         run_name=args.run_name,
     )
     write_config(run_directory, config)
+    if args.evaluation_config:
+        write_json(run_directory / "evaluation_config.json", load_config(args.evaluation_config))
     write_json(run_directory / "metrics.json", metrics)
     write_csv(run_directory / "instance_metrics.csv", rows)
+    from result.sample_selection import write_selected_samples
+    write_selected_samples(run_directory / "selected_instance_metrics.csv", rows)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     print(f"results: {run_directory}")
+
+
+def _apply_evaluation_goal(rows, metrics, evaluation_config_path):
+    """Rescore terminal loads after execution, retaining the policy's training goal."""
+    if not evaluation_config_path:
+        return rows, metrics
+    from analysis.workload_dominance import rescore_workload_row, workload_identity, labelled_workload_dominance
+    scoring = load_config(evaluation_config_path)
+    rescored = [rescore_workload_row(row, scoring) for row in rows]
+    from configs.evaluation_sampling import BEST_OF_THREE
+    scored_rows = ([row for row in rescored if row.get("selected_for_aggregation")]
+                   if metrics.get("sample_aggregation") == BEST_OF_THREE else rescored)
+    score_summary = aggregate_evaluation_rows(scored_rows, dataset=metrics["dataset"], policy=metrics["policy"],
+        manifest=metrics["manifest"], quality_metric=evaluation_quality_metric(scoring))
+    result = dict(metrics)
+    result.setdefault("training_goal_quality", {name: metrics.get(name) for name in ("quality_metric", "quality_metric_sha256", "preference_balanced_quality_score", "completed_metrics")})
+    result.setdefault("training_evaluation_schema_version", metrics["evaluation_schema_version"])
+    result.update({name: score_summary[name] for name in ("evaluation_schema_version", "quality_metric_version", "quality_metric",
+        "quality_metric_sha256", "completed_metrics", "all_instance_metrics", "gap_metrics", "tail_metrics",
+        "preference_quality_by_key", "preference_balanced_quality_score")})
+    result.update(evaluation_goal="explicit_frozen_workload", evaluation_config_source=str(project_path(evaluation_config_path)),
+        evaluation_config_sha256=effective_config_snapshot(scoring)["sha256"],
+        evaluation_objective_scales=scoring["objective_scalarizer"]["scales"],
+        evaluation_normalization_manifest_sha256=scoring["objective_scalarizer"].get("normalization_manifest_sha256"),
+        **workload_identity(scoring, prefix="evaluation_"))
+    result["labelled_worker_dominance"] = labelled_workload_dominance(rescored)
+    return rescored, result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a scheduling policy")
     parser.add_argument("--config", default="configs/default.json")
+    parser.add_argument("--evaluation-config", help="Frozen workload scoring config; policy execution retains --config and its observation contract")
     parser.add_argument(
         "--policy", choices=("heuristic", "random", "ppo"), default="heuristic"
     )
@@ -1484,6 +1573,19 @@ def main() -> None:
                 "subset_sha256": reference["subset_sha256"],
             }
         )
+    from configs.evaluation_sampling import BEST_OF_THREE, sample_aggregation
+    if decode_mode == "sampled" and sample_aggregation(config) == BEST_OF_THREE:
+        from train import _aggregate_formal_rows
+        reference = per_repeat_metrics[0]
+        metadata = {key: metrics[key] for key in (
+            "sampling_seeds", "sampling_rng_version", "dataset_manifest_sha256",
+            "instance_indices", "subset_sha256", "per_repeat_metrics") if key in metrics}
+        count = len({str(row["instance_id"]) for row in rows})
+        metrics = _aggregate_formal_rows(
+            config, rows=rows, dataset_name=args.dataset, manifest=str(reference["manifest"]),
+            unique_instance_count=count, repeat_count=len(sampling_seeds), universal=False,
+            stage="final_test", strict_counts=True)
+        metrics.update(metadata)
     metrics["result_role"] = (
         "formal_sampled" if decode_mode == "sampled" else "greedy_diagnostic"
     )
@@ -1494,12 +1596,14 @@ def main() -> None:
         checkpoint_metadata=checkpoint_metadata,
         evaluation_subset_sha256=metrics["subset_sha256"],
         executed_network_state=(prepared_agent.network.state_dict() if prepared_agent is not None else None),
+        sampled_aggregation=metrics.get("sample_aggregation"),
     )
     for row in rows:
         row["checkpoint_sha256"] = metrics["provenance"].get("checkpoint_sha256")
         row["effective_config_sha256"] = metrics["provenance"]["effective_config_sha256"]
     metrics["active_constraint_pass"] = bool(rows) and all(row["active_constraint_pass"] for row in rows)
     metrics["physical_safety_pass"] = bool(rows) and all(row["physical_safety_pass"] for row in rows)
+    rows, metrics = _apply_evaluation_goal(rows, metrics, args.evaluation_config)
     run_directory = create_run_directory(
         project_path(config["paths"]["result_root"]),
         label=(
@@ -1508,8 +1612,12 @@ def main() -> None:
         run_name=args.run_name,
     )
     write_config(run_directory, config)
+    if args.evaluation_config:
+        write_json(run_directory / "evaluation_config.json", load_config(args.evaluation_config))
     write_json(run_directory / "metrics.json", metrics)
     write_csv(run_directory / "instance_metrics.csv", rows)
+    from result.sample_selection import write_selected_samples
+    write_selected_samples(run_directory / "selected_instance_metrics.csv", rows)
     write_csv(run_directory / "schedule.csv", schedules)
     write_csv(
         run_directory / "reconfigurations.csv",

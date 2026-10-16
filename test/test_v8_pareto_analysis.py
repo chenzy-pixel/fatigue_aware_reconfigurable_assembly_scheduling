@@ -13,19 +13,35 @@ from analysis.pareto_analysis import hypervolume_3d, normalize_objectives
 from analysis.v8_pareto_analysis import analyze_runs, parse_run_arguments
 from configs import load_config, project_path
 from configs.formal_preferences import formal_preferences
+from environment.workload import objective_names, workload_value
+from environment import terminal_quality_score
+from data.distribution import protocol_hashes
+from analysis.workload_dominance import rescore_workload_row, workload_identity
+from result.metrics import result_schema_version, evaluation_quality_metric, quality_metric_sha256
 from result.io import write_config, write_csv, write_json
 from result.provenance import build_provenance, dataset_manifest_snapshot
 from utils import configured_formal_evaluation_sampling_seeds, derive_evaluation_sampling_seed
 
 
-def _write_run(path, *, factor=1.0, seed=11, all_failed=False, training=False):
-    config = load_config("configs/v8/universal.json")
+def _write_run(path, *, factor=1.0, seed=11, all_failed=False, training=False, config=None, instance_ids=("test_a", "test_b")):
+    config = load_config("configs/controls/raw.json") if config is None else deepcopy(config)
+    # This fixture emits historical per-request output, including one-repeat cases.
+    from configs.runtime import runtime_manifest
+    config["training"]["formal_evaluation"]["sample_aggregation"] = "per_sample_v1"
+    config["runtime_manifest"] = runtime_manifest(config)
     config["seed"] = seed
     path.mkdir(parents=True)
     write_config(path, config)
     rows = []
+    manifest_path = project_path(config["paths"]["manifests_root"]) / "test/manifest.json"
+    manifest_hash = dataset_manifest_snapshot(manifest_path)["sha256"]
+    scalarizer = config["objective_scalarizer"]
+    loads = {"worker_a": 3 * factor, "worker_b": 1 * factor, "worker_c": 1 * factor, "worker_d": 1 * factor}
+    workload = workload_value(list(loads.values()), config)
+    mean_load = sum(loads.values()) / len(loads)
+    variance = sum((load - mean_load) ** 2 for load in loads.values()) / len(loads)
     seeds = configured_formal_evaluation_sampling_seeds(config, "final_test")
-    for instance_id in ("test_a", "test_b"):
+    for instance_id in instance_ids:
         for repeat, root_seed in enumerate(seeds):
             for index, preference in enumerate(formal_preferences(config, "final_test")):
                 success = not all_failed and not (instance_id == "test_b" and repeat == 1 and index == 0)
@@ -33,18 +49,43 @@ def _write_run(path, *, factor=1.0, seed=11, all_failed=False, training=False):
                     "instance_id": instance_id, "sampling_repeat": repeat,
                     "preference_key": preference.key, "sampling_seed": root_seed,
                     "derived_sampling_seed": derive_evaluation_sampling_seed(root_seed, instance_id, preference.key),
-                    **{f"preference_{name}": value for name, value in preference.preference.as_dict().items()},
+                    **{f"preference_{name}": value for name, value in preference.preference.as_dict(objective_names(config)).items()},
                     "task_succeeded": success, "task_failed": not success,
                     "terminated": True, "truncated": False,
+                    "terminal_reason": "completed" if success else "infeasible",
+                    "makespan": 50 * factor, "total_flow_time": 100 * factor if success else None,
+                    "decisions": 1, "inference_time_seconds": 0.0, "solve_time_seconds": 0.0,
+                    "inference_time_per_decision_ms": 0.0,
+                    "relative_heuristic_gap_percent": None, "makespan_heuristic_gap_percent": None,
+                    "reconfiguration_cost_heuristic_gap_percent": None, "worker_load_variance_heuristic_gap_percent": None,
                     "schedule_violation_count": 0, "maximum_worker_fatigue": 0.5,
                     "safe_fatigue_limit": 0.75, "fatigue_mode": "full",
                     "flow_time_objective": 100 * factor, "reconfiguration_cost": 200 * factor,
-                    "worker_load_variance": 3 * factor, "action_trace_sha256": f"trace-{instance_id}-{repeat}-{index}",
+                    "worker_load_variance": variance, "worker_loads": json.dumps(loads),
+                    "workload_objective_value": workload,
+                    "worker_load_total": sum(loads.values()), "worker_load_max": max(loads.values()),
+                    "candidate_id": f"{instance_id}-{repeat}-{index}",
+                    "action_trace_sha256": f"trace-{instance_id}-{repeat}-{index}",
+                    "arm": "ppo", "dataset": "test", "algorithm_seed": seed,
+                    "result_schema_version": result_schema_version(config), **protocol_hashes(config),
+                    "dataset_manifest_sha256": manifest_hash, "subset_sha256": "fixture_subset",
+                    "experiment_suite_version": config["experiment_suite_version"],
+                    "reward_version": config["reward"]["mode"], **workload_identity(config),
+                    "objective_scalarizer_type": scalarizer["type"], "objective_scalarizer_rho": scalarizer["rho"],
+                    "normalization_manifest_sha256": scalarizer["normalization_manifest_sha256"],
+                    **{f"objective_scale_{name}": scalarizer["scales"][name] for name in objective_names(config)},
+                    "quality_metric_sha256": quality_metric_sha256(evaluation_quality_metric(config)),
+                    "decode_mode": "sampled", "policy_execution_version": config["training"]["policy_execution_version"],
+                    "policy_precision": config["training"]["policy_precision"],
+                    "preference_quality_score": terminal_quality_score(100 * factor, 200 * factor, workload, config,
+                        preference=preference.preference, terminal_failure=not success),
                 })
     provenance = build_provenance(config, dataset_manifest_path=project_path(config["paths"]["manifests_root"]) / "test/manifest.json",
                                   formal_evaluation_stage="final_test")
-    metrics = {"evaluation_schema_version": "8.0.0", "decode_mode": "sampled", "dataset": "test",
-               "instance_count": 2, "repeat_count": 3, "sampling_seeds": seeds, "provenance": provenance}
+    metrics = {"evaluation_schema_version": result_schema_version(config), "decode_mode": "sampled", "dataset": "test",
+               "instance_count": len(instance_ids), "repeat_count": len(seeds), "sampling_seeds": seeds, "provenance": provenance,
+               "policy": "ppo", "manifest": str(manifest_path), "quality_metric": evaluation_quality_metric(config),
+               "quality_metric_sha256": quality_metric_sha256(evaluation_quality_metric(config))}
     if training:
         write_json(path / "summary.json", {"final_sampled": metrics})
         write_csv(path / "final_sampled_instance_metrics.csv", rows)
@@ -55,7 +96,7 @@ def _write_run(path, *, factor=1.0, seed=11, all_failed=False, training=False):
 
 
 def test_v8_complete_66_by_3_grids_produce_matched_per_instance_fronts(tmp_path):
-    config, _, _ = _write_run(tmp_path / "first")
+    config, _, rows = _write_run(tmp_path / "first")
     _write_run(tmp_path / "second", factor=0.8, training=True)
     summary = analyze_runs({"baseline": tmp_path / "first", "variant": tmp_path / "second"}, tmp_path / "analysis")
     assert summary["candidate_count"] == 2 * 2 * 66 * 3
@@ -63,8 +104,8 @@ def test_v8_complete_66_by_3_grids_produce_matched_per_instance_fronts(tmp_path)
     assert summary["preference_count"] == 66
     assert summary["repeat_count"] == 3
     assert summary["independent_test"]
-    scales = [config["objective_scalarizer"]["scales"][name] for name in ("flow", "cost", "variance")]
-    expected = prod(1 - value for value in normalize_objectives((100, 200, 3), scales))
+    scales = [config["objective_scalarizer"]["scales"][name] for name in objective_names(config)]
+    expected = prod(1 - value for value in normalize_objectives((100, 200, rows[0]["workload_objective_value"]), scales))
     assert summary["methods"]["baseline"]["mean_pooled_hypervolume"]["mean"] == pytest.approx(expected)
     assert summary["methods"]["variant"]["mean_pooled_hypervolume"]["mean"] > expected
     with (tmp_path / "analysis/paired_instances.csv").open(encoding="utf-8-sig") as handle:
@@ -180,3 +221,114 @@ def test_v8_analysis_rejects_external_sampling_truncation(tmp_path, partial_sour
         write_csv(tmp_path / "run/instance_metrics.csv", rows)
     with pytest.raises(ValueError, match="incomplete|truncated"):
         analyze_runs({"run": tmp_path / "run"}, tmp_path / "out")
+
+
+def _explicit_scored_run(path, *, legacy=True):
+    from eval import _apply_evaluation_goal
+    from test_workload_contracts import _legacy_config
+
+    config = _legacy_config() if legacy else load_config("configs/controls/raw_owa_q075.json")
+    config["evaluation"].update(result_schema_version="8.0.0" if legacy else "9.0.0", quality_metric=None)
+    config["training"]["formal_evaluation"]["final_test_repeats"] = 1
+    config, metrics, rows = _write_run(path, config=config, instance_ids=("test_a",))
+    scoring_path = project_path("configs/controls/raw_owa_q075.json")
+    rescored, scored_metrics = _apply_evaluation_goal(rows, metrics, scoring_path)
+    write_json(path / "evaluation_config.json", load_config(scoring_path))
+    write_json(path / "metrics.json", scored_metrics)
+    write_csv(path / "instance_metrics.csv", rescored)
+    return config, scored_metrics, rescored, rows
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_explicit_scored_formal_outputs_reenter_unified_analysis_preserving_training_scores(tmp_path, legacy):
+    config, metrics, _, original = _explicit_scored_run(tmp_path / "rescored", legacy=legacy)
+    assert result_schema_version(config) == ("8.0.0" if legacy else "9.0.0")
+    assert metrics["evaluation_schema_version"] == "9.0.0"
+    assert metrics["evaluation_workload_q"] == .75
+    summary = analyze_runs({"rescored": tmp_path / "rescored"}, tmp_path / "out")
+    assert summary["evaluation_workload_q"] == .5
+    assert summary["candidate_count"] == 66
+    assert summary["sources"][0]["evaluation_workload"]["workload_q"] == .75
+    with (tmp_path / "out/candidates.csv").open(encoding="utf-8-sig", newline="") as handle:
+        candidates = list(csv.DictReader(handle))
+    for old, scored in zip(original, candidates, strict=True):
+        assert float(scored["training_preference_quality_score"]) == old["preference_quality_score"]
+        assert scored["training_quality_metric_sha256"] == old["quality_metric_sha256"]
+        assert scored["training_result_schema_version"] == old["result_schema_version"]
+        assert float(scored["training_workload_objective_value"]) == old["workload_objective_value"]
+        assert float(scored["evaluation_workload_q"]) == .5
+
+
+@pytest.mark.parametrize("corruption", [
+    "missing_config", "config_hash", "config_content", "evaluation_scale", "evaluation_manifest",
+    "evaluation_identity", "evaluation_quality_hash", "training_schema", "training_metric",
+    "training_preference", "row_scale", "row_evaluation_identity", "row_evaluation_value", "row_evaluation_quality",
+])
+def test_explicit_scored_output_rejects_tampered_scoring_or_training_identity(tmp_path, corruption):
+    directory = tmp_path / "run"
+    _, metrics, rows, _ = _explicit_scored_run(directory)
+    path = directory / "evaluation_config.json"
+    if corruption == "missing_config":
+        path.unlink()
+    elif corruption == "config_content":
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        saved["training"]["episodes"] += 1
+        write_json(path, saved)
+    elif corruption == "config_hash":
+        metrics["evaluation_config_sha256"] = "wrong"
+    elif corruption == "evaluation_scale":
+        metrics["evaluation_objective_scales"]["workload"] *= 2
+    elif corruption == "evaluation_manifest":
+        metrics["evaluation_normalization_manifest_sha256"] = "wrong"
+    elif corruption == "evaluation_identity":
+        metrics["evaluation_workload_q"] = .5
+    elif corruption == "evaluation_quality_hash":
+        metrics["quality_metric_sha256"] = "wrong"
+    elif corruption == "training_schema":
+        metrics["training_evaluation_schema_version"] = "9.0.0"
+    elif corruption == "training_metric":
+        metrics["training_goal_quality"]["quality_metric_sha256"] = "wrong"
+    elif corruption == "training_preference":
+        rows[0]["training_preference_quality_score"] += .1
+    elif corruption == "row_scale":
+        rows[0]["evaluation_objective_scale_workload"] *= 2
+    elif corruption == "row_evaluation_identity":
+        rows[0]["evaluation_workload_q"] = .5
+    elif corruption == "row_evaluation_value":
+        rows[0]["workload_objective_value"] += 1
+    else:
+        rows[0]["preference_quality_score"] += .1
+    write_json(directory / "metrics.json", metrics)
+    write_csv(directory / "instance_metrics.csv", rows)
+    with pytest.raises(ValueError, match="evaluation|candidate"):
+        analyze_runs({"run": directory}, tmp_path / "out")
+
+
+def test_legacy_and_modern_explicit_scoring_outputs_share_one_unified_analysis(tmp_path):
+    _explicit_scored_run(tmp_path / "legacy", legacy=True)
+    _explicit_scored_run(tmp_path / "modern", legacy=False)
+    summary = analyze_runs({"legacy": tmp_path / "legacy", "modern": tmp_path / "modern"}, tmp_path / "out")
+    assert summary["candidate_count"] == 132
+    assert summary["evaluation_workload_q"] == .5
+    assert summary["objective_scales"]["workload"] == 21.03145448655653
+    assert {source["training_workload"]["workload_mode"] for source in summary["sources"]} == {"variance", "geometric_owa"}
+    assert all(source["evaluation_workload"]["workload_q"] == .75 for source in summary["sources"])
+
+
+def test_repeated_scoring_preserves_first_training_metadata_and_row_scores(tmp_path):
+    from eval import _apply_evaluation_goal
+
+    config, once_metrics, once_rows, original = _explicit_scored_run(tmp_path / "run")
+    next_path = project_path("configs/controls/raw.json")
+    twice_rows, twice_metrics = _apply_evaluation_goal(once_rows, once_metrics, next_path)
+    assert twice_metrics["training_goal_quality"] == once_metrics["training_goal_quality"]
+    assert twice_metrics["training_evaluation_schema_version"] == result_schema_version(config)
+    assert twice_metrics["evaluation_workload_q"] == .5
+    for old, once, twice in zip(original, once_rows, twice_rows, strict=True):
+        for field in ("workload_objective_value", "preference_quality_score", "quality_metric_sha256", "result_schema_version"):
+            assert twice[f"training_{field}"] == once[f"training_{field}"] == old[field]
+        assert rescore_workload_row(twice, load_config(next_path))["training_preference_quality_score"] == old["preference_quality_score"]
+    write_json(tmp_path / "run/evaluation_config.json", load_config(next_path))
+    write_json(tmp_path / "run/metrics.json", twice_metrics)
+    write_csv(tmp_path / "run/instance_metrics.csv", twice_rows)
+    assert analyze_runs({"twice": tmp_path / "run"}, tmp_path / "out")["candidate_count"] == 66

@@ -18,6 +18,7 @@ from data.models import OrderSpec, OperationSpec, validate_instance
 from data.dataset import load_dataset_split
 from environment import AssemblySchedulingEnv
 from environment.observation_schema import GLOBAL_FEATURE_NAMES
+from environment.workload import objective_names, observation_schema_version
 from environment.types import DecisionType, ReconfigurationStage
 from eval import EvaluationPolicy, evaluate_instance
 from result.provenance import build_provenance, network_weights_sha256
@@ -39,6 +40,7 @@ def test_reachable_histories_expose_hidden_cumulative_flow(config, fixed_instanc
         waves={'audit': {'dominant_module': module, 'order_ids': ['A','B','C'], 'release_interval': [0.0,50.0]}})
     validate_instance(instance)
     observations = []
+    credits = []
     for sequence in [(0,1), (1,0)]:
         env = AssemblySchedulingEnv(config)
         env.reset(instance, preference=(1,0,0))
@@ -47,6 +49,7 @@ def test_reachable_histories_expose_hidden_cumulative_flow(config, fixed_instanc
             env.step(env.wait_action)
         env.step(env.wait_action)
         observations.append(env.observe())
+        credits.append(env.flow_lower_bound_credit())
     first, second = observations
     for name in first.node_features:
         np.testing.assert_array_equal(first.node_features[name], second.node_features[name])
@@ -55,8 +58,9 @@ def test_reachable_histories_expose_hidden_cumulative_flow(config, fixed_instanc
     np.testing.assert_array_equal(first.global_features[:6], second.global_features[:6])
     np.testing.assert_array_equal(first.action_set_features, second.action_set_features)
     scale = config['objective_scalarizer']['scales']['flow']
-    assert first.global_features[6] == pytest.approx(50/scale)
-    assert second.global_features[6] == pytest.approx(70/scale)
+    assert credits[0] == credits[1]
+    assert first.global_features[6] == pytest.approx(np.log2(1+(50-credits[0])/scale))
+    assert second.global_features[6] == pytest.approx(np.log2(1+(70-credits[1])/scale))
     assert first.global_feature_names == GLOBAL_FEATURE_NAMES
 
 
@@ -68,8 +72,8 @@ def test_global_objectives_and_transport_match_reward_state(config, fixed_instan
         env.step(rule.select_action(env), build_observation=False)
         obs = env.observe()
         scales = config['objective_scalarizer']['scales']
-        np.testing.assert_allclose(obs.global_features[6:9], np.asarray(env._objective_vector()) /
-            [scales[name] for name in ('flow','cost','variance')], rtol=1e-6)
+        np.testing.assert_allclose(obs.global_features[6:9], np.log2(1 + np.asarray(env._objective_vector()) /
+            [scales[name] for name in objective_names(config)]), rtol=1e-6)
         buffer = RolloutBuffer(preserve_graph=True)
         buffer.add(obs, env.get_action_mask(), 0, 0, 0, 0, env.terminated)
         for copied in (obs.copy(), pickle.loads(pickle.dumps(obs)), buffer.transitions[0].observation):
@@ -164,14 +168,14 @@ def test_global_schema_rejects_reordering_and_nonfinite_values(config,fixed_inst
         infer_checkpoint_network_spec({'network_spec':spec})
 
 
-def test_config_snapshot_requires_schema10_and_retraining(config,tmp_path):
+def test_config_snapshot_requires_current_schema_and_retraining(config,tmp_path):
     snapshot = public_config(config)
     path = tmp_path/'config.json'
     for schema in (5,6,7,8,9):
         snapshot['runtime_manifest']['observation_schema'] = schema
         path.write_text(json.dumps(snapshot),encoding='utf-8')
         for allow in (False,True):
-            with pytest.raises(ValueError,match='schema 10'):
+            with pytest.raises(ValueError,match=f'schema {observation_schema_version(config)}'):
                 load_config(path,allow_observation_migration=allow)
 
 

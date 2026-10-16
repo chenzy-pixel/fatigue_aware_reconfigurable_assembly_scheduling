@@ -9,8 +9,10 @@ import pytest
 from environment import AssemblySchedulingEnv, CAPABLE_EDGE
 from environment.resource_projection import ResourceProjector, ProjectedResources
 from environment.time_context import OrderTimeEstimator, _Resources
-from scripts.audit_state_sufficiency import worker_alias_instance, worker_histories
-from scripts.audit_schema9_followup import edge_times
+from environment.workload import workload_delta
+from environment.types import flow_reward_version
+from support.state_cases import worker_alias_instance, worker_histories
+from support.time_cases import edge_times
 
 
 def sequential_instance(template):
@@ -52,7 +54,22 @@ def test_running_installation_uses_fixed_finish(config, fixed_instance, mode):
     assert future.resources.loads.tolist() == env._committed_worker_loads.tolist()
 
 
-def test_sequential_path_replays_time_fatigue_cost_and_load(config, fixed_instance):
+@pytest.mark.parametrize('workload_contract', ['geometric_owa', 'variance', 'legacy_variance'])
+def test_sequential_path_replays_time_fatigue_cost_and_load(config, fixed_instance, workload_contract):
+    config = deepcopy(config)
+    if workload_contract != 'geometric_owa':
+        config['workload_objective'] = {'mode': 'variance', 'q': None}
+        for key in tuple(config['network']):
+            if key.startswith('workload_'):
+                config['network'].pop(key)
+        config['objective_scalarizer']['scales']['workload'] = 2.2629
+    if workload_contract == 'legacy_variance':
+        config.pop('workload_objective')
+        config['network']['observation_schema_version'] = 10
+        config['network'].pop('global_objective_encoding', None)
+        scales = config['objective_scalarizer']['scales']
+        scales['variance'] = scales.pop('workload')
+        config['reward']['mode'] = flow_reward_version(config)
     instance = sequential_instance(fixed_instance)
     env = AssemblySchedulingEnv(config)
     env.reset(instance)
@@ -66,11 +83,13 @@ def test_sequential_path_replays_time_fatigue_cost_and_load(config, fixed_instan
     estimator = OrderTimeEstimator(env)
     state = _Resources(estimator.machines.copy(), estimator.workers.copy(), estimator.loads.copy())
     assert estimator._transition_finish(5, 'A3', 'A2', 0, state) == route.end_tick
-    dis, ins, labor, downtime, variance = projector.path_costs(5, route)
+    dis, ins, labor, downtime, load_delta = projector.path_costs(5, route)
     assert dis == 4 and ins == 6
     assert labor == pytest.approx(sum(s.duration_ticks for s in route.stages)*env.resolution)
     assert downtime == pytest.approx(13.6*4.3)
-    assert variance == pytest.approx(np.var(route.resources.loads))
+    assert load_delta == pytest.approx(workload_delta(route.baseline_loads, route.resources.loads, env.config))
+    if workload_contract != 'geometric_owa':
+        assert load_delta == pytest.approx(np.var(route.resources.loads))
     env.step(env.encode_production_action(0, 5), build_observation=False)
     env.step(env.wait_action, build_observation=False)
     for stage in route.stages:

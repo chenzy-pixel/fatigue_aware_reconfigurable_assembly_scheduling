@@ -13,6 +13,7 @@ from environment.time_context import (
     ORDER_TIME_FEATURE, WAIT_TIME_FEATURES, WORKER_WAIT_FEATURE, project_wait_state,
 )
 from environment.types import OperationState, ReconfigurationStage
+from environment.workload import objective_names, observation_schema_version
 
 
 def _chain_instance(fixed_instance, *, mismatch=False, second_release=None):
@@ -209,7 +210,7 @@ def test_zero_time_handoff_preserves_slack_and_stage_wait_age(config, fixed_inst
 
 
 @pytest.mark.parametrize("phase", ["production", "worker", "wait"])
-def test_new_time_inputs_change_all_expert_contexts_but_not_direct_scores(config, fixed_instance, phase):
+def test_time_inputs_reach_shared_scorer(config, fixed_instance, phase):
     env = AssemblySchedulingEnv(config)
     env.reset(_chain_instance(fixed_instance, mismatch=phase == "worker"))
     if phase == "worker":
@@ -220,7 +221,7 @@ def test_new_time_inputs_change_all_expert_contexts_but_not_direct_scores(config
     settings = dict(config["network"], hidden_dim=8, message_passing_layers=1)
     network = build_actor_critic(observation, settings)
     prefix = "production_wait" if phase == "wait" else phase
-    experts = getattr(network, prefix + "_experts")
+    head = getattr(network, prefix + "_shared")
     hidden = network.hidden_dim
     if phase == "wait":
         first, second, column, embedding_column = network.wait_feature_encoder[0], network.wait_action_encoder[0], -2, 0
@@ -232,13 +233,12 @@ def test_new_time_inputs_change_all_expert_contexts_but_not_direct_scores(config
     with torch.no_grad():
         first.weight.zero_(); first.bias.zero_(); first.weight[0, column] = 1
         second.weight.zero_(); second.bias.zero_(); second.weight[0, embedding_column] = 1
-        for expert in experts.experts.values():
-            expert.context[0].weight.zero_(); expert.context[0].bias.zero_(); expert.context[0].weight[0, 0] = 1
-            expert.context[-1].weight.zero_(); expert.context[-1].bias.zero_(); expert.context[-1].weight[0, 0] = 1
-    values = {}
-    handles = [expert.register_forward_hook(
-        lambda module, args, output, name=name: values.__setitem__(name, tuple(v.clone() for v in output))
-    ) for name, expert in experts.experts.items()]
+        for parameter in head.parameters():
+            parameter.zero_()
+        head.score[0].weight[0, 0] = 1
+        head.score[-1].weight[0, 0] = 1
+    values = []
+    handle = head.register_forward_hook(lambda module, args, output: values.append(output.detach().clone()))
     if phase == "wait":
         one = observation.action_set_features.copy(); two = one.copy()
         one[-2] = 0.1; two[-2] = 0.6
@@ -253,18 +253,13 @@ def test_new_time_inputs_change_all_expert_contexts_but_not_direct_scores(config
             relations[relation_type] = relation
             observations.append(replace(observation, relations=relations))
     try:
-        captures = []
         with torch.no_grad():
             for item in observations:
                 network(item, mask, device="cpu")
-                captures.append(dict(values))
-        for name in ("flow", "cost", "variance"):
-            torch.testing.assert_close(captures[0][name][0], captures[1][name][0], rtol=0, atol=0)
-            assert torch.all(captures[1][name][1] > captures[0][name][1])
-        assert len({expert.context[0].weight.data_ptr() for expert in experts.experts.values()}) == 3
+        assert len(values) == 2
+        assert torch.all(values[1] > values[0])
     finally:
-        for handle in handles:
-            handle.remove()
+        handle.remove()
 
 
 def _schema5_observation(observation):
@@ -302,9 +297,9 @@ def test_schema5_checkpoint_rejected_for_each_network_variant(config, fixed_inst
         agent.load(path,load_optimizer=True,allow_observation_migration=True)
 
 
-def test_schema10_requires_explicit_time_features(config, fixed_instance):
+def test_current_schema_requires_explicit_time_features(config, fixed_instance):
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
-    with pytest.raises(ValueError, match="schema-10"):
+    with pytest.raises(ValueError, match=f"schema-{observation_schema_version(config)}"):
         build_actor_critic(_schema5_observation(observation), config["network"])
     spec = build_actor_critic(observation, config["network"]).network_spec()
     spec["time_context_feature_schema"]["worker"] = []

@@ -4,8 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import hashlib
-import tempfile
 import sys
 from copy import deepcopy
 from datetime import datetime
@@ -21,20 +19,19 @@ from result.provenance import dataset_manifest_snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 ROLE_CONFIGS = {
-    "universal": "configs/v8/universal.json",
+    "universal": "configs/default.json",
     "no_graph": "configs/ablations/no_graph.json",
-    "shared_head": "configs/ablations/shared_head.json",
-    "full_flow": "configs/ablations/full_flow.json",
+    "full_flow": "configs/e1/single_flow.json",
     "neutral_flow": "configs/ablations/neutral_flow.json",
-    "full_cost": "configs/ablations/full_cost.json",
+    "full_cost": "configs/e1/single_cost.json",
     "neutral_cost": "configs/ablations/neutral_cost.json",
-    "full_variance": "configs/ablations/full_variance.json",
-    "neutral_variance": "configs/ablations/neutral_variance.json",
+    "full_workload": "configs/e1/single_workload.json",
+    "neutral_workload": "configs/ablations/neutral_workload.json",
 }
-STRUCTURAL = ("universal", "no_graph", "shared_head")
-NEUTRAL = ("neutral_flow", "neutral_cost", "neutral_variance")
-FATIGUE = ("full_flow", "neutral_flow", "full_cost", "neutral_cost", "full_variance", "neutral_variance")
-VARIANTS = ("no_graph", "shared_head") + FATIGUE
+STRUCTURAL = ("universal", "no_graph")
+NEUTRAL = ("neutral_flow", "neutral_cost", "neutral_workload")
+FATIGUE = ("full_flow", "neutral_flow", "full_cost", "neutral_cost", "full_workload", "neutral_workload")
+VARIANTS = ("no_graph",) + FATIGUE
 
 
 def batch_directory() -> Path:
@@ -48,14 +45,19 @@ def save_batch_manifest(path: Path, manifest: dict) -> None:
 
 def protocol_profile(config: dict) -> dict:
     """Compare solver identity and the controlled training/evaluation protocol."""
+    from agent.ppo.network import normalize_network_config
+    from environment.workload import is_modern_workload, workload_config
+
     training = deepcopy(config["training"])
     training.setdefault("episodes_per_update", training["parallel_envs"])
     training.setdefault("initial_checkpoint", None)
     network = deepcopy(config["network"])
-    network.setdefault("encoder_variant", "hetero_gnn")
-    network.setdefault("actor_head_variant", "objective_experts")
+    # Serialized tuples become JSON lists. Canonical network identity preserves
+    # every selected objective/scale while making saved and live profiles equal.
+    network.update(normalize_network_config(network))
     return {
         "network": network,
+        **({"workload_objective": workload_config(config)} if is_modern_workload(config) else {}),
         "fatigue_mode": config.get("environment", {}).get("fatigue_mode", "full"),
         "environment": {k: v for k, v in config["environment"].items() if k != "fatigue_mode"},
         "reward": config["reward"], "ppo": config["ppo"],
@@ -114,62 +116,12 @@ def latest_evaluation_manifest(seed: int = 11) -> Path:
         if manifest.get("status") == "complete" and set(manifest.get("runs", {})) == set(ROLE_CONFIGS):
             candidates.append(path)
     if not candidates:
-        raise FileNotFoundError(f"No completed ablation evaluation manifest for seed {seed}; run scripts/run_13_evaluate_ablations.py")
+        raise FileNotFoundError(f"No completed ablation evaluation manifest for seed {seed}; run python -m scripts.ablation_protocol")
     return max(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name))
 
 
-def train_group(roles: tuple[str, ...], *, smoke: bool = False) -> None:
-    parser = argparse.ArgumentParser(description="Train matched ablation variants")
-    parser.add_argument("--seed", type=int, default=11)
-    parser.add_argument("--device", choices=("cpu", "cuda"))
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
-    seed = validate_algorithm_seed(load_config("configs/default.json"), args.seed)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    group = "smoke" if smoke else ("structural" if roles == STRUCTURAL else "fatigue")
-    manifest_path = batch_directory() / f"training_{group}_seed{seed}_{stamp}.json"
-    manifest = {"schema": "matched_ablation_batch_v1", "seed": seed, "group": group, "status": "running", "runs": {}}
-    for role in roles:
-        config = load_config(ROLE_CONFIGS[role])
-        if args.device:
-            config["device"] = args.device
-        if smoke:
-            import torch
-            cache_key = hashlib.sha256(str(ROOT).encode()).hexdigest()[:10]
-            config["paths"]["training_instances_cache"] = str(Path(tempfile.gettempdir()) / f"assembly_smoke_{cache_key}")
-            config["device"] = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-            config["training"].update({"smoke_episodes": 2, "smoke_rollout_steps": 16,
-                "smoke_parallel_envs": 2, "validation_parallel_envs": 2,
-                "smoke_validation_instance_limit": 1, "torch_num_threads": 2})
-            formal = config["training"]["formal_evaluation"]
-            formal["validation_repeats"] = formal["final_test_repeats"] = 1
-            formal["validation_preferences"] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
-            formal["final_test_lattice_denominator"] = 1
-        name = f"ablation_{group}_{role}_seed{seed}_{stamp}"
-        print(f"{role}: {ROLE_CONFIGS[role]}, seed={seed}, episodes={2 if smoke else config['training']['episodes']}, run={name}", flush=True)
-        if args.dry_run:
-            continue
-        from train import train
-        save_batch_manifest(manifest_path, manifest)
-        try:
-            output = train(config, smoke=smoke, algorithm_seed=seed, run_name=name)
-            summary = json.loads((output / "summary.json").read_text(encoding="utf-8-sig"))
-            if not summary["checkpoint_selection"]["has_best"] or not (output / "best_checkpoint.pt").is_file():
-                raise RuntimeError(f"No eligible best checkpoint for {role}")
-        except Exception as error:
-            manifest.update(status="failed", failed_role=role, error=str(error))
-            save_batch_manifest(manifest_path, manifest)
-            raise
-        manifest["runs"][role] = {"config": ROLE_CONFIGS[role], "training_run": str(output), "checkpoint": str(output / "best_checkpoint.pt")}
-        save_batch_manifest(manifest_path, manifest)
-    if not args.dry_run:
-        manifest["status"] = "complete"
-        save_batch_manifest(manifest_path, manifest)
-        print(f"Batch manifest: {manifest_path}", flush=True)
-
-
 def evaluate_group() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate the nine matched baseline/ablation checkpoints")
+    parser = argparse.ArgumentParser(description="Evaluate matched baseline/ablation checkpoints")
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--device", choices=("cpu", "cuda"))
     parser.add_argument("--dry-run", action="store_true")
@@ -210,3 +162,7 @@ def evaluate_group() -> None:
         manifest["status"] = "complete"
         save_batch_manifest(manifest_path, manifest)
         print(f"Evaluation manifest: {manifest_path}", flush=True)
+
+
+if __name__ == "__main__":
+    evaluate_group()

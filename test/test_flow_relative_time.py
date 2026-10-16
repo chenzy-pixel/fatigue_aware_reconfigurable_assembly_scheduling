@@ -13,6 +13,7 @@ from environment import AssemblySchedulingEnv, DecisionType
 
 
 def networks(config, fixed_instance):
+    config = deepcopy(config)
     env = AssemblySchedulingEnv(config)
     observation = env.reset(fixed_instance, preference=(1, 0, 0))
     baseline = build_actor_critic(observation, dict(config["network"], worker_flow_time_normalization="absolute_v1"))
@@ -30,9 +31,7 @@ def test_masked_duration_does_not_affect_ranking_and_gradients(config, fixed_ins
     legal = torch.tensor([True, True, False])
     relative = network._relative_worker_flow_time(durations, legal)
     torch.testing.assert_close(relative, torch.tensor([-1., 1., 0.]))
-    scores = network.worker_experts.experts["flow"].direct_ranker(relative[:, None])
-    assert scores[0] > scores[1]
-    scores.square().sum().backward()
+    relative.square().sum().backward()
     assert torch.isfinite(durations.grad).all()
     assert durations.grad[2] == 0
 
@@ -50,7 +49,7 @@ def test_floor_prevents_amplification_of_tiny_differences(config, fixed_instance
     assert result.abs().max() < 0.001
 
 
-def test_worker_integration_preserves_other_experts_and_wait(config, fixed_instance):
+def test_worker_time_transform_preserves_other_inputs_and_wait(config, fixed_instance):
     env, observation, baseline, experiment = networks(config, fixed_instance)
     mask = env.get_action_mask()
     with torch.no_grad():
@@ -70,27 +69,21 @@ def test_worker_integration_preserves_other_experts_and_wait(config, fixed_insta
     captures = {}
     handles = []
     for label, network in [("old", baseline), ("new", experiment)]:
-        for kind in ("worker_experts", "worker_wait_experts"):
+        for kind in ("worker_shared", "worker_wait_shared"):
             def capture(module, args, key=(label, kind)):
                 captures[key] = (args[0].detach().clone(), {k:v.detach().clone() for k,v in args[1].items()})
             handles.append(getattr(network, kind).register_forward_pre_hook(capture))
         with torch.no_grad():
             network(observation, mask, device="cpu")
-    for kind in ("worker_experts", "worker_wait_experts"):
+    for kind in ("worker_shared", "worker_wait_shared"):
         old, new = captures["old", kind], captures["new", kind]
         torch.testing.assert_close(old[0], new[0], rtol=0, atol=0)
-        for objective in ("cost", "variance"):
+        for objective in ("cost", "workload"):
             torch.testing.assert_close(old[1][objective], new[1][objective], rtol=0, atol=0)
-    torch.testing.assert_close(captures["old", "worker_wait_experts"][1]["flow"], captures["new", "worker_wait_experts"][1]["flow"], rtol=0, atol=0)
-    assert not torch.equal(captures["old", "worker_experts"][1]["flow"], captures["new", "worker_experts"][1]["flow"])
+    torch.testing.assert_close(captures["old", "worker_wait_shared"][1]["flow"], captures["new", "worker_wait_shared"][1]["flow"], rtol=0, atol=0)
+    assert not torch.equal(captures["old", "worker_shared"][1]["flow"], captures["new", "worker_shared"][1]["flow"])
     for handle in handles:
         handle.remove()
-    for preference in ((0,1,0), (0,0,1)):
-        obs = replace(observation, preference=np.asarray(preference, dtype=np.float32))
-        with torch.no_grad():
-            old, _ = baseline(obs, mask, device="cpu")
-            new, _ = experiment(obs, mask, device="cpu")
-        torch.testing.assert_close(old, new, rtol=0, atol=0)
 
 
 def test_checkpoint_compatibility_is_explicit(config, fixed_instance):

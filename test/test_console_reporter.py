@@ -79,7 +79,7 @@ def test_validation_reports_sampled_rank():
 
 def test_universal_run_header_uses_validation_preference_count():
     reporter, output = _reporter(None)
-    reporter.config = load_config("configs/v8/universal.json")
+    reporter.config = load_config("configs/controls/raw.json")
     reporter.start_run()
     assert "prefs=13" in "\n".join(output)
 

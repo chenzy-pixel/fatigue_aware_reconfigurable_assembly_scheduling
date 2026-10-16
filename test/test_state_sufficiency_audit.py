@@ -2,12 +2,12 @@
 import numpy as np
 import pytest
 
-from scripts.audit_state_sufficiency import (
+from support.state_cases import (
     MODES, PROCESSING, SERVING, effective, worker_alias_instance, worker_histories,
     pair_comparison, current_relations, virtual_observation, reconstructed_quantities,
     event_order_checks, precision_checks, reconstructed_events, actual_events,
 )
-from scripts.audit_observation_reward import build_alias_instance, reachable_histories
+from support.observation_cases import build_alias_instance, reachable_histories
 
 
 @pytest.mark.parametrize("mode", MODES)

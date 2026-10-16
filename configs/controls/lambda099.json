@@ -1,0 +1,7 @@
+{
+  "experiment_name": "lambda099",
+  "ppo": {
+    "gae_lambda": 0.99
+  },
+  "extends": "../default.json"
+}

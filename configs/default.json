@@ -1,7 +1,7 @@
 {
-  "experiment_name": "v8_universal",
-  "experiment_suite_version": "single_stage_progress_quality_failure_v3",
-  "method_version": "M1_hgnn_objective_experts_v8",
+  "experiment_name": "universal",
+  "experiment_suite_version": "single_stage_progress_quality_workload_failure_v6",
+  "method_version": "M1_hgnn_shared_preference_v8",
   "seed": 11,
   "algorithm_seeds": [
     11,
@@ -447,33 +447,24 @@
     "rho": 0.05,
     "scale_source": "frozen_manifest",
     "scales": {
+      "flow": 368.3143,
       "cost": 353.27,
-      "flow": 1089.15,
-      "variance": 2.2629
+      "workload": 21.03145448655653
     },
-    "normalization_manifest": "configs/manifests/v2_selected_scales_20261002.json",
-    "normalization_manifest_sha256": "9d4829c467f592d9a319251f0f779e7354cce70e1511d3bc90ab19b78fa4cce3"
+    "normalization_manifest": "configs/manifests/workload_excess_q50_20261011.json",
+    "normalization_manifest_sha256": "d90a3c93e9458fcff6b7608e856ec5166e009a7cca17695c37a813a470944f19",
+    "flow_mode": "excess_proportional_lb_v1"
   },
   "reward": {
-    "mode": "single_stage_progress_quality_failure_v3",
+    "mode": "single_stage_progress_quality_workload_failure_v6",
     "terminal_failure_penalty": 2.0,
     "feasibility_shaping": {
       "enabled": false
     }
   },
   "evaluation": {
-    "result_schema_version": "8.0.0",
-    "quality_metric": {
-      "version": "canonical_bounded_quality_v2",
-      "flow_scale": 1089.15,
-      "cost_scale": 353.27,
-      "variance_scale": 2.2629,
-      "quality_weights": {
-        "flow": 0.5,
-        "cost": 0.3,
-        "variance": 0.2
-      }
-    }
+    "result_schema_version": "9.0.0",
+    "quality_metric": null
   },
   "network": {
     "hidden_dim": 128,
@@ -483,7 +474,10 @@
     "residual_gate_initial_logit": 0.0,
     "residual_std_floor": 0.001,
     "worker_flow_time_normalization": "candidate_zscore_v1",
-    "worker_flow_time_std_floor": 0.001
+    "worker_flow_time_std_floor": 0.001,
+    "observation_schema_version": 12,
+    "global_objective_encoding": "log2_v1",
+    "actor_head_variant": "shared_preference"
   },
   "ppo": {
     "learning_rate": 0.0001,
@@ -512,6 +506,7 @@
     "forced_action_compression": false,
     "worker_local_physical_forced_actions": true,
     "formal_evaluation": {
+      "sample_aggregation": "best_of_3_v1",
       "decode_mode": "sampled",
       "temperature": 1.0,
       "validation_seed_offset": 100000,
@@ -605,7 +600,8 @@
       "mode": "stratified_v2",
       "diagnostic_instance_limit": 49,
       "diagnostic_interval_validations": 5
-    }
+    },
+    "episodes_per_update": 20
   },
   "logging": {
     "worker_progress": {
@@ -625,5 +621,9 @@
       "representative_instance_index": 0,
       "save_environment": true
     }
+  },
+  "workload_objective": {
+    "mode": "geometric_owa",
+    "q": 0.5
   }
 }

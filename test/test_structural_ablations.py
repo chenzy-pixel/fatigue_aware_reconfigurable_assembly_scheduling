@@ -21,7 +21,7 @@ from environment.observation_schema import OBSERVATION_SCHEMA_VERSION
 
 
 VARIANTS = tuple(product(
-    ("hetero_gnn", "node_mlp_pool"), ("objective_experts", "shared_preference")
+    ("hetero_gnn", "node_mlp_pool"), ("shared_preference",)
 ))
 
 
@@ -91,12 +91,8 @@ def test_variant_spec_and_structure(config, mixed_batch, encoder_variant, actor_
     assert len(network.message_layers) == (2 if encoder_variant == "hetero_gnn" else 0)
     assert len(network.node_mlp_layers) == (2 if encoder_variant == "node_mlp_pool" else 0)
     shared_heads = [module for module in network.modules() if isinstance(module, SharedPreferenceHead)]
-    assert len(shared_heads) == (4 if actor_head_variant == "shared_preference" else 0)
-    expected_parameterization = (
-        "simplex_softplus_v8" if actor_head_variant == "objective_experts"
-        else "shared_preference_mlp_v1"
-    )
-    assert spec["expert_weight_parameterization"] == expected_parameterization
+    assert len(shared_heads) == 4
+    assert spec["actor_head_parameterization"] == "shared_preference_mlp_v1"
 
 
 @pytest.mark.parametrize("name", ("encoder_variant", "actor_head_variant"))
@@ -107,13 +103,13 @@ def test_unknown_structural_variant_is_rejected(name):
 
 def test_default_variant_initialization_and_legacy_checkpoint(config, mixed_batch, tmp_path):
     observations, masks = mixed_batch
-    implicit = _settings(config, "hetero_gnn", "objective_experts")
+    implicit = _settings(config, "hetero_gnn", "shared_preference")
     implicit.pop("encoder_variant")
     implicit.pop("actor_head_variant")
     state = torch.random.get_rng_state()
     original = build_actor_critic(observations[0], implicit)
     torch.random.set_rng_state(state)
-    explicit = build_actor_critic(observations[0], _settings(config, "hetero_gnn", "objective_experts"))
+    explicit = build_actor_critic(observations[0], _settings(config, "hetero_gnn", "shared_preference"))
     assert tuple(original.state_dict()) == tuple(explicit.state_dict())
     for name, value in original.state_dict().items():
         torch.testing.assert_close(value, explicit.state_dict()[name], atol=0, rtol=0)
@@ -121,12 +117,13 @@ def test_default_variant_initialization_and_legacy_checkpoint(config, mixed_batc
     path = tmp_path / "legacy_variants.pt"
     source_agent.save(path)
     checkpoint = torch.load(path, weights_only=False)
-    for name in ("encoder_variant", "actor_head_variant"):
+    for name in ("encoder_variant",):
         checkpoint["network_spec"].pop(name)
+    checkpoint["network_spec"]["expert_weight_parameterization"] = checkpoint["network_spec"].pop("actor_head_parameterization")
     torch.save(checkpoint, path)
     saved = infer_checkpoint_network_spec(checkpoint)
     assert saved["encoder_variant"] == "hetero_gnn"
-    assert saved["actor_head_variant"] == "objective_experts"
+    assert saved["actor_head_variant"] == "shared_preference"
     clone_agent = PPOAgent(explicit, config["ppo"], device="cpu")
     clone_agent.load(path, load_optimizer=True)
     with torch.no_grad():
@@ -147,7 +144,7 @@ def test_node_mlp_encoding_and_critic_are_independent_of_relation_topology(confi
     }
     rewired = replace(original, relations=relations)
     rewired.validate()
-    network = build_actor_critic(original, _settings(config, "node_mlp_pool", "objective_experts"))
+    network = build_actor_critic(original, _settings(config, "node_mlp_pool", "shared_preference"))
     network.eval()
     network.execution_mode = mode
     with torch.no_grad():
@@ -164,7 +161,7 @@ def test_node_mlp_encoding_and_critic_are_independent_of_relation_topology(confi
     torch.testing.assert_close(actual_global, expected_global, atol=0, rtol=0)
     torch.testing.assert_close(actual_context, expected_context, atol=0, rtol=0)
     torch.testing.assert_close(actual_value, expected_value, atol=0, rtol=0)
-    graph_network = build_actor_critic(original, _settings(config, "hetero_gnn", "objective_experts"))
+    graph_network = build_actor_critic(original, _settings(config, "hetero_gnn", "shared_preference"))
     graph_network.eval()
     graph_network.execution_mode = mode
     with torch.no_grad():
@@ -198,14 +195,13 @@ def test_shared_scorer_conditions_action_scores_on_preference(config, mixed_batc
     for weights in ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]):
         preference = torch.tensor([weights, weights], requires_grad=True)
         preference_embedding = network.preference_encoder(preference)
-        _, _, _, base = network._score_head(actions, direct, preference, preference_embedding, phase, wait=wait)
+        base = network._score_head(actions, direct, preference_embedding, phase, wait=wait)
         base.sum().backward()
         assert torch.count_nonzero(preference.grad) > 0
         scores.append(base.detach())
     assert not torch.allclose(scores[0], scores[1])
     assert not torch.allclose(scores[0].diff(), scores[1].diff())
     assert head.score[-1].out_features == 1
-    assert network.effective_relative_cost_weights() == {}
 
 
 @pytest.mark.parametrize("encoder_variant,actor_head_variant", VARIANTS)
@@ -216,12 +212,6 @@ def test_structural_variants_match_reference_logits_values_and_gradients(config,
     observations, masks = mixed_batch
     network = build_actor_critic(observations[0], _settings(config, encoder_variant, actor_head_variant)).to(device)
     network.eval()
-    if actor_head_variant == "objective_experts":
-        with torch.no_grad():
-            for prefix in ("production", "worker", "production_wait", "worker_wait"):
-                for expert in getattr(network, prefix + "_experts").experts.values():
-                    expert.context[-1].weight.uniform_(-0.05, 0.05)
-                    expert.context[-1].bias.uniform_(-0.05, 0.05)
     results = []
     for mode in ("reference_v8", "phase_batched_v1"):
         network.execution_mode = mode
@@ -241,7 +231,6 @@ def test_structural_variants_match_reference_logits_values_and_gradients(config,
         assert [row["decision_type"] for row in diagnostics] == [item.decision_type.value for item in observations]
         assert all(isinstance(value, (str, int, float, bool)) for row in diagnostics for value in row.values())
         if actor_head_variant == "shared_preference":
-            assert all(not name.startswith(("direct_", "expert_", "contribution_")) for row in diagnostics for name in row)
             assert set(network.policy_head_diagnostics()) == {
                 "policy_head_gate_production_residual", "policy_head_gate_worker_residual",
             }
@@ -265,14 +254,14 @@ def test_structural_variants_match_reference_logits_values_and_gradients(config,
 
 
 @pytest.mark.parametrize("encoder_variant,actor_head_variant", VARIANTS)
-@pytest.mark.parametrize("mismatched_field", ("encoder_variant", "actor_head_variant"))
+@pytest.mark.parametrize("mismatched_field", ("encoder_variant",))
 def test_checkpoint_structural_variant_mismatch_is_rejected(config, mixed_batch, tmp_path, encoder_variant, actor_head_variant, mismatched_field):
     observations, _ = mixed_batch
     settings = _settings(config, encoder_variant, actor_head_variant)
     source = PPOAgent(build_actor_critic(observations[0], settings), config["ppo"], device="cpu")
     path = tmp_path / "source.pt"
     source.save(path)
-    choices = ("hetero_gnn", "node_mlp_pool") if mismatched_field == "encoder_variant" else ("objective_experts", "shared_preference")
+    choices = ("hetero_gnn", "node_mlp_pool")
     settings[mismatched_field] = next(value for value in choices if value != settings[mismatched_field])
     target = PPOAgent(build_actor_critic(observations[0], settings), config["ppo"], device="cpu")
     before = deepcopy(target.network.state_dict())
@@ -310,3 +299,23 @@ def test_legacy_schema_rejection_preserves_variant_weights_and_adam_state(
         assert not target.optimizer.state
     assert target.network.network_spec()["encoder_variant"] == encoder_variant
     assert target.network.network_spec()["actor_head_variant"] == actor_head_variant
+
+
+@pytest.mark.parametrize("head", [None, "unsupported"])
+def test_checkpoint_requires_explicit_shared_head_identity(config, mixed_batch, tmp_path, head):
+    observations, _ = mixed_batch
+    settings = _settings(config, "hetero_gnn", "shared_preference")
+    agent = PPOAgent(build_actor_critic(observations[0], settings), config["ppo"], device="cpu")
+    path = tmp_path / "identity.pt"
+    agent.save(path)
+    saved = torch.load(path, weights_only=False)
+    if head is None:
+        saved["network_spec"].pop("actor_head_variant")
+    else:
+        saved["network_spec"]["actor_head_variant"] = head
+    torch.save(saved, path)
+    before = deepcopy(agent.network.state_dict())
+    with pytest.raises(ValueError, match="actor_head_variant"):
+        agent.load(path, load_optimizer=True)
+    for name, value in before.items():
+        torch.testing.assert_close(agent.network.state_dict()[name], value, atol=0, rtol=0)

@@ -11,8 +11,8 @@ from .config import load_config, project_path
 from .formal_preferences import formal_preferences
 from .network_contract import MESSAGE_IDENTITY_FIELDS
 
-ABLATION_MANIFEST = "configs/manifests/ablation_seed11.json"
-ABLATION_PROTOCOL = "v8_matched_ablation_failure2_frozen_v1"
+ABLATION_MANIFEST = "configs/manifests/ablation_mainline.json"
+ABLATION_PROTOCOL = "schema12_shared_excess_owa_best_of_3_v1"
 
 
 def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -20,6 +20,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     from agent.ppo.network import normalize_network_config
     from data.dataset import template_sha256
     from data.models import load_instance_yaml
+    from environment.workload import is_modern_workload, workload_config
 
     training = config["training"]
     scalarizer = dict(config["objective_scalarizer"])
@@ -27,6 +28,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     return deepcopy({
         "algorithm_seed": int(config["seed"]),
         "suite": config["experiment_suite_version"],
+        **({"workload_objective": workload_config(config)} if is_modern_workload(config) else {}),
         "template_sha256": template_sha256(load_instance_yaml(project_path(config["paths"]["fixed_instance"]))),
         "dataset": config["dataset"],
         "generator": config["generator"],
@@ -59,7 +61,7 @@ def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
 
 def assert_matching_training_config(saved: Mapping[str, Any], expected: Mapping[str, Any]) -> None:
     first, second = training_contract(saved), training_contract(expected)
-    differences = [key for key in first if first[key] != second[key]]
+    differences = [key for key in sorted(first.keys() | second.keys()) if first.get(key) != second.get(key)]
     if differences:
         raise ValueError("training configuration mismatch: " + ", ".join(differences))
 
@@ -69,23 +71,17 @@ def assert_paired_configs(baseline: Mapping[str, Any], variant: Mapping[str, Any
     if changed_field == "fatigue_mode":
         if (first["environment"].pop("fatigue_mode"), second["environment"].pop("fatigue_mode")) != ("full", "neutral"):
             raise ValueError("fatigue pair must compare full and neutral environments")
-    elif changed_field in {"encoder_variant", "actor_head_variant"}:
-        expected = (("hetero_gnn", "node_mlp_pool") if changed_field == "encoder_variant"
-                    else ("objective_experts", "shared_preference"))
-        if (first["network"].pop(changed_field), second["network"].pop(changed_field)) != expected:
+    elif changed_field == "encoder_variant":
+        if (first["network"].pop(changed_field), second["network"].pop(changed_field)) != ("hetero_gnn", "node_mlp_pool"):
             raise ValueError(f"unexpected structural pair: {changed_field}")
-        if changed_field == "encoder_variant":
-            first["network"].pop("encoder_type")
-            second["network"].pop("encoder_type")
-            for name in MESSAGE_IDENTITY_FIELDS:
-                first["network"].pop(name)
-                second["network"].pop(name)
-        else:
-            first["network"].pop("expert_weight_parameterization")
-            second["network"].pop("expert_weight_parameterization")
+        first["network"].pop("encoder_type")
+        second["network"].pop("encoder_type")
+        for name in MESSAGE_IDENTITY_FIELDS:
+            first["network"].pop(name)
+            second["network"].pop(name)
     else:
         raise ValueError(f"unknown ablation field: {changed_field}")
-    differences = [key for key in first if first[key] != second[key]]
+    differences = [key for key in sorted(first.keys() | second.keys()) if first.get(key) != second.get(key)]
     if differences:
         raise ValueError("unmatched ablation control variables: " + ", ".join(differences))
 

@@ -20,9 +20,17 @@ from environment.types import (FLOW_EXCESS, FLOW_RAW, flow_mode, metrics_flow_ob
 from data.models import OperationSpec, OrderSpec
 
 
+@pytest.fixture(scope="session")
+def config():
+    """Raw control used by the raw-versus-excess regressions in this module."""
+    value = load_config("configs/controls/raw.json")
+    value["device"] = "cpu"
+    return value
+
+
 @pytest.fixture
 def excess_config():
-    c = load_config("configs/flow_excess/universal.json")
+    c = load_config("configs/default.json")
     c["device"] = "cpu"
     return c
 

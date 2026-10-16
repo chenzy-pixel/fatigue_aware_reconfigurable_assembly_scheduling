@@ -20,11 +20,15 @@ from agent.ppo.parallel import EVALUATION_WORKER_TIMING_FIELDS, ParallelEpisodeR
 from configs import load_config, project_path
 from configs.config import public_config
 from configs.formal_preferences import formal_preferences
+from configs.evaluation_sampling import BEST_OF_THREE, sample_aggregation
 from data import load_dataset_split
 from data.dataset import validate_algorithm_seed
-from data.selection import select_validation_subsets, subset_snapshot
+from data.selection import select_validation_subsets, subset_snapshot, resolve_instance_indices
 from collections import Counter
 from result.metrics import grouped_outcomes, successful_row
+from result.metrics import result_schema_version
+from result.sample_selection import select_best_of_three, write_selected_samples
+from environment.workload import objective_names, is_modern_workload
 from data.models import load_instance_yaml
 from eval import evaluate_dataset_parallel, evaluate_preference_grid_parallel
 from result import (
@@ -64,12 +68,13 @@ def _objective_name(config: dict) -> str | None:
         return None
     fixed = quality.get("fixed")
     if isinstance(fixed, dict):
-        weights = tuple(float(fixed.get(name, 0.0)) for name in ("flow", "cost", "variance"))
+        weights = tuple(float(fixed.get(name, fixed.get("variance", 0.0) if name == "workload" else 0.0)) for name in objective_names(config))
     elif isinstance(fixed, (list, tuple)) and len(fixed) == 3:
         weights = tuple(float(value) for value in fixed)
     else:
         return None
-    return SINGLE_OBJECTIVE_WEIGHTS.get(weights)
+    selected = SINGLE_OBJECTIVE_WEIGHTS.get(weights)
+    return "workload" if selected == "variance" and is_modern_workload(config) else selected
 
 
 def _is_universal(config: dict) -> bool:
@@ -79,7 +84,8 @@ def _is_universal(config: dict) -> bool:
 
 def _rows_are_physically_safe(rows: list[dict], tolerance: float = 1e-9) -> bool:
     return bool(rows) and all(
-        int(row.get("schedule_violation_count", 0)) == 0
+        bool(row.get("physical_safety_pass", True))
+        and int(row.get("schedule_violation_count", 0)) == 0
         and float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
         <= float(row.get("safe_fatigue_limit", -math.inf)) + tolerance
         for row in rows
@@ -89,16 +95,38 @@ def _rows_are_physically_safe(rows: list[dict], tolerance: float = 1e-9) -> bool
 def _rows_satisfy_active_constraints(rows: list[dict], tolerance: float = 1e-9) -> bool:
     """Use each ablation's active constraints for checkpoint eligibility."""
     return bool(rows) and all(
-        int(row.get("schedule_violation_count", 0)) == 0
+        bool(row.get("active_constraint_pass", True))
+        and int(row.get("schedule_violation_count", 0)) == 0
         and (row.get("fatigue_mode", "full") == "neutral"
-             or float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
-             <= float(row.get("safe_fatigue_limit", -math.inf)) + tolerance)
+             or (bool(row.get("physical_safety_pass", True))
+                 and float(row.get("fatigue_monitor_peak", row.get("maximum_worker_fatigue", math.inf)))
+                 <= float(row.get("safe_fatigue_limit", -math.inf)) + tolerance))
         for row in rows
     )
 
 
 def _validation_manifest_path(config: dict, split: str) -> Path:
     return project_path(config["paths"]["manifests_root"]) / split / "manifest.json"
+
+
+def _select_training_validation_subsets(config, dataset, *, target_count, diagnostic_count):
+    explicit = config["training"].get("validation_instance_indices")
+    if explicit is None:
+        return select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+            target_count=target_count, diagnostic_count=diagnostic_count)
+    if not isinstance(explicit, (list, tuple)) or any(isinstance(index, bool) for index in explicit):
+        raise ValueError("validation_instance_indices must be a list of integer dataset indices")
+    indices = resolve_instance_indices(dataset, instance_indices=explicit)
+    if len(indices) != target_count:
+        raise ValueError("validation_instance_indices count must match the configured validation instance limit")
+    subsets = {"target": subset_snapshot(dataset, indices, role="target")}
+    if diagnostic_count:
+        diagnostic = select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+            target_count=0, diagnostic_count=diagnostic_count)["diagnostic"]
+        if set(indices).intersection(diagnostic["instance_indices"]):
+            raise ValueError("explicit target validation indices overlap the diagnostic subset")
+        subsets["diagnostic"] = diagnostic
+    return subsets
 
 
 def _checkpoint_metadata(
@@ -116,8 +144,8 @@ def _checkpoint_metadata(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     if validation_selection is None:
         dataset = load_dataset_split(config, validation_split)
-        validation_selection = select_validation_subsets(
-            dataset, config["generator"]["dataset_pressure_weights"],
+        validation_selection = _select_training_validation_subsets(
+            config, dataset,
             target_count=validation_instance_limit, diagnostic_count=0,
         )["target"]
     files = list(validation_selection["files"])
@@ -134,8 +162,10 @@ def _checkpoint_metadata(
         "runtime_manifest": dict(config["runtime_manifest"]),
         "effective_config": public_config(config),
         "algorithm_seed": int(config["seed"]),
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": result_schema_version(config),
         "selection_decode_mode": "sampled",
+        "sample_aggregation": sample_aggregation(config),
+        "sampling_budget": int(formal["validation_repeats"]),
         "formal_evaluation_stage": "validation",
         "selection_temperature": float(formal["temperature"]),
         "validation_split": validation_split,
@@ -162,7 +192,7 @@ def _checkpoint_metadata(
     }
 
 
-def _aggregate_formal_rows(
+def _aggregate_per_sample_rows(
     config: dict,
     *,
     rows: list[dict[str, Any]],
@@ -268,6 +298,55 @@ def _aggregate_formal_rows(
     return aggregate
 
 
+def _aggregate_formal_rows(
+    config: dict, *, rows: list[dict[str, Any]], dataset_name: str,
+    manifest: str, unique_instance_count: int, repeat_count: int,
+    universal: bool, stage: str = "validation", strict_counts: bool = False,
+) -> dict[str, Any]:
+    mode = sample_aggregation(config)
+    if mode == BEST_OF_THREE and repeat_count != 3:
+        raise ValueError("best_of_3_v1 requires exactly three formal sampling repeats")
+    arguments = dict(config=config, dataset_name=dataset_name, manifest=manifest,
+                     unique_instance_count=unique_instance_count, universal=universal, stage=stage)
+    raw = _aggregate_per_sample_rows(**arguments, rows=rows, repeat_count=repeat_count,
+                                     strict_counts=strict_counts or mode == BEST_OF_THREE)
+    if mode != BEST_OF_THREE:
+        return raw
+    if universal:
+        keys = [point.key for point in formal_preferences(config, stage)]
+    else:
+        from environment import PreferenceContext
+        keys = [PreferenceContext.from_input(config["preference"]["quality"]["fixed"]).key]
+    chosen, success_counts = select_best_of_three(
+        rows, unique_instance_count=unique_instance_count, preference_keys=keys)
+    aggregate = _aggregate_per_sample_rows(**arguments, rows=chosen, repeat_count=1)
+    # Eligibility and the solve budget cover ALL requests, even when a bad row loses selection.
+    for field in ("evaluation_complete", "selection_eligible", "completion_coverage",
+                  "sampling_truncated_count", "schedule_violation_count", "decision_count",
+                  "total_inference_time_seconds", "total_solve_time_seconds", "worker_timing_totals"):
+        aggregate[field] = raw[field]
+    aggregate.update(
+        sample_aggregation=mode, aggregation_protocol_version=mode, sampling_budget=3,
+        repeat_count=3, request_count=len(rows), delivery_count=len(chosen),
+        cell_count=len(chosen), completed_cell_count=sum(successful_row(row) for row in chosen),
+        overall_completion_rate=sum(successful_row(row) for row in chosen) / len(chosen),
+        raw_overall_completion_rate=sum(successful_row(row) for row in rows) / len(rows),
+        raw_minimum_preference_completion_rate=raw.get("minimum_preference_completion_rate", raw["completion_rate"]),
+        raw_preference_balanced_quality_score=raw["preference_balanced_quality_score"],
+        success_count_distribution=success_counts, raw_sampled=raw,
+        physical_safety_pass=_rows_are_physically_safe(rows),
+        active_constraint_pass=_rows_satisfy_active_constraints(rows),
+    )
+    if not aggregate["active_constraint_pass"]:
+        aggregate["selection_eligible"] = False
+    if not aggregate["evaluation_complete"]:
+        aggregate.update(completion_rate=None, overall_completion_rate=None,
+                         completion_rate_by_preference={}, minimum_preference_completion_rate=None,
+                         preference_quality_by_key={}, preference_balanced_quality_score=None,
+                         completed_metrics={}, all_instance_metrics={}, gap_metrics={}, tail_metrics={})
+    return aggregate
+
+
 def _evaluate_policy(
     config: dict,
     *,
@@ -353,6 +432,11 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
     all_metrics = aggregate["all_instance_metrics"]
     return {
         "episode": int(episode),
+        **{field: (json.dumps(aggregate[field], sort_keys=True) if field == "success_count_distribution" else aggregate[field]) for field in (
+            "sample_aggregation", "sampling_budget", "request_count", "delivery_count",
+            "overall_completion_rate", "raw_overall_completion_rate",
+            "raw_minimum_preference_completion_rate", "raw_preference_balanced_quality_score",
+            "success_count_distribution") if field in aggregate},
         "subset_sha256": aggregate.get("subset_sha256"),
         "dataset_manifest_sha256": aggregate.get("dataset_manifest_sha256"),
         "instance_indices": aggregate.get("instance_indices"),
@@ -390,6 +474,9 @@ def _validation_log_row(aggregate: dict, *, episode: int) -> dict[str, Any]:
         "mean_worker_load_variance": _summary_value(
             completed, "worker_load_variance"
         ),
+        "mean_workload_objective_value": _summary_value(completed, "workload_objective_value"),
+        "mean_worker_load_total": _summary_value(completed, "worker_load_total"),
+        "mean_worker_load_max": _summary_value(completed, "worker_load_max"),
         "mean_operation_progress": _summary_value(
             all_metrics, "operation_progress"
         ),
@@ -445,7 +532,7 @@ class LearningRatePlateauController:
 
 
 def preference_group(preference):
-    for name in ("flow", "cost", "variance"):
+    for name in ("flow", "cost", "workload", "variance"):
         if float(preference.get(name, 0)) >= 1 - 1e-9:
             return name
     return "mixed"
@@ -477,7 +564,7 @@ def _episode_log_row(episode) -> dict[str, Any]:
         "instance_id": episode.instance_id,
         **{name: episode.metadata.get(name) for name in ("seed", "pressure_type", "cost_profile", "severity", "feasibility_status", "diagnostic_status")},
         **{name: episode.metadata.get(name) for name in ("generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256", "training_cache_fingerprint")},
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": "9.0.0" if "workload_mode" in metrics else EVALUATION_SCHEMA_VERSION,
         **{"instance_" + name: value for name, value in (episode.metadata.get("sampled_parameters") or {}).items()},
         "generation_time_seconds": episode.generation_time_seconds,
         **{name: float(getattr(episode, name, 0.0))
@@ -524,6 +611,9 @@ def _episode_log_row(episode) -> dict[str, Any]:
         "flow_mode": metrics.get("flow_mode", "raw_v1"),
         "reconfiguration_cost": float(metrics["reconfiguration_cost"]),
         "worker_load_variance": float(metrics["worker_load_variance"]),
+        **{name: metrics.get(name) for name in ("workload_objective_value", "committed_workload_objective_value",
+            "worker_load_total", "worker_load_max", "worker_loads", "workload_mode", "workload_q", "workload_rule",
+            "workload_order", "workload_version", "reward_objective_workload_value") if name in metrics},
         "maximum_worker_fatigue": float(metrics["maximum_worker_fatigue"]),
         "safe_fatigue_limit": float(metrics["safe_fatigue_limit"]),
         "makespan": float(metrics["time"]),
@@ -539,6 +629,8 @@ def _episode_log_row(episode) -> dict[str, Any]:
             for name, value in episode.reward_components.items()
         }
     )
+    if isinstance(row.get("worker_loads"), dict):
+        row["worker_loads"] = json.dumps(row["worker_loads"], sort_keys=True)
     return row
 
 
@@ -760,8 +852,8 @@ def _train_single_stage(
     validation_pool = load_dataset_split(config, validation_split)
     selection_config = config["training"].get("validation_selection", {})
     diagnostic_limit = 0 if smoke else int(selection_config.get("diagnostic_instance_limit", 49))
-    subsets = select_validation_subsets(validation_pool, config["generator"]["dataset_pressure_weights"],
-                                       target_count=validation_limit, diagnostic_count=diagnostic_limit)
+    subsets = _select_training_validation_subsets(config, validation_pool,
+        target_count=validation_limit, diagnostic_count=diagnostic_limit)
     target_selection = subsets["target"]
     diagnostic_selection = subsets.get("diagnostic")
     write_json(run_directory / "validation_subsets.json", subsets)
@@ -909,6 +1001,7 @@ def _train_single_stage(
                 run_directory / "sampled_validation_instance_metrics.csv",
                 sampled_validation_rows,
             )
+            write_selected_samples(run_directory / "selected_validation_instance_metrics.csv", sampled_validation_rows)
             dashboard.log_validation(
                 validation_row,
                 best_validation=best_validation_row,
@@ -931,6 +1024,7 @@ def _train_single_stage(
                 diagnostic_log.append(_validation_log_row(current, episode=completed_episodes))
                 current.update(validation_episode=completed_episodes, evaluated_model_role="current")
                 write_csv(run_directory / "sampled_diagnostic_instance_metrics.csv", diagnostic_rows)
+                write_selected_samples(run_directory / "selected_diagnostic_instance_metrics.csv", diagnostic_rows)
                 write_csv(run_directory / "diagnostic_log.csv", diagnostic_log)
                 write_json(run_directory / "diagnostic_summary.json", current)
 
@@ -983,6 +1077,7 @@ def _train_single_stage(
             run_directory / "final_sampled_instance_metrics.csv",
             final_sampled_rows,
         )
+        write_selected_samples(run_directory / "final_selected_instance_metrics.csv", final_sampled_rows)
     checkpoint = best_checkpoint if selector.has_best else None
     provenance = build_provenance(
         config,

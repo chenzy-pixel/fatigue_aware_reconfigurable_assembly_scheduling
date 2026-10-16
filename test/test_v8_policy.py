@@ -10,7 +10,6 @@ import torch
 from agent.baselines import HeuristicPolicy
 from agent.ppo import PPOAgent, build_actor_critic
 from agent.ppo.network import infer_checkpoint_network_spec
-from agent.ppo.network import ObjectiveExpert, SimplexMonotoneRanker
 from environment import (
     AssemblySchedulingEnv,
     bounded_quality_score,
@@ -19,40 +18,10 @@ from environment import (
 )
 
 
-@pytest.mark.parametrize("feature_count", (1, 3, 4))
-def test_equal_direct_inputs_have_feature_count_invariant_scale(feature_count):
-    ranker = SimplexMonotoneRanker([-1] * feature_count)
-    value = ranker(torch.full((1, feature_count), 0.6))
-    assert value.item() == pytest.approx(-np.tanh(0.6), abs=1e-7)
-    weights = ranker.normalized_weights()
-    assert torch.all(weights > 0)
-    assert weights.sum().item() == pytest.approx(1.0, abs=1e-7)
-    assert torch.allclose(weights, torch.full_like(weights, 1.0 / feature_count))
 
 
-def test_objective_expert_ranges_and_parameterization():
-    expert = ObjectiveExpert([-1, 1, -1], hidden_dim=8)
-    action = torch.randn(17, 8)
-    features = torch.rand(17, 3)
-    direct, context, combined = expert(action, features)
-    assert torch.all(direct >= -1) and torch.all(direct <= 1)
-    assert torch.all(context >= -1) and torch.all(context <= 1)
-    assert torch.all(combined >= -2) and torch.all(combined <= 2)
-    assert expert.direct_ranker._parameters.keys() == {"theta"}
-    assert not any(
-        token in name
-        for name, _ in expert.direct_ranker.named_parameters()
-        for token in ("bias", "temperature", "scale")
-    )
 
 
-def test_one_hot_mixer_ignores_inactive_experts():
-    experts = torch.tensor([[0.25, -0.4, 1.2]], requires_grad=True)
-    preference = torch.tensor([1.0, 0.0, 0.0])
-    base = (experts * preference).sum()
-    base.backward()
-    assert base.item() == pytest.approx(0.25)
-    assert experts.grad.tolist() == [[1.0, 0.0, 0.0]]
 
 
 def test_preference_is_outside_hgnn_but_conditions_actor_and_critic(config, fixed_instance):
@@ -94,12 +63,12 @@ def test_single_stage_reward_is_unshaped_and_telescopes(config, fixed_instance):
     assert metrics["truncated"] is False
     initial = metrics["initial_objectives"]
     initial_score = bounded_quality_score(
-        initial["flow"], initial["cost"], initial["variance"], config, preference=(7, 2, 1)
+        initial["flow"], initial["cost"], initial["workload"], config, preference=(7, 2, 1)
     )
     terminal_score = bounded_quality_score(
-        metrics["flow_time_objective"],
+        metrics["reward_objective_flow"],
         metrics["reconfiguration_cost"],
-        metrics["worker_load_variance"],
+        metrics["workload_objective_value"],
         config,
         preference=(7, 2, 1),
     )
@@ -137,7 +106,7 @@ def test_sampling_guard_preserves_actual_quality_and_reward(
     initial_score = bounded_quality_score(
         initial["flow"],
         initial["cost"],
-        initial["variance"],
+        initial["workload"],
         truncated_config,
         preference=preference,
     )

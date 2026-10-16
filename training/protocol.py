@@ -34,6 +34,8 @@ class LexicographicCheckpointSelector:
     improvement_count: int = 0
     tie_count: int = 0
     last_decision: dict[str, object] = field(default_factory=dict)
+    protocol: str = "single_stage_lexicographic_failure_v3"
+    sample_aggregation: str = "per_sample_v1"
 
     @classmethod
     def from_config(cls, config: dict) -> "LexicographicCheckpointSelector":
@@ -43,7 +45,9 @@ class LexicographicCheckpointSelector:
             )
         if not math.isclose(float(config["ppo"]["gamma"]), 1.0):
             raise ValueError("single-stage telescoping training requires ppo.gamma = 1.0")
-        return cls()
+        from configs.evaluation_sampling import sample_aggregation
+        return cls(protocol=config.get("runtime_manifest", {}).get("training_protocol", "single_stage_lexicographic_failure_v3"),
+                   sample_aggregation=sample_aggregation(config))
 
     @property
     def has_best(self) -> bool:
@@ -75,6 +79,8 @@ class LexicographicCheckpointSelector:
                 "best_episode": self.best_episode,
             }
             return "ineligible"
+        if validation.get("sample_aggregation", "per_sample_v1") != self.sample_aggregation:
+            raise ValueError("checkpoint selector and validation sampling aggregation disagree")
         completion_rate = float(validation["completion_rate"])
         quality_score = float(
             validation.get("preference_balanced_quality_score", math.inf)
@@ -159,7 +165,8 @@ class LexicographicCheckpointSelector:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "protocol": "single_stage_lexicographic_failure_v3",
+            "protocol": self.protocol,
+            "sample_aggregation": self.sample_aggregation,
             "selection_tolerance": SELECTION_TOLERANCE,
             "has_best": self.has_best,
             "best_completion_rate": self.best_completion_rate,

@@ -320,6 +320,7 @@ def test_parallel_training_seeds_and_cleanup(
                 "flow",
                 "cost",
                 "variance",
+                "workload",
                 "operation_progress",
                 "quality",
                 "failure",
@@ -723,6 +724,10 @@ def test_mixed_preference_quality_rollout_uses_episode_contexts(
             abs=1e-8,
         )
         assert episode.reward_components["failure"] == 0.0
+        assert episode.reward_components["workload"] == pytest.approx(episode.metrics["cumulative_reward"]["workload"])
+        assert episode.reward_components["variance"] == pytest.approx(-episode.metrics["committed_worker_load_variance"])
+        from train import _episode_log_row
+        assert _episode_log_row(episode)["reward_workload"] == episode.reward_components["workload"]
         assert episode.metrics["task_failed"] is False
         assert all(
             transition.observation.preference.tolist() == preference
@@ -777,7 +782,7 @@ def test_serial_and_parallel_ppo_preserve_the_same_preference(
     assert parallel.metrics["preference"] == serial["preference"] == {
         "flow": 0.7,
         "cost": 0.2,
-        "variance": pytest.approx(0.1),
+        "workload": pytest.approx(0.1),
     }
     assert parallel.metrics["preference_key"] == serial["preference_key"]
     for field in (

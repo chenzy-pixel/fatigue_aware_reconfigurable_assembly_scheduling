@@ -46,7 +46,7 @@ def test_latest_network_config_is_fixed_to_v8(config, fixed_instance):
     observation = AssemblySchedulingEnv(config).reset(fixed_instance)
     network = build_actor_critic(observation, config["network"])
     assert network.policy_head_version == 8
-    assert network.expert_weight_parameterization == "simplex_softplus_v8"
+    assert network.actor_head_parameterization == "shared_preference_mlp_v1"
 
     invalid = deepcopy(config["network"])
     invalid["policy_head_version"] = 7
@@ -67,7 +67,7 @@ def test_network_spec_records_public_observation_schema(config, fixed_instance):
     network = build_actor_critic(observation, config["network"])
     spec = network.network_spec()
 
-    assert spec["observation_schema_version"] == 10
+    assert spec["observation_schema_version"] == 12
     assert spec["policy_head_version"] == 8
-    assert spec["expert_weight_parameterization"] == "simplex_softplus_v8"
+    assert spec["actor_head_parameterization"] == "shared_preference_mlp_v1"
     assert spec["preference_embedding_dim"] == 32

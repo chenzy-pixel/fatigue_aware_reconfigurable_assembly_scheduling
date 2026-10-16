@@ -8,20 +8,23 @@ from pathlib import Path
 
 import pytest
 
-from configs import load_config, validate_latest_only_config
+from configs import load_config, project_path, validate_latest_only_config
 from configs.formal_preferences import formal_preferences
 from configs.runtime import runtime_manifest
 from configs.normalization import (
     NORMALIZATION_MANIFEST_SCHEMA,
     SELECTED_VALIDATION_MANIFEST_SCHEMA,
+    WORKLOAD_MANIFEST_SCHEMA,
     apply_normalization_manifest,
     canonical_json_sha256,
+    file_sha256,
     load_normalization_manifest,
     write_immutable_manifest,
 )
 from environment import PreferenceContext, normalize_preference, quality_preference_for_episode, simplex_lattice
 from result import build_provenance, source_state_snapshot
-from train import _aggregate_formal_rows, _checkpoint_metadata
+# Preserve regression coverage for the historical per-request aggregation.
+from train import _aggregate_per_sample_rows as _aggregate_formal_rows, _checkpoint_metadata
 from utils import configured_formal_evaluation_sampling_seeds
 
 
@@ -30,7 +33,8 @@ from utils import configured_formal_evaluation_sampling_seeds
     (
         ("configs/e1/single_flow.json", [1.0, 0.0, 0.0]),
         ("configs/e1/single_cost.json", [0.0, 1.0, 0.0]),
-        ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
+        ("configs/e1/single_workload.json", [0.0, 0.0, 1.0]),
+        ("configs/controls/raw_single_variance.json", [0.0, 0.0, 1.0]),
     ),
 )
 def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
@@ -49,7 +53,7 @@ def test_single_objective_configs_use_one_quality_preference_from_episode_zero(
 
 
 def test_universal_uses_13_validation_and_66_final_preferences_with_training_sequence():
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     assert config["reward"]["terminal_failure_penalty"] == 2.0
     assert config["runtime_manifest"]["terminal_failure_penalty"] == 2.0
     assert len(formal_preferences(config, "validation")) == 13
@@ -88,7 +92,7 @@ def test_universal_uses_13_validation_and_66_final_preferences_with_training_seq
 
 
 def test_all_final_grid_preferences_survive_float32_observation_round_trip():
-    for point in formal_preferences(load_config("configs/v8/universal.json"), "final_test"):
+    for point in formal_preferences(load_config("configs/controls/raw.json"), "final_test"):
         normalized = normalize_preference(point.as_array())
         assert normalized.as_tuple() == pytest.approx(point.as_tuple(), abs=5e-8)
         assert all(value >= 0.0 for value in normalized.as_tuple())
@@ -103,14 +107,15 @@ def test_all_final_grid_preferences_survive_float32_observation_round_trip():
 def test_single_stage_rejects_legacy_reward_weights_and_nonunit_gamma():
     config = deepcopy(load_config("configs/default.json"))
     config.pop("runtime_manifest")
+    current_suite = config["experiment_suite_version"]
     config["experiment_suite_version"] = "single_stage_progress_quality_v1"
     with pytest.raises(ValueError, match="experiment_suite_version"):
         validate_latest_only_config(config)
-    config["experiment_suite_version"] = "single_stage_progress_quality_failure_v3"
+    config["experiment_suite_version"] = current_suite
     config["reward"]["quality_weights"] = {
         "flow": 1.0,
         "cost": 0.0,
-        "variance": 0.0,
+        "workload": 0.0,
     }
     with pytest.raises(ValueError, match="reward.quality_weights"):
         validate_latest_only_config(config)
@@ -175,22 +180,37 @@ def test_normalization_manifest_round_trip_stays_outside_training_protocol(tmp_p
         load_normalization_manifest(destination, expected_sha256=digest)
 
 
-def test_frozen_scales_match_committed_tail_means_and_config():
-    config = load_config("configs/v8/universal.json")
-    manifest = load_normalization_manifest(
-        config["objective_scalarizer"]["normalization_manifest"],
-        expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
-    )
-    assert config["objective_scalarizer"]["scales"] == manifest["scales"]
+def test_historical_selected_scales_match_committed_validation_means():
+    path = project_path("configs/manifests/v2_selected_scales_20261002.json")
+    manifest = load_normalization_manifest(path, expected_sha256=file_sha256(path))
     assert manifest["schema_version"] == SELECTED_VALIDATION_MANIFEST_SCHEMA
     assert manifest["scales"] == {"flow": 1089.15, "cost": 353.27, "variance": 2.2629}
     for objective, source in manifest["sources"].items():
         assert round(source["successful_trajectory_mean"], source["rounding_digits"]) == manifest["scales"][objective]
 
 
+def test_current_workload_scales_match_their_validation_reference_rows():
+    from environment.workload import workload_config, workload_value
+
+    config = load_config("configs/controls/raw.json")
+    manifest = load_normalization_manifest(
+        project_path(config["objective_scalarizer"]["normalization_manifest"]),
+        expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
+    )
+    assert manifest["schema_version"] == WORKLOAD_MANIFEST_SCHEMA
+    assert config["objective_scalarizer"]["scales"] == manifest["scales"]
+    assert manifest["workload_objective"] == workload_config(config)
+    rows = manifest["workload_source"]["rows"]
+    good = [row for row in rows if row["success"] and row["physical_valid"]]
+    for row in rows:
+        actual = workload_value(tuple(row["worker_loads"].values()), config)
+        assert row["workload_value"] == pytest.approx(actual)
+    assert statistics.fmean(row["workload_value"] for row in good) == pytest.approx(manifest["scales"]["workload"])
+    assert manifest["scales"] == {"flow": 1089.15, "cost": 353.27, "workload": 21.03145448655653}
+
+
 def test_legacy_e1_scales_remain_verifiable():
-    from configs.normalization import file_sha256
-    path = Path("configs/manifests/e1_tail5_scales_20260928.json")
+    path = project_path("configs/manifests/e1_tail5_scales_20260928.json")
     manifest = load_normalization_manifest(path, expected_sha256=file_sha256(path))
     assert manifest["schema_version"] == NORMALIZATION_MANIFEST_SCHEMA
     for objective, source in manifest["sources"].items():
@@ -200,11 +220,8 @@ def test_legacy_e1_scales_remain_verifiable():
 
 @pytest.mark.parametrize("invalid", ["scale", "rounding", "source_hash"])
 def test_selected_scales_reject_inconsistent_signed_payload(tmp_path, invalid):
-    config = load_config("configs/default.json")
-    manifest = load_normalization_manifest(
-        config["objective_scalarizer"]["normalization_manifest"],
-        expected_sha256=config["objective_scalarizer"]["normalization_manifest_sha256"],
-    )
+    source = project_path("configs/manifests/v2_selected_scales_20261002.json")
+    manifest = load_normalization_manifest(source, expected_sha256=file_sha256(source))
     manifest.pop("content_sha256")
     if invalid == "scale":
         manifest["scales"]["variance"] *= 2
@@ -223,18 +240,29 @@ def test_current_scales_align_training_reference_quality_and_pareto():
     from analysis.pareto_analysis import normalize_objectives
     from environment.types import bounded_quality_score
     from result.metrics import evaluation_quality_metric, LEGACY_QUALITY_METRIC, quality_metric_sha256
-    expected = {"flow":1089.15, "cost":353.27, "variance":2.2629}
-    for path in ("configs/default.json", "configs/v8/universal.json",
-                 "configs/e1/single_flow.json", "configs/e1/single_cost.json", "configs/e1/single_variance.json",
+    expected = {"flow":368.3143, "cost":353.27, "workload":21.03145448655653}
+    for path in ("configs/default.json",
+                 "configs/e1/single_flow.json", "configs/e1/single_cost.json", "configs/e1/single_workload.json",
                  "configs/baselines/mo_alns.json"):
         config = load_config(path)
         assert config["objective_scalarizer"]["scales"] == expected
         reference = evaluation_quality_metric(config)
+        assert reference["flow_mode"] == "excess_proportional_lb_v1"
+        assert reference["workload_mode"] == "geometric_owa"
+        assert reference["workload_q"] == 0.5
         assert {name:reference[f"{name}_scale"] for name in expected} == expected
         assert normalize_objectives(list(expected.values()), list(expected.values())) == pytest.approx([.5,.5,.5])
         for preference in ((1,0,0),(0,1,0),(0,0,1)):
             assert bounded_quality_score(*expected.values(), config, preference=preference) == pytest.approx(.5)
-        assert bounded_quality_score(1089.15, 2*353.27, 4*2.2629, reference) == pytest.approx(.61)
+        assert bounded_quality_score(expected["flow"], 2*expected["cost"], 4*expected["workload"], reference) == pytest.approx(.61)
+    control = load_config("configs/controls/raw_single_variance.json")
+    control_expected = {**expected, "flow": 1089.15, "workload": 2.2629}
+    assert control["objective_scalarizer"]["scales"] == control_expected
+    assert control["network"]["observation_schema_version"] == 12
+    control_metric = evaluation_quality_metric(control)
+    assert control_metric["workload_mode"] == "variance"
+    assert control_metric["workload_q"] is None
+    assert bounded_quality_score(*control_expected.values(), control) == pytest.approx(.5)
     assert evaluation_quality_metric({"evaluation":{"quality_metric":LEGACY_QUALITY_METRIC}}) == LEGACY_QUALITY_METRIC
     assert quality_metric_sha256(reference) != quality_metric_sha256(LEGACY_QUALITY_METRIC)
 
@@ -261,6 +289,12 @@ def _row(
         "flow_time_objective": 1.0,
         "reconfiguration_cost": 1.0,
         "worker_load_variance": 1.0,
+        "workload_objective_value": 1.0,
+        "workload_mode": "geometric_owa",
+        "workload_q": 0.5,
+        "workload_rule": "normalized_geometric_by_worker_count_v1",
+        "workload_order": "descending",
+        "workload_version": "workload_objective_v1",
         "inference_time_seconds": 0.0,
         "solve_time_seconds": 0.0,
         "inference_time_per_decision_ms": 0.0,
@@ -319,7 +353,7 @@ def test_universal_any_preference_without_success_has_infinite_quality():
 
 
 def test_universal_validation_uses_only_configured_13_preferences():
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     keys = [point.key for point in formal_preferences(config, "validation")]
     rows = [_row(key, 0.25) for key in keys]
     aggregate = _aggregate_formal_rows(
@@ -338,7 +372,7 @@ def test_universal_validation_uses_only_configured_13_preferences():
 
 
 def test_universal_checkpoint_metadata_records_all_fixed_preferences():
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     metadata = _checkpoint_metadata(
         config,
         role="best",
@@ -357,7 +391,7 @@ def test_universal_checkpoint_metadata_records_all_fixed_preferences():
 
 @pytest.mark.parametrize(("stage", "preference_count"), (("validation", 13), ("final_test", 66)))
 def test_formal_aggregation_rejects_duplicate_cells_even_when_counts_match(stage, preference_count):
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     rows = [
         {**_row(point.key, 0.25, index=index), "sampling_repeat": repeat}
         for point in formal_preferences(config, stage)
@@ -388,7 +422,7 @@ def test_formal_aggregation_rejects_duplicate_cells_even_when_counts_match(stage
 
 @pytest.mark.parametrize(("stage", "preference_count"), (("validation", 13), ("final_test", 66)))
 def test_provenance_records_the_evaluated_stage_and_moved_sources(stage, preference_count):
-    config = load_config("configs/v8/universal.json")
+    config = load_config("configs/controls/raw.json")
     provenance = build_provenance(config, formal_evaluation_stage=stage)
     assert provenance["formal_evaluation_stage"] == stage
     assert provenance["preference_count"] == preference_count

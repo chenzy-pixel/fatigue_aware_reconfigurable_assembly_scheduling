@@ -267,7 +267,8 @@ def test_episode_csv_row_reconstructs_truncated_training_return(
     write_csv(path, [_episode_log_row(episode)])
     with path.open("r", encoding="utf-8", newline="") as handle:
         row = next(csv.DictReader(handle))
-    assert row["reward_version"] == FAILURE_PENALTY_REWARD
+    from environment.types import flow_reward_version
+    assert row["reward_version"] == flow_reward_version(config)
     assert float(row["reward_failure"]) == 0
     assert float(row["base_reward"]) + float(row["reward_failure"]) == pytest.approx(
         float(row["reward"]), abs=1e-8

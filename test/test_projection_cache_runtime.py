@@ -8,8 +8,8 @@ from data.distribution import protocol_hashes
 from environment import AssemblySchedulingEnv
 from environment.resource_projection import ResourceProjector, projection_cache_scope
 from environment.time_context import project_wait_state
-from scripts.audit_observation_reward import compare_observations
-from scripts.audit_state_sufficiency import worker_alias_instance, worker_histories
+from support.observation_cases import compare_observations
+from support.state_cases import worker_alias_instance, worker_histories
 
 
 def projector(config, instance, entries=1024):

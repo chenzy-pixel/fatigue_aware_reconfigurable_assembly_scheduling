@@ -246,6 +246,20 @@ def test_dashboard_creates_then_appends_stable_windows(config, tmp_path):
     )
 
 
+def test_best_of_three_dashboard_labels_selected_and_raw_metrics(config, tmp_path):
+    FakeVisdom.instances.clear()
+    FakeVisdom.connected = True
+    dashboard = TrainingDashboard(config=_enabled_config(config), run_directory=tmp_path,
+                                  total_episodes=2, visdom_class=FakeVisdom)
+    row = {"episode":2, "sample_aggregation":"best_of_3_v1", "completion_rate":1.,
+           "preference_balanced_quality_score":.2, "raw_preference_balanced_quality_score":.3,
+           "raw_overall_completion_rate":.9, "raw_minimum_preference_completion_rate":.8}
+    dashboard.log_validation(row, best_validation=None, phase_state=_phase_state())
+    lines = [c[2] for c in FakeVisdom.instances[-1].calls if c[0]=="line"]
+    assert any(c.get("win")=="68_validation_delivery_quality" and c.get("name")=="三次取优质量代价" for c in lines)
+    assert any(c.get("win")=="60_validation_feasibility" and c.get("name")=="原始请求整体完成率" for c in lines)
+
+
 def test_unreachable_server_switches_to_offline_events(config, tmp_path):
     FakeVisdom.instances.clear()
     FakeVisdom.connected = False

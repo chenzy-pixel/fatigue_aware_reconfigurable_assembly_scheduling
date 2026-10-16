@@ -14,8 +14,9 @@ from configs import load_config, project_path
 from configs.formal_preferences import formal_preferences, objective_scales
 from environment import PreferenceContext, terminal_quality_score
 from environment.types import metrics_flow_objective
+from environment.workload import metrics_workload_objective, workload_config, objective_names, is_modern_workload
 from result.io import write_csv, write_json
-from result.metrics import EVALUATION_SCHEMA_VERSION, evaluation_quality_metric, quality_metric_sha256
+from result.metrics import EVALUATION_SCHEMA_VERSION, evaluation_quality_metric, quality_metric_sha256, result_schema_version
 
 RELATIVE_TOLERANCE = 1e-9
 REFERENCE_POINT = (1.0, 1.0, 1.0)
@@ -136,7 +137,7 @@ def _flag(value: Any) -> bool:
 
 def _preference(row: Mapping[str, Any]) -> PreferenceContext:
     values = []
-    for name in ("flow", "cost", "variance"):
+    for name in ("flow", "cost", "workload" if "preference_workload" in row or "w_workload" in row else "variance"):
         value = row.get(f"w_{name}")
         if value in {None, ""}:
             value = row.get(f"preference_{name}")
@@ -148,18 +149,23 @@ def _preference(row: Mapping[str, Any]) -> PreferenceContext:
 
 def valid_candidate(row: Mapping[str, Any]) -> bool:
     try:
-        objectives = [float(row[name]) for name in OBJECTIVE_FIELDS]
+        fields = ("flow_time_objective", "reconfiguration_cost", "workload_objective_value" if "workload_objective_value" in row else "worker_load_variance")
+        objectives = [float(row[name]) for name in fields]
         return bool(
             _flag(row["task_succeeded"]) and not _flag(row.get("sampling_truncated", row["truncated"]))
             and int(float(row.get("schedule_violation_count", 0))) == 0
             and float(row.get("maximum_worker_fatigue", 0)) <= float(row.get("safe_fatigue_limit", math.inf)) + 1e-9
             and all(math.isfinite(value) and value >= 0 for value in objectives)
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, KeyError):
         return False
 
 
 def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    row = dict(row)
+    for field in ("result_schema_version", "quality_metric_sha256", "preference_quality_score", "workload_objective_value"):
+        if f"training_{field}" in row:
+            row[field] = row[f"training_{field}"]
     from data.distribution import protocol_hashes
     from environment.types import flow_mode
     if row.get("flow_mode", "raw_v1") != flow_mode(dict(config)):
@@ -167,7 +173,7 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
     scalarizer = config["objective_scalarizer"]
     required = {
         **protocol_hashes(config),
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": result_schema_version(config),
         "experiment_suite_version": config["experiment_suite_version"],
         "reward_version": config["reward"]["mode"],
         "objective_scalarizer_type": scalarizer["type"],
@@ -175,11 +181,11 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
         "quality_metric_sha256": quality_metric_sha256(evaluation_quality_metric(config)),
     }
     for field, expected in required.items():
-        if str(row.get(field)) != str(expected):
+        if str(row.get(f"training_{field}", row.get(field))) != str(expected):
             raise ValueError(f"candidate {field} does not match the current experiment")
     for field, expected in {
         "objective_scalarizer_rho": scalarizer["rho"],
-        **{f"objective_scale_{name}": scalarizer["scales"][name] for name in ("flow", "cost", "variance")},
+        **{f"objective_scale_{name}": scalarizer["scales"][name] for name in objective_names(config)},
     }.items():
         value = float(row[field])
         if not math.isfinite(value) or not math.isclose(value, expected, rel_tol=1e-12, abs_tol=1e-12):
@@ -194,29 +200,56 @@ def _validate_row_protocol(row: Mapping[str, Any], config: Mapping[str, Any]) ->
             raise ValueError("candidate policy execution does not match the current experiment")
         if row.get("policy_precision") != config["training"]["policy_precision"]:
             raise ValueError("candidate policy precision does not match the current experiment")
-    normalize_objectives([float(row[field]) for field in OBJECTIVE_FIELDS], objective_scales(config))
+    if is_modern_workload(config):
+        from analysis.workload_dominance import actual_worker_loads, workload_identity
+        from environment.workload import workload_value
+        for name, expected in workload_identity(config).items():
+            actual = row.get(name)
+            if name == "workload_q" and actual in {"", "None", "null"}:
+                actual = None
+            if name == "workload_q" and actual is not None:
+                actual = float(actual)
+            if actual != expected:
+                raise ValueError(f"candidate {name} does not match its training workload identity")
+        loads = actual_worker_loads(row)
+        actual_variance = workload_value(list(loads.values()), {"workload_objective": {"mode": "variance"}})
+        if not math.isclose(actual_variance, float(row["worker_load_variance"]), rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("candidate actual variance disagrees with labelled-worker loads")
+        if not math.isclose(workload_value(list(loads.values()), config), metrics_workload_objective(dict(row), dict(config)), rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("candidate workload objective disagrees with actual labelled-worker loads")
+    normalize_objectives([float(row["flow_time_objective"]), float(row["reconfiguration_cost"]),
+                          metrics_workload_objective(dict(row), dict(config))], objective_scales(config))
     quality = terminal_quality_score(
         metrics_flow_objective(dict(row),dict(config)),
-        float(row["reconfiguration_cost"]),float(row["worker_load_variance"]), dict(config),
+        float(row["reconfiguration_cost"]), metrics_workload_objective(dict(row), dict(config)), dict(config),
         preference=_preference(row).preference, terminal_failure=_flag(row["task_failed"]),
     )
-    if not math.isclose(float(row["preference_quality_score"]), quality, rel_tol=1e-9, abs_tol=1e-9):
+    if not math.isclose(float(row.get("training_preference_quality_score", row["preference_quality_score"])), quality, rel_tol=1e-9, abs_tol=1e-9):
         raise ValueError("candidate preference quality does not match its objectives and preference")
 
 
 def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final_test", arms=None,
-                 evaluation_flow_mode=None):
+                 evaluation_flow_mode=None, evaluation_config=None, own_goal=False):
     """Validate the preference/repeat matrix and analyze each scheduling instance."""
     config = load_config("configs/default.json") if config is None else config
     preferences = formal_preferences(config, stage)
     expected = {point.key for point in preferences}
     scales = objective_scales(config)
     from environment.types import flow_mode, FLOW_RAW, FLOW_EXCESS
-    selected_evaluation_mode = flow_mode(config) if evaluation_flow_mode is None else evaluation_flow_mode
+    selected_evaluation_mode = (evaluation_flow_mode if evaluation_flow_mode is not None
+                                else flow_mode(evaluation_config) if evaluation_config is not None
+                                else flow_mode(config))
     if selected_evaluation_mode not in {FLOW_RAW,FLOW_EXCESS}:
         raise ValueError("unknown evaluation_flow_mode")
     if evaluation_flow_mode is not None:
         scales = (1089.15,353.27,2.2629) if selected_evaluation_mode==FLOW_RAW else (368.3143,353.27,2.2629)
+    scoring_config = config
+    rescore = is_modern_workload(config) or evaluation_config is not None
+    if rescore:
+        from analysis.workload_dominance import resolve_workload_evaluation_config, rescore_workload_row
+        scoring_config = resolve_workload_evaluation_config(config, evaluation_config=evaluation_config,
+            own_goal=own_goal, flow_mode=selected_evaluation_mode)
+        scales = objective_scales(scoring_config)
     groups = defaultdict(list)
     for original in rows:
         row = dict(original)
@@ -227,8 +260,10 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
         if _flag(row.get("sampling_truncated", row.get("truncated", False))) or row.get("evaluation_complete") is False:
             raise ValueError("externally truncated evaluations cannot enter Pareto/HV analysis")
         _validate_row_protocol(row, config)
+        if rescore:
+            row = rescore_workload_row(row, scoring_config)
         row["preference_key"] = _preference(row).key
-        for name, value in zip(("flow", "cost", "variance"), _preference(row).as_tuple()):
+        for name, value in zip(objective_names(config), _preference(row).as_tuple()):
             row[f"w_{name}"] = value
         groups[(str(row["dataset"]), int(row["algorithm_seed"]), str(row["instance_id"]))].append(row)
     if not groups:
@@ -263,7 +298,7 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
             safe = [row for row in cells if valid_candidate(row)]
             points = [normalize_objectives([
                 float(row["flow_excess_objective"] if selected_evaluation_mode==FLOW_EXCESS else row["flow_time_objective"]),
-                float(row["reconfiguration_cost"]),float(row["worker_load_variance"])], scales) for row in safe]
+                float(row["reconfiguration_cost"]), metrics_workload_objective(row, scoring_config)], scales) for row in safe]
             front = set(nondominated_indices(points))
             all_points.extend(points)
             all_safe_rows.extend(safe)
@@ -304,28 +339,35 @@ def analyze_rows(rows: Sequence[Mapping[str, Any]], config=None, *, stage="final
         seed_summary.append(summary)
     summary = {
         "analysis_protocol": PROTOCOL_VERSION,
-        "result_schema_version": EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": result_schema_version(scoring_config),
         "formal_evaluation_stage": stage,
         "preference_count": len(expected),
         "ppo_repeats": ppo_repeats,
-        "objective_scales": dict(zip(("flow", "cost", "variance"), scales)),
-        "normalization_manifest_sha256": config["objective_scalarizer"]["normalization_manifest_sha256"],
+        "objective_scales": dict(zip(objective_names(scoring_config), scales)),
+        "normalization_manifest_sha256": scoring_config["objective_scalarizer"]["normalization_manifest_sha256"],
+        "evaluation_goal": "own_training_goal" if own_goal else "unified_q05" if rescore and evaluation_config is None else "explicit_goal" if rescore else "legacy_variance",
         "arms": list(required_arms),
         "candidate_count": len(annotated),
         "instance_seed_count": len(instance_summary),
         "dataset_seed_count": len(seed_summary),
         "budget_note": "PPO uses the configured sampled repeats per preference; MO-ALNS selects one endpoint after its configured search budget per preference.",
     }
+    if rescore:
+        from analysis.workload_dominance import workload_identity, labelled_workload_dominance
+        summary.update(workload_identity(scoring_config, prefix="evaluation_"))
+        summary["labelled_worker_dominance"] = labelled_workload_dominance(annotated)
     return annotated, instance_summary, seed_summary, summary
 
 
-def analyze_candidate_files(paths, output_dir, config=None, *, stage="final_test", arms=None, analyzer=None):
+def analyze_candidate_files(paths, output_dir, config=None, *, stage="final_test", arms=None, analyzer=None,
+    evaluation_config=None, own_goal=False):
     rows = []
     for path in paths:
         with project_path(path).open(encoding="utf-8-sig", newline="") as handle:
             rows.extend(csv.DictReader(handle))
     if analyzer is None:
-        annotated, instances, seeds, summary = analyze_rows(rows, config, stage=stage, arms=arms)
+        annotated, instances, seeds, summary = analyze_rows(rows, config, stage=stage, arms=arms,
+            evaluation_config=evaluation_config, own_goal=own_goal)
     else:
         annotated, instances, seeds, summary = analyzer(rows, config, stage=stage)
     output = project_path(output_dir)
@@ -343,9 +385,13 @@ def main():
     parser.add_argument("--candidate-csv", action="append", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--config", default="configs/default.json")
+    parser.add_argument("--evaluation-config", help="Explicit frozen workload scoring config")
+    parser.add_argument("--own-goal", action="store_true", help="Report this run's own training goal separately")
     parser.add_argument("--stage", choices=("validation", "final_test"), default="final_test")
     args = parser.parse_args()
-    print(json.dumps(analyze_candidate_files(args.candidate_csv, args.output_dir, load_config(args.config), stage=args.stage), indent=2))
+    print(json.dumps(analyze_candidate_files(args.candidate_csv, args.output_dir, load_config(args.config), stage=args.stage,
+        evaluation_config=load_config(args.evaluation_config) if args.evaluation_config else None,
+        own_goal=args.own_goal), indent=2))
 
 
 if __name__ == "__main__":

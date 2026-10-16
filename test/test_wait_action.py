@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from agent.baselines import HeuristicPolicy
+from configs import load_config
 from scripts.deadlock_replay import _unfinished_order_timing
 from environment import AssemblySchedulingEnv, DecisionType
 from environment.types import EventType, OperationState
@@ -78,6 +79,8 @@ def test_wait_allows_process_completion_exactly_at_horizon(
     config,
     fixed_instance,
 ):
+    # This synthetic event fixture uses the raw-Flow control.
+    config = load_config("configs/controls/raw.json")
     environment = AssemblySchedulingEnv(config)
     environment.reset(fixed_instance, build_observation=False)
     pair_actions = [
@@ -140,6 +143,8 @@ def test_process_completion_after_horizon_is_not_labeled_deadlock(
     config,
     fixed_instance,
 ):
+    # This synthetic event fixture uses the raw-Flow control.
+    config = load_config("configs/controls/raw.json")
     environment = AssemblySchedulingEnv(config)
     environment.reset(fixed_instance, build_observation=False)
     pair_actions = [

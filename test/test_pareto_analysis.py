@@ -4,7 +4,9 @@ from data.distribution import protocol_hashes
 from configs import load_config
 from configs.formal_preferences import formal_preferences
 from environment import bounded_quality_score
-from result.metrics import EVALUATION_SCHEMA_VERSION, evaluation_quality_metric, quality_metric_sha256
+from result.metrics import EVALUATION_SCHEMA_VERSION, evaluation_quality_metric, quality_metric_sha256, result_schema_version
+from environment.workload import objective_names, workload_value
+from analysis.workload_dominance import workload_identity
 from analysis.pareto_analysis import analyze_rows
 from analysis.mo_alns_analysis import analyze_rows as compare_rows
 from analysis.pareto_analysis import dominates, vectors_equal, nondominated_indices, normalize_objectives, hypervolume_3d
@@ -22,6 +24,27 @@ def test_bounded_normalization_is_monotone() -> None:
     upper = normalize_objectives((20.0, 40.0, 60.0), (100.0, 100.0, 100.0))
     assert all(0.0 <= value < 1.0 for value in lower + upper)
     assert all(first < second for first, second in zip(lower, upper, strict=True))
+
+
+def test_explicit_evaluation_config_selects_flow_without_training_override():
+    training = load_config("configs/default.json")
+    scoring = load_config("configs/controls/raw.json")
+    rows = _formal_candidates(training, "validation")
+    for row in rows:
+        row.update(flow_mode="excess_proportional_lb_v1", flow_excess_objective=400.,
+                   reward_objective_flow=400.)
+        row["preference_quality_score"] = bounded_quality_score(
+            400., 300., 3., training, preference=[row[f"w_{key}"] for key in ("flow", "cost", "workload")])
+    annotated, instances, _, summary = analyze_rows(rows, training, stage="validation", evaluation_config=scoring)
+    assert instances[0]["ppo_hypervolume"] == pytest.approx(
+        hypervolume_3d([normalize_objectives((1000., 300., 3.),
+                         tuple(scoring["objective_scalarizer"]["scales"].values()))]))
+    assert annotated[0]["evaluation_flow_mode"] == "raw_v1"
+    assert annotated[0]["training_preference_quality_score"] == rows[0]["preference_quality_score"]
+    assert summary["evaluation_goal"] == "explicit_goal"
+    with pytest.raises(ValueError, match="Flow mode"):
+        analyze_rows(rows, training, stage="validation", evaluation_config=scoring,
+                     evaluation_flow_mode="excess_proportional_lb_v1")
 
 
 def test_exact_hypervolume_for_single_and_overlapping_boxes() -> None:
@@ -44,19 +67,24 @@ def _formal_candidates(config, stage="validation", arm="ppo"):
                 "arm": arm, "dataset": "test", "algorithm_seed": 11, "instance_id": "matrix_instance",
                 "terminated": True, "task_succeeded": True, "task_failed": False, "truncated": False, "schedule_violation_count": 0,
                 "maximum_worker_fatigue": 0.5, "safe_fatigue_limit": 0.75,
-                "flow_time_objective": 1000.0, "reconfiguration_cost": 300.0, "worker_load_variance": 3.0,
-                "result_schema_version": EVALUATION_SCHEMA_VERSION,
+                "flow_time_objective": 1000.0, "flow_excess_objective": 1000.0,
+                "flow_mode": scalarizer.get("flow_mode", "raw_v1"),
+                "reconfiguration_cost": 300.0, "worker_load_variance": 0.0,
+                "worker_loads": {"a": 3.0, "b": 3.0, "c": 3.0, "d": 3.0},
+                "workload_objective_value": 3.0,
+                **workload_identity(config),
+                "result_schema_version": result_schema_version(config),
                 **protocol_hashes(config), "dataset_manifest_sha256": "fixture_manifest", "subset_sha256": "fixture_subset",
                 "experiment_suite_version": config["experiment_suite_version"],
                 "reward_version": config["reward"]["mode"],
                 "objective_scalarizer_type": scalarizer["type"], "objective_scalarizer_rho": scalarizer["rho"],
                 "normalization_manifest_sha256": scalarizer["normalization_manifest_sha256"],
-                **{f"objective_scale_{name}": scalarizer["scales"][name] for name in ("flow", "cost", "variance")},
+                **{f"objective_scale_{name}": scalarizer["scales"][name] for name in objective_names(config)},
                 "quality_metric_sha256": quality_metric_sha256(evaluation_quality_metric(config)),
                 "decode_mode": "sampled" if arm == "ppo" else "solver",
                 "policy_execution_version": config["training"]["policy_execution_version"],
                 "policy_precision": "float32", "sampling_repeat": repeat,
-                **{f"w_{name}": value for name, value in point.preference.as_dict().items()},
+                **{f"w_{name}": value for name, value in point.preference.as_dict(objective_names(config)).items()},
                 "preference_quality_score": bounded_quality_score(1000.0, 300.0, 3.0, config, preference=point.preference),
             })
     return rows

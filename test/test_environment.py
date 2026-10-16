@@ -36,7 +36,7 @@ def test_heuristic_schedule_is_safe_and_reward_components_telescope(config, fixe
     assert environment.terminated and not environment.truncated
     assert environment.validate_schedule() == []
     assert sum(reward.flow for reward in rewards) == pytest.approx(
-        -metrics["flow_time_objective"]
+        -metrics["flow_excess_objective"]
     )
     assert sum(reward.cost for reward in rewards) == pytest.approx(
         -metrics["reconfiguration_cost"]
@@ -61,4 +61,4 @@ def test_observe_and_public_metrics_are_available(config, fixed_instance):
     initial = environment.reset(fixed_instance)
     observed = environment.observe()
     assert observed.feature_dimensions == initial.feature_dimensions
-    assert config["runtime_manifest"]["observation_schema"] == 10
+    assert config["runtime_manifest"]["observation_schema"] == 12

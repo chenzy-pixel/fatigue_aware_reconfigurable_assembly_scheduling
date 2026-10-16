@@ -1,0 +1,26 @@
+{
+  "experiment_name": "single_variance",
+  "preference": {
+    "quality": {
+      "mode": "fixed",
+      "fixed": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  },
+  "objective_scalarizer": {
+    "normalization_manifest": "configs/manifests/flow_excess_scales_20261008.json",
+    "normalization_manifest_sha256": "17367f71e7a529ee504feb2b531a6a44fdf7458f323797ca9be33508723ce61b"
+  },
+  "training": {
+    "episodes": 1000,
+    "validation_interval_episodes": 40
+  },
+  "workload_objective": {
+    "mode": "variance",
+    "q": null
+  },
+  "extends": "../default.json"
+}

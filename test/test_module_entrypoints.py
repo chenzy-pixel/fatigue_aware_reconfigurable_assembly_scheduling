@@ -23,7 +23,7 @@ from environment import AssemblySchedulingEnv
 from result.io import write_config, write_json
 
 
-def tiny_config(directory, fixed_instance, source='configs/v8/universal.json', *, training_template=False, environment_updates=None):
+def tiny_config(directory, fixed_instance, source='configs/default.json', *, training_template=False, environment_updates=None):
     config = load_config(source)
     config['device'] = 'cpu'
     config['environment'].update(environment_updates or {})
@@ -33,7 +33,7 @@ def tiny_config(directory, fixed_instance, source='configs/v8/universal.json', *
         'fixed_instance':'template.yaml', 'training_instances_cache':'train_cache'}.items()})
     config['training'].update({'torch_num_threads':1,'parallel_envs':1,'validation_parallel_envs':1,
         'smoke_parallel_envs':1,'smoke_episodes':2,'smoke_rollout_steps':4,'smoke_validation_instance_limit':1})
-    config['training']['formal_evaluation'].update({'validation_repeats':1,'final_test_repeats':1})
+    config['training']['formal_evaluation'].update({'validation_repeats':3,'final_test_repeats':3})
     config['training']['validation_selection']['diagnostic_instance_limit'] = 0
     config['generator']['dataset_pressure_weights'] = {
         name: float(name == 'easy') for name in config['generator']['dataset_pressure_weights']
@@ -93,7 +93,7 @@ def test_real_baseline_configs_solve_and_write_current_results(source,tmp_path,f
         '--canonical-only','--instance-limit','1','--parallel-envs','1','--smoke','--run-name','baseline'],tmp_path/'cli.log')
     directory = tmp_path/'runs/baseline'
     metrics = json.loads((directory/'metrics.json').read_text())
-    assert metrics['evaluation_schema_version'] == '8.0.0'
+    assert metrics['evaluation_schema_version'] == '9.0.0'
     assert metrics['candidate_budget_per_preference'] == 8
     assert metrics['search_scalarizer']['scales'] == config['objective_scalarizer']['scales']
     assert metrics['provenance']['objective_scales'] == config['objective_scalarizer']['scales']
@@ -121,25 +121,41 @@ def test_real_baseline_manifest_entrypoint(tmp_path,fixed_instance):
     assert all(row['replay_verified']=='True' for row in rows)
 
 
-def test_real_schema10_training_update_validation_and_final_grid(tmp_path,fixed_instance):
-    config,tiny = tiny_config(tmp_path,fixed_instance,training_template=True)
+@pytest.mark.parametrize("encoding", ["log2_v1", "bounded_v1"])
+def test_real_schema12_training_update_validation_and_final_grid(tmp_path,fixed_instance,encoding):
+    source="configs/default.json" if encoding=="log2_v1" else "configs/controls/bounded.json"
+    config,tiny = tiny_config(tmp_path,fixed_instance,source=source,training_template=True)
     run_cli(['train.py','--config',str(tmp_path/'config.json'),'--smoke','--parallel-envs','1',
         '--episodes-per-update','2','--validation-parallel-envs','1','--run-name','ppo'],tmp_path/'train_cli.log')
     directory = tmp_path/'runs/ppo'
     assert (directory/'best_checkpoint.pt').is_file() and (directory/'last_checkpoint.pt').is_file()
-    for filename,count in [('sampled_validation_instance_metrics.csv',13),('final_sampled_instance_metrics.csv',66)]:
+    for filename,count in [('sampled_validation_instance_metrics.csv',39),('final_sampled_instance_metrics.csv',198),
+                           ('selected_validation_instance_metrics.csv',13),('final_selected_instance_metrics.csv',66)]:
         with (directory/filename).open(encoding='utf-8-sig',newline='') as handle:
             rows = list(csv.DictReader(handle))
         assert len(rows) == count and all(int(row['schedule_violation_count'])==0 for row in rows)
     payload = torch.load(directory/'best_checkpoint.pt',weights_only=False)
-    assert payload['network_spec']['feature_dimensions']['global'] == 9
-    assert payload['network_spec']['observation_schema_version'] == 10
+    assert payload['network_spec']['feature_dimensions']['global'] == 10
+    assert payload['network_spec']['observation_schema_version'] == 12
+    assert payload['network_spec']['global_objective_encoding'] == encoding
+    assert payload['network_spec']['objective_names'] == ('flow', 'cost', 'workload')
+    assert payload['network_spec']['workload_mode'] == 'geometric_owa'
     env = AssemblySchedulingEnv(config)
     obs = env.reset(tiny)
     agent = PPOAgent(build_actor_critic(obs,config['network']),config['ppo'])
     agent.load(directory/'best_checkpoint.pt')
     agent.load(directory/'last_checkpoint.pt',load_optimizer=True)
-    assert load_config(directory/'config.json')['runtime_manifest']['observation_schema'] == 10
+    assert load_config(directory/'config.json')['runtime_manifest']['observation_schema'] == 12
+    summary = json.loads((directory/'summary.json').read_text())
+    final = summary['final_sampled']
+    assert final['sample_aggregation'] == 'best_of_3_v1'
+    assert final['request_count'] == 198 and final['delivery_count'] == 66
+    assert sum(final['success_count_distribution'].values()) == 66
+    assert final['total_solve_time_seconds'] == final['raw_sampled']['total_solve_time_seconds']
+    assert payload['metadata']['sample_aggregation'] == 'best_of_3_v1'
+    assert summary['checkpoint_selection']['sample_aggregation'] == 'best_of_3_v1'
+    assert summary['provenance']['global_objective_encoding'] == encoding
+    assert final['provenance']['global_objective_encoding'] == encoding
 
 
 def test_real_training_external_guards_keep_partial_rows_and_last_checkpoint(tmp_path, fixed_instance):
@@ -148,7 +164,7 @@ def test_real_training_external_guards_keep_partial_rows_and_last_checkpoint(tmp
     path = tmp_path/'config.json'
     config['training'].update(episodes=2, validation_interval_episodes=1,
                              validation_instance_limit=1, torch_num_threads=1)
-    config['training']['formal_evaluation'].update(validation_repeats=1, final_test_repeats=1)
+    config['training']['formal_evaluation'].update(validation_repeats=3, final_test_repeats=3)
     write_config(tmp_path, config)
     run_cli(['train.py','--config',str(path),'--episodes','2','--parallel-envs','1',
           '--episodes-per-update','2','--validation-parallel-envs','1','--run-name','guard'],
@@ -161,7 +177,7 @@ def test_real_training_external_guards_keep_partial_rows_and_last_checkpoint(tmp
     assert (directory/'last_checkpoint.pt').is_file()
     with (directory/'sampled_validation_instance_metrics.csv').open(encoding='utf-8-sig') as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) == 13
+    assert len(rows) == 39
     assert all(row['sampling_truncated'] == 'True' and row['task_failed'] == 'False' for row in rows)
     with (directory/'validation_log.csv').open(encoding='utf-8-sig') as handle:
         validation = list(csv.DictReader(handle))

@@ -15,6 +15,7 @@ from typing import Any
 NORMALIZATION_MANIFEST_SCHEMA = "e1_tail_validation_scales_v1"
 SELECTED_VALIDATION_MANIFEST_SCHEMA = "v2_selected_validation_scales_v1"
 EXCESS_MANIFEST_SCHEMA = "proportional_flow_validation_scales_v1"
+WORKLOAD_MANIFEST_SCHEMA = "workload_validation_scales_v1"
 OBJECTIVE_FIELDS = {
     "flow": "flow_time_objective",
     "cost": "reconfiguration_cost",
@@ -210,12 +211,15 @@ def load_normalization_manifest(
         raise ValueError("normalization manifest SHA256 mismatch")
     payload = json.loads(source.read_text(encoding="utf-8"))
     schema = payload.get("schema_version")
-    if schema not in {NORMALIZATION_MANIFEST_SCHEMA, SELECTED_VALIDATION_MANIFEST_SCHEMA, EXCESS_MANIFEST_SCHEMA}:
+    if schema not in {NORMALIZATION_MANIFEST_SCHEMA, SELECTED_VALIDATION_MANIFEST_SCHEMA, EXCESS_MANIFEST_SCHEMA, WORKLOAD_MANIFEST_SCHEMA}:
         raise ValueError("unsupported normalization manifest schema")
     content_sha = payload.pop("content_sha256", None)
     if content_sha != canonical_json_sha256(payload):
         raise ValueError("normalization manifest content hash is invalid")
     payload["content_sha256"] = content_sha
+    if schema == WORKLOAD_MANIFEST_SCHEMA:
+        _validate_workload_manifest(payload, Path(__file__).resolve().parents[1])
+        return payload
     from environment.types import flow_mode, FLOW_EXCESS
     manifest_mode = flow_mode(payload)
     if (
@@ -307,9 +311,15 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     selected_mode = flow_mode(config)
     if selected_mode != flow_mode(manifest):
         raise ValueError("flow_mode disagrees with normalization manifest")
-    scalarizer["scales"] = {
-        name: float(manifest["scales"][name]) for name in OBJECTIVE_FIELDS
-    }
+    from environment.workload import workload_config, observation_schema_version, objective_names
+    modern = observation_schema_version(config) >= 11
+    names = objective_names(config)
+    if manifest["schema_version"] == WORKLOAD_MANIFEST_SCHEMA:
+        if not modern or workload_config(config) != manifest["workload_objective"]:
+            raise ValueError("workload identity disagrees with normalization manifest")
+    elif modern and workload_config(config)["mode"] != "variance":
+        raise ValueError("OWA requires its own frozen workload normalization manifest")
+    scalarizer["scales"] = {name: float(manifest["scales"]["variance" if name == "workload" and "workload" not in manifest["scales"] else name]) for name in names}
     try:
         scalarizer["normalization_manifest"] = path.resolve().relative_to(project_root.resolve()).as_posix()
     except ValueError:
@@ -327,3 +337,59 @@ def apply_normalization_manifest(config: dict[str, Any], *, project_root: Path) 
     network["normalization_manifest_sha256"] = str(expected).lower()
     network["flow_mode"] = selected_mode
     network["reward_version"] = expected_reward
+    if modern:
+        identity = workload_config(config)
+        fields = {"workload_mode": identity["mode"], "workload_q": identity["q"],
+                  "workload_weight_rule": identity["weights"], "workload_version": identity["version"],
+                  "workload_order": identity["order"],
+                  "workload_scale": scalarizer["scales"]["workload"],
+                  "objective_scales": tuple(scalarizer["scales"][name] for name in names),
+                  "observation_schema_version": observation_schema_version(config)}
+        for key, value in fields.items():
+            if key in network and network[key] != value and not (key == "objective_scales" and tuple(network[key]) == value):
+                raise ValueError(f"network {key} disagrees with workload configuration")
+            network[key] = value
+
+
+def _validate_workload_manifest(payload: Mapping[str, Any], project_root: Path) -> None:
+    """Rebuild workload scales from embedded, complete validation reference rows."""
+    from environment.workload import workload_config, workload_value
+    from environment.types import flow_mode
+
+    identity = workload_config(dict(payload))
+    if dict(payload.get("workload_objective", {})) != identity:
+        raise ValueError("workload manifest identity is not canonical")
+    if set(payload.get("scales", {})) != {"flow", "cost", "workload"}:
+        raise ValueError("workload normalization scales are incomplete")
+    inherited = payload.get("inherited_manifest", {})
+    original = load_normalization_manifest(project_root / inherited["path"], expected_sha256=inherited["sha256"])
+    if flow_mode(dict(payload)) != flow_mode(original):
+        raise ValueError("workload manifest Flow identity mismatch")
+    for name in ("flow", "cost"):
+        if payload["scales"][name] != original["scales"][name]:
+            raise ValueError("workload manifest changed inherited Flow/Cost scale")
+    source = payload.get("workload_source", {})
+    rows = source.get("rows", [])
+    if source.get("reference_rows_sha256") != canonical_json_sha256({"rows": rows}):
+        raise ValueError("workload reference row hash mismatch")
+    if source.get("validation_dataset_manifest_sha256") != original.get("validation_dataset_manifest_sha256"):
+        raise ValueError("workload calibration validation manifest mismatch")
+    if len(rows) != 50 or len({row.get("instance_id") for row in rows}) != 50:
+        raise ValueError("workload calibration requires all 50 fixed validation instances")
+    good = [row for row in rows if row.get("success") is True and row.get("physical_valid") is True]
+    if not good or source.get("successful_count") != len(good) or source.get("trajectory_count") != 50:
+        raise ValueError("workload calibration success counts disagree")
+    for row in rows:
+        loads = list(row["worker_loads"].values())
+        if not loads or not math.isclose(sum(loads), float(row["total_labor"]), abs_tol=1e-8):
+            raise ValueError("workload calibration labor vector is incomplete")
+        actual = workload_value(loads, dict(payload))
+        if not math.isclose(actual, float(row["workload_value"]), abs_tol=1e-8):
+            raise ValueError("workload calibration row does not reproduce objective")
+    scale = statistics.fmean(float(row["workload_value"]) for row in good)
+    if not math.isfinite(scale) or scale <= 0 or not math.isclose(scale, float(payload["scales"]["workload"]), rel_tol=0, abs_tol=1e-12):
+        raise ValueError("workload scale does not reproduce successful reference mean")
+    for name in ("config_sha256", "validation_dataset_manifest_sha256", "validation_subset_sha256", "reference_rows_sha256"):
+        digest = str(source.get(name, ""))
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError(f"workload calibration requires {name}")

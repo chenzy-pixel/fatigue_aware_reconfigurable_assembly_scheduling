@@ -12,15 +12,14 @@ from environment.types import ReconfigurationStage, WorkerState
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-@pytest.mark.parametrize("variant", ["objective_experts", "shared_preference"])
 def test_grouped_diagnostics_match_reference_statistics_and_pair_ties(
-    config, fixed_instance, device, variant
+    config, fixed_instance, device
 ):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
     env = AssemblySchedulingEnv(config)
     observation = env.reset(fixed_instance)
-    settings = {**config["network"], "actor_head_variant": variant}
+    settings = config["network"]
     network = build_actor_critic(observation, settings).to(device)
     indices = [0, 2, 4, 5, 6]
     # Masked WAIT, WAIT only, pair only, mixed actions, and no pair candidates.
@@ -35,18 +34,6 @@ def test_grouped_diagnostics_match_reference_statistics_and_pair_ties(
     action_indices = torch.tensor([v for row in actions for v in row], device=device)
     waits = torch.tensor(np.cumsum(widths) - 1, device=device)
     phase_indices = torch.tensor(indices, device=device)
-    preference = torch.tensor([
-        [0.6, 0.3, 0.1], [1, 0, 0], [0, 1, 0], [0, 0, 1],
-        [0.2, 0.5, 0.3], [1 / 3, 1 / 3, 1 / 3], [0, 0, 1],
-    ], device=device)
-    size = mask.numel()
-    direct = torch.stack((
-        torch.linspace(-1, 1, size, device=device),
-        torch.ones(size, device=device),
-        torch.linspace(0, 1e-6, size, device=device),
-    ), dim=-1)
-    context = direct * 0.75
-    experts = direct + context
     base = torch.tensor([0.8, 0.8, 0.2, float("nan"), 0, 0, 0.1, 0.3, 0.2, 0.4, 0], device=device)
     residual = torch.tensor([0, 0, 0.7, float("nan"), 0, 1e-12, 0, 0.2, 0, 0, 0], device=device)
     final = base + residual
@@ -57,16 +44,14 @@ def test_grouped_diagnostics_match_reference_statistics_and_pair_ties(
             for index, width in zip(indices, widths, strict=True):
                 segment = slice(start, start + width)
                 network._record_components(
-                    phase, mask[segment], direct[segment], context[segment], experts[segment],
-                    base[segment], residual[segment], final[segment], preference[index],
+                    phase, mask[segment], base[segment], residual[segment], final[segment],
                     pair_action_indices=action_indices[segment][:-1],
                 )
                 start += width
             expected = network.consume_policy_decision_diagnostics()
             network._record_components_grouped(
-                phase, indices, graph_ids, mask, direct, context, experts,
-                base, residual, final, preference, action_indices=action_indices,
-                wait_positions=waits, phase_indices=phase_indices,
+                phase, indices, graph_ids, mask, base, residual, final, action_indices=action_indices,
+                wait_positions=waits, phase_indices=phase_indices, graph_count=7,
             )
             actual = network.consume_policy_decision_diagnostics()
         assert len(actual) == len(expected)

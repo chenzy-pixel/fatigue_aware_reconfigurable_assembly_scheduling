@@ -4,11 +4,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
-from .observation_schema import GLOBAL_FEATURE_NAMES, OBSERVATION_SCHEMA_VERSION
+from .observation_schema import (
+    GLOBAL_FEATURE_NAMES, LEGACY_GLOBAL_FEATURE_NAMES,
+    infer_global_observation_contract, OBSERVATION_SCHEMA_VERSION,
+)
+from .workload import objective_names, observation_schema_version, metrics_workload_objective, workload_config
 
 from .preference import (
     CANONICAL_PREFERENCE,
-    PREFERENCE_NAMES,
     PreferenceInput,
     normalize_preference,
 )
@@ -19,10 +22,13 @@ EdgeType = tuple[str, str, str]
 LEGACY_PROGRESS_QUALITY_REWARD = "single_stage_progress_quality_v1"
 FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v3"
 EXCESS_FAILURE_PENALTY_REWARD = "single_stage_progress_quality_failure_v4"
+WORKLOAD_FAILURE_PENALTY_REWARD = "single_stage_progress_quality_workload_failure_v5"
+WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD = "single_stage_progress_quality_workload_failure_v6"
 FLOW_RAW = "raw_v1"
 FLOW_EXCESS = "excess_proportional_lb_v1"
 SUPPORTED_REWARD_MODES = frozenset(
-    {FAILURE_PENALTY_REWARD, EXCESS_FAILURE_PENALTY_REWARD}
+    {FAILURE_PENALTY_REWARD, EXCESS_FAILURE_PENALTY_REWARD,
+     WORKLOAD_FAILURE_PENALTY_REWARD, WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD}
 )
 
 
@@ -34,6 +40,9 @@ def flow_mode(config: dict) -> str:
 
 
 def flow_reward_version(config: dict) -> str:
+    if observation_schema_version(config) >= 11:
+        return (WORKLOAD_EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS
+                else WORKLOAD_FAILURE_PENALTY_REWARD)
     return EXCESS_FAILURE_PENALTY_REWARD if flow_mode(config) == FLOW_EXCESS else FAILURE_PENALTY_REWARD
 
 
@@ -146,6 +155,7 @@ class RewardVector:
     failure: float = 0.0
     feasibility_shaping: float = 0.0
     preference_key: str | None = None
+    workload: float | None = None
 
     def scalarize(self, config: dict) -> float:
         """Return the configured single-stage training reward."""
@@ -178,6 +188,8 @@ class RewardVector:
         }
         if self.preference_key is not None:
             result["preference_key"] = self.preference_key
+        if self.workload is not None:
+            result["workload"] = self.workload
         return result
 
 
@@ -188,26 +200,28 @@ def objective_scalarizer_config(config: dict) -> dict:
     if not isinstance(raw, dict):
         raise TypeError("objective_scalarizer must be an object")
     scales_value = raw.get("scales")
+    names = objective_names(config)
     if scales_value is None:
         scales = {
             name: float(raw[f"{name}_scale"])
-            for name in PREFERENCE_NAMES
+            for name in names
         }
     else:
         if not isinstance(scales_value, dict):
             raise TypeError("objective_scalarizer.scales must be an object")
-        if set(scales_value) != set(PREFERENCE_NAMES):
+        if set(scales_value) != set(names):
             raise ValueError(
-                "objective_scalarizer.scales must contain flow/cost/variance"
+                f"objective_scalarizer.scales must contain {'/'.join(names)}"
             )
         scales = {
-            name: float(scales_value[name]) for name in PREFERENCE_NAMES
+            name: float(scales_value[name]) for name in names
         }
     if any(not np.isfinite(value) or value <= 0.0 for value in scales.values()):
         raise ValueError("objective scalarizer scales must be finite and positive")
     default_kind = (
         "canonical_bounded_weighted_sum_v1"
-        if raw.get("version") in {"canonical_bounded_quality_v1", "canonical_bounded_quality_v2"}
+        if raw.get("version") in {"canonical_bounded_quality_v1", "canonical_bounded_quality_v2",
+                                  "canonical_bounded_workload_quality_v1"}
         else "normalized_augmented_tchebycheff_v1"
     )
     kind = str(raw.get("type", default_kind))
@@ -248,15 +262,15 @@ def bounded_quality_score(
     *,
     preference: PreferenceInput | None = None,
 ) -> float:
-    """Return the configured normalized scalar objective (smaller is better)."""
-    values = {
-        "flow": float(flow),
-        "cost": float(cost),
-        "variance": float(variance),
-    }
+    """Score Flow, cost, and the active workload objective (smaller is better).
+
+    The third positional argument retains its legacy keyword for API stability.
+    """
+    names = objective_names(config)
+    values = dict(zip(names, (float(flow), float(cost), float(variance)), strict=True))
     scalarizer = objective_scalarizer_config(config)
     weights = (
-        normalize_preference(preference).as_dict()
+        normalize_preference(preference).as_dict(names)
         if preference is not None
         else normalize_preference(
             config.get(
@@ -265,7 +279,7 @@ def bounded_quality_score(
                 .get("quality", {})
                 .get("fixed", CANONICAL_PREFERENCE),
             )
-        ).as_dict()
+        ).as_dict(names)
     )
     scales = scalarizer["scales"]
     weight_sum = sum(float(weights[name]) for name in values)
@@ -275,17 +289,17 @@ def bounded_quality_score(
     for name, value in values.items():
         weight = float(weights[name])
         scale = scales[name]
-        if value < 0.0:
-            raise ValueError(f"{name} objective cannot be negative")
+        if not np.isfinite(value) or value < 0.0:
+            raise ValueError(f"{name} objective must be finite and nonnegative")
         if weight < 0.0:
             raise ValueError(f"{name} quality weight cannot be negative")
         if scale <= 0.0:
             raise ValueError(f"{name} quality scale must be positive")
         normalized[name] = value / (scale + value)
     if scalarizer["type"] == "canonical_bounded_weighted_sum_v1":
-        return sum(float(weights[name]) * normalized[name] for name in PREFERENCE_NAMES) / weight_sum
+        return sum(float(weights[name]) * normalized[name] for name in names) / weight_sum
     rho = float(scalarizer["rho"])
-    weighted = [float(weights[name]) * normalized[name] for name in PREFERENCE_NAMES]
+    weighted = [float(weights[name]) * normalized[name] for name in names]
     return (max(weighted) + rho * sum(weighted)) / (1.0 + rho)
 
 
@@ -330,14 +344,14 @@ def proxy_return_from_metrics(
     if initial_score_value is None:
         initial = metrics.get(
             "initial_objectives",
-            {"flow": 0.0, "cost": 0.0, "variance": 0.0},
+            dict.fromkeys(objective_names(config), 0.0),
         )
         if not isinstance(initial, dict):
             raise TypeError("metrics.initial_objectives must be an object")
         initial_score = bounded_quality_score(
             float(initial.get("flow", 0.0)),
             float(initial.get("cost", 0.0)),
-            float(initial.get("variance", 0.0)),
+            float(initial.get(objective_names(config)[2], 0.0)),
             config,
             preference=preference,
         )
@@ -349,18 +363,25 @@ def proxy_return_from_metrics(
             "actual_preference_quality_score", metrics.get("raw_preference_quality_score")
         ),
     )
-    terminal_score = (
-        bounded_quality_score(
+    if terminal_score_value is None:
+        reward_workload = metrics.get(
+            "reward_objective_workload_value", metrics.get("committed_workload_objective_value"))
+        if reward_workload is None:
+            reward_workload = (
+                metrics["reward_objective_worker_load_variance"]
+                if workload_config(config)["mode"] == "variance" and "reward_objective_worker_load_variance" in metrics
+                else metrics_workload_objective(metrics, config)
+            )
+        terminal_score = bounded_quality_score(
             float(metrics["reward_objective_flow"] if "reward_objective_flow" in metrics
                   else metrics_flow_objective(metrics, config)),
             float(metrics["reconfiguration_cost"]),
-            float(metrics.get(
-                "reward_objective_worker_load_variance", metrics["worker_load_variance"]
-            )),
+            float(reward_workload),
             config,
             preference=preference,
-        ) if terminal_score_value is None else float(terminal_score_value)
-    )
+        )
+    else:
+        terminal_score = float(terminal_score_value)
     task_failed = bool(metrics.get("task_failed", False))
     failure_penalty = (
         terminal_failure_penalty(config)
@@ -558,9 +579,10 @@ class HeterogeneousGraphObservation:
             raise ValueError(
                 "global feature width must match the number of feature names"
             )
-        if self.relations and (self.global_features.shape != (len(GLOBAL_FEATURE_NAMES),)
-                               or tuple(self.global_feature_names) != GLOBAL_FEATURE_NAMES):
-            raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order/dimensions are incompatible")
+        if self.relations:
+            infer_global_observation_contract(self.global_feature_names)
+            if self.global_features.shape != (len(self.global_feature_names),):
+                raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order/dimensions are incompatible")
         expected_node_types = set(ASSEMBLY_NODE_TYPES)
         if set(node_features) != expected_node_types:
             raise ValueError(

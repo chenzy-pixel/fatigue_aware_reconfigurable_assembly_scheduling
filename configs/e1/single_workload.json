@@ -1,0 +1,18 @@
+{
+  "extends": "../default.json",
+  "experiment_name": "single_workload",
+  "preference": {
+    "quality": {
+      "mode": "fixed",
+      "fixed": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  },
+  "training": {
+    "episodes": 1000,
+    "validation_interval_episodes": 40
+  }
+}

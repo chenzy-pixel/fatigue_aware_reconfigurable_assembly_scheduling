@@ -1,0 +1,7 @@
+{
+  "extends": "raw.json",
+  "experiment_name": "raw_bounded",
+  "network": {
+    "global_objective_encoding": "bounded_v1"
+  }
+}

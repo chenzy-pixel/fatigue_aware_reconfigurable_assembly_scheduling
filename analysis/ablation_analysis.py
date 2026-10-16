@@ -26,13 +26,13 @@ from scripts.ablation_protocol import ROLE_CONFIGS, latest_evaluation_manifest, 
 
 PAIRS = (
     ("graph_propagation", "universal", "no_graph"),
-    ("objective_experts", "universal", "shared_head"),
     ("fatigue_flow", "full_flow", "neutral_flow"),
     ("fatigue_cost", "full_cost", "neutral_cost"),
-    ("fatigue_variance", "full_variance", "neutral_variance"),
+    ("fatigue_workload", "full_workload", "neutral_workload"),
 )
 FIELDS = (
     "flow_time_objective", "reconfiguration_cost", "worker_load_variance",
+    "workload_objective_value", "worker_load_total", "worker_load_max",
     "completed_reconfigurations", "completed_reconfigurations_per_operation",
     "worker_reconfiguration_busy_minutes", "mean_interstage_idle_minutes",
     "max_consecutive_worker_stages", "fatigue_monitor_peak",
@@ -44,7 +44,7 @@ CONTROL_FIELDS = (
     "algorithm_seed", "generator_version", "dataset_manifest_sha256", "subset_sha256",
     "normalization_manifest_sha256", "quality_metric_sha256", "terminal_failure_penalty_configured",
     "objective_scalarizer_type", "objective_scalarizer_rho", "objective_scale_flow",
-    "objective_scale_cost", "objective_scale_variance", "sampling_rng_version",
+    "objective_scale_cost", "objective_scale_workload", "sampling_rng_version",
     "sampling_seed", "derived_sampling_seed",
 )
 
@@ -70,7 +70,12 @@ def paired_rows(baseline: list[dict], variant: list[dict], experiment: str) -> t
     rows = []
     for key in sorted(left):
         first, second = left[key], right[key]
-        for field in CONTROL_FIELDS:
+        modern = any("objective_scale_workload" in row or "workload_mode" in row for row in (first, second))
+        controls = CONTROL_FIELDS if modern else tuple(
+            "objective_scale_variance" if field == "objective_scale_workload" else field
+            for field in CONTROL_FIELDS
+        )
+        for field in controls:
             if first.get(field) in (None, "") or second.get(field) in (None, ""):
                 raise ValueError(f"missing {field}: {experiment}, {key}")
             if first.get(field) != second.get(field):
@@ -135,10 +140,10 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
     require(protocol_profile(metadata["effective_config"]) == protocol_profile(expected)
             and int(metadata["algorithm_seed"]) == seed, "checkpoint protocol mismatch")
     selectors = {"encoder_variant": expected["network"].get("encoder_variant", "hetero_gnn"),
-                 "actor_head_variant": expected["network"].get("actor_head_variant", "objective_experts"),
+                 "actor_head_variant": expected["network"].get("actor_head_variant", "shared_preference"),
                  "fatigue_mode": expected["environment"].get("fatigue_mode", "full")}
     require(all(payload["network_spec"].get(key, default) == selectors[key] for key, default in
-                (("encoder_variant", "hetero_gnn"), ("actor_head_variant", "objective_experts")))
+                (("encoder_variant", "hetero_gnn"), ("actor_head_variant", "shared_preference")))
             and payload["network_spec"]["observation_schema_version"] == OBSERVATION_SCHEMA_VERSION
             and metadata["runtime_manifest"].get("fatigue_mode", "full") == selectors["fatigue_mode"],
             "checkpoint variant mismatch")
@@ -179,7 +184,9 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
     require(provenance.get("normalization_manifest_sha256") == controls["normalization_manifest_sha256"]
             and metrics.get("quality_metric_sha256") == provenance.get("quality_metric_sha256") == controls["quality_metric_sha256"], "aggregate protocol mismatch")
     required = ("task_succeeded", "active_constraint_pass", "physical_safety_pass")
-    finite_fields = ("flow_time_objective", "reconfiguration_cost", "worker_load_variance",
+    from environment.workload import is_modern_workload
+    objective_fields = ("workload_objective_value", "worker_load_total", "worker_load_max") if is_modern_workload(expected) else ()
+    finite_fields = ("flow_time_objective", "reconfiguration_cost", "worker_load_variance", *objective_fields,
                      "fatigue_monitor_peak", "fatigue_monitor_over_limit_minutes", "fatigue_monitor_over_limit_area")
     for row in rows:
         require(not _true(row.get("sampling_truncated", row.get("truncated", False))), "incomplete evaluation cell")
@@ -187,12 +194,13 @@ def validate_role_evaluation(role: str, entry: dict, rows: list[dict], metrics: 
             actual = row.get(key)
             match = (actual not in (None, "") and float(actual) == float(value)) if isinstance(value, (int, float)) else actual == value
             require(match, f"row {key} mismatch")
-        require(all(key in row for key in FIELDS) and all(row.get(key) not in (None, "") for key in required),
+        required_fields = FIELDS if objective_fields else tuple(key for key in FIELDS if key not in {"workload_objective_value", "worker_load_total", "worker_load_max"})
+        require(all(key in row for key in required_fields) and all(row.get(key) not in (None, "") for key in required),
                 "missing monitor or safety fields")
         require(all(row.get(key) not in (None, "") and math.isfinite(float(row[key])) for key in finite_fields),
                 "nonfinite objective or monitor fields")
         require(int(row["sampling_seed"]) == sampling_seeds[int(row["sampling_repeat"])], "row sampling seed mismatch")
-        key = row["preference_key"] if role in ("universal", "no_graph", "shared_head") else None
+        key = row["preference_key"] if role in ("universal", "no_graph") else None
         require(int(row["derived_sampling_seed"]) == derive_evaluation_sampling_seed(
             int(row["sampling_seed"]), row["instance_id"], key), "derived sampling seed mismatch")
     return {"evaluation_run": str(directory), "checkpoint": str(checkpoint),
@@ -222,8 +230,7 @@ def summarize(manifest_path: Path, output: Path) -> Path:
         for field in ("dataset_manifest_sha256", "subset_sha256", "quality_metric_sha256", "normalization_manifest_sha256"):
             if old_metrics.get(field) != new_metrics.get(field):
                 raise ValueError(f"aggregate {field} mismatch: {experiment}")
-        changed_field = ("encoder_variant" if experiment == "graph_propagation" else
-                         "actor_head_variant" if experiment == "objective_experts" else "fatigue_mode")
+        changed_field = ("encoder_variant" if experiment == "graph_propagation" else "fatigue_mode")
         assert_paired_configs(load_config(ROLE_CONFIGS[baseline]), load_config(ROLE_CONFIGS[variant]), changed_field)
         cells, row = paired_rows(left, right, experiment)
         for cell in cells:
@@ -245,18 +252,18 @@ def summarize(manifest_path: Path, output: Path) -> Path:
     lines = [f"# Seed {manifest['seed']} ablation comparisons", "",
         "Objective differences are variant minus baseline on common successful cells. Completion counts include all matched cells.",
         "These are descriptive results from one training seed. Neutral-fatigue exposure is a counterfactual audit of its realized schedule.", "",
-        "| Experiment | Cells | Completed: baseline / variant | Common success | Δ Flow | Δ Cost | Δ Variance | Δ Fatigue area |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        "| Experiment | Cells | Completed: baseline / variant | Common success | Δ Flow | Δ Cost | Δ Workload | Δ Variance | Δ Fatigue area |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for row in summaries:
         values = ["—" if row.get(f"mean_delta_{field}") is None else f"{row['mean_delta_' + field]:+.4f}" for field in
-            ("flow_time_objective", "reconfiguration_cost", "worker_load_variance", "fatigue_monitor_over_limit_area")]
+            ("flow_time_objective", "reconfiguration_cost", "workload_objective_value", "worker_load_variance", "fatigue_monitor_over_limit_area")]
         lines.append(f"| {row['experiment']} | {row['cell_count']} | {row['baseline_completed']} / {row['variant_completed']} | {row['common_success_count']} | " + " | ".join(values) + " |")
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Summarize five paired ablation comparisons")
+    parser = argparse.ArgumentParser(description="Summarize matched ablation comparisons")
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output-dir", type=Path)

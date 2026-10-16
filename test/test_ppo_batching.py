@@ -127,12 +127,6 @@ def test_phase_batched_head_matches_reference_values_and_gradients(config, fixed
     masks.append(pair_only)
     network = build_actor_critic(observations[0], effective_config['network']).to(device)
     network.eval()
-    with torch.no_grad():
-        for prefix in ('production_experts', 'worker_experts', 'production_wait_experts', 'worker_wait_experts'):
-            for expert in getattr(network, prefix).experts.values():
-                expert.context[-1].weight.uniform_(-0.05, 0.05)
-                expert.context[-1].bias.uniform_(-0.05, 0.05)
-
     def evaluate(mode):
         network.zero_grad(set_to_none=True)
         network.execution_mode = mode

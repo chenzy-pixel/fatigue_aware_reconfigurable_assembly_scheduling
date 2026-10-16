@@ -18,7 +18,7 @@ from training import LexicographicCheckpointSelector
 CONFIGS = {
     "flow": ("configs/e1/single_flow.json", [1.0, 0.0, 0.0]),
     "cost": ("configs/e1/single_cost.json", [0.0, 1.0, 0.0]),
-    "variance": ("configs/e1/single_variance.json", [0.0, 0.0, 1.0]),
+    "workload": ("configs/e1/single_workload.json", [0.0, 0.0, 1.0]),
 }
 
 
@@ -39,7 +39,7 @@ def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
     config = load_config("configs/default.json")
     public = public_config(config)
     assert config["reward"]["mode"] == (
-        "single_stage_progress_quality_failure_v3"
+        "single_stage_progress_quality_workload_failure_v6"
     )
     assert config["reward"]["terminal_failure_penalty"] == 2.0
     assert config["ppo"]["gamma"] == 1.0
@@ -54,7 +54,7 @@ def test_default_uses_only_single_stage_reward_and_fixed_formal_sampling():
         "unfinished_order_penalty",
     }.intersection(config["reward"])
     assert public["runtime_manifest"]["training_protocol"] == (
-        "single_stage_lexicographic_failure_v3"
+        "single_stage_lexicographic_workload_failure_v6_best_of_3_v1"
     )
 
 
@@ -80,6 +80,19 @@ def test_e1_children_keep_one_hot_preference_and_user_validation_cadence(
     assert child["objective_scalarizer"]["scales"] == base["objective_scalarizer"]["scales"]
     assert child["network"] == base["network"]
     assert child["ppo"] == base["ppo"]
+
+
+def test_variance_control_uses_modern_neutral_schema_and_its_own_scale():
+    control = load_config("configs/controls/raw_single_variance.json")
+    primary = load_config("configs/e1/single_workload.json")
+    assert control["workload_objective"]["mode"] == "variance"
+    assert control["network"]["observation_schema_version"] == 12
+    assert control["network"]["workload_mode"] == "variance"
+    assert control["network"]["workload_q"] is None
+    assert control["preference"]["quality"]["fixed"] == [0.0, 0.0, 1.0]
+    assert set(control["objective_scalarizer"]["scales"]) == {"flow", "cost", "workload"}
+    assert control["objective_scalarizer"]["scales"]["workload"] == 2.2629
+    assert control["network"]["workload_scale"] != primary["network"]["workload_scale"]
 
 
 def test_first_safe_checkpoint_initializes_even_with_zero_completion_and_inf_quality():

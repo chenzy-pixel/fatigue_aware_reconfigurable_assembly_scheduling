@@ -19,6 +19,9 @@ from agent.ppo.network import (
 )
 from configs.runtime import assert_checkpoint_fatigue_mode
 from environment import Observation
+from environment.workload import (
+    is_modern_workload, objective_names, observation_schema_version, workload_config,
+)
 from result.provenance import (
     network_weights_sha256,
     provenance_with_network_weights,
@@ -73,10 +76,6 @@ def summarize_policy_decision_diagnostics(
         ),
     }
     component_prefixes = (
-        "direct_",
-        "context_",
-        "expert_",
-        "contribution_",
         "residual_base_rms_ratio",
     )
     for phase, phase_rows in (("production", production), ("worker", worker)):
@@ -147,10 +146,22 @@ class PPOAgent:
 
     def assert_evaluation_config(self, config: Mapping[str, Any]) -> None:
         """Check the executing model and loaded physics identity before reuse."""
+        selected_schema = observation_schema_version(config)
+        workload_config(config)
         spec = self.network.network_spec()
         # Observation dimensions belong to the constructed network. Architecture
         # controls and generated message identities come from evaluation config.
-        configured_spec = {**spec, **normalize_network_config(config["network"])}
+        normalized = normalize_network_config(config["network"])
+        if normalized["observation_schema_version"] != selected_schema:
+            raise ValueError("network observation_schema_version differs from workload_objective")
+        if is_modern_workload(config):
+            scales = config.get("objective_scalarizer", {}).get("scales", {})
+            expected = tuple(float(scales[name]) for name in objective_names(config))
+            if normalized["objective_scales"] != expected:
+                raise ValueError("network objective_scales differs from objective_scalarizer.scales")
+            if normalized["workload_scale"] != expected[2]:
+                raise ValueError("network workload_scale differs from objective_scalarizer.scales")
+        configured_spec = {**spec, **normalized}
         assert_network_config_matches_spec(configured_spec, spec)
         if hasattr(self, "loaded_checkpoint_metadata"):
             assert_checkpoint_fatigue_mode(self.loaded_checkpoint_metadata, config)

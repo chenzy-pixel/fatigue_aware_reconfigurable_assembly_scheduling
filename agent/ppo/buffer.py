@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from environment.observation_schema import GLOBAL_FEATURE_NAMES, OBSERVATION_SCHEMA_VERSION
+from environment.observation_schema import OBSERVATION_SCHEMA_VERSION, infer_global_observation_contract
 from environment import (
     ASSEMBLY_EDGE_TYPES,
     HeterogeneousGraphObservation,
@@ -12,12 +12,13 @@ from environment import (
 )
 
 
-def validate_graph_schema(observation: Observation) -> None:
+def validate_graph_schema(observation: Observation, schema_version: int | None = None) -> int | None:
     """Check the current graph contract before storing a rollout sample."""
     if not isinstance(observation, HeterogeneousGraphObservation) or not observation.relations:
         return
-    if (observation.global_features.shape != (len(GLOBAL_FEATURE_NAMES),)
-            or tuple(observation.global_feature_names) != GLOBAL_FEATURE_NAMES):
+    inferred, _ = infer_global_observation_contract(observation.global_feature_names)
+    if ((schema_version is not None and inferred != schema_version)
+            or observation.global_features.shape != (len(observation.global_feature_names),)):
         raise ValueError(
             f"schema-{OBSERVATION_SCHEMA_VERSION} global feature names/order/dimensions are incompatible"
         )
@@ -25,6 +26,7 @@ def validate_graph_schema(observation: Observation) -> None:
         raise ValueError("global features must be finite")
     if set(observation.relations) != set(ASSEMBLY_EDGE_TYPES):
         raise ValueError(f"schema-{OBSERVATION_SCHEMA_VERSION} graph relations are incompatible")
+    return inferred
 
 
 @dataclass
@@ -41,10 +43,12 @@ class Transition:
 
 
 class RolloutBuffer:
-    def __init__(self, *, preserve_graph: bool = True) -> None:
+    def __init__(self, *, preserve_graph: bool = True, observation_schema_version: int | None = None) -> None:
         if not preserve_graph:
             raise ValueError("rollout buffers require graph observations")
         self.preserve_graph = True
+        self.observation_schema_version = observation_schema_version
+        self.global_feature_names: tuple[str, ...] | None = None
         self.transitions: list[Transition] = []
 
     def __len__(self) -> int:
@@ -61,7 +65,13 @@ class RolloutBuffer:
         done: bool,
     ) -> None:
         stored_observation = observation.copy()
-        validate_graph_schema(stored_observation)
+        selected_schema = validate_graph_schema(stored_observation, self.observation_schema_version)
+        if selected_schema is not None:
+            names = tuple(stored_observation.global_feature_names)
+            if self.global_feature_names is not None and self.global_feature_names != names:
+                raise ValueError("rollout buffers cannot mix global objective encodings")
+            self.observation_schema_version = selected_schema
+            self.global_feature_names = names
         self.transitions.append(
             Transition(
                 observation=stored_observation,
@@ -75,6 +85,16 @@ class RolloutBuffer:
         )
 
     def extend(self, other: "RolloutBuffer") -> None:
+        if (self.global_feature_names is not None and other.global_feature_names is not None
+                and self.global_feature_names != other.global_feature_names):
+            raise ValueError("rollout buffers cannot mix global objective encodings")
+        if (self.observation_schema_version is not None and other.observation_schema_version is not None
+                and self.observation_schema_version != other.observation_schema_version):
+            raise ValueError("rollout buffers cannot mix observation schemas")
+        if self.observation_schema_version is None:
+            self.observation_schema_version = other.observation_schema_version
+        if self.global_feature_names is None:
+            self.global_feature_names = other.global_feature_names
         self.transitions.extend(other.transitions)
 
     def compute_gae(

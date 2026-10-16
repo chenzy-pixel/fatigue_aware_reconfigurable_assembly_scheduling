@@ -11,11 +11,13 @@ from statistics import mean, stdev
 from typing import Any, Mapping, Sequence
 
 from configs import load_config
-from configs.formal_preferences import formal_preferences
+from configs.formal_preferences import formal_preferences, objective_scales
 from data.dataset import sha256_file
 from environment import PreferenceContext
 from result.io import write_csv, write_json
-from result.metrics import EVALUATION_SCHEMA_VERSION
+from result.metrics import evaluation_quality_metric, quality_metric_sha256, result_schema_version
+from environment.workload import objective_names, is_modern_workload, metrics_workload_objective
+from .workload_dominance import resolve_workload_evaluation_config, rescore_workload_row, workload_identity, labelled_workload_dominance
 from result.provenance import effective_config_snapshot
 from utils import derive_evaluation_sampling_seed
 from .pareto_analysis import dominates, hypervolume_3d, nondominated_indices, normalize_objectives, vectors_equal
@@ -64,6 +66,83 @@ def parse_run_arguments(values: Sequence[str]) -> dict[str, list[Path]]:
     return dict(runs)
 
 
+def _validate_explicit_scoring(directory: Path, config: dict, metrics: dict, rows: list[dict]) -> dict:
+    """Check the saved scoring goal while retaining the executing training goal."""
+    path = directory / "evaluation_config.json"
+    if metrics.get("evaluation_goal") != "explicit_frozen_workload" or not path.is_file():
+        raise ValueError("explicit evaluation requires its saved evaluation_config.json")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    scoring = load_config(path)
+    if not is_modern_workload(scoring):
+        raise ValueError("explicit workload evaluation requires a modern workload config")
+    digest = effective_config_snapshot(raw)["sha256"]
+    if metrics.get("evaluation_config_sha256") != digest:
+        raise ValueError("evaluation scoring configuration hash mismatch")
+    if metrics.get("training_evaluation_schema_version") != result_schema_version(config):
+        raise ValueError("evaluation training result schema mismatch")
+    if metrics.get("evaluation_schema_version") != result_schema_version(scoring):
+        raise ValueError("evaluation scoring result schema mismatch")
+    for name, expected in {
+        "evaluation_objective_scales": scoring["objective_scalarizer"]["scales"],
+        "evaluation_normalization_manifest_sha256": scoring["objective_scalarizer"].get("normalization_manifest_sha256"),
+        **workload_identity(scoring, prefix="evaluation_"),
+    }.items():
+        if metrics.get(name) != expected:
+            raise ValueError(f"evaluation scoring {name} mismatch")
+    metric = evaluation_quality_metric(scoring)
+    if metrics.get("quality_metric") != metric or metrics.get("quality_metric_sha256") != quality_metric_sha256(metric):
+        raise ValueError("evaluation scoring quality metric mismatch")
+    training_metric = evaluation_quality_metric(config)
+    training_quality = metrics.get("training_goal_quality", {})
+    training_digest = quality_metric_sha256(training_metric)
+    if (training_quality.get("quality_metric") != training_metric
+            or training_quality.get("quality_metric_sha256") != training_digest
+            or metrics.get("provenance", {}).get("quality_metric_sha256") != training_digest):
+        raise ValueError("evaluation original training quality metric mismatch")
+    from .pareto_analysis import _validate_row_protocol
+    for row in rows:
+        training_row = dict(row)
+        for name in ("workload_objective_value", "preference_quality_score", "actual_preference_quality_score",
+                     "quality_score", "quality_metric_sha256", "result_schema_version"):
+            if f"training_{name}" in row:
+                training_row[name] = row[f"training_{name}"]
+        for name in ("result_schema_version", "quality_metric_sha256", "preference_quality_score"):
+            if f"training_{name}" not in row:
+                raise ValueError(f"evaluation row is missing its original training_{name}")
+        if not is_modern_workload(config):
+            training_row["workload_objective_value"] = row["worker_load_variance"]
+        _validate_row_protocol(training_row, config)
+        if row.get("result_schema_version") != result_schema_version(scoring):
+            raise ValueError("evaluation row scoring result schema mismatch")
+        if row.get("quality_metric_sha256") != quality_metric_sha256(metric):
+            raise ValueError("evaluation row scoring quality hash mismatch")
+        for name, expected in {
+            **workload_identity(scoring, prefix="evaluation_"),
+            "evaluation_flow_mode": metric["flow_mode"],
+            "evaluation_normalization_manifest_sha256": scoring["objective_scalarizer"].get("normalization_manifest_sha256"),
+        }.items():
+            actual = row.get(name)
+            if name == "evaluation_workload_q":
+                actual = None if actual in {None, "", "None", "null"} else float(actual)
+            if actual != expected:
+                raise ValueError(f"evaluation row {name} mismatch")
+        for name in objective_names(scoring):
+            actual = float(row[f"evaluation_objective_scale_{name}"])
+            if not math.isclose(actual, scoring["objective_scalarizer"]["scales"][name], rel_tol=1e-12, abs_tol=1e-12):
+                raise ValueError(f"evaluation row scoring {name} scale mismatch")
+        recomputed = rescore_workload_row(row, scoring)
+        for name in ("workload_objective_value", "preference_quality_score", "quality_score", "actual_preference_quality_score"):
+            actual = float(row[name])
+            if not math.isfinite(actual) or not math.isclose(actual, recomputed[name], rel_tol=1e-9, abs_tol=1e-9):
+                raise ValueError(f"evaluation row scoring {name} disagrees with its actual objectives")
+    return {
+        "evaluation_config_sha256": sha256_file(path),
+        "evaluation_effective_config_sha256": digest,
+        "evaluation_scales": scoring["objective_scalarizer"]["scales"],
+        "evaluation_workload": workload_identity(scoring),
+    }
+
+
 def _load_run(directory: Path) -> tuple[dict, dict, list[dict[str, str]], dict]:
     config_path = directory / "config.json"
     raw_config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -78,7 +157,11 @@ def _load_run(directory: Path) -> tuple[dict, dict, list[dict[str, str]], dict]:
     else:
         metadata_path, csv_path = directory / "summary.json", directory / "final_sampled_instance_metrics.csv"
         metrics = json.loads(metadata_path.read_text(encoding="utf-8"))["final_sampled"]
-    if not isinstance(metrics, dict) or metrics.get("evaluation_schema_version") != EVALUATION_SCHEMA_VERSION:
+    explicit_scoring = isinstance(metrics, dict) and (
+        metrics.get("evaluation_goal") is not None or (directory / "evaluation_config.json").is_file()
+    )
+    expected_schema = result_schema_version(config)
+    if not isinstance(metrics, dict) or (not explicit_scoring and metrics.get("evaluation_schema_version") != expected_schema):
         raise ValueError("V8 analysis requires the current evaluation schema")
     if not metrics.get("evaluation_complete", True) or metrics.get("sampling_truncated_count", 0):
         raise ValueError("incomplete evaluations cannot enter Pareto/HV analysis")
@@ -100,6 +183,7 @@ def _load_run(directory: Path) -> tuple[dict, dict, list[dict[str, str]], dict]:
         raise ValueError("evaluation has no dataset manifest hash")
     with csv_path.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
+    scoring_source = _validate_explicit_scoring(directory, config, metrics, rows) if explicit_scoring else {}
     source = {
         "directory": str(directory.resolve()),
         "config_sha256": sha256_file(config_path),
@@ -111,13 +195,16 @@ def _load_run(directory: Path) -> tuple[dict, dict, list[dict[str, str]], dict]:
         "flow_mode": flow_mode(config),
         "training_scales": config["objective_scalarizer"]["scales"],
         "reward_version": config["reward"]["mode"],
+        "training_workload": workload_identity(config) if is_modern_workload(config) else {"workload_mode": "variance"},
+        **scoring_source,
     }
     return config, metrics, rows, source
 
 
 def analyze_runs(
     runs: Mapping[str, str | Path | Sequence[str | Path]], output_dir: str | Path,
-    *, evaluation_flow_mode: str | None = None,
+    *, evaluation_flow_mode: str | None = None, evaluation_config: Mapping[str, Any] | None = None,
+    own_goal: bool = False,
 ) -> dict[str, Any]:
     """Analyze matched candidate budgets separately for each instance and seed.
 
@@ -141,12 +228,23 @@ def analyze_runs(
     shared_identity = None
     shared_config = None
     seeds_by_training_seed: dict[int, list[int]] = {}
+    prepared_runs = {}
+    for method, directories in runs.items():
+        for path in ([directories] if isinstance(directories, (str, Path)) else list(directories)):
+            prepared_runs[(method, str(path))] = _load_run(Path(path))
+    workload_comparison = evaluation_config is not None or any(
+        is_modern_workload(loaded[0]) or "evaluation_workload" in loaded[3]
+        for loaded in prepared_runs.values()
+    )
+    shared_scoring_config = None
     for method, directories in runs.items():
         paths = [directories] if isinstance(directories, (str, Path)) else list(directories)
         if not paths:
             raise ValueError(f"method has no runs: {method}")
         for raw_path in paths:
-            config, metrics, rows, source = _load_run(Path(raw_path))
+            config, metrics, rows, source = prepared_runs[(method, str(raw_path))]
+            scoring_config = (resolve_workload_evaluation_config(config, evaluation_config=evaluation_config,
+                own_goal=own_goal, flow_mode=evaluation_flow_mode) if workload_comparison else config)
             seed = int(config["seed"])
             if (method, seed) in seen_runs:
                 raise ValueError(f"duplicate method/training seed: {method}/{seed}")
@@ -167,7 +265,7 @@ def analyze_runs(
                 raise ValueError("instance count differs from evaluation metadata")
             identity = (metrics["dataset"], source["dataset_manifest_sha256"],
                         tuple(sorted(ids)), tuple(sorted(keys)), repeats,
-                        tuple(config["objective_scalarizer"]["scales"][name] for name in ("flow", "cost", "variance")),
+                        objective_scales(config),
                         config["objective_scalarizer"].get("normalization_manifest_sha256"))
             if evaluation_flow_mode is not None:
                 # Training identities are validated per run above; compare shared physical/evaluation identity.
@@ -183,8 +281,25 @@ def analyze_runs(
                         if record.instance.instance_id in ids:
                             env.reset(record.instance,build_observation=False)
                             lower_bounds[record.instance.instance_id] = env._total_processing_lower_bound_ticks*env.resolution
+            if workload_comparison:
+                identity = (*identity[:5], objective_scales(scoring_config),
+                    (json.dumps(workload_identity(scoring_config), sort_keys=True),
+                     scoring_config["objective_scalarizer"].get("normalization_manifest_sha256"),
+                     json.dumps(config.get("environment", {}), sort_keys=True)))
+                if flow_mode(scoring_config) == FLOW_EXCESS and not lower_bounds:
+                    from data import load_dataset_split
+                    from environment import AssemblySchedulingEnv
+                    dataset = load_dataset_split(config, metrics["dataset"])
+                    if dataset_manifest_snapshot_hash(dataset) != source["dataset_manifest_sha256"]:
+                        raise ValueError("cannot derive excess from an unverified instance manifest")
+                    environment = AssemblySchedulingEnv(config)
+                    for record in dataset:
+                        if record.instance.instance_id in ids:
+                            environment.reset(record.instance, build_observation=False)
+                            lower_bounds[record.instance.instance_id] = environment._total_processing_lower_bound_ticks * environment.resolution
             if shared_identity is None:
                 shared_identity, shared_config = identity, config
+                shared_scoring_config = scoring_config
             elif identity != shared_identity:
                 raise ValueError("runs have unmatched dataset, instances, preferences, repeat budget, or scales")
             expected_cells = {(instance_id, key, repeat) for instance_id in ids for key in keys for repeat in range(repeats)}
@@ -192,13 +307,18 @@ def analyze_runs(
             if len(observed_cells) != len(rows) or observed_cells != expected_cells:
                 raise ValueError("duplicate or incomplete instance/preference/repeat cells")
             scales = identity[5]
+            load_sources = {}
+            if workload_comparison and any(row.get("worker_loads") in {None, ""} for row in rows if _flag(row["task_succeeded"])):
+                from .workload_dominance import historical_load_sources
+                load_sources = historical_load_sources(raw_path, config, metrics["dataset"],
+                    [row for row in rows if _flag(row["task_succeeded"])])
             grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
             for raw in rows:
                 repeat = int(raw["sampling_repeat"])
                 sampling_seed = int(sampling_seeds[repeat])
                 if int(raw["sampling_seed"]) != sampling_seed:
                     raise ValueError("row sampling seed disagrees with repeat metadata")
-                weights = [float(raw[f"preference_{name}"]) for name in ("flow", "cost", "variance")]
+                weights = [float(raw[f"preference_{name}"]) for name in objective_names(config)]
                 if PreferenceContext.from_input(weights).key != raw["preference_key"]:
                     raise ValueError("row preference weights disagree with preference key")
                 if int(raw["derived_sampling_seed"]) != derive_evaluation_sampling_seed(
@@ -217,20 +337,30 @@ def analyze_runs(
                 if raw.get("fatigue_mode", "full") != "full":
                     raise ValueError("neutral row in full-fatigue evaluation")
                 objectives = [_finite(raw[name], name) for name in OBJECTIVE_FIELDS]
-                if evaluation_flow_mode == FLOW_EXCESS and succeeded:
+                selected_flow_mode = flow_mode(scoring_config) if workload_comparison else evaluation_flow_mode
+                if selected_flow_mode == FLOW_EXCESS and succeeded:
                     lb = lower_bounds.get(raw["instance_id"])
                     if lb is None or objectives[0] < lb-1e-8:
                         raise ValueError("successful excess derivation has invalid processing lower bound")
-                    expected_excess = max(0.0,objectives[0]-lb)
+                    expected_excess = max(0.0, objectives[0]-lb)
                     if raw.get("flow_excess_objective") not in {None,""} and not math.isclose(
                             _finite(raw["flow_excess_objective"],"flow_excess_objective"),expected_excess,abs_tol=1e-7):
                         raise ValueError("excess report disagrees with verified instance lower bound")
+                    raw = {**raw, "flow_excess_objective": expected_excess}
                     objectives[0] = expected_excess
-                point = normalize_objectives(objectives, scales)
+                if workload_comparison and succeeded and safe:
+                    if is_modern_workload(config):
+                        from .pareto_analysis import _validate_row_protocol
+                        _validate_row_protocol(raw, config)
+                    raw = rescore_workload_row(raw, scoring_config,
+                        **load_sources.get((raw["instance_id"], str(raw.get("candidate_id", "")), str(raw.get("sampling_repeat", 0))), {}))
+                    objectives[2] = metrics_workload_objective(raw, scoring_config)
+                    objectives[0] = _finite(raw["flow_excess_objective"] if flow_mode(scoring_config) == FLOW_EXCESS else raw["flow_time_objective"], "evaluation Flow")
+                point = normalize_objectives(objectives, scales) if not workload_comparison or succeeded and safe else (None, None, None)
                 row = {**raw, "method": method, "algorithm_seed": seed,
                        "sampling_repeat": repeat, "candidate_feasible": succeeded and safe,
                        "is_pareto": False,
-                       **dict(zip(("normalized_flow", "normalized_cost", "normalized_variance"), point)),
+                       **dict(zip(tuple(f"normalized_{name}" for name in objective_names(scoring_config)), point)),
                        "_point": point}
                 candidates.append(row)
                 grouped[raw["instance_id"]].append(row)
@@ -286,13 +416,18 @@ def analyze_runs(
         "protocol": PROTOCOL, "dataset": shared_identity[0], "independent_test": shared_identity[0] == "test",
         "dataset_manifest_sha256": shared_identity[1], "instance_count": len(shared_identity[2]),
         "preference_count": len(shared_identity[3]), "repeat_count": shared_identity[4],
-        "normalization": "J/(scale+J)", "objective_scales": dict(zip(("flow","cost","variance"),shared_identity[5])),
-        "evaluation_flow_mode": evaluation_flow_mode or flow_mode(shared_config),
+        "normalization": "J/(scale+J)", "objective_scales": dict(zip(objective_names(shared_scoring_config),shared_identity[5])),
+        "evaluation_flow_mode": evaluation_flow_mode or flow_mode(shared_scoring_config),
+        "evaluation_goal": "own_training_goal" if own_goal else "unified_q05" if workload_comparison and evaluation_config is None else "explicit_goal" if workload_comparison else "legacy_variance",
         "reference_point": [1.0, 1.0, 1.0], "methods": method_summary,
         "coverage_definition": "fraction of unique front points weakly dominated by the other method",
         "candidate_count": len(candidates), "front_row_count": sum(r["is_pareto"] for r in candidates),
         "sources": sources,
     }
+    if workload_comparison:
+        summary.update(workload_identity(shared_scoring_config, prefix="evaluation_"))
+        summary["evaluation_normalization_manifest_sha256"] = shared_scoring_config["objective_scalarizer"].get("normalization_manifest_sha256")
+        summary["labelled_worker_dominance"] = labelled_workload_dominance(candidates)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     for row in candidates:

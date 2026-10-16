@@ -122,7 +122,7 @@ def test_default_plan_covers_preferences_within_all_scenarios(config):
         point = quality_preference_for_episode(config, algorithm_seed=11, quality_episode_index=index)
         kind = point.source if point.source.startswith("endpoint_") else "mixed"
         coverage.add((label, kind))
-    assert coverage == {(name, kind) for name in PRESSURE_TYPES for kind in ("endpoint_flow", "endpoint_cost", "endpoint_variance", "mixed")}
+    assert coverage == {(name, kind) for name in PRESSURE_TYPES for kind in ("endpoint_flow", "endpoint_cost", "endpoint_workload", "mixed")}
 
 
 def test_cache_matches_fresh_and_configuration_changes_isolate(config, fixed_instance, tmp_path):
@@ -180,7 +180,7 @@ def test_unknown_instances_in_denominator_and_invalid_gap_is_empty(config, tmp_p
               "task_succeeded": False, "task_failed": True, "task_done": True,
               "sampling_truncated": False, "objective_complete": True,
               "termination_reason": "horizon", "operation_progress": .75}
-    aggregate = aggregate_evaluation_rows([row,failed], dataset="validation", policy="heuristic", manifest="manifest.json")
+    aggregate = aggregate_evaluation_rows([row,failed], dataset="validation", policy="heuristic", manifest="manifest.json", quality_metric=evaluation_quality_metric(config))
     assert aggregate["completion_rate"] == .5
     assert aggregate["by_feasibility_status"]["unknown"]["count"] == 2
     assert aggregate["failure_reasons"] == {"horizon": 1}
@@ -192,9 +192,9 @@ def test_unknown_instances_in_denominator_and_invalid_gap_is_empty(config, tmp_p
         assert next(csv.DictReader(file))["relative_heuristic_gap_percent"] == ""
     for field in ("subset_sha256", "distribution_contract_sha256", "objective_scale_flow"):
         with pytest.raises(ValueError, match=field):
-            aggregate_evaluation_rows([rows[0], {**rows[0], field: "different"}], dataset="validation", policy="heuristic", manifest="manifest.json")
+            aggregate_evaluation_rows([rows[0], {**rows[0], field: "different"}], dataset="validation", policy="heuristic", manifest="manifest.json", quality_metric=evaluation_quality_metric(config))
     with pytest.raises(ValueError, match="result schema"):
-        aggregate_evaluation_rows([{**rows[0], "result_schema_version": "7.0.0"}], dataset="validation", policy="heuristic", manifest="manifest.json")
+        aggregate_evaluation_rows([{**rows[0], "result_schema_version": "7.0.0"}], dataset="validation", policy="heuristic", manifest="manifest.json", quality_metric=evaluation_quality_metric(config))
 
 
 def test_legacy_data_is_preserved_and_loadable():
@@ -213,7 +213,7 @@ def test_legacy_data_is_preserved_and_loadable():
 def test_run_audit_loads_saved_runtime_config(config, tmp_path):
     from configs.config import public_config
     from result.io import write_json
-    from scripts.audit_data_v2_runs import load_run_config
+    from support.data_v2_cases import load_run_config
     saved = public_config(config)
     path = tmp_path / "config.json"
     write_json(path, saved)

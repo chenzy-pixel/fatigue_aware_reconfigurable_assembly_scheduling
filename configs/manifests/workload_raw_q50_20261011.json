@@ -1,0 +1,888 @@
+{
+  "bounded_objective": "q_i=J_i/(s_i+J_i)",
+  "content_sha256": "b9c00a827bb9f22e73cbd2d08bdbb273429510c4bc3a264f2cffc43e93f87fed",
+  "flow_mode": "raw_v1",
+  "inherited_manifest": {
+    "path": "configs/manifests/v2_selected_scales_20261002.json",
+    "sha256": "9d4829c467f592d9a319251f0f779e7354cce70e1511d3bc90ab19b78fa4cce3"
+  },
+  "scales": {
+    "cost": 353.27,
+    "flow": 1089.15,
+    "workload": 21.03145448655653
+  },
+  "schema_version": "workload_validation_scales_v1",
+  "selection": "successful_heuristic_validation_mean",
+  "workload_objective": {
+    "mode": "geometric_owa",
+    "order": "descending",
+    "q": 0.5,
+    "version": "workload_objective_v1",
+    "weights": "normalized_geometric_by_worker_count_v1"
+  },
+  "workload_source": {
+    "config_sha256": "dac87abf5e6012954f665ea6dc8e6942d1e443c926ad1967098a9b07cbe7da3a",
+    "git_commit": "ccf5051814b77288498812921d9cc993978e7cfb",
+    "policy": "HeuristicPolicy",
+    "reference_config": "result/runs/flow_seed11_20261008_130244/config.json",
+    "reference_rows_sha256": "835262fddb4b318d21c897246770ee278ef4fe8aaed50c2cf43e175a36ff5e25",
+    "rows": [
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000001",
+        "physical_valid": true,
+        "reconfiguration_count": 8,
+        "success": true,
+        "total_labor": 49.900000000000006,
+        "worker_loads": {
+          "H1": 9.700000000000001,
+          "H2": 8.8,
+          "H3": 7.5,
+          "H4": 9.1,
+          "H5": 9.4,
+          "H6": 5.4
+        },
+        "workload_value": 9.352380952380951
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_high_arrival_pressure_2000006",
+        "physical_valid": true,
+        "reconfiguration_count": 16,
+        "success": true,
+        "total_labor": 98.8,
+        "worker_loads": {
+          "H1": 18.3,
+          "H2": 16.2,
+          "H3": 16.6,
+          "H4": 14.600000000000001,
+          "H5": 15.8,
+          "H6": 17.299999999999997
+        },
+        "workload_value": 17.558730158730153
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_easy_2000028",
+        "physical_valid": true,
+        "reconfiguration_count": 9,
+        "success": true,
+        "total_labor": 49.7,
+        "worker_loads": {
+          "H1": 8.2,
+          "H2": 6.700000000000001,
+          "H3": 9.600000000000001,
+          "H4": 9.0,
+          "H5": 7.800000000000001,
+          "H6": 8.4
+        },
+        "workload_value": 9.103174603174603
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000029",
+        "physical_valid": true,
+        "reconfiguration_count": 9,
+        "success": true,
+        "total_labor": 58.7,
+        "worker_loads": {
+          "H1": 9.4,
+          "H2": 12.200000000000001,
+          "H3": 8.4,
+          "H4": 8.9,
+          "H5": 8.9,
+          "H6": 10.9
+        },
+        "workload_value": 11.13968253968254
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_fatigue_bottleneck_2000033",
+        "physical_valid": true,
+        "reconfiguration_count": 25,
+        "success": true,
+        "total_labor": 197.50000000000003,
+        "worker_loads": {
+          "H1": 32.1,
+          "H2": 31.900000000000002,
+          "H3": 36.7,
+          "H4": 31.1,
+          "H5": 33.2,
+          "H6": 32.50000000000001
+        },
+        "workload_value": 34.74444444444445
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_high_arrival_pressure_2000034",
+        "physical_valid": true,
+        "reconfiguration_count": 19,
+        "success": true,
+        "total_labor": 129.8,
+        "worker_loads": {
+          "H1": 21.200000000000003,
+          "H2": 23.8,
+          "H3": 21.3,
+          "H4": 19.8,
+          "H5": 21.5,
+          "H6": 22.200000000000003
+        },
+        "workload_value": 22.796825396825398
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_machine_bottleneck_2000079",
+        "physical_valid": true,
+        "reconfiguration_count": 17,
+        "success": true,
+        "total_labor": 116.9,
+        "worker_loads": {
+          "H1": 20.0,
+          "H2": 19.0,
+          "H3": 20.400000000000002,
+          "H4": 24.1,
+          "H5": 19.6,
+          "H6": 13.8
+        },
+        "workload_value": 22.02857142857143
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_easy_2000091",
+        "physical_valid": true,
+        "reconfiguration_count": 8,
+        "success": true,
+        "total_labor": 42.1,
+        "worker_loads": {
+          "H1": 8.4,
+          "H2": 4.4,
+          "H3": 6.4,
+          "H4": 10.0,
+          "H5": 7.800000000000001,
+          "H6": 5.1
+        },
+        "workload_value": 8.84126984126984
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_worker_bottleneck_2000095",
+        "physical_valid": true,
+        "reconfiguration_count": 23,
+        "success": true,
+        "total_labor": 160.00000000000003,
+        "worker_loads": {
+          "H1": 26.500000000000004,
+          "H2": 24.200000000000003,
+          "H3": 26.6,
+          "H4": 28.200000000000003,
+          "H5": 27.700000000000003,
+          "H6": 26.800000000000004
+        },
+        "workload_value": 27.67619047619048
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000099",
+        "physical_valid": true,
+        "reconfiguration_count": 12,
+        "success": true,
+        "total_labor": 81.4,
+        "worker_loads": {
+          "H1": 13.3,
+          "H2": 12.7,
+          "H3": 14.799999999999999,
+          "H4": 12.9,
+          "H5": 15.5,
+          "H6": 12.200000000000001
+        },
+        "workload_value": 14.736507936507936
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_high_arrival_pressure_2000104",
+        "physical_valid": true,
+        "reconfiguration_count": 17,
+        "success": true,
+        "total_labor": 105.5,
+        "worker_loads": {
+          "H1": 17.6,
+          "H2": 19.2,
+          "H3": 17.700000000000003,
+          "H4": 15.200000000000001,
+          "H5": 18.2,
+          "H6": 17.6
+        },
+        "workload_value": 18.539682539682538
+      },
+      {
+        "failure_reason": "horizon",
+        "instance_id": "validation_reconfiguration_bottleneck_2000115",
+        "physical_valid": true,
+        "reconfiguration_count": 28,
+        "success": false,
+        "total_labor": 260.8,
+        "worker_loads": {
+          "H1": 43.300000000000004,
+          "H2": 43.00000000000001,
+          "H3": 45.900000000000006,
+          "H4": 45.1,
+          "H5": 39.2,
+          "H6": 44.3
+        },
+        "workload_value": 45.13015873015873
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_machine_bottleneck_2000121",
+        "physical_valid": true,
+        "reconfiguration_count": 19,
+        "success": true,
+        "total_labor": 117.0,
+        "worker_loads": {
+          "H1": 23.400000000000002,
+          "H2": 18.6,
+          "H3": 18.4,
+          "H4": 20.099999999999998,
+          "H5": 21.6,
+          "H6": 14.900000000000002
+        },
+        "workload_value": 21.925396825396827
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_worker_bottleneck_2000130",
+        "physical_valid": true,
+        "reconfiguration_count": 20,
+        "success": true,
+        "total_labor": 127.30000000000001,
+        "worker_loads": {
+          "H1": 20.000000000000004,
+          "H2": 22.000000000000004,
+          "H3": 19.900000000000002,
+          "H4": 22.0,
+          "H5": 20.900000000000002,
+          "H6": 22.5
+        },
+        "workload_value": 22.08730158730159
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_high_arrival_pressure_2000139",
+        "physical_valid": true,
+        "reconfiguration_count": 17,
+        "success": true,
+        "total_labor": 111.4,
+        "worker_loads": {
+          "H1": 19.200000000000003,
+          "H2": 20.500000000000004,
+          "H3": 17.900000000000002,
+          "H4": 18.700000000000003,
+          "H5": 17.3,
+          "H6": 17.8
+        },
+        "workload_value": 19.639682539682543
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_fatigue_bottleneck_2000152",
+        "physical_valid": true,
+        "reconfiguration_count": 21,
+        "success": true,
+        "total_labor": 172.3,
+        "worker_loads": {
+          "H1": 27.800000000000004,
+          "H2": 27.700000000000003,
+          "H3": 25.4,
+          "H4": 32.400000000000006,
+          "H5": 29.400000000000002,
+          "H6": 29.6
+        },
+        "workload_value": 30.755555555555556
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_easy_2000154",
+        "physical_valid": true,
+        "reconfiguration_count": 10,
+        "success": true,
+        "total_labor": 53.5,
+        "worker_loads": {
+          "H1": 9.5,
+          "H2": 7.300000000000001,
+          "H3": 9.9,
+          "H4": 9.2,
+          "H5": 9.100000000000001,
+          "H6": 8.5
+        },
+        "workload_value": 9.573015873015873
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000169",
+        "physical_valid": true,
+        "reconfiguration_count": 15,
+        "success": true,
+        "total_labor": 97.4,
+        "worker_loads": {
+          "H1": 16.1,
+          "H2": 13.700000000000003,
+          "H3": 15.1,
+          "H4": 16.700000000000003,
+          "H5": 23.099999999999998,
+          "H6": 12.700000000000001
+        },
+        "workload_value": 19.614285714285714
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_machine_bottleneck_2000176",
+        "physical_valid": true,
+        "reconfiguration_count": 24,
+        "success": true,
+        "total_labor": 161.70000000000002,
+        "worker_loads": {
+          "H1": 27.300000000000004,
+          "H2": 27.000000000000004,
+          "H3": 27.1,
+          "H4": 27.900000000000002,
+          "H5": 27.500000000000004,
+          "H6": 24.900000000000002
+        },
+        "workload_value": 27.595238095238102
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_reconfiguration_bottleneck_2000177",
+        "physical_valid": true,
+        "reconfiguration_count": 29,
+        "success": true,
+        "total_labor": 253.00000000000003,
+        "worker_loads": {
+          "H1": 41.5,
+          "H2": 40.10000000000001,
+          "H3": 40.800000000000004,
+          "H4": 43.800000000000004,
+          "H5": 44.10000000000001,
+          "H6": 42.7
+        },
+        "workload_value": 43.51269841269842
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_worker_bottleneck_2000178",
+        "physical_valid": true,
+        "reconfiguration_count": 20,
+        "success": true,
+        "total_labor": 136.1,
+        "worker_loads": {
+          "H1": 22.7,
+          "H2": 20.3,
+          "H3": 21.900000000000002,
+          "H4": 26.099999999999998,
+          "H5": 23.300000000000004,
+          "H6": 21.8
+        },
+        "workload_value": 24.461904761904762
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_fatigue_bottleneck_2000179",
+        "physical_valid": true,
+        "reconfiguration_count": 23,
+        "success": true,
+        "total_labor": 180.5,
+        "worker_loads": {
+          "H1": 33.6,
+          "H2": 32.6,
+          "H3": 29.400000000000002,
+          "H4": 30.400000000000006,
+          "H5": 30.8,
+          "H6": 23.700000000000003
+        },
+        "workload_value": 32.49682539682539
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_machine_bottleneck_2000182",
+        "physical_valid": true,
+        "reconfiguration_count": 21,
+        "success": true,
+        "total_labor": 143.6,
+        "worker_loads": {
+          "H1": 23.2,
+          "H2": 21.0,
+          "H3": 24.0,
+          "H4": 21.3,
+          "H5": 28.0,
+          "H6": 26.1
+        },
+        "workload_value": 26.38095238095238
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000193",
+        "physical_valid": true,
+        "reconfiguration_count": 10,
+        "success": true,
+        "total_labor": 66.7,
+        "worker_loads": {
+          "H1": 16.299999999999997,
+          "H2": 9.9,
+          "H3": 8.0,
+          "H4": 11.6,
+          "H5": 10.0,
+          "H6": 10.900000000000002
+        },
+        "workload_value": 13.685714285714283
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_high_arrival_pressure_2000198",
+        "physical_valid": true,
+        "reconfiguration_count": 18,
+        "success": true,
+        "total_labor": 119.70000000000002,
+        "worker_loads": {
+          "H1": 20.1,
+          "H2": 20.1,
+          "H3": 19.5,
+          "H4": 20.200000000000003,
+          "H5": 18.900000000000006,
+          "H6": 20.9
+        },
+        "workload_value": 20.493650793650794
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000205",
+        "physical_valid": true,
+        "reconfiguration_count": 20,
+        "success": true,
+        "total_labor": 122.10000000000001,
+        "worker_loads": {
+          "H1": 22.400000000000002,
+          "H2": 19.700000000000003,
+          "H3": 22.400000000000006,
+          "H4": 21.400000000000002,
+          "H5": 23.599999999999998,
+          "H6": 12.6
+        },
+        "workload_value": 22.704761904761906
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_worker_bottleneck_2000226",
+        "physical_valid": true,
+        "reconfiguration_count": 20,
+        "success": true,
+        "total_labor": 124.80000000000001,
+        "worker_loads": {
+          "H1": 21.500000000000004,
+          "H2": 23.9,
+          "H3": 20.0,
+          "H4": 19.6,
+          "H5": 22.1,
+          "H6": 17.700000000000003
+        },
+        "workload_value": 22.655555555555555
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_fatigue_bottleneck_2000233",
+        "physical_valid": true,
+        "reconfiguration_count": 21,
+        "success": true,
+        "total_labor": 164.9,
+        "worker_loads": {
+          "H1": 30.200000000000003,
+          "H2": 26.9,
+          "H3": 26.2,
+          "H4": 25.700000000000003,
+          "H5": 31.400000000000002,
+          "H6": 24.500000000000004
+        },
+        "workload_value": 29.903174603174605
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_fatigue_bottleneck_2000239",
+        "physical_valid": true,
+        "reconfiguration_count": 18,
+        "success": true,
+        "total_labor": 155.8,
+        "worker_loads": {
+          "H1": 25.400000000000002,
+          "H2": 29.600000000000005,
+          "H3": 28.9,
+          "H4": 22.0,
+          "H5": 27.300000000000004,
+          "H6": 22.6
+        },
+        "workload_value": 28.520634920634922
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000247",
+        "physical_valid": true,
+        "reconfiguration_count": 21,
+        "success": true,
+        "total_labor": 135.0,
+        "worker_loads": {
+          "H1": 23.5,
+          "H2": 23.6,
+          "H3": 23.299999999999997,
+          "H4": 23.999999999999996,
+          "H5": 22.299999999999997,
+          "H6": 18.3
+        },
+        "workload_value": 23.646031746031746
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000253",
+        "physical_valid": true,
+        "reconfiguration_count": 19,
+        "success": true,
+        "total_labor": 110.5,
+        "worker_loads": {
+          "H1": 19.6,
+          "H2": 19.400000000000002,
+          "H3": 19.400000000000002,
+          "H4": 17.8,
+          "H5": 17.0,
+          "H6": 17.3
+        },
+        "workload_value": 19.295238095238098
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_reconfiguration_bottleneck_2000279",
+        "physical_valid": true,
+        "reconfiguration_count": 25,
+        "success": true,
+        "total_labor": 234.20000000000002,
+        "worker_loads": {
+          "H1": 37.0,
+          "H2": 38.1,
+          "H3": 42.60000000000001,
+          "H4": 37.4,
+          "H5": 42.60000000000001,
+          "H6": 36.5
+        },
+        "workload_value": 41.42380952380953
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000289",
+        "physical_valid": true,
+        "reconfiguration_count": 5,
+        "success": true,
+        "total_labor": 35.800000000000004,
+        "worker_loads": {
+          "H1": 6.5,
+          "H2": 8.100000000000001,
+          "H3": 8.100000000000001,
+          "H4": 6.5,
+          "H5": 2.4000000000000004,
+          "H6": 4.2
+        },
+        "workload_value": 7.580952380952382
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_worker_bottleneck_2000298",
+        "physical_valid": true,
+        "reconfiguration_count": 18,
+        "success": true,
+        "total_labor": 118.30000000000001,
+        "worker_loads": {
+          "H1": 20.0,
+          "H2": 21.500000000000004,
+          "H3": 22.500000000000004,
+          "H4": 16.6,
+          "H5": 19.400000000000002,
+          "H6": 18.299999999999997
+        },
+        "workload_value": 21.504761904761907
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000307",
+        "physical_valid": true,
+        "reconfiguration_count": 14,
+        "success": true,
+        "total_labor": 87.7,
+        "worker_loads": {
+          "H1": 15.4,
+          "H2": 14.9,
+          "H3": 16.0,
+          "H4": 17.6,
+          "H5": 14.3,
+          "H6": 9.500000000000002
+        },
+        "workload_value": 16.50952380952381
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_machine_bottleneck_2000308",
+        "physical_valid": true,
+        "reconfiguration_count": 19,
+        "success": true,
+        "total_labor": 116.50000000000001,
+        "worker_loads": {
+          "H1": 21.800000000000004,
+          "H2": 20.0,
+          "H3": 18.6,
+          "H4": 20.200000000000003,
+          "H5": 18.6,
+          "H6": 17.300000000000004
+        },
+        "workload_value": 20.788888888888895
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000325",
+        "physical_valid": true,
+        "reconfiguration_count": 15,
+        "success": true,
+        "total_labor": 96.7,
+        "worker_loads": {
+          "H1": 16.6,
+          "H2": 14.1,
+          "H3": 16.3,
+          "H4": 15.200000000000001,
+          "H5": 20.9,
+          "H6": 13.600000000000001
+        },
+        "workload_value": 18.530158730158725
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_machine_bottleneck_2000326",
+        "physical_valid": true,
+        "reconfiguration_count": 12,
+        "success": true,
+        "total_labor": 74.0,
+        "worker_loads": {
+          "H1": 12.6,
+          "H2": 12.1,
+          "H3": 12.0,
+          "H4": 12.700000000000001,
+          "H5": 12.7,
+          "H6": 11.900000000000002
+        },
+        "workload_value": 12.614285714285714
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_reconfiguration_bottleneck_2000330",
+        "physical_valid": true,
+        "reconfiguration_count": 27,
+        "success": true,
+        "total_labor": 257.80000000000007,
+        "worker_loads": {
+          "H1": 46.20000000000001,
+          "H2": 37.4,
+          "H3": 42.60000000000001,
+          "H4": 45.00000000000001,
+          "H5": 44.50000000000001,
+          "H6": 42.10000000000001
+        },
+        "workload_value": 45.180952380952384
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_reconfiguration_bottleneck_2000339",
+        "physical_valid": true,
+        "reconfiguration_count": 22,
+        "success": true,
+        "total_labor": 230.0,
+        "worker_loads": {
+          "H1": 43.00000000000001,
+          "H2": 40.8,
+          "H3": 41.3,
+          "H4": 30.6,
+          "H5": 37.8,
+          "H6": 36.50000000000001
+        },
+        "workload_value": 41.55555555555555
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000346",
+        "physical_valid": true,
+        "reconfiguration_count": 9,
+        "success": true,
+        "total_labor": 58.400000000000006,
+        "worker_loads": {
+          "H1": 10.8,
+          "H2": 10.5,
+          "H3": 9.600000000000001,
+          "H4": 9.8,
+          "H5": 11.200000000000001,
+          "H6": 6.5
+        },
+        "workload_value": 10.795238095238096
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000376",
+        "physical_valid": true,
+        "reconfiguration_count": 3,
+        "success": true,
+        "total_labor": 20.2,
+        "worker_loads": {
+          "H1": 3.5,
+          "H2": 6.5,
+          "H3": 3.7,
+          "H4": 3.2,
+          "H5": 3.3000000000000003,
+          "H6": 0.0
+        },
+        "workload_value": 4.996825396825397
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_machine_bottleneck_2000377",
+        "physical_valid": true,
+        "reconfiguration_count": 20,
+        "success": true,
+        "total_labor": 127.2,
+        "worker_loads": {
+          "H1": 22.3,
+          "H2": 19.200000000000003,
+          "H3": 21.5,
+          "H4": 19.7,
+          "H5": 23.400000000000002,
+          "H6": 21.099999999999998
+        },
+        "workload_value": 22.54920634920635
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_reconfiguration_bottleneck_2000381",
+        "physical_valid": true,
+        "reconfiguration_count": 26,
+        "success": true,
+        "total_labor": 225.2,
+        "worker_loads": {
+          "H1": 40.8,
+          "H2": 37.900000000000006,
+          "H3": 40.4,
+          "H4": 40.800000000000004,
+          "H5": 37.4,
+          "H6": 27.9
+        },
+        "workload_value": 40.25238095238095
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_reconfiguration_bottleneck_2000387",
+        "physical_valid": true,
+        "reconfiguration_count": 20,
+        "success": true,
+        "total_labor": 166.70000000000002,
+        "worker_loads": {
+          "H1": 27.299999999999997,
+          "H2": 28.700000000000003,
+          "H3": 27.000000000000007,
+          "H4": 30.1,
+          "H5": 26.5,
+          "H6": 27.1
+        },
+        "workload_value": 29.042857142857144
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000404",
+        "physical_valid": true,
+        "reconfiguration_count": 10,
+        "success": true,
+        "total_labor": 59.6,
+        "worker_loads": {
+          "H1": 12.5,
+          "H2": 11.7,
+          "H3": 12.600000000000001,
+          "H4": 10.700000000000001,
+          "H5": 9.200000000000001,
+          "H6": 2.9000000000000004
+        },
+        "workload_value": 12.077777777777778
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000411",
+        "physical_valid": true,
+        "reconfiguration_count": 11,
+        "success": true,
+        "total_labor": 59.800000000000004,
+        "worker_loads": {
+          "H1": 12.200000000000001,
+          "H2": 10.100000000000001,
+          "H3": 10.100000000000001,
+          "H4": 10.2,
+          "H5": 10.200000000000001,
+          "H6": 7.0
+        },
+        "workload_value": 11.155555555555555
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000446",
+        "physical_valid": true,
+        "reconfiguration_count": 4,
+        "success": true,
+        "total_labor": 24.3,
+        "worker_loads": {
+          "H1": 6.1000000000000005,
+          "H2": 3.4000000000000004,
+          "H3": 5.2,
+          "H4": 3.4000000000000004,
+          "H5": 3.0,
+          "H6": 3.2
+        },
+        "workload_value": 5.215873015873016
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000448",
+        "physical_valid": true,
+        "reconfiguration_count": 6,
+        "success": true,
+        "total_labor": 34.800000000000004,
+        "worker_loads": {
+          "H1": 8.8,
+          "H2": 6.7,
+          "H3": 5.700000000000001,
+          "H4": 5.800000000000001,
+          "H5": 5.2,
+          "H6": 2.6
+        },
+        "workload_value": 7.476190476190477
+      },
+      {
+        "failure_reason": "completed",
+        "instance_id": "validation_balanced_2000462",
+        "physical_valid": true,
+        "reconfiguration_count": 5,
+        "success": true,
+        "total_labor": 27.400000000000002,
+        "worker_loads": {
+          "H1": 5.6,
+          "H2": 4.300000000000001,
+          "H3": 6.6000000000000005,
+          "H4": 3.1,
+          "H5": 5.0,
+          "H6": 2.8000000000000003
+        },
+        "workload_value": 5.825396825396825
+      }
+    ],
+    "script_sha256": "8c630a77f7ea81a7c13f72a0a3d666c5d168197f429609800f116ce55d05ddc1",
+    "selection_file_sha256": "f16d9036615349b9b43b026f2d777697957b813e3e1220ff65d17d3bb0a56270",
+    "successful_count": 49,
+    "trajectory_count": 50,
+    "validation_dataset_manifest_sha256": "5e973c436d14f079fdf8992c8ac772dc4e9efebf1e0477a38e13e7240f457c35",
+    "validation_subset_sha256": "b54cbf99baa94debc48ec245a163da8269dd2dc2d0fab8094c051b5eb65d57f5"
+  }
+}
