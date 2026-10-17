@@ -1,13 +1,13 @@
 {
   "extends": "../default.json",
   "experiment_name": "mo_alns_fatigue_aware_baseline",
-  "method_version": "MO_ALNS_v1",
+  "method_version": "MO_ALNS_v2",
   "evaluation": {
     "result_schema_version": "9.0.0"
   },
   "mo_alns": {
-    "protocol": "mo_alns_solver_budget_v2",
-    "max_evaluations_per_preference": 300,
+    "protocol": "mo_alns_solver_budget_v3",
+    "max_evaluations_per_preference": null,
     "max_proposals_multiplier": 10,
     "destroy_fraction": [
       0.1,
@@ -16,7 +16,7 @@
     "minimum_removed_operations": 2,
     "regret_position_candidates": 6,
     "regret_resource_variants": 3,
-    "operator_segment_length": 25,
+    "operator_segment_length": 5,
     "operator_reaction": 0.2,
     "operator_minimum_probability": 0.05,
     "operator_scores": {
@@ -33,6 +33,11 @@
     "reheat_fraction": 0.25,
     "maximum_reheats": 2,
     "matching_repair": true,
-    "parallel_workers": 20
+    "parallel_workers": 8,
+    "max_seconds_per_preference": 600,
+    "max_evaluations_per_neighbourhood": 6,
+    "max_proxy_evaluations_per_neighbourhood": 24,
+    "adaptive_weights": true,
+    "no_new_evaluation_proposals": 100
   }
 }

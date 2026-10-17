@@ -95,7 +95,10 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
                     raise ValueError("candidate sampling seed mismatch")
             budget=(repeats,tuple(sampling_seeds))
         else:
-            budget=(config.get("mo_alns",{}).get("max_evaluations_per_preference"),)
+            settings = config.get("mo_alns", {})
+            budget = tuple(settings.get(name) for name in (
+                "protocol", "max_evaluations_per_preference", "max_seconds_per_preference",
+                "max_evaluations_per_neighbourhood", "max_proxy_evaluations_per_neighbourhood", "adaptive_weights"))
         if arm in budgets and budgets[arm]!=budget:
             raise ValueError("matched candidate arms have different evaluation budgets")
         budgets[arm]=budget
@@ -105,7 +108,8 @@ def analyze_candidate_flow_runs(runs,output_dir,*,stage="final_test",require_com
         sources.append({"method":method,"directory":str(directory),"flow_mode":config["objective_scalarizer"].get("flow_mode","raw_v1"),
                         "training_scales":config["objective_scalarizer"]["scales"],"repeat_budget":repeats,
                         "training_workload": workload_identity(config),
-                        "solver_evaluations_per_preference":config.get("mo_alns",{}).get("max_evaluations_per_preference") if rows[0]["arm"]!="ppo" else None})
+                        "solver_evaluations_per_preference":config.get("mo_alns",{}).get("max_evaluations_per_preference") if rows[0]["arm"]!="ppo" else None,
+                        "solver_seconds_per_preference":config.get("mo_alns",{}).get("max_seconds_per_preference") if rows[0]["arm"]!="ppo" else None})
     summaries=[]
     from environment.types import flow_mode
     requested_modes = {flow_mode(evaluation_config)} if evaluation_config is not None else {"raw_v1", "excess_proportional_lb_v1"}

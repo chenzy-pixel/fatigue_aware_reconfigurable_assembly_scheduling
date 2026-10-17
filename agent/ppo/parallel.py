@@ -79,6 +79,7 @@ class _WorkerResetRequest:
     drain_physical_forced_actions: bool = False
     max_environment_steps: int | None = None
     preference: PreferenceContextInput | None = None
+    capture_trajectory: bool = False
 
 
 @dataclass(frozen=True)
@@ -426,6 +427,9 @@ class FixedEvaluationRollout:
     terminal_metrics_time_seconds: float = 0.0
     worker_service_time_seconds: float = 0.0
     reset_time_seconds: float = 0.0
+    actions: tuple[int, ...] = ()
+    schedule: list[dict[str, Any]] = field(default_factory=list)
+    reconfigurations: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ParallelWorkerError(RuntimeError):
@@ -458,6 +462,11 @@ def _worker_state(
 def _terminal_metrics(environment: AssemblySchedulingEnv) -> dict[str, Any]:
     metrics = environment.metrics()
     metrics["schedule_violations"] = environment.validate_schedule()
+    if getattr(environment, "_capture_evaluation_trajectory", False):
+        metrics["_evaluation_trajectory"] = {
+            "schedule": environment.schedule_log,
+            "reconfigurations": environment.reconfiguration_log,
+        }
     return metrics
 
 
@@ -519,6 +528,7 @@ def _worker_main(
                 observation = environment.reset(
                     record.instance, preference=request.preference
                 )
+                environment._capture_evaluation_trajectory = False
                 reset_seconds = time.perf_counter() - reset_started
                 metadata = {
                     key: record.metadata.get(key)
@@ -596,6 +606,7 @@ def _worker_main(
                 observation = environment.reset(
                     request.value, preference=request.preference
                 )
+                environment._capture_evaluation_trajectory = request.capture_trajectory
                 reset_seconds = time.perf_counter() - reset_started
                 connection.send(
                     _worker_roll_forward(
@@ -1800,13 +1811,15 @@ class ParallelEpisodeRunner:
         max_parallelism: int | None = None, deterministic: bool = True,
         sampling_seed: int | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
+        capture_trajectories: bool = False,
     ) -> list[FixedEvaluationRollout]:
         # Reject incompatible agents before starting any evaluation bookkeeping.
         agent.assert_evaluation_config(self.config)
         with self._track_evaluation_runtime():
             return self._evaluate_records(
                 agent, records, max_parallelism=max_parallelism,
-                deterministic=deterministic, sampling_seed=sampling_seed, preferences=preferences)
+                deterministic=deterministic, sampling_seed=sampling_seed, preferences=preferences,
+                capture_trajectories=capture_trajectories)
 
     def _evaluate_records(
         self,
@@ -1817,6 +1830,7 @@ class ParallelEpisodeRunner:
         deterministic: bool = True,
         sampling_seed: int | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
+        capture_trajectories: bool = False,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1878,7 +1892,8 @@ class ParallelEpisodeRunner:
                     )
                 requests[lane] = (
                     "reset_instance",
-                    _WorkerResetRequest(value=records[index].instance, preference=preference),
+                    _WorkerResetRequest(value=records[index].instance, preference=preference,
+                                        capture_trajectory=capture_trajectories),
                 )
             if requests:
                 responses = self._exchange(requests)
@@ -1980,6 +1995,9 @@ class ParallelEpisodeRunner:
                             policy_diagnostics[lane]
                         )
                     )
+                    trajectory = response.metrics.pop("_evaluation_trajectory", {})
+                    if capture_trajectories and not trajectory:
+                        raise ParallelWorkerError("worker returned no requested trajectory")
                     results.append(
                         FixedEvaluationRollout(
                             record_index=record_indices[lane],
@@ -2003,6 +2021,9 @@ class ParallelEpisodeRunner:
                                 else derived_sampling_seeds[lane]
                             ),
                             sampling_evaluation_key=evaluation_keys[lane],
+                            actions=tuple(action_traces[lane]) if capture_trajectories else (),
+                            schedule=trajectory.get("schedule", []),
+                            reconfigurations=trajectory.get("reconfigurations", []),
                             **worker_times[lane],
                         )
                     )

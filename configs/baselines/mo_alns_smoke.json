@@ -6,6 +6,7 @@
     "max_proposals_multiplier": 2,
     "regret_position_candidates": 1,
     "regret_resource_variants": 1,
-    "parallel_workers": 1
+    "parallel_workers": 1,
+    "max_seconds_per_preference": null
   }
 }

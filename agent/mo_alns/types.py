@@ -22,7 +22,7 @@ OBJECTIVE_FIELDS = (
     "reconfiguration_cost",
     "worker_load_variance",
 )
-ENCODING_SCHEMA_VERSION = "mo_alns_encoding_v1"
+ENCODING_SCHEMA_VERSION = "mo_alns_encoding_v2"
 
 
 def preference_key(preference: PreferenceVector) -> str:
@@ -48,6 +48,8 @@ class MOALNSSolution:
     disassembly_wait: dict[str, bool]
     installation_wait: dict[str, bool]
     origin: str = "generated"
+    resource_modes: dict[str, str] = field(default_factory=dict)
+    replay_actions: tuple[int, ...] | None = None
 
     def clone(self, *, origin: str | None = None) -> "MOALNSSolution":
         return MOALNSSolution(
@@ -65,11 +67,17 @@ class MOALNSSolution:
             disassembly_wait=dict(self.disassembly_wait),
             installation_wait=dict(self.installation_wait),
             origin=self.origin if origin is None else origin,
+            resource_modes=dict(self.resource_modes),
+            replay_actions=self.replay_actions,
         )
 
     def validate(self, instance: AssemblyInstance, *, allow_partial: bool = False) -> None:
         operation_ids = [operation.id for operation in instance.operations]
         known_operations = set(operation_ids)
+        allowed_modes = {"ranking", "earliest_finish", "minimum_reconfiguration_cost",
+                         "lowest_predicted_fatigue", "minimum_workload_delta"}
+        if not set(self.resource_modes).issubset(known_operations) or not set(self.resource_modes.values()).issubset(allowed_modes):
+            raise ValueError("invalid dynamic resource mode")
         encoded = list(self.operation_order)
         if len(encoded) != len(set(encoded)):
             raise ValueError("operation_order contains duplicate operation ids")
@@ -135,11 +143,15 @@ class MOALNSSolution:
                 for key in sorted(self.installation_wait)
             },
             "origin": self.origin,
+            "resource_modes": self.resource_modes,
+            "replay_actions": self.replay_actions,
         }
 
     def digest(self) -> str:
+        payload = self.payload()
+        payload.pop("origin")
         raw = json.dumps(
-            self.payload(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
@@ -160,6 +172,8 @@ class CandidateEvaluation:
     diagnostics: dict[str, Any]
     schedule_log: tuple[dict[str, Any], ...] = ()
     reconfiguration_log: tuple[dict[str, Any], ...] = ()
+    actions: tuple[int, ...] = ()
+    completed_seconds: float = 0.0
 
     @property
     def solution_digest(self) -> str:
@@ -194,13 +208,15 @@ class CandidateEvaluation:
             action_trace_sha256=self.action_trace_sha256,
             realized={key: value for key, value in self.realized.items()},
             diagnostics={key: value for key, value in self.diagnostics.items()},
+            actions=self.actions,
+            completed_seconds=self.completed_seconds,
         )
 
 
 @dataclass
 class SearchResult:
     preference: PreferenceVector
-    selected: CandidateEvaluation
+    selected: CandidateEvaluation | None
     archive: tuple[CandidateEvaluation, ...]
     initial_best_tchebycheff: float | None
     environment_evaluations: int
@@ -209,12 +225,18 @@ class SearchResult:
     search_time_seconds: float
     operator_statistics: dict[str, Any]
     search_log: tuple[dict[str, Any], ...]
+    status: str = "completed"
+    stop_reason: str = "evaluation_limit"
+    accounting: dict[str, Any] = field(default_factory=dict)
+    candidate_history: tuple[dict[str, Any], ...] = ()
+    initial_seconds: float = 0.0
+    initial_candidate_count: int = 0
 
 
 @dataclass
 class GridSearchResult:
     preferences: tuple[PreferenceVector, ...]
-    endpoints: dict[str, CandidateEvaluation]
+    endpoints: dict[str, CandidateEvaluation | None]
     archive: tuple[CandidateEvaluation, ...]
     searches: tuple[SearchResult, ...]
 

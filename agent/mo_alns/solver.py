@@ -28,6 +28,9 @@ from utils import action_trace_sha256
 
 from configs.formal_preferences import formal_preferences
 
+from .budget import SearchBudget, BudgetExhausted
+from .projection import SerialPredictor, MODES, production_score, worker_score
+
 from .archive import ParetoArchive, augmented_tchebycheff, candidate_better, normalized_objectives
 from .types import (
     CandidateEvaluation,
@@ -46,7 +49,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "minimum_removed_operations": 2,
     "regret_position_candidates": 6,
     "regret_resource_variants": 3,
-    "operator_segment_length": 25,
+    "operator_segment_length": 5,
     "operator_reaction": 0.20,
     "operator_minimum_probability": 0.05,
     "operator_scores": {
@@ -63,6 +66,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "reheat_fraction": 0.25,
     "maximum_reheats": 2,
     "matching_repair": True,
+    "max_seconds_per_preference": None,
+    "max_evaluations_per_neighbourhood": 6,
+    "max_proxy_evaluations_per_neighbourhood": 24,
+    "adaptive_weights": True,
+    "no_new_evaluation_proposals": 100,
 }
 
 DESTROY_OPERATORS = (
@@ -79,7 +87,7 @@ REPAIR_OPERATORS = (
     "earliest_finish",
     "minimum_reconfiguration_cost",
     "lowest_predicted_fatigue",
-    "minimum_load_variance",
+    "minimum_workload_delta",
 )
 INITIAL_RULES = (
     "existing_heuristic",
@@ -88,7 +96,7 @@ INITIAL_RULES = (
     "configuration_reuse",
     "minimum_reconfiguration_cost",
     "lowest_predicted_fatigue",
-    "minimum_load_variance",
+    "minimum_workload_delta",
     "same_wave_randomized",
 )
 
@@ -103,9 +111,16 @@ def _merge_settings(config: Mapping[str, Any]) -> dict[str, Any]:
             result[key] = {**dict(result[key]), **dict(value)}
         else:
             result[key] = value
-    evaluations = int(result["max_evaluations_per_preference"])
-    if evaluations < len(INITIAL_RULES):
-        raise ValueError("max_evaluations_per_preference must cover all initial rules")
+    if result.get("protocol", "mo_alns_solver_budget_v3") != "mo_alns_solver_budget_v3":
+        raise ValueError("legacy MO-ALNS protocol requires explicit migration to v3")
+    evaluations = result["max_evaluations_per_preference"]
+    if evaluations is not None and (type(evaluations) is not int or evaluations < 1):
+        raise ValueError("evaluation budget must be a positive integer or null")
+    if evaluations is None and result.get("max_seconds_per_preference") is None:
+        raise ValueError("at least one search budget is required")
+    local = result["max_evaluations_per_neighbourhood"]
+    if type(local) is not int or not 1 <= local <= 6:
+        raise ValueError("local evaluation budget must be in [1, 6]")
     fraction = tuple(float(value) for value in result["destroy_fraction"])
     if len(fraction) != 2 or not 0 < fraction[0] <= fraction[1] <= 1:
         raise ValueError("mo_alns.destroy_fraction must be an increasing range in (0, 1]")
@@ -129,7 +144,7 @@ def derive_mo_alns_seed(
     """Use a seed independent of scheduling order and process topology."""
 
     payload = (
-        f"mo_alns_solver_v1\0{int(algorithm_seed)}\0{dataset_name}\0{instance_id}\0"
+        f"mo_alns_solver_v2\0{int(algorithm_seed)}\0{dataset_name}\0{instance_id}\0"
         f"{preference_key(preference)}"
     ).encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
@@ -180,6 +195,7 @@ def _choose_production_action(env: AssemblySchedulingEnv, solution: MOALNSSoluti
         scored.append(
             (
                 operation_positions[operation_id],
+                production_score(env, operation_index, machine_index, solution.resource_modes[operation_id]) if operation_id in solution.resource_modes else (),
                 _rank_index(solution.machine_rankings[operation_id])[machine_id],
                 action,
             )
@@ -233,6 +249,7 @@ def _choose_worker_action(env: AssemblySchedulingEnv, solution: MOALNSSolution, 
         scored.append(
             (
                 operation_positions[reconfiguration.operation_id],
+                worker_score(env, machine_index, worker_index, solution.resource_modes[reconfiguration.operation_id]) if reconfiguration.operation_id in solution.resource_modes else (),
                 _rank_index(rankings[reconfiguration.operation_id])[worker_id],
                 machine_index,
                 action,
@@ -302,6 +319,8 @@ def decode_solution(
     preference: PreferenceInput,
     *,
     capture_logs: bool = False,
+    budget: SearchBudget | None = None,
+    policy: Any = None,
 ) -> CandidateEvaluation:
     """Replay one encoded solution exclusively through ``AssemblySchedulingEnv``."""
 
@@ -319,10 +338,18 @@ def decode_solution(
         "worker_wait_operations": [],
     }
     while not (env.terminated or env.truncated):
+        if budget is not None:
+            budget.check_time()
         mask = env.get_action_mask()
         phase = env.decision_type
+        forced = (policy.select_action(env) if policy is not None else
+                  solution.replay_actions[len(actions)] if solution.replay_actions is not None and len(actions) < len(solution.replay_actions) else None)
+        if solution.replay_actions is not None and policy is None and forced is None:
+            raise RuntimeError("saved action trace ended before environment termination")
+        if forced is not None and (forced >= len(mask) or mask[forced]):
+            raise RuntimeError("saved/policy action is illegal")
         if phase == DecisionType.PRODUCTION:
-            action = _choose_production_action(env, solution, mask)
+            action = forced if forced is not None else _choose_production_action(env, solution, mask)
             if action == env.wait_action:
                 ready = [
                     operation for operation in env.operations if operation.state == OperationState.READY
@@ -336,7 +363,7 @@ def decode_solution(
                 operation_index, machine_index = env.decode_production_action(action)
                 realized["machines"][env.operations[operation_index].spec.id] = env.machines[machine_index].spec.id
         elif phase == DecisionType.WORKER:
-            action = _choose_worker_action(env, solution, mask)
+            action = forced if forced is not None else _choose_worker_action(env, solution, mask)
             if action == env.wait_action:
                 pending = [
                     _pending_reconfiguration(env, machine_index)
@@ -363,6 +390,11 @@ def decode_solution(
             raise RuntimeError("non-terminal rollout reached an invalid decision phase")
         actions.append(int(action))
         env.step(action, build_observation=False)
+        if budget is not None:
+            budget.environment_steps += 1
+            budget.check_time()
+    if solution.replay_actions is not None and policy is None and len(actions) != len(solution.replay_actions):
+        raise RuntimeError("saved action trace has trailing actions")
     metrics = env.metrics()
     metrics["decisions"] = len(actions)
     metrics["inference_time_seconds"] = 0.0
@@ -380,7 +412,7 @@ def decode_solution(
         <= float(metrics["safe_fatigue_limit"]) + 1e-9
         and int(metrics.get("current_worker_matching_deficit", 0)) == 0
     )
-    return CandidateEvaluation(
+    result = CandidateEvaluation(
         solution=solution.clone(),
         preference=effective_preference,
         metrics=metrics,
@@ -391,11 +423,15 @@ def decode_solution(
         action_trace_sha256=str(metrics["action_trace_sha256"]),
         realized=realized,
         diagnostics=_candidate_diagnostics(env),
+        actions=tuple(actions),
         schedule_log=tuple(dict(row) for row in env.schedule_log) if capture_logs else (),
         reconfiguration_log=(
             tuple(dict(row) for row in env.reconfiguration_log) if capture_logs else ()
         ),
     )
+    if budget is not None:
+        budget.check_time()
+    return result
 
 
 def _operation_lookup(instance: AssemblyInstance) -> dict[str, OperationSpec]:
@@ -548,7 +584,7 @@ def _rule_solution(
                 if operation.required_module in worker.qualified_modules
             )
             return (fatigue, minimum_processing, operation.id)
-        if rule == "minimum_load_variance":
+        if rule == "minimum_workload_delta":
             return (operation.sequence, operation.id)
         if rule == "same_wave_randomized":
             return (order.wave, rng.random(), operation.id)
@@ -583,7 +619,7 @@ def _rule_solution(
             worker = worker_specs[worker_id]
             qualified = operation.required_module in worker.qualified_modules
             rotate = (index + workers.index(worker_id)) % max(1, len(workers))
-            if rule == "minimum_load_variance":
+            if rule == "minimum_workload_delta":
                 return (0 if qualified else 1, rotate, worker.initial_fatigue, worker_id)
             if rule == "minimum_reconfiguration_cost":
                 return (0 if qualified else 1, worker.labor_cost_per_minute, worker.initial_fatigue, worker_id)
@@ -798,50 +834,8 @@ def _rank_for_mode(
     candidate: CandidateEvaluation | None,
 ) -> MOALNSSolution:
     result = solution.clone(origin=mode)
-    operation = _operation_lookup(instance)[operation_id]
-    machine_specs = {machine.id: machine for machine in instance.machines}
-    worker_specs = {worker.id: worker for worker in instance.workers}
-
-    def machine_score(machine_id: str) -> tuple[float, ...]:
-        machine = machine_specs[machine_id]
-        if operation.required_module not in machine.module_parameters:
-            return (1.0, math.inf)
-        parameter = machine.module_parameters[operation.required_module]
-        process = operation.base_processing_time * parameter.processing_speed_factor
-        recon = 0.0 if machine.initial_module == operation.required_module else 1.0
-        cost = instance.module_costs[operation.required_module].fixed_installation_cost
-        if recon:
-            cost += instance.module_costs[machine.initial_module].fixed_disassembly_cost
-        if mode == "minimum_reconfiguration_cost":
-            return (0.0, cost, process)
-        return (0.0, process + recon, cost)
-
-    result.machine_rankings[operation_id] = tuple(sorted(result.machine_rankings[operation_id], key=machine_score))
-    load = candidate.diagnostics.get("worker_load", {}) if candidate is not None else {}
-    peak_fatigue = (
-        candidate.diagnostics.get("worker_peak_fatigue", {}) if candidate is not None else {}
-    )
-
-    def worker_score(worker_id: str) -> tuple[float, ...]:
-        worker = worker_specs[worker_id]
-        qualified = operation.required_module in worker.qualified_modules
-        if mode == "lowest_predicted_fatigue":
-            return (
-                0.0 if qualified else 1.0,
-                float(peak_fatigue.get(worker_id, worker.initial_fatigue)),
-                worker.labor_cost_per_minute,
-            )
-        if mode == "minimum_load_variance":
-            return (0.0 if qualified else 1.0, float(load.get(worker_id, 0.0)), worker.initial_fatigue)
-        if mode == "minimum_reconfiguration_cost":
-            return (0.0 if qualified else 1.0, worker.labor_cost_per_minute, worker.initial_fatigue)
-        return (0.0 if qualified else 1.0, worker.initial_fatigue, worker.labor_cost_per_minute)
-
-    result.disassembly_worker_rankings[operation_id] = tuple(sorted(result.disassembly_worker_rankings[operation_id], key=worker_score))
-    result.installation_worker_rankings[operation_id] = tuple(sorted(result.installation_worker_rankings[operation_id], key=worker_score))
-    result.production_wait[operation_id] = mode in {"lowest_predicted_fatigue", "minimum_reconfiguration_cost"}
-    result.disassembly_wait[operation_id] = mode == "lowest_predicted_fatigue"
-    result.installation_wait[operation_id] = mode == "lowest_predicted_fatigue"
+    result.replay_actions = None
+    result.resource_modes[operation_id] = "earliest_finish" if mode == "regret" else mode
     return result
 
 
@@ -851,167 +845,8 @@ class _RepairOutcome:
     probes: tuple[CandidateEvaluation, ...] = ()
 
 
-class _CandidateEvaluator:
-    def __init__(
-        self,
-        config: Mapping[str, Any],
-        instance: AssemblyInstance,
-        preference: PreferenceVector,
-        maximum_evaluations: int,
-    ) -> None:
-        self.config = config
-        self.instance = instance
-        self.preference = preference
-        self.maximum_evaluations = maximum_evaluations
-        self.cache: dict[str, CandidateEvaluation] = {}
-        self.evaluation_count = 0
-        self.cache_hits = 0
-
-    def evaluate(self, solution: MOALNSSolution) -> CandidateEvaluation | None:
-        digest = solution.digest()
-        cached = self.cache.get(digest)
-        if cached is not None:
-            self.cache_hits += 1
-            return cached
-        if self.evaluation_count >= self.maximum_evaluations:
-            return None
-        candidate = decode_solution(self.config, self.instance, solution, self.preference)
-        self.evaluation_count += 1
-        stripped = candidate.without_logs()
-        self.cache[digest] = stripped
-        return stripped
-
-
-def _repair_greedy(
-    name: str,
-    base: MOALNSSolution,
-    removed: Sequence[str],
-    instance: AssemblyInstance,
-    candidate: CandidateEvaluation,
-    *,
-    original_order: Sequence[str] | None = None,
-) -> _RepairOutcome:
-    original = tuple(base.operation_order if original_order is None else original_order)
-    core = tuple(value for value in original if value not in set(removed))
-    solution = base.clone(origin=name)
-    solution.operation_order = core
-    for operation_id in removed:
-        lower, upper = _valid_positions(solution.operation_order, operation_id, instance)
-        if name == "earliest_finish":
-            position = lower
-        elif name == "minimum_reconfiguration_cost":
-            position = upper
-        elif name == "lowest_predicted_fatigue":
-            position = upper
-        else:
-            position = (lower + upper) // 2
-        solution.operation_order = _insert(solution.operation_order, operation_id, position)
-        solution = _rank_for_mode(solution, operation_id, instance, name, candidate)
-    solution.operation_order = _complete_partial_order(solution.operation_order, original, instance)
-    return _RepairOutcome(solution)
-
-
-def _repair_regret(
-    name: str,
-    base: MOALNSSolution,
-    removed: Sequence[str],
-    instance: AssemblyInstance,
-    evaluator: _CandidateEvaluator,
-    candidate: CandidateEvaluation,
-    settings: Mapping[str, Any],
-) -> _RepairOutcome:
-    original = tuple(base.operation_order)
-    remaining = list(removed)
-    working = base.clone(origin=name)
-    working.operation_order = tuple(value for value in original if value not in set(remaining))
-    probes: list[CandidateEvaluation] = []
-    regret_rank = 2 if name == "regret_2" else 3
-    while remaining:
-        choices: list[tuple[float, CandidateEvaluation, MOALNSSolution, str]] = []
-        for operation_id in tuple(remaining):
-            lower, upper = _valid_positions(working.operation_order, operation_id, instance)
-            options: list[tuple[CandidateEvaluation, MOALNSSolution]] = []
-            for position in _sample_positions(lower, upper, int(settings["regret_position_candidates"])):
-                partial = working.clone(origin=name)
-                partial.operation_order = _insert(working.operation_order, operation_id, position)
-                for variant in range(int(settings["regret_resource_variants"])):
-                    mode = (
-                        "earliest_finish"
-                        if variant == 1
-                        else "minimum_reconfiguration_cost"
-                        if variant == 2
-                        else "regret"
-                    )
-                    ranked_partial = _rank_for_mode(
-                        partial, operation_id, instance, mode, candidate
-                    )
-                    option = ranked_partial.clone(origin=name)
-                    option.operation_order = _complete_partial_order(
-                        option.operation_order,
-                        original,
-                        instance,
-                    )
-                    evaluated = evaluator.evaluate(option)
-                    if evaluated is None:
-                        break
-                    probes.append(evaluated)
-                    options.append((evaluated, ranked_partial))
-                if evaluator.evaluation_count >= evaluator.maximum_evaluations:
-                    break
-            if not options:
-                continue
-            options.sort(
-                key=lambda value: (
-                    0 if value[0].feasible else 1,
-                    value[0].tchebycheff if value[0].feasible else value[0].completion_rank,
-                    value[0].action_trace_sha256,
-                )
-            )
-            best_candidate, best_partial = options[0]
-            values = [
-                value[0].tchebycheff if value[0].feasible else 1.0 + value[0].completion_rank[0]
-                for value in options
-            ]
-            comparison = values[min(regret_rank - 1, len(values) - 1)]
-            regret = comparison - values[0]
-            choices.append((regret, best_candidate, best_partial, operation_id))
-            if evaluator.evaluation_count >= evaluator.maximum_evaluations:
-                break
-        if not choices:
-            # Budget exhaustion: retain a deterministic, fully valid repair path.
-            fallback = _repair_greedy(
-                "earliest_finish",
-                working,
-                remaining,
-                instance,
-                candidate,
-                original_order=original,
-            )
-            return _RepairOutcome(fallback.solution, tuple(probes))
-        _, _, selected_partial, selected_operation = max(
-            choices,
-            key=lambda value: (value[0], value[3]),
-        )
-        working = selected_partial
-        remaining.remove(selected_operation)
-    working.operation_order = _complete_partial_order(working.operation_order, original, instance)
-    return _RepairOutcome(working, tuple(probes))
-
-
-def repair_solution(
-    name: str,
-    base: MOALNSSolution,
-    removed: Sequence[str],
-    instance: AssemblyInstance,
-    candidate: CandidateEvaluation,
-    evaluator: _CandidateEvaluator,
-    settings: Mapping[str, Any],
-) -> _RepairOutcome:
-    if name in {"regret_2", "regret_3"}:
-        return _repair_regret(name, base, removed, instance, evaluator, candidate, settings)
-    if name not in REPAIR_OPERATORS:
-        raise ValueError(f"unknown repair operator {name!r}")
-    return _repair_greedy(name, base, removed, instance, candidate)
+# Bounded repair and accounting are implemented in search.py.
+from .search import CandidateEvaluator as _CandidateEvaluator, repair_solution
 
 
 def _roulette(weights: Mapping[str, float], rng: random.Random) -> str:
@@ -1051,274 +886,24 @@ def _update_weights(
 
 
 class MOALNSSolver:
-    """Strong, fully environment-decoded multi-objective ALNS baseline."""
-
-    def __init__(
-        self,
-        config: Mapping[str, Any],
-        *,
-        algorithm_seed: int | None = None,
-        dataset_name: str = "",
-    ) -> None:
+    """Independent preference searches with explicitly accounted anytime budgets."""
+    def __init__(self, config, *, algorithm_seed=None, dataset_name=""):
         self.config = dict(config)
         self.settings = _merge_settings(config)
         self.algorithm_seed = int(config.get("seed", 0) if algorithm_seed is None else algorithm_seed)
         self.dataset_name = str(dataset_name)
 
-    def _initial_solutions(
-        self,
-        instance: AssemblyInstance,
-        preference: PreferenceVector,
-        rng: random.Random,
-    ) -> tuple[MOALNSSolution, ...]:
-        result: list[MOALNSSolution] = []
-        for rule in INITIAL_RULES:
-            if rule == "existing_heuristic":
-                result.append(_heuristic_trace_seed(self.config, instance, preference))
-            else:
-                result.append(_rule_solution(instance, rule, rng))
-        return tuple(result)
+    def solve(self, instance, preference, *, budget=None):
+        from .search import solve
+        return solve(self, instance, normalize_preference(preference), budget=budget)
 
-    def solve(
-        self,
-        instance: AssemblyInstance,
-        preference: PreferenceInput,
-    ) -> SearchResult:
-        started = time.perf_counter()
-        effective_preference = normalize_preference(preference)
-        rng = random.Random(
-            derive_mo_alns_seed(
-                self.algorithm_seed,
-                instance.instance_id,
-                effective_preference,
-                self.dataset_name,
-            )
-        )
-        maximum = int(self.settings["max_evaluations_per_preference"])
-        evaluator = _CandidateEvaluator(self.config, instance, effective_preference, maximum)
-        archive = ParetoArchive(dict(self.config))
-        search_log: list[dict[str, Any]] = []
-        initial: list[CandidateEvaluation] = []
-        for solution in self._initial_solutions(instance, effective_preference, rng):
-            candidate = evaluator.evaluate(solution)
-            if candidate is None:
-                break
-            archive.update(candidate)
-            initial.append(candidate)
-            search_log.append({
-                "kind": "initial",
-                "origin": solution.origin,
-                "evaluation": evaluator.evaluation_count,
-                "feasible": candidate.feasible,
-                "tchebycheff": candidate.tchebycheff,
-                "archive_size": len(archive.entries),
-            })
-        if not initial:
-            raise RuntimeError("MO-ALNS had no budget to evaluate an initial solution")
-        current = min(initial, key=lambda value: (0 if value.feasible else 1, value.tchebycheff if value.feasible else value.completion_rank))
-        feasible_initial = [value for value in initial if value.feasible]
-        initial_best = min((value.tchebycheff for value in feasible_initial), default=None)
-        scalar_best = min((value.tchebycheff for value in archive.entries), default=math.inf)
-
-        destroy_weights = {name: 1.0 for name in DESTROY_OPERATORS}
-        repair_weights = {name: 1.0 for name in REPAIR_OPERATORS}
-        destroy_scores = Counter()
-        repair_scores = Counter()
-        destroy_uses = Counter()
-        repair_uses = Counter()
-        positive_deltas: list[float] = []
-        temperature: float | None = None
-        initial_temperature: float | None = None
-        cooling_per_evaluation: float | None = None
-        last_temperature_evaluation = evaluator.evaluation_count
-        completed_neighbourhoods = 0
-        stale_evaluations = 0
-        reheats = 0
-        proposals = 0
-        max_proposals = maximum * int(self.settings["max_proposals_multiplier"])
-        segment = int(self.settings["operator_segment_length"])
-        score_config = self.settings["operator_scores"]
-
-        while evaluator.evaluation_count < maximum and proposals < max_proposals:
-            proposals += 1
-            destroy_name = _roulette(destroy_weights, rng)
-            repair_name = _roulette(repair_weights, rng)
-            destroy_uses[destroy_name] += 1
-            repair_uses[repair_name] += 1
-            removed = destroy_operations(
-                destroy_name,
-                current.solution,
-                current,
-                instance,
-                self.settings,
-                rng,
-            )
-            evaluations_before = evaluator.evaluation_count
-            outcome = repair_solution(
-                repair_name,
-                current.solution,
-                removed,
-                instance,
-                current,
-                evaluator,
-                self.settings,
-            )
-            probe_archive_added = False
-            for probe in outcome.probes:
-                probe_archive_added = archive.update(probe) or probe_archive_added
-            candidate = evaluator.evaluate(outcome.solution)
-            if candidate is None:
-                break
-            if bool(self.settings["matching_repair"]):
-                repaired = matching_safe_repair(outcome.solution, candidate)
-                if repaired.digest() != outcome.solution.digest():
-                    re_evaluated = evaluator.evaluate(repaired)
-                    if re_evaluated is not None:
-                        candidate = re_evaluated
-            completed_neighbourhoods += 1
-            evaluation_delta = evaluator.evaluation_count - evaluations_before
-            archive_added = archive.update(candidate) or probe_archive_added
-            was_scalar_best = candidate.feasible and candidate.tchebycheff < scalar_best - 1e-12
-            if was_scalar_best:
-                scalar_best = candidate.tchebycheff
-            improved_current = candidate_better(candidate, current)
-            delta = (
-                candidate.tchebycheff - current.tchebycheff
-                if candidate.feasible and current.feasible
-                else math.inf
-            )
-            calibration_samples = int(self.settings["temperature_calibration_samples"])
-            if (
-                completed_neighbourhoods <= calibration_samples
-                and math.isfinite(delta)
-                and delta > 1e-12
-            ):
-                positive_deltas.append(delta)
-            just_calibrated = False
-            if temperature is None and completed_neighbourhoods >= calibration_samples:
-                if positive_deltas:
-                    temperature = max(
-                        1e-12,
-                        -float(np.median(np.asarray(positive_deltas)))
-                        / math.log(float(self.settings["temperature_target_acceptance"])),
-                    )
-                else:
-                    temperature = float(self.settings["temperature_fallback"])
-                initial_temperature = temperature
-                cooling_per_evaluation = float(self.settings["temperature_final_ratio"]) ** (
-                    1.0 / max(1, maximum - evaluator.evaluation_count)
-                )
-                last_temperature_evaluation = evaluator.evaluation_count
-                just_calibrated = True
-            accepted = improved_current
-            if not accepted and candidate.feasible and current.feasible and temperature is not None and math.isfinite(delta):
-                accepted = rng.random() < math.exp(-max(0.0, delta) / max(temperature, 1e-12))
-            if accepted:
-                current = candidate
-
-            score = 0.0
-            if archive_added:
-                score = max(score, float(score_config["archive_addition"]))
-            if was_scalar_best:
-                score = max(score, float(score_config["scalar_best"]))
-            if improved_current:
-                score = max(score, float(score_config["current_improvement"]))
-            if accepted:
-                score = max(score, float(score_config["accepted"]))
-            destroy_scores[destroy_name] += score
-            repair_scores[repair_name] += score
-            stale_evaluations = (
-                0
-                if archive_added or was_scalar_best
-                else stale_evaluations + evaluation_delta
-            )
-
-            if temperature is not None:
-                if not just_calibrated and cooling_per_evaluation is not None:
-                    elapsed = max(0, evaluator.evaluation_count - last_temperature_evaluation)
-                    temperature *= cooling_per_evaluation ** elapsed
-                    last_temperature_evaluation = evaluator.evaluation_count
-                if stale_evaluations >= int(self.settings["stagnation_evaluations"]) and reheats < int(self.settings["maximum_reheats"]):
-                    baseline = initial_temperature if initial_temperature is not None else float(self.settings["temperature_fallback"])
-                    temperature = max(temperature, float(self.settings["reheat_fraction"]) * baseline)
-                    reheats += 1
-                    stale_evaluations = 0
-            if proposals % segment == 0:
-                _update_weights(
-                    destroy_weights,
-                    destroy_scores,
-                    destroy_uses,
-                    float(self.settings["operator_reaction"]),
-                    float(self.settings["operator_minimum_probability"]),
-                )
-                _update_weights(
-                    repair_weights,
-                    repair_scores,
-                    repair_uses,
-                    float(self.settings["operator_reaction"]),
-                    float(self.settings["operator_minimum_probability"]),
-                )
-                destroy_scores.clear()
-                repair_scores.clear()
-                destroy_uses.clear()
-                repair_uses.clear()
-            search_log.append({
-                "kind": "neighbour",
-                "proposal": proposals,
-                "evaluation": evaluator.evaluation_count,
-                "destroy_operator": destroy_name,
-                "repair_operator": repair_name,
-                "removed_operation_count": len(removed),
-                "feasible": candidate.feasible,
-                "tchebycheff": candidate.tchebycheff,
-                "accepted": accepted,
-                "archive_added": archive_added,
-                "scalar_best": was_scalar_best,
-                "temperature": temperature,
-                "archive_size": len(archive.entries),
-            })
-
-        selected = archive.best(effective_preference) if archive.entries else current
-        return SearchResult(
-            preference=effective_preference,
-            selected=selected,
-            archive=archive.snapshots(),
-            initial_best_tchebycheff=initial_best,
-            environment_evaluations=evaluator.evaluation_count,
-            cache_hits=evaluator.cache_hits,
-            proposal_count=proposals,
-            search_time_seconds=time.perf_counter() - started,
-            operator_statistics={
-                "destroy_weights": dict(destroy_weights),
-                "repair_weights": dict(repair_weights),
-                "reheats": reheats,
-                "temperature": temperature,
-            },
-            search_log=tuple(search_log),
-        )
-
-    def solve_grid(
-        self,
-        instance: AssemblyInstance,
-        preferences: Sequence[PreferenceInput] | None = None,
-    ) -> GridSearchResult:
-        points = (
-            tuple(point.preference for point in formal_preferences(self.config, "final_test"))
-            if preferences is None
-            else tuple(normalize_preference(value) for value in preferences)
-        )
-        searches = tuple(self.solve(instance, point) for point in points)
-        archive = ParetoArchive(dict(self.config))
+    def solve_grid(self, instance, preferences=None):
+        points = (tuple(p.preference for p in formal_preferences(self.config, "final_test"))
+                  if preferences is None else tuple(normalize_preference(p) for p in preferences))
+        searches = tuple(self.solve(instance, p) for p in points)
+        archive = ParetoArchive(self.config)
         for search in searches:
             archive.extend(search.archive)
-        endpoints: dict[str, CandidateEvaluation] = {}
-        for search in searches:
-            endpoints[preference_key(search.preference)] = (
-                archive.best(search.preference) if archive.entries else search.selected
-            )
-        return GridSearchResult(
-            preferences=points,
-            endpoints=endpoints,
-            archive=archive.snapshots(),
-            searches=searches,
-        )
+        # Independent request endpoints: the pooled archive is a separate artifact.
+        return GridSearchResult(points, {preference_key(s.preference): s.selected for s in searches},
+                                archive.snapshots(), searches)

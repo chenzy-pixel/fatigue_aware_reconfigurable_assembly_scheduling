@@ -86,6 +86,16 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
             manifest["training_protocol"] += "_best_of_3_v1"
             manifest["sample_aggregation"] = BEST_OF_THREE
             manifest["sampling_budget"] = 3
+        comparison = config.get("comparison")
+        if comparison is not None:
+            manifest["comparison"] = {key: comparison[key] for key in
+                ("version", "method", "delivery_protocol", "training_steps") if key in comparison}
+            method = comparison.get("method")
+            if method in {"dcan", "rule_ddqn"}:
+                manifest["encoder_variant"] = "dcan_assembly_v1" if method == "dcan" else "pooled_rule_state_v1"
+                manifest["actor_head_variant"] = "learned_phase_candidate_v1" if method == "dcan" else "linear_rule_q_v1"
+                manifest["message_function"] = "conditional_dual_and_service_attention_v1" if method == "dcan" else "not_applicable"
+                manifest["message_aggregation"] = "preference_conditioned_attention_v1" if method == "dcan" else "mean_max_pooling_v1"
     return manifest
 
 

@@ -110,6 +110,10 @@ G^*=1-\min_r Q_r=\max_r G_r.
 
 **7．预算与实现对应**
 
-每个实例—偏好组合为三次请求、一份交付。预算统计累计全部请求的推理、仿真、决策和工人时间；原始样本池 Pareto/HV 与每偏好一份交付的 Pareto/HV 应分开命名。三次 PPO 采样与300次候选评价的搜索算法属于不同求解预算，不因都输出一份方案而成为同预算比较。
+在best_of_3_v1下，每个实例—偏好组合为三次请求、一份交付。预算统计累计全部请求的推理、仿真、决策和工人时间；原始样本池 Pareto/HV 与每偏好一份交付的 Pareto/HV 应分开命名。三次PPO采样与给定时限内的搜索属于不同预算定义，不因都输出一份方案而成为同预算比较；旧300次候选评价不是当前已冻结的正式搜索预算。
 
 实现对应：[候选选择](../../result/sample_selection.py)、[成功标记](../../result/metrics.py)的 successful_row、[正式聚合与活动约束](../../train.py)的 _aggregate_formal_rows / _rows_satisfy_active_constraints，以及 [checkpoint 选择](../../training/protocol.py)。[操作协议](../../docs/default_best_of_three.md)说明记录文件与历史身份；[实验清单](../../docs/experiment_runlist.md)列出验证这些边界的实验。
+
+2026-10-17新增[对照套件](../../docs/comparator_implementation_spec.md)的PPO/DCAN三次取优也满足相同候选选择性质，但其实现位于[learning.py](../../agent/comparators/learning.py)，使用独立训练/验证协议。Rule-DDQN为贪心单次，搜索为独立请求时限内交付，不属于本文三候选规则的适用对象。suite的checkpoint按自身实现比较；上文关于`LexicographicCheckpointSelector`容差的描述仍限定于原PPO入口。五档交互验证、三个训练种子和重复计时均不增加每个best-of-three交付的候选数。
+
+新套件学习方法匹配350411次实际env.step，搜索用验证曲线选择合理预算，另列PPO实测交付时限；这不构成跨算法等优化或等算力的定理。平台、初始化改善、独立确认和性能结论均需真实实验产物，本文证明不能替代它们。

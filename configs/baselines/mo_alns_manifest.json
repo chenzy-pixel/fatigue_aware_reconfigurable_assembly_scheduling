@@ -1,5 +1,5 @@
 {
-  "protocol": "ppo_mo_alns_solver_budget_v2",
+  "protocol": "ppo_mo_alns_solver_budget_v3",
   "config": "configs/baselines/mo_alns.json",
   "datasets": [
     "test",
@@ -12,6 +12,6 @@
     37
   ],
   "instance_limit": null,
-  "parallel_envs": 20,
+  "parallel_envs": 8,
   "ppo_candidates": "result/analysis/universal/candidates.csv"
 }

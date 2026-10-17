@@ -110,6 +110,7 @@ def _rollout_metrics(
     instance: AssemblyInstance,
     config: dict[str, Any],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    actions: list[int] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     from agent.baselines import HeuristicPolicy
     from environment import AssemblySchedulingEnv
@@ -138,6 +139,8 @@ def _rollout_metrics(
                 )
                 ready_mismatch_count += int(not matching_idle)
         action = policy.select_action(environment)
+        if actions is not None:
+            actions.append(int(action))
         environment.step(action, build_observation=False)
     base_metrics = environment.metrics()
     wave_overlap_values = _wave_overlap_values(instance, environment.schedule_log)
@@ -409,6 +412,8 @@ class InstanceGenerator:
         ood_factor: str | None,
         attempt: int,
         severity: float = 1.0,
+        reconfiguration_scale_override: float | None = None,
+        sampled_parameters: dict[str, Any] | None = None,
     ) -> AssemblyInstance:
         profile = self.settings["pressure_profiles"][pressure_type]
         order_low, order_high = severity_bounds(profile["order_count"], severity, integer=True)
@@ -507,6 +512,14 @@ class InstanceGenerator:
         )
         if ood_factor == "reconfiguration_time_scale":
             reconfiguration_scale = rng.uniform(1.5, 2.0)
+        if reconfiguration_scale_override is not None:
+            if not math.isfinite(reconfiguration_scale_override) or reconfiguration_scale_override <= 0:
+                raise ValueError("reconfiguration scale must be finite and positive")
+            reconfiguration_scale = float(reconfiguration_scale_override)
+        latent_times = [] if sampled_parameters is not None else None
+        if sampled_parameters is not None:
+            sampled_parameters["reconfiguration_scale"] = reconfiguration_scale
+            sampled_parameters["unscaled_times"] = latent_times
         machine_specs = self._machines(
             rng=rng,
             pressure_type=pressure_type,
@@ -515,6 +528,7 @@ class InstanceGenerator:
             bottleneck_module=bottleneck_module,
             reconfiguration_scale=reconfiguration_scale,
             speed_ood=ood_factor == "processing_time_heterogeneity",
+            latent_times=latent_times,
         )
         worker_specs = self._workers(
             rng=rng,
@@ -645,6 +659,7 @@ class InstanceGenerator:
         bottleneck_module: str,
         reconfiguration_scale: float,
         speed_ood: bool,
+        latent_times: list[dict[str, Any]] | None = None,
     ) -> tuple[MachineSpec, ...]:
         downtime_scale = 1.5 if cost_profile == "downtime_dominant" else (
             0.75 if cost_profile != "balanced_cost" else 1.0
@@ -656,6 +671,17 @@ class InstanceGenerator:
         ]
         kept_bottleneck_machine = compatible_bottleneck[0].id
         result = []
+        def sampled_time(base, machine_id, module, phase):
+            local = rng.uniform(*self.settings["reconfiguration_factor_local"])
+            if latent_times is None:
+                # Preserve the historical floating point evaluation order.
+                value = base * reconfiguration_scale * local
+            else:
+                unscaled = base * local
+                latent_times.append({"machine": machine_id, "module": module,
+                                     "phase": phase, "unscaled": unscaled, "local": local})
+                value = unscaled * reconfiguration_scale
+            return _quantize(value, self.template.resolution)
         for machine in self.template.machines:
             parameters: dict[str, MachineModuleSpec] = {}
             for module, values in machine.module_parameters.items():
@@ -665,18 +691,8 @@ class InstanceGenerator:
                     else rng.uniform(*self.settings["processing_factor_local"])
                 )
                 parameters[module] = MachineModuleSpec(
-                    installation_base_time=_quantize(
-                        values.installation_base_time
-                        * reconfiguration_scale
-                        * rng.uniform(*self.settings["reconfiguration_factor_local"]),
-                        self.template.resolution,
-                    ),
-                    disassembly_base_time=_quantize(
-                        values.disassembly_base_time
-                        * reconfiguration_scale
-                        * rng.uniform(*self.settings["reconfiguration_factor_local"]),
-                        self.template.resolution,
-                    ),
+                    installation_base_time=sampled_time(values.installation_base_time, machine.id, module, "installation"),
+                    disassembly_base_time=sampled_time(values.disassembly_base_time, machine.id, module, "disassembly"),
                     processing_speed_factor=round(
                         values.processing_speed_factor * speed_local, 10
                     ),
