@@ -107,7 +107,7 @@ def test_solver_candidates_use_dual_metrics_and_enforce_matched_budget(tmp_path,
     assert len(summary["instances"])==2
     for metric in ("raw_primary_hypervolume","excess_supplementary_hypervolume"):
         assert summary["instances"][0][metric]==summary["instances"][1][metric]
-    excess["mo_alns"]["max_evaluations_per_preference"]+=1
+    excess["mo_alns"]["max_seconds_per_preference"]+=1
     write_config(runs["excess"],excess)
     with pytest.raises(ValueError,match="evaluation budgets"):
         analyze_candidate_flow_runs(runs,tmp_path/"mismatched")

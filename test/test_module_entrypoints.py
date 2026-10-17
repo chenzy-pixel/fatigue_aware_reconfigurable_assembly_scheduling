@@ -101,14 +101,14 @@ def test_real_baseline_configs_solve_and_write_current_results(source,tmp_path,f
     with (directory/'instance_metrics.csv').open(encoding='utf-8-sig',newline='') as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1 and rows[0]['single_stage_proxy_return']
-    assert rows[0]['method_version'] == 'MO_ALNS_v1'
+    assert rows[0]['method_version'] == 'MO_ALNS_v2'
     for filename in ('config.json','schedule.csv','pareto_archive.csv','search_log.csv','operator_statistics.csv'):
         assert (directory/filename).is_file()
 
 
 def test_real_baseline_manifest_entrypoint(tmp_path,fixed_instance):
     config, _ = tiny_config(tmp_path,fixed_instance,'configs/baselines/mo_alns_smoke.json')
-    manifest = {'protocol':'ppo_mo_alns_solver_budget_v2','config':str(tmp_path/'config.json'),
+    manifest = {'protocol':'ppo_mo_alns_solver_budget_v3','config':str(tmp_path/'config.json'),
         'datasets':['test'],'algorithm_seeds':[11],'instance_limit':1,'parallel_envs':1}
     write_json(tmp_path/'manifest.json',manifest)
     run_cli(['scripts/mo_alns_benchmark.py','--manifest',str(tmp_path/'manifest.json'),

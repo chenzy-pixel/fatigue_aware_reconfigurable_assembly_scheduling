@@ -1,12 +1,14 @@
 # 当前主线完整实验执行清单
 
-核对日期：2026-10-16。以当前配置、训练/评价入口、固定V2数据及本地正式产物为依据。本文件是执行与验收清单；这里列出的正式实验本轮尚未启动。远端状态未读取，历史运行不自动算作新协议完成项。
+独立测试补充：[瓶颈与重构倍率外推套件](challenge_suite_protocol.md)已物化100例test_hard及20组四档倍率外推，共180例，完成数据审计及9例smoke。当前仅支持冻结PPO和启发式，完整66偏好评价单独执行，不计入训练矩阵，也不由comparison_suite的all/formal-evaluate自动展开。
+
+更新日期：2026-10-17。2026-10-16的数据与历史产物核对结果保留；新增对照按当前源码同步。本文件是执行与验收清单，列出的矩阵不代表已完成。用户在远端手动启动实验；本机已取消的MO-ALNS批次不再续跑，远端实时状态未读取。
 
 当前三种子启动脚本：[run_three_seeds.ps1](../scripts/run_three_seeds.ps1)。[逐实验命令清单](experiment_three_seeds.md)逐行列出26个实验；默认只运行Universal，支持指定多个实验、预检和dry-run。
 
 ## 1．冻结条件与顺序
 
-统一主线：schema12/log2、HGNN shared-head、excess Flow、OWA(q=.5)、gamma=1、GAE lambda=.95、best_of_3_v1。默认尺度为 `(368.3143,353.27,21.03145448655653)`。当前先执行 **11、23、37** 三个训练种子；配置允许的53、71留待后续扩展，以下运行数按三个种子展开；三次采样属于同一模型的解码预算，不是三个独立训练种子。
+PPO主线：schema12/log2、HGNN shared-head、excess Flow、OWA(q=.5)、gamma=1、GAE lambda=.95、best_of_3_v1。默认尺度为 `(368.3143,353.27,21.03145448655653)`。当前先执行 **11、23、37** 三个训练种子；配置允许的53、71留待后续扩展，以下运行数按三个种子展开；三次采样属于同一模型的解码预算，不是三个独立训练种子。第6节的新对照套件另按实际环境交互匹配，不能把其训练预算写成这里的2000 episodes。
 
 执行顺序：数据/协议预检 → 每种配置小规模链路检查 → 核心矩阵 → 单因素对照 → 固定best的独立比较与泛化 → 多种子汇总。可先用seed11检查工程，再完成同一预先声明矩阵的其余种子；不能因seed11的测试表现删选不利种子或条件。
 
@@ -17,11 +19,11 @@
 | P3 条件扩展 | 11 | 33 | 45,000 | 研究交互作用或单目标OWA机制时再执行 |
 | 合计 | 26 | 78 | 117,000 | 现有全部PPO训练配置的完全展开 |
 
-**核心加单因素是45次训练；78次表示把11个条件扩展也全部跑完。** P3不是当前主线结论的先决条件。MO-ALNS、独立评价、诊断和离线统计另计。单目标是经验参照，未经精确求解不能称为理论上界或最优解。
+**核心加单因素是45次训练；78次表示把11个条件扩展也全部跑完。** P3不是当前主线结论的先决条件。新对照套件的9次匹配训练、9次学习率试验、搜索、独立评价和统计另计。单目标是经验参照，未经精确求解不能称为理论上界或最优解。
 
 ## 2．数据与启动门槛
 
-本轮已逐条载入并核对当前V2数据：validation=500，test=20，OOD=20，stress=20。具体manifest哈希及26配置展开表见 `result/analysis/proof_selection_review_20261016/experiment_inventory.json`。主验证固定分层50实例；49个独立诊断实例按既有频率使用，不参与选模。
+2026-10-16已逐条载入并核对V2数据：validation=500，test=20，OOD=20，stress=20。具体manifest哈希及26配置展开表见 `result/analysis/proof_selection_review_20261016/experiment_inventory.json`。PPO主线验证固定分层50实例；49个独立诊断实例按既有频率使用，不参与选模。新对照套件采用第6节单独冻结的验证划分。
 
 当前20实例test/OOD/stress属于开发规模。配置中的publication档为test=1000、OOD=500、stress=500，但不能仅凭配置项宣称已完成大规模评价。需要更大样本时，先指定独立版本目录、物化固定文件并冻结manifest，再让全部比较方法使用同一数据版本；不能覆盖已有正式数据后混用旧结果。
 
@@ -112,25 +114,56 @@ foreach ($experimentSeed in @(11,23,37)) {
 
 ## 6．求解器比较、交付与原始池指标
 
+### 6.1 新对照套件：先验证，再冻结正式预算
+
+统一入口为 [comparison_suite.py](../scripts/comparison_suite.py)，方法身份为`comparison_suite_v1`；合同、远端操作和本地验证分别见[实施契约](comparator_implementation_spec.md)、[启动说明](comparator_remote_startup.md)、[验证记录](comparator_verification_20261017.md)。四种新方法均为本项目适配，DCAN不称为原论文完整复现。
+
 | 实验 | 运行矩阵 | 当前支持/产物 |
 |---|---|---|
-| PPO Universal | P1的3个best；test/OOD/stress；每实例66偏好×3次 | test在训练末尾自动完成；OOD/stress全网格入口见第8节缺口 |
-| MO-ALNS | 3种子×3数据集=9个数据集作业；每实例66偏好 | 已有manifest/批次入口；每偏好最多300次候选评价，输出最佳候选及档案 |
-| 启发式 | 3个固定数据集各运行一次确定性轨迹 | 无训练；物理轨迹不随偏好变，后续在相同66偏好下评分 |
-| 随机策略 | 5算法种子×3数据集，按明确偏好和3次采样 | 单偏好CLI已支持；完整66偏好比较需要网格包装 |
-| 单目标参照 | P1三个单目标×3种子 | 自动测试各自one-hot端点；与Universal对应端点配对 |
+| 匹配PPO / DCAN适配版 / Rule-DDQN | 各3训练种子11/23/37，共9次；每次350411次实际env.step | 从头训练；PPO/DCAN主交付三次取优，并列greedy诊断；DDQN贪心单次 |
+| 学习率试验 | 每方法3个学习率，seed11，共9次；每次35041步 | 在调参集选择学习率，正式训练重新开始 |
+| NSGA-II-LS / MOEA/D | 种群16/32/64，在7例×4偏好×seed11调参，共168个600秒请求 | 冻结种群后，各跑21例×4偏好×3搜索种子曲线 |
+| MO-ALNS v2 | 套件内另建alns_reference，重新机制验收及21例×4偏好×3搜索种子曲线 | 使用当前修复版与原生环境；读取实际选中预算，不默认认定600秒充分 |
+| 三种搜索的合理预算 | 每方法先600秒，必要时完整矩阵扩展至1800秒 | 同时保存初始化、10/30/60/180/600及可用的1800秒端点；平台和机制门槛共同决定预算 |
+| 独立确认 | 7例×13偏好×3训练/搜索种子，每臂273份交付；11臂共3003份 | 5个学习交付臂，3个充分搜索臂，3个PPO交付时限搜索臂 |
+| 正式test/OOD/stress | 参数、权重与预算冻结后，各实例66偏好 | `all`只生成formal_manifest；满足预算和独立改善门槛后另行formal-evaluate |
 
-MO-ALNS正式批次：
+500例validation中，按固定哈希和七类压力分出21调参、21选模、7确认实例，三者互斥。调参使用三端点和等权共4偏好；正式训练在20/40/60/80/100%实际步数档位，用21选模实例×13偏好选best。确认集不参与选模、学习率或搜索参数选择。这里的21例选模不是P1的50例主验证；两套协议分别保存身份。
+
+350411步来自旧PPO实际交互日志的预算标定；旧权重不充当新匹配PPO。所有实际env.step（含WAIT）计费，关闭forced compression；档位和总预算边界截断保留自举。等交互不等于等优化或等算力，另报梯度更新、样本重用、训练/验证墙钟和设备。末档仍明显改善时生成统一2B扩展清单，不自动执行。
+
+搜索从请求开始计费，包含初始化、代理、修复、解码与档案更新。完整候选须在截止前完成，短时限无可行解时明确记无交付。NSGA-II-LS至少完成5代并实际执行局部搜索，MOEA/D至少5次完整扫描，ALNS至少20个完整邻域及4次权重更新；各压力组至少90%请求达到对应机制门槛。平台要求无新增成功、各压力组平均Q增益≤.002、总体90分位增益≤.01；按[具体选择器](../scripts/comparison_suite.py)结合尾段平台取最早合格档位。1800秒仍未达标时保留`not_established`，不把最大预算改名为充分预算。
+
+远端先预检：
 
 ```powershell
-.\.venv\Scripts\python.exe -m scripts.mo_alns_benchmark --manifest configs/baselines/mo_alns_manifest.json --output-dir result/analysis/mainline_mo_alns
+python -u -m scripts.comparison_suite --stage preflight --output-dir result/analysis/comparison_suite_remote_v1
 ```
 
-产出 `candidates.csv`、`pareto_archive.csv`、`search_log.csv`、`operator_statistics.csv`、schedule/reconfigurations与summary。manifest的ppo_candidates字段只是来源记录，不会自动执行PPO或完成比较。
+预检成功后，在同一远端、同一源码和输出目录执行：
 
-三次PPO和300次MO-ALNS候选评价是不同预算，应同时报告端到端求解时间、全部候选/解码次数及交付质量。不能称为相同计算预算。若论文需要同预算结论，另固定双方可执行的预算网格并统计质量—耗时曲线；当前MO-ALNS有8条初始化规则，最小候选预算为8，不能直接设为3并当作可运行对照。PPO的其他预算也须定义独立协议，不能冒用best_of_3_v1。
+```powershell
+python -u -m scripts.comparison_suite --stage all --remote-run --output-dir result/analysis/comparison_suite_remote_v1 --workers 8 --training-workers 20
+```
 
-现有 `analysis.mo_alns_analysis` 用于原始候选池，输入PPO原始final_sampled/instance_metrics和MO-ALNS candidates。主结果还需“每实例—偏好一份交付”的完成率/Q/目标/交付HV；不以原始池指标替代。
+默认8个搜索进程、20个训练环境worker，学习任务串行用GPU，确认时延串行测量。重跑只跳过身份匹配的完整请求；中断训练从零开始。更换源码、配置、数据、硬件或并行宽度时另建输出目录。完整test/OOD/stress入口与恢复规则见[远端说明](comparator_remote_startup.md)。
+
+PPO短时限取同实例、偏好的三个新PPO模型各自三次取优交付中位时延，再取跨模型中位数。每个模型重复计时三次，保持同一组三条轨迹，不能额外做九次选优。短时限搜索若只返回初始化解，就报告这一结果；充分搜索质量仍按其独立预算判断。无需战胜PPO才能成为有效对照。
+
+主表按实例—偏好交付对齐，另报13点交付HV和全部付费档案HV。各臂先在同一实例—偏好内平均训练/搜索重复，再配对；两类种子不解释为相同实验单位。7例确认按整个实例pooled bootstrap；21例调参允许分层实例bootstrap。独立改善门槛针对搜索相对自身初始化最优解的Q增益区间，不要求优于PPO；原始启发式候选及初始化成本也保留供核查。
+
+### 6.2 原有入口与其他参照
+
+| 实验 | 运行范围 | 当前边界 |
+|---|---|---|
+| P1 PPO Universal | 3个best；最终test每实例66偏好×3次 | 与新匹配PPO分别标记；其OOD/stress包装见第8节 |
+| 启发式 | test/OOD/stress各一次确定性物理轨迹 | 后续按公共66偏好评分；完整网格包装待补 |
+| 随机策略 | 按预先声明的算法种子和采样预算评价 | 单偏好CLI可用；完整网格包装待补，不冒用DDQN单次或PPO三次协议 |
+| 单目标参照 | P1三个单目标×3训练种子 | 自动测试各自one-hot端点；与Universal对应端点配对 |
+
+单独的[MO-ALNS研究脚本](mo_alns_v2_implementation_20261017.md)保留历史λ=.95/seed11固定PPO参照，包含固定概率LNS诊断；新套件则重新训练三个PPO模型。两种研究的权重、训练重复和耗时不混用。`scripts.mo_alns_benchmark`仍可读取预算已冻结的manifest批量求解；仓库默认600秒配置是验证起点，旧“每偏好300次评价”不再是正式预算。评价次数上限仅用于明确声明的回归或诊断。
+
+原有`analysis.mo_alns_analysis`分析原始候选池；新`analysis.comparator_study`已提供套件确认集的交付配对、完成覆盖、共同成功Q/目标、HV及报告。前者不能替代后者，后者也不自动覆盖所有PPO消融和正式split的汇总。
 
 ## 7．机制、协议与效率实验
 
@@ -149,20 +182,20 @@ M3/M4可首先在现有旧协议记录上复算，作为历史诊断。当前 [v
 
 ## 8．目前需补齐的执行/统计环节
 
-这些限制来自当前源码核对，清单不把尚未支持的命令当作可运行入口：
+以下区分原有入口的缺口与新套件已支持的范围：
 
-1. **Universal OOD/stress完整网格**：`eval.py --preference-set final_test`当前明确要求`--dataset test`，并且只接受PPO。底层 `evaluate_preference_grid_parallel`可接收数据集，但尚缺完整正式CLI包装。应补齐split、网格、三次种子、原始/selected输出与provenance后执行。不要直接把`test`命令的split改成`ood`并假定成功。
+1. **P1及全部消融的OOD/stress完整网格**：`eval.py --preference-set final_test`当前要求`--dataset test`，并且只接受PPO；这些历史/主线run仍需正式CLI包装。新套件的`formal-evaluate`已支持其冻结学习/搜索臂在test/OOD/stress的66偏好评测，但不自动接收任意P1/P2模型，也不在`all`中运行。
 2. **启发式/随机的公共偏好网格**：普通CLI可以跑单偏好；Universal的`--preference-set`不接受它们。启发式可重用同一物理轨迹在各偏好评分；随机要声明每偏好采样与种子预算，需对应包装和公共汇总。
-3. **交付层比较统计**：`analysis.ablation_analysis`按原始sampling_repeat配对；`analysis.pareto_analysis`和`analysis.mo_alns_analysis`以全部原始候选池计算完成率、Q和HV。新主表需要按(instance_id, preference_key)配对selected交付，两个模型允许选中不同repeat；原始请求仍承担安全和预算核查。该统计出口需补齐，现有训练summary可验证各run自身交付口径。
+3. **全部消融及正式split的交付汇总**：`analysis.ablation_analysis`仍按原始sampling_repeat配对，旧Pareto/ALNS分析仍针对原始池；新套件已实现3003份独立确认交付的完整性和配对统计。将它推广到全部消融、不同目标条件及正式split仍需对应适配，不能直接把确认报告当作正式测试报告。
 4. **公共坐标与跨条件配对**：raw、Variance、不同q的原生分数不同，应从实际Flow/Cost/worker_loads重算公共指标，保留首次training_*及原生selected标记。公共评分不应重写训练身份或偷偷重选。
 5. **未来中间权重复核**：当前通常保留best/last。若要反事实测试其他验证episode，须预先保存所需候选权重；只有验证日志不足以重建权重。
-6. **大规模与真正规模泛化**：现有OOD/stress是其固定分布条件，不能自动命名为跨规模泛化。要提出跨订单/机器/工人规模主张，需独立定义、物化并冻结相应算例；目前未计入78次训练或9个求解器作业。
+6. **独立压力与规模泛化**：challenge_v1已提供100例压力测试和80例重构倍率配对实例，但全量模型评价尚待执行，其他学习/搜索方法仍需challenge适配。现有OOD/stress及这些倍率档位不自动构成跨订单/机器/工人规模证据；相应规模实验需独立定义并冻结，目前未计入训练矩阵。
 
-这几项是后续执行完整论文比较的工作项。本轮完成证明、文档与清单核对，不将它们记为已实现或已跑完。
+新套件已完成实现及小实例回归；余下缺口和远端正式性能分别验收，不以预检或smoke替代。
 
 ## 9．已有产物与新协议的完成状态
 
-本地发现以下4条schema12/shared-head正式训练：均2000 episodes，best/last与最终原始测试CSV存在，均为per_sample_v1。
+2026-10-16本地产物核对发现以下4条schema12/shared-head正式训练：均2000 episodes，best/last与最终原始测试CSV存在，均为per_sample_v1。
 
 | 历史实验 | 旧选模best episode | 新口径离线重选episode | 当前用途 |
 |---|---:|---:|---|
@@ -173,11 +206,11 @@ M3/M4可首先在现有旧协议记录上复算，作为历史诊断。当前 [v
 
 前三行复算记录来自 `result/analysis/best_of_three_protocol_verification/`。其中原best的三次取优测试Q分别为.262400/.324509/.313682；这些测试值属于原best权重，不属于表中重选episode。记录已注明重选候选未测试。新协议还可能改变学习率衰减路径，因此P1/P2仍需用新协议完整训练；现有数据不能把这些run标记为已完成。
 
-本轮本地未发现满足新协议的完整正式训练记录；前次两套2-episode smoke用于集成验证。远端队列需另核实，不能据本地缺少记录断言远端没运行。
+截至2026-10-17，本机的新对照证据限于预检、定向测试与小实例smoke，详见[验证记录](comparator_verification_20261017.md)。尚无新套件正式训练、充分搜索或独立确认成绩；合成3003行报告测试只验证统计链路。旧两套2-episode smoke同样仅用于集成。远端队列需另核实，不能据本地缺少记录断言远端没运行。
 
 ## 10．产物与统计验收清单
 
-每个训练run核对：保存配置及runtime身份、全部训练预算、validation_subsets及manifest哈希、train/update/validation日志、best/last权重哈希、checkpoint选择事件、原始和selected验证/测试行。50实例验证应有1950请求/650交付；20实例Universal测试应有3960请求/1320交付；单目标对应150/50及60/20。
+每个训练run核对：保存配置及runtime身份、全部训练预算、validation_subsets及manifest哈希、train/update/validation日志、best/last权重哈希、checkpoint选择事件、原始和selected验证/测试行。PPO主线50实例验证应有1950请求/650交付；20实例Universal测试应有3960请求/1320交付；单目标对应150/50及60/20。新套件每模型每次选模为21×13=273交付，PPO/DCAN原始819请求，DDQN原始273请求；独立确认每臂跨三个种子共273交付。文件格式按各自入口解释，suite请求JSON不冒称主线CSV。
 
 每个实验主表至少报告：完成率（Universal最差偏好及整体分别列）、成功条件Q、Flow/Cost/OWA/Variance、个体总量/最大值、物理违规、失败原因、总求解和推理耗时。跨目标比较加公共坐标；疲劳中性加原始疲劳暴露。
 

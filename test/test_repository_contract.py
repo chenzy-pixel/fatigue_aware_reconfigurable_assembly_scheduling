@@ -47,8 +47,13 @@ def test_supported_training_and_baseline_configs_are_executable(path):
     raw = json.loads(path.read_text(encoding="utf-8"))
     # Solver-budget manifests are executable through their referenced full
     # config, rather than through the experiment configuration loader itself.
-    if "protocol" in raw:
-        assert raw["protocol"] == "ppo_mo_alns_solver_budget_v2"
+    if path == project_path("configs/challenge_suite.json"):
+        from data.challenge import load_spec
+
+        spec = load_spec(path)
+        config = load_config(spec["base_config"])
+    elif "protocol" in raw:
+        assert raw["protocol"] == "ppo_mo_alns_solver_budget_v3"
         assert raw["datasets"] and raw["algorithm_seeds"]
         config = load_config(raw["config"])
     else:

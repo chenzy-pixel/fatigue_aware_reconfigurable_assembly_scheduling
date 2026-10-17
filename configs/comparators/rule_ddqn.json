@@ -1,0 +1,1 @@
+{"extends":"suite.json","comparison":{"method":"rule_ddqn","delivery_protocol":"greedy_single_v1"},"training":{"formal_evaluation":{"sample_aggregation":"per_sample_v1"}}}

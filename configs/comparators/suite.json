@@ -1,0 +1,30 @@
+{
+  "extends": "../default.json",
+  "experiment_name": "comparison_suite_v1",
+  "comparison": {
+    "version": "comparison_suite_v1",
+    "training_steps": 350411,
+    "pilot_steps": 35041,
+    "evolution": {
+      "population_size": 32,
+      "crossover_probability": 0.9,
+      "mutation_probability": 0.2,
+      "neighbors": 10,
+      "neighbor_mating_probability": 0.9,
+      "maximum_replacements": 2
+    },
+    "ddqn": {
+      "capacity": 100000,
+      "batch_size": 128,
+      "warmup": 1024,
+      "update_every": 4,
+      "sync_every": 1000
+    },
+    "alns_seconds": 600
+  },
+  "training": {
+    "forced_action_compression": false,
+    "episodes_per_update": 20,
+    "formal_evaluation": {"sample_aggregation": "best_of_3_v1"}
+  }
+}

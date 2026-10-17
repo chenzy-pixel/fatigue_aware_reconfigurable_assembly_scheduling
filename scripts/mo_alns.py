@@ -34,7 +34,7 @@ from result import (
 from result.io import write_config, write_csv, write_json
 
 
-PROTOCOL_VERSION = "mo_alns_solver_budget_v2"
+PROTOCOL_VERSION = "mo_alns_solver_budget_v3"
 
 
 def mo_alns_preference_grid(config=None, stage="final_test") -> tuple[PreferenceVector, ...]:
@@ -78,6 +78,18 @@ def _run_record(
     for preference in preferences:
         key = preference_key(preference)
         endpoint = grid.endpoints[key]
+        if endpoint is None:
+            rows.append({"instance_id": record.instance.instance_id, "dataset": dataset_name,
+                         "algorithm_seed": algorithm_seed, "endpoint_preference_key": key,
+                         "arm": "mo_alns", "method_version": "MO_ALNS_v2",
+                         "status": "no_feasible_solution", "stop_reason": searches[key].stop_reason,
+                         "solve_time_seconds": searches[key].search_time_seconds,
+                         "preference_quality_score": 1.0, "task_succeeded": False})
+            search_log.extend({"instance_id": record.instance.instance_id, "preference_key": key, **v}
+                              for v in searches[key].search_log)
+            operator_rows.append({"instance_id": record.instance.instance_id, "preference_key": key,
+                                  **searches[key].operator_statistics, **searches[key].accounting})
+            continue
         replay = decode_solution(
             worker_config,
             record.instance,
@@ -116,7 +128,7 @@ def _run_record(
             {
                 **row,
                 "arm": "mo_alns",
-                "method_version": "MO_ALNS_v1",
+                "method_version": "MO_ALNS_v2",
                 "algorithm_seed": int(algorithm_seed),
                 "dataset": dataset_name,
                 "candidate_id": candidate_id,
@@ -130,6 +142,9 @@ def _run_record(
                 "tchebycheff": replay.tchebycheff,
                 "initial_best_tchebycheff": search.initial_best_tchebycheff,
                 "replay_verified": True,
+                "status": search.status, "stop_reason": search.stop_reason,
+                "initialization_seconds": search.initial_seconds,
+                **search.accounting,
                 "search_scalarizer": json.dumps(worker_config["objective_scalarizer"], sort_keys=True),
             }
         )
@@ -229,7 +244,7 @@ def run_mo_alns_dataset(
     effective_config = deepcopy(dict(config))
     if effective_config.get("mo_alns", {}).get("protocol", PROTOCOL_VERSION) != PROTOCOL_VERSION:
         raise ValueError("unsupported mo_alns.protocol")
-    effective_config["method_version"] = "MO_ALNS_v1"
+    effective_config["method_version"] = "MO_ALNS_v2"
     effective_config["seed"] = validate_algorithm_seed(effective_config, int(algorithm_seed))
     dataset = load_dataset_split(effective_config, dataset_name)
     indices = resolve_instance_indices(dataset, instance_indices=instance_indices,
@@ -271,22 +286,27 @@ def run_mo_alns_dataset(
     selection = subset_snapshot(dataset, indices, role="evaluation")
     for row in rows:
         row.update(subset_sha256=selection["subset_sha256"], dataset_manifest_sha256=selection["dataset_manifest_sha256"])
+    completed_rows = [r for r in rows if r.get("status") != "no_feasible_solution"]
     aggregate = aggregate_evaluation_rows(
-        rows,
+        completed_rows,
         dataset=dataset_name,
         policy="mo_alns",
         manifest=manifest,
         quality_metric=evaluation_quality_metric(effective_config),
-    )
+    ) if completed_rows else {}
+    aggregate.update(request_count=len(rows), delivery_success_count=len(completed_rows),
+                     delivery_completion_rate=len(completed_rows)/len(rows),
+                     no_solution_request_count=len(rows)-len(completed_rows))
     aggregate.update(
         {
             "protocol": PROTOCOL_VERSION,
             "search_scalarizer": deepcopy(effective_config["objective_scalarizer"]),
             "algorithm_seed": int(algorithm_seed),
             "preference_count_per_instance": len(points),
-            "candidate_budget_per_preference": int(effective_config.get("mo_alns", {}).get("max_evaluations_per_preference", 300)),
-            "candidate_budget_per_instance": len(points)
-            * int(effective_config.get("mo_alns", {}).get("max_evaluations_per_preference", 300)),
+            "candidate_budget_per_preference": effective_config["mo_alns"].get("max_evaluations_per_preference"),
+            "time_budget_per_preference": effective_config["mo_alns"].get("max_seconds_per_preference"),
+            "candidate_budget_per_instance": (len(points) * effective_config["mo_alns"]["max_evaluations_per_preference"]
+                if effective_config["mo_alns"].get("max_evaluations_per_preference") is not None else None),
             "dataset_manifest_sha256": dataset_manifest_snapshot(dataset.manifest_path)["sha256"],
             "parallel_envs": workers,
             "instance_indices": indices,
@@ -325,6 +345,7 @@ def main() -> None:
     if args.smoke:
         config = deepcopy(config)
         config.setdefault("mo_alns", {})["max_evaluations_per_preference"] = 8
+        config["mo_alns"]["max_seconds_per_preference"] = None
         config["mo_alns"]["max_proposals_multiplier"] = 2
         args.instance_limit = 1 if args.instance_limit is None else args.instance_limit
     seed = int(config["seed"] if args.algorithm_seed is None else args.algorithm_seed)

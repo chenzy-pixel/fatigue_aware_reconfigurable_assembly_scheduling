@@ -1,0 +1,1 @@
+{"extends":"suite.json","comparison":{"method":"moead","evolution":{"population_size":32}}}

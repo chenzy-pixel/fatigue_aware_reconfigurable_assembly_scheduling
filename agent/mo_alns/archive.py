@@ -48,10 +48,9 @@ class ParetoArchive:
         if not candidate.feasible:
             return False
         for index, existing in enumerate(self.entries):
-            if existing.action_trace_sha256 == candidate.action_trace_sha256:
-                if candidate.tchebycheff < existing.tchebycheff - 1e-12:
+            if existing.action_trace_sha256 == candidate.action_trace_sha256 or vectors_equal(existing.objectives, candidate.objectives):
+                if candidate.action_trace_sha256 < existing.action_trace_sha256:
                     self.entries[index] = candidate
-                    return True
                 return False
         if any(dominates(existing.objectives, candidate.objectives) for existing in self.entries):
             return False

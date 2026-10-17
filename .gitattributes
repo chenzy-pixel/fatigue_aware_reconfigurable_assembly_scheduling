@@ -7,4 +7,6 @@ data/instances/fixed_instance.yaml text eol=crlf
 data/manifests/*/manifest.json text eol=crlf
 # Preserve v2 manifests, selections and original configuration snapshot bytes.
 data/manifests/v2/** -text whitespace=cr-at-eol
+# Preserve challenge index, manifests and audit bytes referenced by SHA256.
+data/manifests/challenge_v1/** -text whitespace=cr-at-eol
 configs/archive/*.json -text whitespace=cr-at-eol

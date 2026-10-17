@@ -1,88 +1,62 @@
 # Fatigue-aware reconfigurable assembly scheduling
 
-疲劳感知的可重构装配调度。PPO 基于异质图观测，联合选择生产工序—机器配对和重构机器—工人配对；三目标为订单 Flow、重构费用及工人实际劳动负担。环境负责事件推进、动作掩码、资源互斥与疲劳安全。
+**疲劳感知的可重构装配调度**
 
-## 当前主线
+本项目研究多个模块化装配工位共享有限换型工人的多目标调度问题。机器通过更换工艺模块执行不同工序，普通加工由机器完成，工人负责模块拆卸与安装。调度需要综合考虑工序先后关系、设备兼容性、人员资质及疲劳积累与恢复，协调生产安排、机器重构、工人分配和等待时机，在订单流经时间、重构费用与人员劳动负担之间进行权衡。
 
-`schema12 + log2 + HGNN shared-head + excess Flow + geometric OWA(q=.5)`。
+主方法采用支持目标偏好输入的异质图 PPO，表示工序、机器、工人、订单和模块之间的关系，并依据仿真环境给出的合法动作生成调度方案。同一模型可在不同偏好下产生候选方案。仓库同时提供事件驱动仿真、启发式与强化学习对照、固定评测数据，以及从训练、选模到质量和耗时比较的实验流程。
 
-- PPO：`gamma=1`、`gae_lambda=.95`，每采集20 episodes更新；额外势函数塑形关闭。
-- 冻结尺度：`(368.3143, 353.27, 21.03145448655653)`，来源为[excess/OWA清单](configs/manifests/workload_excess_q50_20261011.json)。
-- 全局目标输入为 `log2(1+J/s)`；训练质量坐标为 `J/(s+J)`。
-- 正式评价：同实例、同偏好三次采样，成功优先、原生Q更低优先取一份交付；所有请求的成本、安全与完整性均保留。
-- Universal选模：交付后的最差偏好完成率优先，再比较偏好平衡Q。训练buffer、奖励和GAE保持原始单轨迹口径。
+## 方法与目标
 
-| 配置 | episodes | 每次更新 | 验证间隔 |
-|---|---:|---:|---:|
-| [Universal](configs/default.json) | 2000 | 20 | 100 |
-| [Flow](configs/e1/single_flow.json) | 1000 | 20 | 40 |
-| [Cost](configs/e1/single_cost.json) | 1000 | 20 | 40 |
-| [Workload](configs/e1/single_workload.json) | 1000 | 20 | 40 |
+| 内容 | 说明 |
+|---|---|
+| 主方法 | 偏好条件异质图 PPO，联合处理工序—机器配对、重构机器—工人配对及等待决策 |
+| 优化目标 | Excess Flow、重构费用、基于实际拆装劳动时间的几何 OWA；劳动目标兼顾总投入与负荷集中程度 |
+| 搜索对照 | MO-ALNS、NSGA-II＋局部搜索、MOEA/D |
+| 学习对照 | DCAN 适配版、规则选择型 DDQN |
+| 评价方式 | 多种子、固定实例与偏好网格，分别报告交付质量、完成覆盖和计算成本 |
 
-固定V2数据：500个验证实例，test/OOD/stress各20个。主验证取固定分层50实例×13偏好×3次采样；Universal测试为20实例×66偏好×3次采样。当前数据规模与更大规模发布方案分开记录，详见[实验清单](docs/experiment_runlist.md)。
+当前[默认配置](configs/default.json)采用 schema12、log2 观测编码、HGNN shared-head 和 OWA(q=.5)。目标定义、冻结尺度及训练参数见[主线实验协议](docs/experiment_protocol.md)。新增对照已完成本地集成检查，正式性能待远端实验验证，详见[验证记录](docs/comparator_verification_20261017.md)。
 
-## 安装与检查
+## 快速开始
 
-本机 `.venv` 链接到共享环境 `C:\Users\chenz\myenv`。新环境按[依赖文件](requirements.txt)安装；以下命令在项目根目录运行。
+以下为 PowerShell 示例，在项目根目录运行，并使用已激活的 Python 环境。默认配置使用 CUDA；正式训练在远端实验机器执行。
 
-```powershell
-.\.venv\Scripts\python.exe -m pip check
-.\.venv\Scripts\python.exe -m scripts.run_experiments --suite all --seed 11 --preflight-only
-.\.venv\Scripts\python.exe -m scripts.run_00_smoke
-```
-
-预检验证配置、数据、冻结身份、硬件和网络前向；smoke检查训练/保存/重载/评价链路。正式完成以summary、checkpoint及完整结果行核实。
+**1. 安装依赖**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q --basetemp=.t
+python -m pip install -r requirements.txt
 ```
 
-旧V1清单按 `.gitattributes` 使用CRLF换行，原归档哈希保持不变；当前实验使用 `data/manifests/v2`。运行时只接受schema12配置与模型。
-
-## 训练
-
-当前先运行种子 **11、23、37**。三个seed的Universal批次：
+**2. 预检配置、数据与运行环境**
 
 ```powershell
-.\scripts\run_three_seeds.ps1 -Experiment universal
+.\scripts\run_three_seeds.ps1 -Experiment universal -Python python -PreflightOnly
 ```
 
-该脚本先后执行三个种子，任一失败停止；`-PreflightOnly`只预检，`-DryRun`只打印命令，`-List`列出26个实验。每个实验的单独命令见[三种子逐项清单](docs/experiment_three_seeds.md)。
-
-脚本优先使用已激活的 virtualenv/Conda 环境，其次使用项目`.venv`，最后查找 PATH 中的`python`；`-Python`可显式指定解释器路径或命令名。
-
-一次Universal训练示例：
+**3. 预检通过后，启动 Universal 三种子训练**
 
 ```powershell
-.\.venv\Scripts\python.exe train.py --config configs/default.json --algorithm-seed 11 --run-name universal_seed11
+.\scripts\run_three_seeds.ps1 -Experiment universal -Python python
 ```
 
-一个种子的完整核心矩阵包括Universal、无图、三个单目标及其疲劳中性对照，共8次训练：
+脚本依次运行种子 **11、23、37**，任一失败即停止。`-DryRun` 可预览命令，`-List` 可查看实验配置。单目标、消融及其他启动方式见[逐实验运行清单](docs/experiment_three_seeds.md)。
 
-```powershell
-.\.venv\Scripts\python.exe -m scripts.run_experiments --suite all --seed 11
-```
+## 实验与评估
 
-两条命令是不同启动方式；完整矩阵已包含Universal。通用启动器支持 `--config` 列出对照、`--seed` 指定算法种子，预检全部配置后顺序启动，任一训练失败停止。`--parallel-envs`调整并行宽度，保留每次更新20 episodes的预算。
+当前固定 V2 数据包含 **500 个验证实例**，test、OOD、stress 各 **20 个实例**。另已物化[独立挑战集](docs/challenge_suite_protocol.md)：100 个瓶颈实例及 20 组四档重构倍率配对实例，供冻结模型后评估，当前完成数据审计与小规模链路检查。PPO 主线与对照套件分别冻结验证划分和预算；完整实验矩阵见[实验执行清单](docs/experiment_runlist.md)。
 
-## 评估与分析
+PPO 主线训练结束后自动测试验证选出的 best 模型。PPO/DCAN 主交付采用同实例、同偏好三次采样取优，DDQN 采用单次贪心；搜索方法先通过验证曲线确定合理预算，再另测 PPO 实际交付时限下的表现。选模和交付规则见[评估协议](docs/default_best_of_three.md)，独立测试命令见[运行清单](docs/experiment_three_seeds.md#独立评估)。
 
-使用训练目录保存的配置读取模型：
+新增对照通过 `python -m scripts.comparison_suite` 统一运行，默认仅预检。匹配训练、搜索预算选择、独立确认及正式测试的分阶段操作见[远端启动说明](docs/comparator_remote_startup.md)。
 
-```powershell
-.\.venv\Scripts\python.exe eval.py --config result/runs/universal_seed11/config.json --policy ppo --checkpoint result/runs/universal_seed11/best_checkpoint.pt --dataset test --decode-mode sampled --preference-set final_test --run-name universal_seed11_test
-```
+结果保留配置、源码/数据/权重身份、训练与验证日志、原始候选及选中交付；交付质量与全部付费候选池的 Pareto/HV 分别报告。
 
-训练末尾已自动测试选出的best；独立评估用于复核或补齐产物。`eval.py`还支持启发式和随机策略；MO-ALNS入口为 `python -m scripts.mo_alns`。其预算、适用参数和完整比较命令见[实验执行清单](docs/experiment_runlist.md)。
+## 文档导航
 
-结果保留有效配置、源码/数据/尺度/权重身份、训练与验证日志、全部原始请求和selected交付行。历史逐采样结果与新协议结果分别标记；原始样本池Pareto/HV和三次取优交付指标分别报告。
-
-## 代码与文档
-
-`agent`负责策略与求解器，`environment`负责物理与观测，`data`负责实例，`configs`负责配置/身份，`training`负责选模，`result`负责指标和产物；`scripts`提供运行入口，`analysis`及`analysis/studies`提供分析和历史复核。
-
-- [全部实验及执行顺序](docs/experiment_runlist.md)
-- [主线实验协议](docs/experiment_protocol.md) · [三次取优与选模操作协议](docs/default_best_of_three.md) · [消融协议](docs/ablation_protocol.md)
-- [数学证明目录](data/docs/README.md) · [选模证明](data/docs/SELECTION.md)
-- [当前架构](docs/ARCHITECTURE.md) · [整理与路径迁移](docs/project_cleanup.md)
-- [工业背景](docs/research_background_cesa3r.md) · [fluid搜索研究设计](docs/fluid_bottleneck_search_ppo_research_20261014.md)
+- **理解问题**：[工业背景](docs/research_background_cesa3r.md) · [数学定义与证明](data/docs/README.md)
+- **了解实现**：[当前架构](docs/ARCHITECTURE.md) · [对照方法实施契约](docs/comparator_implementation_spec.md)
+- **运行实验**：[完整实验清单](docs/experiment_runlist.md) · [三种子逐项命令](docs/experiment_three_seeds.md) · [对照远端启动](docs/comparator_remote_startup.md)
+- **独立压力评估**：[瓶颈测试与重构倍率外推套件](docs/challenge_suite_protocol.md)
+- **解释结果**：[主线协议](docs/experiment_protocol.md) · [三次取优与选模](docs/default_best_of_three.md) · [选模证明](data/docs/SELECTION.md) · [消融协议](docs/ablation_protocol.md)
+- **维护与研究**：[路径迁移](docs/project_cleanup.md) · [Fluid 搜索研究设计（尚未实现）](docs/fluid_bottleneck_search_ppo_research_20261014.md)
