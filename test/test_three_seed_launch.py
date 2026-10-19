@@ -167,9 +167,9 @@ def test_catalog_covers_each_current_ppo_configuration_once():
     rows = json.loads(result.stdout)
     expected = {p.relative_to(project_path(".")).as_posix() for p in project_path("configs").rglob("*.json")
                 if not {"archive", "manifests", "baselines"}.intersection(p.parts)}
-    assert len(rows) == len(expected) == 26
+    assert len(rows) == len(expected) == 27
     assert {row["Config"] for row in rows} == expected
-    assert len({row["Experiment"] for row in rows}) == 26
+    assert len({row["Experiment"] for row in rows}) == 27
     for row in rows:
         config = load_config(row["Config"])
         assert all(seed in config["algorithm_seeds"] for seed in (11, 23, 37))

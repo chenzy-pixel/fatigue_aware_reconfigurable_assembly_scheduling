@@ -1,0 +1,40 @@
+{
+  "extends": "../default.json",
+  "experiment_name": "mixed_instances",
+  "generator": {
+    "curriculum": {
+      "anchors": [
+        {
+          "at_fraction": 0,
+          "weights": {
+            "easy": 0.05,
+            "balanced": 0.35,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
+          }
+        },
+        {
+          "at_fraction": 1,
+          "weights": {
+            "easy": 0.05,
+            "balanced": 0.35,
+            "machine_bottleneck": 0.15,
+            "reconfiguration_bottleneck": 0.15,
+            "worker_bottleneck": 0.1,
+            "fatigue_bottleneck": 0.1,
+            "high_arrival_pressure": 0.1
+          }
+        }
+      ]
+    },
+    "severity_curriculum": {
+      "anchors": [
+        { "at_fraction": 0, "value": 1 },
+        { "at_fraction": 1, "value": 1 }
+      ]
+    }
+  }
+}

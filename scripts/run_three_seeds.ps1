@@ -4,6 +4,8 @@ Run selected PPO experiments sequentially with seeds 11, 23, and 37.
 .EXAMPLE
 .\scripts\run_three_seeds.ps1 -Experiment universal
 .EXAMPLE
+.\scripts\run_three_seeds.ps1 -Experiment mixed_instances
+.EXAMPLE
 .\scripts\run_three_seeds.ps1 -Experiment single_flow,single_cost -PreflightOnly
 .EXAMPLE
 .\scripts\run_three_seeds.ps1 -List
@@ -28,6 +30,7 @@ $experimentRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Pat
 $experimentSeeds = @(11, 23, 37)
 $experimentConfigs = [ordered]@{
     universal              = 'configs/default.json'
+    mixed_instances        = 'configs/controls/mixed_instances.json'
     single_flow            = 'configs/e1/single_flow.json'
     single_cost            = 'configs/e1/single_cost.json'
     single_workload        = 'configs/e1/single_workload.json'
