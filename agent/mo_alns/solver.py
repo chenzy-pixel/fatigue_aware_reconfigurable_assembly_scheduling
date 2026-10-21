@@ -187,10 +187,18 @@ def _choose_production_action(env: AssemblySchedulingEnv, solution: MOALNSSoluti
         )
         if solution.production_wait[primary_operation.spec.id] and not preferred_legal:
             return terminal
-    scored: list[tuple[int, int, int]] = []
+    # Operation priority is the first lexicographic key. Later operations cannot
+    # win, even if their dynamic resource score is better; avoid projecting them.
+    first_position = min(
+        operation_positions[env.operations[env.decode_production_action(a)[0]].spec.id]
+        for a in legal_pairs
+    )
+    scored = []
     for action in legal_pairs:
         operation_index, machine_index = env.decode_production_action(action)
         operation_id = env.operations[operation_index].spec.id
+        if operation_positions[operation_id] != first_position:
+            continue
         machine_id = env.machines[machine_index].spec.id
         scored.append(
             (
@@ -234,12 +242,18 @@ def _choose_worker_action(env: AssemblySchedulingEnv, solution: MOALNSSolution, 
         )
         if waits[primary.operation_id] and not preferred_legal:
             return terminal
-    scored: list[tuple[int, int, int, int]] = []
+    first_position = min(
+        operation_positions[_pending_reconfiguration(env, env.decode_worker_action(a)[0]).operation_id]
+        for a in legal_pairs
+    )
+    scored = []
     for action in legal_pairs:
         machine_index, worker_index = env.decode_worker_action(action)
         reconfiguration = _pending_reconfiguration(env, machine_index)
         if reconfiguration is None:
             raise RuntimeError("a legal worker action has no pending reconfiguration")
+        if operation_positions[reconfiguration.operation_id] != first_position:
+            continue
         rankings = (
             solution.disassembly_worker_rankings
             if reconfiguration.stage == ReconfigurationStage.WAIT_DIS

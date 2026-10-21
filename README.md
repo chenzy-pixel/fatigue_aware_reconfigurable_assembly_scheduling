@@ -16,7 +16,7 @@
 | 学习对照 | DCAN 适配版、规则选择型 DDQN |
 | 评价方式 | 多种子、固定实例与偏好网格，分别报告交付质量、完成覆盖和计算成本 |
 
-当前[默认配置](configs/default.json)采用 schema12、log2 观测编码、HGNN shared-head 和 OWA(q=.5)。目标定义、冻结尺度及训练参数见[主线实验协议](docs/experiment_protocol.md)。新增对照已完成本地集成检查，正式性能待远端实验验证，详见[验证记录](docs/comparator_verification_20261017.md)。
+当前[默认配置](configs/default.json)采用 schema12、log2 观测编码、HGNN shared-head 和 OWA(q=.5)，训练全程按固定七场景配比采样完整参数范围。目标定义、冻结尺度及训练参数见[主线实验协议](docs/experiment_protocol.md)。新增对照已完成本地集成检查，正式性能待远端实验验证，详见[验证记录](docs/comparator_verification_20261017.md)。
 
 ## 快速开始
 

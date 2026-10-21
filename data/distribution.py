@@ -26,8 +26,8 @@ def benchmark_environment_config(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def protocol_hashes(config: Mapping[str, Any], settings: Mapping[str, Any] | None = None) -> dict[str, str]:
-    # A fixed evaluation pool is shared across curriculum ablations. The online
-    # cache fingerprints the full generator separately, including the course.
+    # Historical snapshots retain these training-only fields. Fixed benchmark
+    # hashes exclude them; the online cache fingerprints the full generator.
     generator = {key: value for key, value in (config["generator"] if settings is None else settings).items()
                  if key not in {"curriculum", "severity_curriculum", "sampling_window_episodes"}}
     payloads = {
@@ -43,23 +43,20 @@ def protocol_hashes(config: Mapping[str, Any], settings: Mapping[str, Any] | Non
             for name, value in payloads.items()}
 
 
-def severity_at(config: Mapping[str, Any], progress: float) -> float:
-    anchors = config["generator"]["severity_curriculum"]["anchors"]
-    if not 0.0 <= progress <= 1.0:
-        raise ValueError("severity progress must be in [0, 1]")
-    if len(anchors) < 2 or anchors[0]["at_fraction"] != 0 or anchors[-1]["at_fraction"] != 1:
-        raise ValueError("severity anchors must cover [0, 1]")
-    previous = -1.0
-    for anchor in anchors:
-        at, value = float(anchor["at_fraction"]), float(anchor["value"])
-        if at <= previous or not 0 <= at <= 1 or not 0 < value <= 1:
-            raise ValueError("invalid severity curriculum anchors")
-        previous = at
-    for left, right in zip(anchors, anchors[1:]):
-        if progress <= right["at_fraction"]:
-            alpha = (progress - left["at_fraction"]) / (right["at_fraction"] - left["at_fraction"])
-            return float(left["value"] + alpha * (right["value"] - left["value"]))
-    return float(anchors[-1]["value"])
+def validate_training_distribution(config: Mapping[str, Any]) -> None:
+    """Reject retired training instructions before creating workers or output."""
+    generator = config["generator"]
+    if {"curriculum", "severity_curriculum"}.intersection(generator):
+        raise ValueError(
+            "historical curriculum configurations support evaluation and analysis only; "
+            "reproduce training with the original code version"
+        )
+    weights = generator["dataset_pressure_weights"]
+    if set(weights) != set(PRESSURE_TYPES):
+        raise ValueError("training weights must define all seven pressure types")
+    weighted_labels(1, weights)
+    if int(generator["sampling_window_episodes"]) < 1:
+        raise ValueError("sampling_window_episodes must be positive")
 
 
 def severity_bounds(bounds: Any, severity: float, *, integer: bool = False) -> tuple[Any, Any]:
@@ -91,27 +88,16 @@ def weighted_labels(count: int, weights: Mapping[str, float]) -> list[str]:
 
 
 def training_sampling_plan(config: Mapping[str, Any], episode_count: int) -> list[tuple[str, float]]:
-    # Import lazily: dataset also uses the shared protocol helpers.
-    from data.dataset import curriculum_weights_at
-
+    """Allocate fixed scenario quotas and shuffle each window deterministically."""
+    validate_training_distribution(config)
     if episode_count < 1:
         raise ValueError("episode_count must be positive")
     window = int(config["generator"]["sampling_window_episodes"])
-    if window < 1:
-        raise ValueError("sampling_window_episodes must be positive")
     contract = protocol_hashes(config)["distribution_contract_sha256"]
     result = []
     for start in range(0, episode_count, window):
         end = min(start + window, episode_count)
-        progress = [(index + 0.5) / episode_count for index in range(start, end)]
-        averages = {name: 0.0 for name in PRESSURE_TYPES}
-        for fraction in progress:
-            weights = curriculum_weights_at(config["generator"]["curriculum"], fraction)
-            if set(weights) != set(PRESSURE_TYPES):
-                raise ValueError("curriculum must define all seven pressure types")
-            for name in PRESSURE_TYPES:
-                averages[name] += weights[name] / len(progress)
-        labels = weighted_labels(end - start, averages)
+        labels = weighted_labels(end - start, config["generator"]["dataset_pressure_weights"])
         random.Random(stable_seed("training-window-v2", contract, config["dataset"]["splits"]["train"]["seed_start"], episode_count, start)).shuffle(labels)
-        result.extend((label, severity_at(config, fraction)) for label, fraction in zip(labels, progress, strict=True))
+        result.extend((label, 1.0) for label in labels)
     return result

@@ -106,7 +106,9 @@ def search_job(task):
     config["comparison"]["evolution"] = {**config["comparison"].get("evolution", {}), "population_size": size}
     solver = (MOALNSSolver(config, algorithm_seed=seed, dataset_name="validation") if method == "mo_alns"
               else EvolutionSolver(config, method, algorithm_seed=seed, dataset_name="validation"))
+    cpu_started = time.process_time()
     result = solver.solve(record.instance, PreferenceVector(*pref), budget=SearchBudget(evaluations, seconds))
+    cpu_seconds = time.process_time() - cpu_started
     selected = result.selected
     summary = {"method": method, "instance_id": record.instance.instance_id, "preference": pref, "seed": seed,
                "pressure_type": record.metadata["pressure_type"], "population_size": size,
@@ -115,6 +117,10 @@ def search_job(task):
                "normalized_objectives": selected.normalized_objectives if selected else None,
                "initial_quality": result.initial_best_tchebycheff,
                "search_seconds": result.search_time_seconds, "initialization_seconds": result.initial_seconds,
+               "process_cpu_seconds": cpu_seconds,
+               "process_cpu_cores_used": cpu_seconds / max(result.search_time_seconds, 1e-9),
+               "completed_evaluations_per_second": result.environment_evaluations / max(result.search_time_seconds, 1e-9),
+               "process_id": os.getpid(),
                "environment_evaluations": result.environment_evaluations, "stop_reason": result.stop_reason,
                "cache_hits": result.cache_hits, **result.operator_statistics, **result.accounting}
     atomic_json(path, {"job_id": job_id, "summary": summary, "candidates": result.candidate_history, "events": result.search_log,

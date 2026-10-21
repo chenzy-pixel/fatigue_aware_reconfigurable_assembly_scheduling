@@ -35,6 +35,13 @@ def test_complete_legacy_snapshot_keeps_implicit_defaults_and_hash(tmp_path):
     snapshot = public_config(load_config("configs/controls/raw.json"))
     snapshot["objective_scalarizer"].pop("flow_mode")
     snapshot["training"]["formal_evaluation"].pop("sample_aggregation")
+    snapshot["generator"]["curriculum"] = {"mode": "linear", "anchors": [
+        {"at_fraction": 0, "weights": {"easy": 1}},
+        {"at_fraction": 1, "weights": {"easy": 1}},
+    ]}
+    snapshot["generator"]["severity_curriculum"] = {"anchors": [
+        {"at_fraction": 0, "value": .4}, {"at_fraction": 1, "value": 1},
+    ]}
     snapshot["runtime_manifest"] = runtime_manifest(snapshot)
     expected = effective_config_snapshot(snapshot)["sha256"]
     snapshot["extends"] = str(tmp_path / "retired_preset.json")
@@ -50,7 +57,8 @@ def test_complete_legacy_snapshot_keeps_implicit_defaults_and_hash(tmp_path):
 @pytest.mark.parametrize("path", sorted(
     p.relative_to(project_path(".")).as_posix()
     for p in project_path("configs").rglob("*.json")
-    if not {"archive", "manifests"}.intersection(p.parts) and p.name != "mo_alns_manifest.json"
+    if not {"archive", "manifests"}.intersection(p.parts)
+    and p.name not in {"mo_alns_manifest.json", "challenge_suite.json"}
 ))
 def test_retained_configuration_loads(path):
     config = load_config(path)

@@ -1,5 +1,7 @@
 # MO-ALNS 修改与验证规格 v1（2026-10-17）
 
+2026-10-21 默认训练变更：采用完整参数范围的固定七场景采样，每100个episode按easy/balanced/machine/reconfiguration/worker/fatigue/arrival分配5/35/15/15/10/10/10，全程severity=1。训练配比直接复用generator.dataset_pressure_weights，移除课程锚点与独立训练预设。默认预算、模型、目标及固定评测数据身份沿用既有契约；继承默认配置的后续训练使用此分布，已有结果按保存配置解释。历史课程配置支持评测和分析，训练复现使用原代码版本。全项目清理的快照与迁移清单位于result/analysis/default_training_cleanup_20261021/。
+
 2026-10-17独立测试补充：用户已确认瓶颈与重构外推套件计划。数据、证书、评估和统计契约见[challenge_suite_protocol.md](challenge_suite_protocol.md)，范围为100例test_hard、20组四档倍率外推及冻结模型的小规模链路验收。
 
 2026-10-17补充：用户已确认四类新对照的实施计划。其算法、匹配交互预算、数据隔离与远端执行约定由`docs/comparator_implementation_spec.md`补充，启动说明见`docs/comparator_remote_startup.md`；不改写本文件既有MO-ALNS历史参照身份。

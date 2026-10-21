@@ -23,8 +23,11 @@ def startup_preflight(configs, *, probe_network=False, config_paths=None,
                       allowed_flow_modes=(FLOW_RAW, FLOW_EXCESS)):
     """Check native data, contracts and hardware; never collect/train episodes."""
     import torch
+    from data.distribution import validate_training_distribution
+
     reports = {}
     for label, config in configs.items():
+        validate_training_distribution(config)
         if flow_mode(config) not in allowed_flow_modes or config["reward"]["mode"] != flow_reward_version(config):
             raise ValueError("experiment Flow mode and reward identity disagree with the launch contract")
         device = torch.device(config["device"])
@@ -43,6 +46,8 @@ def startup_preflight(configs, *, probe_network=False, config_paths=None,
             "actor_head_variant": config["network"].get("actor_head_variant", "shared_preference"),
             "scales": config["objective_scalarizer"]["scales"], "device": str(device),
             "episodes": config["training"]["episodes"],
+            "training_pressure_weights": dict(config["generator"]["dataset_pressure_weights"]),
+            "training_severity": 1.0,
             "episodes_per_update": config["training"].get("episodes_per_update") or config["training"]["parallel_envs"],
             "parallel_envs": config["training"]["parallel_envs"],
             "validation_parallel_envs": config["training"]["validation_parallel_envs"],

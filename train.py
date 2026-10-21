@@ -682,6 +682,9 @@ class TrainingEngine:
         visdom_enabled: bool | None = None,
         initial_checkpoint: str | Path | None = None,
     ) -> None:
+        from data.distribution import validate_training_distribution
+
+        validate_training_distribution(config)
         self.config = deepcopy(config)
         self.smoke = bool(smoke)
         self.run_name = run_name

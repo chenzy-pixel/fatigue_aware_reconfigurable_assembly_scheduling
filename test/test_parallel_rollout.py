@@ -47,6 +47,51 @@ def _agent(config, instance):
     return PPOAgent(network, config["ppo"], device="cpu")
 
 
+class _CommandConnection:
+    def __init__(self, commands):
+        self.commands = iter(commands)
+        self.responses = []
+        self.closed = False
+
+    def recv(self):
+        return next(self.commands)
+
+    def send(self, response):
+        self.responses.append(response)
+
+    def close(self):
+        self.closed = True
+
+
+def test_historical_evaluation_worker_does_not_construct_training_data(config, fixed_instance, tmp_path, monkeypatch):
+    historical = deepcopy(config)
+    historical["generator"]["curriculum"] = {"anchors": []}
+    historical["paths"]["training_instances_cache"] = str(tmp_path / "cache")
+    monkeypatch.setattr(parallel_module, "OnlineInstanceDataset",
+                        lambda **kwargs: pytest.fail("evaluation constructed training data"))
+    connection = _CommandConnection([("reset_instance", fixed_instance), ("close", None)])
+    parallel_module._worker_main(0, connection, historical, fixed_instance, 2000)
+    assert connection.closed
+    assert len(connection.responses) == 3
+    assert all(isinstance(response, WorkerResponse) for response in connection.responses)
+    assert connection.responses[1].observation is not None
+    assert not (tmp_path / "cache").exists()
+
+
+@pytest.mark.parametrize("command", ["reset_online", "generate_online"])
+def test_historical_worker_rejects_online_training(config, fixed_instance, tmp_path, command):
+    historical = deepcopy(config)
+    historical["generator"]["severity_curriculum"] = {"anchors": []}
+    historical["paths"]["training_instances_cache"] = str(tmp_path / "cache")
+    connection = _CommandConnection([(command, 0)])
+    parallel_module._worker_main(0, connection, historical, fixed_instance, 2000)
+    failure = connection.responses[-1]
+    assert isinstance(failure, parallel_module.WorkerFailure)
+    assert failure.command == command
+    assert "evaluation and analysis only" in failure.message
+    assert connection.closed and not (tmp_path / "cache").exists()
+
+
 class _FakeObservation:
     def __init__(self, state: int):
         self.state = state

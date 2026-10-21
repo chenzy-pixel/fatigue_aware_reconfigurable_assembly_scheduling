@@ -1,11 +1,13 @@
 from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
+import hashlib
+import json
 
 import pytest
 
-from data.dataset import OnlineInstanceDataset, canonical_json_bytes, curriculum_weights_at, load_dataset_split
-from data.distribution import PRESSURE_TYPES, protocol_hashes, severity_at, severity_bounds, training_sampling_plan, weighted_labels
+from data.dataset import OnlineInstanceDataset, canonical_json_bytes, load_dataset_split
+from data.distribution import PRESSURE_TYPES, protocol_hashes, severity_bounds, training_sampling_plan, weighted_labels
 from data.generate_orders import InstanceGenerator
 from data.selection import resolve_instance_indices, select_validation_subsets, subset_snapshot
 from environment.preference import quality_preference_for_episode
@@ -94,26 +96,55 @@ def test_training_diagnostics_are_disabled_and_seed_reproducible(config, fixed_i
     assert all(0.10 <= worker.initial_fatigue <= 0.16 + 1e-9 for worker in first.instance.workers)
 
 
-def test_curriculum_anchors_windows_partial_window_and_streams(config):
+def test_training_windows_partial_window_and_streams(config):
     plan = training_sampling_plan(config, 2037)
     assert len(plan) == 2037
-    for at, expected in ((0, .4), (.15, .4), (.375, .7), (.6, 1), (1, 1)):
-        assert severity_at(config, at) == pytest.approx(expected)
+    weights = config["generator"]["dataset_pressure_weights"]
     for start in range(0, len(plan), 100):
         end = min(start + 100, len(plan))
-        expected = {name: 0.0 for name in PRESSURE_TYPES}
-        for index in range(start, end):
-            weights = curriculum_weights_at(config["generator"]["curriculum"], (index + .5) / len(plan))
-            for name in PRESSURE_TYPES:
-                expected[name] += weights[name] / (end - start)
-        assert Counter(label for label, _ in plan[start:end]) == Counter(weighted_labels(end-start, expected))
+        assert Counter(label for label, _ in plan[start:end]) == Counter(weighted_labels(end-start, weights))
     alternate = deepcopy(config)
     alternate["seed"] = 71
     alternate["training"]["parallel_envs"] = 2
     assert training_sampling_plan(alternate, 2037) == plan
-    assert all(severity == 1 for _, severity in plan[1223:])
-    assert severity_bounds([4, 5], .4, integer=True) == (4, 4)
-    assert Counter(weighted_labels(50, config["generator"]["dataset_pressure_weights"])) == dict(zip(PRESSURE_TYPES, (3,18,7,7,5,5,5)))
+    assert all(severity == 1 for _, severity in plan)
+    assert Counter(weighted_labels(50, weights)) == dict(zip(PRESSURE_TYPES, (3,18,7,7,5,5,5)))
+
+
+@pytest.mark.parametrize("count,expected", [
+    (1, "aa237afb993814602158b086f5854178ec45dfd452a7f61f0d6d9931f8e54064"),
+    (37, "0293cc8e8e29c408e15722463629cc3265742e37dbd26692b920a479ebf6cb37"),
+    (100, "fe76dc2478aa54651940f2bf3c42811d7c69fd5e8d6f73fc3368cbee8f5babc5"),
+    (1000, "491ee16459cecde12cbef7913ff5b2ad0b7d3270940c64c6903dae61e02ce427"),
+    (2000, "b904594e4b06f7020e8b0187bceac365a89077f9ab8ae1e062e985cf1d2b43bd"),
+    (2037, "72af6a87eb2980d940d78360f0e913dedcb6e42890024359bb8e07d220d9a187"),
+])
+def test_training_sequence_matches_frozen_reference(config, count, expected):
+    # Captured from the accepted sampler before consolidating the default.
+    plan = training_sampling_plan(config, count)
+    actual = hashlib.sha256(json.dumps(plan, separators=(",", ":")).encode()).hexdigest()
+    assert actual == expected
+
+
+@pytest.mark.parametrize("field", ["curriculum", "severity_curriculum"])
+def test_historical_training_config_is_rejected_before_output(config, tmp_path, field):
+    from train import TrainingEngine
+
+    historical = deepcopy(config)
+    historical["generator"][field] = {"anchors": []}
+    historical["paths"]["result_root"] = str(tmp_path / "runs")
+    with pytest.raises(ValueError, match="evaluation and analysis only"):
+        training_sampling_plan(historical, 100)
+    with pytest.raises(ValueError, match="evaluation and analysis only"):
+        TrainingEngine(historical, smoke=True)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_training_weights_require_all_scenarios(config):
+    invalid = deepcopy(config)
+    invalid["generator"]["dataset_pressure_weights"].pop("easy")
+    with pytest.raises(ValueError, match="all seven"):
+        training_sampling_plan(invalid, 100)
 
 
 def test_default_plan_covers_preferences_within_all_scenarios(config):
@@ -140,7 +171,7 @@ def test_cache_matches_fresh_and_configuration_changes_isolate(config, fixed_ins
     different["environment"]["max_decisions"] += 1
     assert OnlineInstanceDataset(config=different, template=fixed_instance, episode_count=400).cache_directory != path.parent
     different = deepcopy(current)
-    different["generator"]["severity_curriculum"]["anchors"][0]["value"] = .5
+    different["generator"]["sampling_window_episodes"] = 50
     assert OnlineInstanceDataset(config=different, template=fixed_instance, episode_count=400).cache_directory != path.parent
     assert protocol_hashes(different) == protocol_hashes(current)  # Shared fixed pool.
 

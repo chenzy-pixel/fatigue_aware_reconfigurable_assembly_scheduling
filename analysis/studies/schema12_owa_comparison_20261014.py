@@ -507,7 +507,7 @@ def report(result):
     for r in result["run_metrics"]:text+=f"| {r['model']} | {r['elapsed_seconds']/3600:.2f} | {r['transitions']} | {r['test_wall_seconds']:.1f} |\n"
     text+="\nOWA该次运行较快，且决策样本更少；硬件负载和策略轨迹均影响耗时，不能将差异全部归因于目标计算更快。\n\n## 8. 下一步预算建议\n\n"
     text+="按预先约定，以验证而非测试决定补跑：OWA在验证中降低实际负担，末期Cost风险没有持续恶化，last的独立验证也支持这一方向。若继续采用已选定的OWA负担语义，建议只补`owa_bounded`这一组2000轮，与本组OWA/log2保持其余设置一致；保留Variance结果作为均衡目标对照。该建议不等于OWA全面优于Variance，尤其不能忽略best完成率略低和高均衡偏好的方差代价。\n\n"
-    text+="```powershell\npython scripts/run_schema12_screening.py --experiment owa_bounded\n```\n\n"
+    text+="历史补跑建议需沿用原实验提交及保存配置；启动源码见result/analysis/default_training_cleanup_20261021/source_before.zip。当前配置与启动方式见docs/experiment_three_seeds.md。\n\n"
     text+="本报告未启动该命令。后续若评估OWA last，只补该保留候选的完整测试，并使用run内config.json；多seed、raw、q敏感性和单目标上界留到编码对照有结果之后。\n\n"
     text+="复现：`python -m analysis.studies.schema12_owa_comparison_20261014`。comparison.json含数据/模型/脚本哈希；checks.csv记录验收；paired_metrics.csv、endpoints.csv、failures.csv、preference_group_metrics.csv、cluster_bootstrap.csv为主要明细。\n"
     (OUT/"report.md").write_text(text,encoding="utf-8")

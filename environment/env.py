@@ -3984,12 +3984,15 @@ class AssemblySchedulingEnv:
         so this value is diagnostic guidance rather than a certified lower bound.
         """
         baseline = self._remaining_work_lower_bound_ticks()
+        # Native decoders skip observe(), whose scoped index cache would otherwise
+        # hide this cost. The immutable instance mapping is shared by this query.
+        operation_index = observation_operation_index(self.instance)
         chain_bounds: list[int] = []
         for order in self.instance.orders:
             pending = [
                 operation
                 for operation in order.operations
-                if self.operations[observation_operation_index(self.instance)[operation.id]].state
+                if self.operations[operation_index[operation.id]].state
                 != OperationState.DONE
             ]
             if not pending:
@@ -3998,7 +4001,7 @@ class AssemblySchedulingEnv:
             previous_module = self.instance.no_module_state
             for operation in pending:
                 runtime = self.operations[
-                    observation_operation_index(self.instance)[operation.id]
+                    operation_index[operation.id]
                 ]
                 if runtime.state == OperationState.PROCESSING:
                     machine = (
@@ -4015,7 +4018,7 @@ class AssemblySchedulingEnv:
                     continue
                 values = self._capability_processing_ticks[
                     self._capability_operation_indices
-                    == observation_operation_index(self.instance)[operation.id]
+                    == operation_index[operation.id]
                 ]
                 chain += (
                     int(values.min()) if values.size else self.horizon_tick + 1
@@ -4057,6 +4060,7 @@ class AssemblySchedulingEnv:
             ),
         )
         mismatch_candidates: list[tuple[MachineRuntime, str, int]] = []
+        seen_mismatches: set[tuple[int, str]] = set()
         for operation_index, operation in enumerate(self.operations):
             if operation.state != OperationState.READY:
                 continue
@@ -4069,6 +4073,10 @@ class AssemblySchedulingEnv:
                     not in machine.spec.module_parameters
                 ):
                     continue
+                pair = (machine_index, operation.spec.required_module)
+                if pair in seen_mismatches:
+                    continue
+                seen_mismatches.add(pair)
                 current_duration = self._idle_worker_reconfiguration_ticks_at(
                     machine,
                     operation.spec.required_module,
@@ -4109,6 +4117,22 @@ class AssemblySchedulingEnv:
                         )
                     )
 
+        if not mismatch_candidates and not stage_candidates:
+            return None
+        # Until the next event the idle-worker set is fixed. Once every idle
+        # fatigue has reached zero, all durations in both candidate sets are
+        # constant; later ticks cannot be the first duration improvement.
+        maximum_idle_fatigue = max(
+            (worker.fatigue for worker in self.workers if worker.state == WorkerState.IDLE),
+            default=0.0,
+        )
+        if maximum_idle_fatigue <= 0.0:
+            return None
+        recovery_ticks = math.ceil(
+            maximum_idle_fatigue / (recovery_rate * self.resolution)
+        )
+        # One guard tick covers floating-point boundary rounding.
+        scan_end_tick = min(scan_end_tick, self.current_tick + recovery_ticks + 1)
         for tick in range(self.current_tick + 1, scan_end_tick + 1):
             for machine, target_module, current_duration in mismatch_candidates:
                 duration = self._idle_worker_reconfiguration_ticks_at(
