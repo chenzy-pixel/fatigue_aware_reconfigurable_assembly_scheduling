@@ -14,7 +14,7 @@ from result.sample_selection import select_best_of_three
 from training.protocol import LexicographicCheckpointSelector
 from train import _aggregate_formal_rows, _validation_log_row, LearningRatePlateauController
 from configs.formal_preferences import formal_preferences
-from test_v8_protocol import _row
+from test_preference_protocol import _row
 
 
 def rows_for(config, qualities=(.7, .4, .2), successes=(True, True, True), instances=1):

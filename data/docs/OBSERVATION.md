@@ -134,7 +134,7 @@ s_{\min}=\min_{j\ {\rm 未完成}}
 
 例如，两个已释放订单各需在唯一机器上加工 \(6\) 分钟，机器空闲、期限为 \(10\) 分钟、无需重构。各订单独立投影均得 \(\widehat C_j=6\)，裕量均为 \(0.4>0\)；联合完成至少需要 \(12\) 分钟。因此，正裕量不充分保证全部订单按期完成。逐工序选择局部最快候选又未证明构成真实最优完成时间的下界，故负裕量也不能直接作为全局不可行证书。
 
-实现对应为 [图观测构造](../../environment/env.py) 中的 _build_observation、_build_locked_edges、_actual_resource_relations、flow_lower_bound_credit，以及 [订单时间估计](../../environment/time_context.py)。[观测充分性回归](../../test/test_state_sufficiency_audit.py) 和 [资源关系与状态恢复回归](../../test/test_schema9_relations.py) 提供实现核对与有限样本证据；本证明不将这些样本数量解释为全状态空间验证。
+实现对应为 [图观测构造](../../environment/env.py) 中的 _build_observation、_build_locked_edges、_actual_resource_relations、flow_lower_bound_credit，以及 [订单时间估计](../../environment/time_context.py)。[观测充分性回归](../../test/test_state_sufficiency_audit.py) 和 [资源关系与状态恢复回归](../../test/test_resource_relations.py) 提供实现核对与有限样本证据；本证明不将这些样本数量解释为全状态空间验证。
 
 **7．三次采样外层状态与 critic 的范围**
 

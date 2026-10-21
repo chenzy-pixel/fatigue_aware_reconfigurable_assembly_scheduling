@@ -35,3 +35,25 @@
 用户在远端手动启动新批次，本机已取消的MO-ALNS长实验不续跑。套件先预检，再显式`--stage all --remote-run`；`all`停在正式清单，test/OOD/stress的`formal-evaluate`须满足预算和确认门槛后另行执行。完整请求可按同一身份跳过，中断训练从零重跑；源代码、配置、数据、硬件或并行宽度改变时使用新目录。
 
 新套件主结果使用350411次实际交互训练的三个PPO模型；旧MO-ALNS研究固定历史seed11权重。两种研究及原有2000-episode主线分别保存身份，不迁移或重标旧成绩。现有本机测试与smoke仅证明链路，充分搜索和方法性能仍待远端结果。
+
+
+## 默认训练与源码清理（2026-10-21）
+
+默认入口直接采用固定七场景分布：easy/balanced/machine/reconfiguration/worker/fatigue/arrival为5/35/15/15/10/10/10，每100个episode分配配额，尾窗按实际长度分配，全程severity=1。训练配比直接读取generator.dataset_pressure_weights，原有Universal名称和启动命令继续使用。
+
+课程插值实现、重复训练预设、旧训练包装及无调用者的checkpoint迁移占位已移除。主线、单目标、消融和学习对照继承当前分布。保存的历史配置仍用于评测与分析；包含旧课程字段的训练配置会在启动前报错，复现该训练需使用原代码版本。固定数据、归一化清单、模型和历史成绩按原身份保存。
+
+历史分析集中于analysis/studies/；仍验证当前行为的旧版本测试按用途重命名。MO-ALNS、四类新对照、启发式和当前目标/编码/参数消融继续保留。
+
+恢复与核查位置为 `result/analysis/default_training_cleanup_20261021/`：
+
+- `source_before.zip`：清理前源码及文档，保留原仓库路径和字节；历史过程文档也在此包内。
+- `migration.json`：逐路径归档/迁移清单与原因。
+- `before.json`、`workspace.patch`、`source_hashes.json`：起始Git身份、未跟踪文件和源码哈希。
+- `protected_before.json`、`artifact_verification.json`：受保护产物的清理前后核对。
+- `sampling_reference.json`：清理前接受的固定采样计划；测试校验六种长度的完整顺序。
+- 测试、预检及smoke日志：本次验证的实际执行结果。
+
+该目录为本机忽略的证据目录；Git记录保留正式源码变更，历史复现实验以其原提交及保存配置为准。
+
+验收：完整回归978通过、2项慢测试跳过；最终worker代码另通过32项并行模块复核（1项慢测试跳过）。三种子CPU预检、训练—保存—评测smoke与真实历史checkpoint评测均通过，2874份受保护产物哈希未变。详细身份、验证顺序和恢复核对见本次证据目录的verification.md与verification.json。

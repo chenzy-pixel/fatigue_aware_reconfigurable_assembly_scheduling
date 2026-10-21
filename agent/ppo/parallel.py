@@ -479,11 +479,7 @@ def _worker_main(
 ) -> None:
     command = "startup"
     try:
-        dataset = OnlineInstanceDataset(
-            config=config,
-            template=template,
-            episode_count=episode_count,
-        )
+        dataset = None
         environment = AssemblySchedulingEnv(config)
         progress_context: dict[str, Any] = {}
 
@@ -497,7 +493,6 @@ def _worker_main(
                 )
             )
 
-        dataset.generator.progress_callback = emit_progress
         preserve_graph = network_requires_graph_observation(
             config["network"]
         )
@@ -507,6 +502,13 @@ def _worker_main(
             if command == "close":
                 connection.send(WorkerResponse(lane_id=lane_id))
                 return
+            if command in {"reset_online", "generate_online"} and dataset is None:
+                dataset = OnlineInstanceDataset(
+                    config=config,
+                    template=template,
+                    episode_count=episode_count,
+                )
+                dataset.generator.progress_callback = emit_progress
             if command == "reset_online":
                 request = (
                     payload

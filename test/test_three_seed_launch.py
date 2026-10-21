@@ -166,10 +166,11 @@ def test_catalog_covers_each_current_ppo_configuration_once():
     assert result.returncode == 0, result.stdout + result.stderr
     rows = json.loads(result.stdout)
     expected = {p.relative_to(project_path(".")).as_posix() for p in project_path("configs").rglob("*.json")
-                if not {"archive", "manifests", "baselines"}.intersection(p.parts)}
-    assert len(rows) == len(expected) == 27
+                if not {"archive", "manifests", "baselines", "comparators"}.intersection(p.parts)
+                and p.name != "challenge_suite.json"}
+    assert len(rows) == len(expected) == 26
     assert {row["Config"] for row in rows} == expected
-    assert len({row["Experiment"] for row in rows}) == 27
+    assert len({row["Experiment"] for row in rows}) == 26
     for row in rows:
         config = load_config(row["Config"])
         assert all(seed in config["algorithm_seeds"] for seed in (11, 23, 37))

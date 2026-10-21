@@ -6,6 +6,8 @@
 
 当前三种子启动脚本：[run_three_seeds.ps1](../scripts/run_three_seeds.ps1)。[逐实验命令清单](experiment_three_seeds.md)逐行列出26个实验；默认只运行Universal，支持指定多个实验、预检和dry-run。
 
+后续训练统一采用默认固定七场景配比与完整参数范围，原有结果按各自保存配置解释。训练配比与随机流规则见[主线协议](experiment_protocol.md)。
+
 ## 1．冻结条件与顺序
 
 PPO主线：schema12/log2、HGNN shared-head、excess Flow、OWA(q=.5)、gamma=1、GAE lambda=.95、best_of_3_v1。默认尺度为 `(368.3143,353.27,21.03145448655653)`。当前先执行 **11、23、37** 三个训练种子；配置允许的53、71留待后续扩展，以下运行数按三个种子展开；三次采样属于同一模型的解码预算，不是三个独立训练种子。第6节的新对照套件另按实际环境交互匹配，不能把其训练预算写成这里的2000 episodes。

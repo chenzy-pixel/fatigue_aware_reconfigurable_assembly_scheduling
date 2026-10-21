@@ -106,6 +106,9 @@ def validation(config, agent, dataset, indices, prefs, method, *, seed):
 
 
 def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, output, identity, *, workers=20, smoke_instance=None):
+    from data.distribution import validate_training_distribution
+
+    validate_training_distribution(base)
     output = Path(output)
     job_id = digest([identity, method, seed, rate, steps, val_indices, prefs, workers])
     summary_path = output / "summary.json"

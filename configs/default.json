@@ -340,59 +340,6 @@
         "module_demand_imbalance"
       ]
     },
-    "curriculum": {
-      "mode": "linear",
-      "anchors": [
-        {
-          "at_fraction": 0,
-          "weights": {
-            "easy": 0.3,
-            "balanced": 0.5,
-            "machine_bottleneck": 0.04,
-            "reconfiguration_bottleneck": 0.04,
-            "worker_bottleneck": 0.04,
-            "fatigue_bottleneck": 0.04,
-            "high_arrival_pressure": 0.04
-          }
-        },
-        {
-          "at_fraction": 0.15,
-          "weights": {
-            "easy": 0.3,
-            "balanced": 0.5,
-            "machine_bottleneck": 0.04,
-            "reconfiguration_bottleneck": 0.04,
-            "worker_bottleneck": 0.04,
-            "fatigue_bottleneck": 0.04,
-            "high_arrival_pressure": 0.04
-          }
-        },
-        {
-          "at_fraction": 0.6,
-          "weights": {
-            "easy": 0.05,
-            "balanced": 0.35,
-            "machine_bottleneck": 0.15,
-            "reconfiguration_bottleneck": 0.15,
-            "worker_bottleneck": 0.1,
-            "fatigue_bottleneck": 0.1,
-            "high_arrival_pressure": 0.1
-          }
-        },
-        {
-          "at_fraction": 1,
-          "weights": {
-            "easy": 0.05,
-            "balanced": 0.35,
-            "machine_bottleneck": 0.15,
-            "reconfiguration_bottleneck": 0.15,
-            "worker_bottleneck": 0.1,
-            "fatigue_bottleneck": 0.1,
-            "high_arrival_pressure": 0.1
-          }
-        }
-      ]
-    },
     "diagnostics": {
       "enabled_splits": [
         "validation",
@@ -403,27 +350,7 @@
       "classify_reconfiguration_value": false
     },
     "sampling_window_episodes": 100,
-    "random_stream_version": "independent_pressure_cost_preference_v2",
-    "severity_curriculum": {
-      "anchors": [
-        {
-          "at_fraction": 0,
-          "value": 0.4
-        },
-        {
-          "at_fraction": 0.15,
-          "value": 0.4
-        },
-        {
-          "at_fraction": 0.6,
-          "value": 1
-        },
-        {
-          "at_fraction": 1,
-          "value": 1
-        }
-      ]
-    }
+    "random_stream_version": "independent_pressure_cost_preference_v2"
   },
   "environment": {
     "max_decisions": 5000,
