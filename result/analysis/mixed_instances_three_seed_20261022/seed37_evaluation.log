@@ -1,0 +1,31 @@
+PREFLIGHT PASSED: 3b1cc70059c7a1bbd4e439569b7fe3257c6d5a5b4648b5ae3da43447f6960fa1 / 1 frozen best x 7 cases x 4 prefs x 3 samples
+START seed=37 best_ep=1900 requests=28 trajectories=84 workers=8
+ppo chunk 1: repeat 1/3, trajectories=8
+ppo chunk 1: repeat 2/3, trajectories=8
+ppo chunk 1: repeat 3/3, trajectories=8
+ppo chunk 2: repeat 1/3, trajectories=8
+ppo chunk 2: repeat 2/3, trajectories=8
+ppo chunk 2: repeat 3/3, trajectories=8
+ppo chunk 3: repeat 1/3, trajectories=8
+ppo chunk 3: repeat 2/3, trajectories=8
+ppo chunk 3: repeat 3/3, trajectories=8
+ppo chunk 4: repeat 1/3, trajectories=4
+ppo chunk 4: repeat 2/3, trajectories=4
+ppo chunk 4: repeat 3/3, trajectories=4
+DONE seed=37 wall_seconds=293.7
+{
+  "plan_sha256": "3b1cc70059c7a1bbd4e439569b7fe3257c6d5a5b4648b5ae3da43447f6960fa1",
+  "raw_trajectories": 84,
+  "deliveries": 28,
+  "paired_rows": 56,
+  "ppo_by_seed": {
+    "37": {
+      "successes": 28,
+      "quality": 0.296005519687319
+    }
+  },
+  "all_raw_constraints_pass": true,
+  "all_raw_complete_without_engineering_truncation": true,
+  "checkpoint_files_unchanged": true,
+  "interpretation": "post-hoc tuning-set comparison of frozen existing PPO; not independent confirmation or matched retraining; parallel timings are not isolated latency"
+}

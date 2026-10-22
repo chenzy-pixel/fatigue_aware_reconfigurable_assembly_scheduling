@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "archive_count": 4,
+  "archive_members_verified": 187,
+  "analysis_files_verified": 125,
+  "published_model_weights": 0,
+  "historical_audit_checks": 1235,
+  "new_training": 0,
+  "new_evaluation_rollouts": 0
+}

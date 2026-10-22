@@ -1,0 +1,342 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "id": "formal-test-three-seeds",
+      "title": "两种课程的三个best原测试结果",
+      "queries": [
+        {
+          "id": "test-models",
+          "source": {
+            "label": "20例×66偏好正式测试",
+            "files": [
+              {
+                "label": "comparison_summary.csv"
+              },
+              {
+                "label": "audit.json"
+              }
+            ],
+            "metricDefinitions": [
+              {
+                "label": "20例×66偏好正式测试",
+                "definition": "每个模型先对同算例同偏好三次取优，Q在各偏好成功交付上平均后等权汇总。"
+              }
+            ],
+            "caveats": [
+              "渐进seed23有4个交付失败，mix全部完成；Q为条件于成功的质量，需与覆盖一起解读。"
+            ]
+          },
+          "reportingPeriod": "2026-10-16至2026-10-22完成的训练；分析更新2026-10-22",
+          "columns": [
+            "seed",
+            "arm",
+            "best_episode",
+            "test_Q",
+            "test_completion",
+            "raw_completion"
+          ],
+          "rows": [
+            {
+              "seed": 11,
+              "arm": "progressive",
+              "best_episode": 1800,
+              "test_Q": 0.2267677786983146,
+              "test_completion": 1.0,
+              "raw_completion": 0.989141414141414
+            },
+            {
+              "seed": 11,
+              "arm": "mixed",
+              "best_episode": 2000,
+              "test_Q": 0.2280572919315795,
+              "test_completion": 1.0,
+              "raw_completion": 0.9936868686868688
+            },
+            {
+              "seed": 23,
+              "arm": "progressive",
+              "best_episode": 900,
+              "test_Q": 0.2314038577455384,
+              "test_completion": 0.996969696969697,
+              "raw_completion": 0.9676767676767676
+            },
+            {
+              "seed": 23,
+              "arm": "mixed",
+              "best_episode": 1500,
+              "test_Q": 0.2365803081982188,
+              "test_completion": 1.0,
+              "raw_completion": 0.9863636363636364
+            },
+            {
+              "seed": 37,
+              "arm": "progressive",
+              "best_episode": 1000,
+              "test_Q": 0.2340702371918029,
+              "test_completion": 1.0,
+              "raw_completion": 0.9800505050505052
+            },
+            {
+              "seed": 37,
+              "arm": "mixed",
+              "best_episode": 1900,
+              "test_Q": 0.2339983308278177,
+              "test_completion": 1.0,
+              "raw_completion": 0.9704545454545456
+            }
+          ],
+          "preview": {
+            "kind": "aggregate",
+            "note": "均来自冻结日志、checkpoint和已执行补评。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "late-convergence",
+      "title": "后期收敛与reward波动",
+      "queries": [
+        {
+          "id": "late-models",
+          "source": {
+            "label": "固定验证与训练后期",
+            "files": [
+              {
+                "label": "comparison_summary.csv"
+              },
+              {
+                "label": "reward_windows.csv"
+              }
+            ],
+            "metricDefinitions": [
+              {
+                "label": "固定验证与训练后期",
+                "definition": "验证标准差取ep1300至2000的8点，reward标准差取ep1201至2000的800条单次训练轨迹。"
+              }
+            ],
+            "caveats": [
+              "两种标准差不是同一统计量；不同训练分布的reward不能直接用于性能排名。"
+            ]
+          },
+          "reportingPeriod": "2026-10-16至2026-10-22完成的训练；分析更新2026-10-22",
+          "columns": [
+            "seed",
+            "arm",
+            "last_val_Q",
+            "last_val_worst_completion",
+            "late_validation_Q_sd",
+            "late_train_sd",
+            "late_train_failures"
+          ],
+          "rows": [
+            {
+              "seed": 11,
+              "arm": "progressive",
+              "last_val_Q": 0.2452119900595644,
+              "last_val_worst_completion": 1.0,
+              "late_validation_Q_sd": 0.0116134504400832,
+              "late_train_sd": 0.2619675440558142,
+              "late_train_failures": 10
+            },
+            {
+              "seed": 11,
+              "arm": "mixed",
+              "last_val_Q": 0.2342703328918207,
+              "last_val_worst_completion": 1.0,
+              "late_validation_Q_sd": 0.017592387861246,
+              "late_train_sd": 0.2753967972767448,
+              "late_train_failures": 11
+            },
+            {
+              "seed": 23,
+              "arm": "progressive",
+              "last_val_Q": 0.2565782024452902,
+              "last_val_worst_completion": 1.0,
+              "late_validation_Q_sd": 0.0142519405451829,
+              "late_train_sd": 0.2912684010367315,
+              "late_train_failures": 13
+            },
+            {
+              "seed": 23,
+              "arm": "mixed",
+              "last_val_Q": 0.2278549190927045,
+              "last_val_worst_completion": 0.98,
+              "late_validation_Q_sd": 0.0135642378061115,
+              "late_train_sd": 0.239707682344415,
+              "late_train_failures": 8
+            },
+            {
+              "seed": 37,
+              "arm": "progressive",
+              "last_val_Q": 0.260628370479501,
+              "last_val_worst_completion": 1.0,
+              "late_validation_Q_sd": 0.0153537773871337,
+              "late_train_sd": 0.2767982089387227,
+              "late_train_failures": 11
+            },
+            {
+              "seed": 37,
+              "arm": "mixed",
+              "last_val_Q": 0.2568044756267114,
+              "last_val_worst_completion": 1.0,
+              "late_validation_Q_sd": 0.0136654564597673,
+              "late_train_sd": 0.3198075822572875,
+              "late_train_failures": 15
+            }
+          ],
+          "preview": {
+            "kind": "aggregate",
+            "note": "均来自冻结日志、checkpoint和已执行补评。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "preference-three-seed-response",
+      "title": "共同成功样本上的偏好总体响应",
+      "queries": [
+        {
+          "id": "preference-models",
+          "source": {
+            "label": "三个目标响应",
+            "files": [
+              {
+                "label": "preference_correlations_matched.csv"
+              }
+            ],
+            "metricDefinitions": [
+              {
+                "label": "三个目标响应",
+                "definition": "每实例内计算目标权重与目标值的Spearman，再对实例及三个训练seed平均。"
+              }
+            ],
+            "caveats": [
+              "两课程同seed共同成功组合，seed23为1316格，其余1320格；均值不表示所有seed或方向同时改善。"
+            ]
+          },
+          "reportingPeriod": "2026-10-16至2026-10-22完成的训练；分析更新2026-10-22",
+          "columns": [
+            "arm",
+            "objective",
+            "rho_mean"
+          ],
+          "rows": [
+            {
+              "arm": "mixed",
+              "objective": "cost",
+              "rho_mean": -0.445485827179169
+            },
+            {
+              "arm": "mixed",
+              "objective": "flow",
+              "rho_mean": -0.8051277069005085
+            },
+            {
+              "arm": "mixed",
+              "objective": "workload",
+              "rho_mean": -0.42231470857506254
+            },
+            {
+              "arm": "progressive",
+              "objective": "cost",
+              "rho_mean": -0.43085518114628224
+            },
+            {
+              "arm": "progressive",
+              "objective": "flow",
+              "rho_mean": -0.7976455418097984
+            },
+            {
+              "arm": "progressive",
+              "objective": "workload",
+              "rho_mean": -0.390587430132767
+            }
+          ],
+          "preview": {
+            "kind": "aggregate",
+            "note": "均来自冻结日志、checkpoint和已执行补评。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "heuristic-matched-overall",
+      "title": "7例4偏好总体比较已对齐三个seed",
+      "queries": [
+        {
+          "id": "seven-cases",
+          "source": {
+            "label": "冻结模型同口径补评",
+            "files": [
+              {
+                "label": "heuristic_preferences_overall.csv"
+              },
+              {
+                "label": "unified_verification.json"
+              }
+            ],
+            "metricDefinitions": [
+              {
+                "label": "冻结模型同口径补评",
+                "definition": "PPO各模型内三次取优，再跨seed11、23、37平均；总体等权汇总四个偏好。"
+              }
+            ],
+            "caveats": [
+              "7例来自搜索调参子集；搜索seed11每请求600秒，未证明预算充分性；不是独立确认或同算力比较。"
+            ]
+          },
+          "reportingPeriod": "2026-10-16至2026-10-22完成的训练；分析更新2026-10-22",
+          "columns": [
+            "preference",
+            "progressive_Q",
+            "mixed_Q",
+            "nsga2_ls",
+            "moead"
+          ],
+          "rows": [
+            {
+              "preference": "Flow",
+              "progressive_Q": 0.4750587177218422,
+              "mixed_Q": 0.4798414712679979,
+              "nsga2_ls": 0.4584133439026749,
+              "moead": 0.4689816030562191
+            },
+            {
+              "preference": "Cost",
+              "progressive_Q": 0.3003581403070329,
+              "mixed_Q": 0.2983293489320845,
+              "nsga2_ls": 0.5448130937493421,
+              "moead": 0.5676892231508297
+            },
+            {
+              "preference": "OWA",
+              "progressive_Q": 0.2193010901339432,
+              "mixed_Q": 0.2292297644844258,
+              "nsga2_ls": 0.3918583975883484,
+              "moead": 0.4436285915911633
+            },
+            {
+              "preference": "Equal",
+              "progressive_Q": 0.1930453386210105,
+              "mixed_Q": 0.1930815958355606,
+              "nsga2_ls": 0.2001641983828861,
+              "moead": 0.2126617510821478
+            },
+            {
+              "preference": "Overall",
+              "progressive_Q": 0.2969408216959572,
+              "mixed_Q": 0.3001205451300172,
+              "nsga2_ls": 0.3988122584058129,
+              "moead": 0.42324029222009
+            }
+          ],
+          "preview": {
+            "kind": "aggregate",
+            "note": "均来自冻结日志、checkpoint和已执行补评。"
+          }
+        }
+      ]
+    }
+  ]
+}

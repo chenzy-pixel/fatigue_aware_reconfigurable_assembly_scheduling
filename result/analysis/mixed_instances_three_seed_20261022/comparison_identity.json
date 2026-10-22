@@ -1,0 +1,70 @@
+{
+  "config_differences": [
+    {
+      "seed": 11,
+      "changed_config_fields": [
+        ".experiment_name",
+        ".generator.curriculum.anchors",
+        ".generator.severity_curriculum.anchors"
+      ],
+      "matched_validation_subsets": true
+    },
+    {
+      "seed": 23,
+      "changed_config_fields": [
+        ".experiment_name",
+        ".generator.curriculum.anchors",
+        ".generator.severity_curriculum.anchors"
+      ],
+      "matched_validation_subsets": true
+    },
+    {
+      "seed": 37,
+      "changed_config_fields": [
+        ".experiment_name",
+        ".generator.curriculum.anchors",
+        ".generator.severity_curriculum.anchors"
+      ],
+      "matched_validation_subsets": true
+    }
+  ],
+  "test_full_coverage": [
+    {
+      "seed": 11,
+      "old_failures": 0,
+      "mixed_failures": 0,
+      "full_coverage_loss_old": 0.2267677786983146,
+      "full_coverage_loss_mixed": 0.22805729193157948,
+      "full_coverage_delta": 0.0012895132332648822,
+      "exploratory_instance_ci": [
+        -0.003158300291411967,
+        0.005452652003781147
+      ]
+    },
+    {
+      "seed": 23,
+      "old_failures": 4,
+      "mixed_failures": 0,
+      "full_coverage_loss_old": 0.2339073338702212,
+      "full_coverage_loss_mixed": 0.23658030819821887,
+      "full_coverage_delta": 0.0026729743279976874,
+      "exploratory_instance_ci": [
+        -0.0018996054704847225,
+        0.007135210430149291
+      ]
+    },
+    {
+      "seed": 37,
+      "old_failures": 0,
+      "mixed_failures": 0,
+      "full_coverage_loss_old": 0.23407023719180295,
+      "full_coverage_loss_mixed": 0.2339983308278176,
+      "full_coverage_delta": -7.190636398527124e-05,
+      "exploratory_instance_ci": [
+        -0.0060492523747678025,
+        0.006328054667627395
+      ]
+    }
+  ],
+  "uncertainty": "Two trained seeds; per-instance bootstrap is exploratory and not training-seed uncertainty."
+}

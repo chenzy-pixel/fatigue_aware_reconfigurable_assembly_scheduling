@@ -1,0 +1,126 @@
+{
+  "scope": "mixed_instances only; seeds 11, 23, 37; no new training or evaluation",
+  "figures": [
+    {
+      "stem": "01_mix_reward",
+      "caption": "固定混合实例训练；两图均为完整 100 轮窗口的滑动平均，前 99 轮不绘制。每个 seed 训练 2000 轮。"
+    },
+    {
+      "stem": "02_mix_convergence",
+      "caption": "三次采样取优；选模优先比较最差偏好完成率，再比较 Q；Q 统计成功交付。\nBest：Seed 11 = ep2000，Seed 23 = ep1500，Seed 37 = ep1900。独立诊断不参与选模。"
+    },
+    {
+      "stem": "03_mix_preference_response",
+      "caption": "正式测试：20 实例 × 66 偏好，每个模型三次取优；相同目标权重处平均其余偏好组合及实例。\n每个 seed 均 1320/1320 交付成功；目标值越低越好，曲线展示平均响应，不代表逐实例严格单调。"
+    },
+    {
+      "stem": "04_hgnnppo_heuristic_comparison",
+      "caption": "HGNN-PPO：各训练 seed 的 best 模型独立三次取优，再跨 seed 等权平均；总体为 4 偏好等权均值。\n搜索：冻结的 search seed=11、600 秒/请求。"
+    }
+  ],
+  "best_episodes": {
+    "11": 2000,
+    "23": 1500,
+    "37": 1900
+  },
+  "reward_window": {
+    "episodes": 100,
+    "minimum_periods": 100
+  },
+  "inputs": {
+    "result/analysis/mixed_instances_three_seed_20261022/run_summary.csv": {
+      "sha256": "123019014c67105d79bec3434d7a03478bcf761bc1b7ef2818f54272aa06f836",
+      "rows": 3
+    },
+    "result/analysis/mixed_instances_three_seed_20261022/validation_curves.csv": {
+      "sha256": "8424520b216829d6c7e27d3e8239d29b2308b4734fd93bd08f13a6c90ffbffe5",
+      "rows": 60
+    },
+    "result/analysis/mixed_instances_three_seed_20261022/diagnostic_curves.csv": {
+      "sha256": "5563226317d145b41fac98b8abd18cc627c29c89cf0ac31b5256e3df0d85143e",
+      "rows": 12
+    },
+    "result/analysis/mixed_instances_three_seed_20261022/preference_weight_means.csv": {
+      "sha256": "b7c92058c5ce4c58eb6696451a523893b1bbdd024cc70e9a70a2c1ccfaa7e700",
+      "rows": 198
+    },
+    "result/analysis/mixed_instances_three_seed_20261022/heuristic_preferences_overall.csv": {
+      "sha256": "ac609f6aa663c1bc2d05dbd51569bb0cb829c9056adef9e5b5653f8d21e561cc",
+      "rows": 5
+    },
+    "result/runs/experiment_seed11_20261019_195939_701454_01_mixed_instances/train_log.csv": {
+      "sha256": "0a85d28fcb109a1ac94a1376e9733d001f984b456eea311b93ac0d69977e6ed9",
+      "rows": 2000
+    },
+    "result/runs/experiment_seed23_20261020_172009_642312_01_mixed_instances/train_log.csv": {
+      "sha256": "fc64292e5aba52548ae825d8b524f5ab6245edd63edf68f9c4d773846f7f6f17",
+      "rows": 2000
+    },
+    "result/runs/experiment_seed37_20261021_141740_420983_01_mixed_instances/train_log.csv": {
+      "sha256": "be910b4c02cac5de860829481a5c002d4039aacda72205566cd3f65e6912a26b",
+      "rows": 2000
+    }
+  },
+  "exports": [
+    {
+      "path": "01_mix_reward.png",
+      "bytes": 294110,
+      "sha256": "9d9453b29cd16e6349cb9d1d8cae073d9552427356c53dc37e71c5069cb879e5"
+    },
+    {
+      "path": "01_mix_reward.pdf",
+      "bytes": 87628,
+      "sha256": "903c3ccc41bfe113cbdc6a16dd1c3f16c525e1441392cd3cc5f3a1c7167c06a9"
+    },
+    {
+      "path": "01_mix_reward.svg",
+      "bytes": 211298,
+      "sha256": "30eddbdee2fe9fb6006554f8f08f0ccd0cbd8abc70c97cddeaf761c29fa3a125"
+    },
+    {
+      "path": "02_mix_convergence.png",
+      "bytes": 354368,
+      "sha256": "01c091acc85d38ffa1bba541ab862af287fc133f51f7b7652d33a5d9a1e0a433"
+    },
+    {
+      "path": "02_mix_convergence.pdf",
+      "bytes": 51967,
+      "sha256": "a60075bea754deae5e564dfe94262c980a2632e87dbaa5b1010185ff34bcbf0e"
+    },
+    {
+      "path": "02_mix_convergence.svg",
+      "bytes": 145162,
+      "sha256": "a544679da7350ee33543dd8f113f740e79ed21c4419467e275fd18250cb135c4"
+    },
+    {
+      "path": "03_mix_preference_response.png",
+      "bytes": 339633,
+      "sha256": "67b8dac678d282b5ac1097bf488b2374d74a54d01bec0b2035e467861e8c4666"
+    },
+    {
+      "path": "03_mix_preference_response.pdf",
+      "bytes": 55701,
+      "sha256": "dde200e51b7a1c203522337d97b5c7a1c04994431104f8bf8dd234b031c90515"
+    },
+    {
+      "path": "03_mix_preference_response.svg",
+      "bytes": 142414,
+      "sha256": "8d8d61aadd51efec051a11ca285bab6f0b7a70c0c0181f7c3c1b07361c6001cf"
+    },
+    {
+      "path": "04_hgnnppo_heuristic_comparison.png",
+      "bytes": 166237,
+      "sha256": "d6da7c2a6dd6669aad6717bdaaab16bf29ff89c11c6caeafeb607c501286f984"
+    },
+    {
+      "path": "04_hgnnppo_heuristic_comparison.pdf",
+      "bytes": 44108,
+      "sha256": "0368d64f3965abc705b72b20f46e834fa4e4b4fa153f019c61aa01ee068cf163"
+    },
+    {
+      "path": "04_hgnnppo_heuristic_comparison.svg",
+      "bytes": 98406,
+      "sha256": "0c394b8554b381b9722eb07a83e737a064849fc11db58f9ead3f66a812300034"
+    }
+  ]
+}

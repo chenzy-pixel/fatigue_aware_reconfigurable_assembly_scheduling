@@ -1,0 +1,4 @@
+# Preserve the exact audited bytes on every platform.
+* -text whitespace=cr-at-eol
+# Matplotlib's generated path data contains intentional spaces before newlines.
+*.svg -whitespace linguist-generated=true

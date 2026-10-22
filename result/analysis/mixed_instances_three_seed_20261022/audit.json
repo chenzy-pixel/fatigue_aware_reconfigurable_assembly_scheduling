@@ -1,0 +1,5121 @@
+{
+  "analysis_date": "2026-10-22",
+  "timezone": "UTC+8",
+  "runs": [
+    {
+      "seed": 11,
+      "run": "experiment_seed11_20261019_195939_701454_01_mixed_instances",
+      "start_utc8": "2026-10-19 20:00:11",
+      "end_utc8": "2026-10-20 17:19:54",
+      "elapsed_hours": 21.33892095725013,
+      "best_episode": 2000,
+      "best_val_Q": 0.23427033289182078,
+      "last_val_Q": 0.2342703328918207,
+      "last_worse_percent": -3.3306690738754696e-14,
+      "test_Q": 0.22805729193157948,
+      "test_completion": 1.0,
+      "worst_preference_completion": 1.0,
+      "test_failures": 0,
+      "raw_completion": 0.9936868686868687,
+      "raw_Q": 0.2549204690625404,
+      "all3_success_cells": 1296,
+      "first_repeat_completion": 0.990909090909091,
+      "flow_excess_objective": 520.8293181818183,
+      "reconfiguration_cost": 270.3520269343219,
+      "workload_objective_value": 10.201535594035594,
+      "train_completion": 0.972,
+      "train_hours": 1.2165320046398684,
+      "validation_hours": 15.647517347749995,
+      "diagnostic_hours": 2.9978104568056816,
+      "test_hours": 1.4276432917499915,
+      "lr_decay_count": 0,
+      "source_state_sha256": "48f9b5e4be66ccab4169dedf7927fe97773ac1de7eb4b9679ea9c11e81af02ef"
+    },
+    {
+      "seed": 23,
+      "run": "experiment_seed23_20261020_172009_642312_01_mixed_instances",
+      "start_utc8": "2026-10-20 17:20:39",
+      "end_utc8": "2026-10-21 14:17:25",
+      "elapsed_hours": 20.957048388777768,
+      "best_episode": 1500,
+      "best_val_Q": 0.23765916456896108,
+      "last_val_Q": 0.2278549190927045,
+      "last_worse_percent": -4.125338694191905,
+      "test_Q": 0.23658030819821887,
+      "test_completion": 1.0,
+      "worst_preference_completion": 1.0,
+      "test_failures": 0,
+      "raw_completion": 0.9863636363636363,
+      "raw_Q": 0.2627056814907158,
+      "all3_success_cells": 1269,
+      "first_repeat_completion": 0.9840909090909091,
+      "flow_excess_objective": 497.75621212121206,
+      "reconfiguration_cost": 277.371274765172,
+      "workload_objective_value": 10.8435088985089,
+      "train_completion": 0.9735,
+      "train_hours": 1.2104181916952237,
+      "validation_hours": 15.35084179291631,
+      "diagnostic_hours": 2.9057433773057224,
+      "test_hours": 1.441363895777613,
+      "lr_decay_count": 0,
+      "source_state_sha256": "48f9b5e4be66ccab4169dedf7927fe97773ac1de7eb4b9679ea9c11e81af02ef"
+    },
+    {
+      "seed": 37,
+      "run": "experiment_seed37_20261021_141740_420983_01_mixed_instances",
+      "start_utc8": "2026-10-21 14:18:10",
+      "end_utc8": "2026-10-22 11:14:34",
+      "elapsed_hours": 20.94933388575006,
+      "best_episode": 1900,
+      "best_val_Q": 0.23591214204850944,
+      "last_val_Q": 0.2568044756267114,
+      "last_worse_percent": 8.855980619219661,
+      "test_Q": 0.23399833082781765,
+      "test_completion": 1.0,
+      "worst_preference_completion": 1.0,
+      "test_failures": 0,
+      "raw_completion": 0.9704545454545455,
+      "raw_Q": 0.25724256992419275,
+      "all3_success_cells": 1220,
+      "first_repeat_completion": 0.9734848484848485,
+      "flow_excess_objective": 575.5034848484848,
+      "reconfiguration_cost": 272.5112089089313,
+      "workload_objective_value": 10.2143746993747,
+      "train_completion": 0.971,
+      "train_hours": 1.2071913777765197,
+      "validation_hours": 15.31462691777748,
+      "diagnostic_hours": 2.9435941721941346,
+      "test_hours": 1.4351760971944572,
+      "lr_decay_count": 0,
+      "source_state_sha256": "48f9b5e4be66ccab4169dedf7927fe97773ac1de7eb4b9679ea9c11e81af02ef"
+    }
+  ],
+  "seed_mean_sd": {
+    "test_Q": {
+      "mean": 0.23287864365253866,
+      "sample_sd": 0.004370437746749532
+    },
+    "test_completion": {
+      "mean": 1.0,
+      "sample_sd": 0.0
+    },
+    "worst_preference_completion": {
+      "mean": 1.0,
+      "sample_sd": 0.0
+    },
+    "raw_completion": {
+      "mean": 0.9835016835016835,
+      "sample_sd": 0.01187763828927354
+    },
+    "flow_excess_objective": {
+      "mean": 531.363005050505,
+      "sample_sd": 39.929669713358415
+    },
+    "reconfiguration_cost": {
+      "mean": 273.41150353614177,
+      "sample_sd": 3.595185369290654
+    },
+    "workload_objective_value": {
+      "mean": 10.419806397306397,
+      "sample_sd": 0.3669932803205245
+    }
+  },
+  "checks": [
+    {
+      "check": "seed11: mainline",
+      "passed": true
+    },
+    {
+      "check": "seed11: saved config hash",
+      "passed": true
+    },
+    {
+      "check": "seed11: best checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed11: best finite weights",
+      "passed": true
+    },
+    {
+      "check": "seed11: evaluated best checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed11: last checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed11: last finite weights",
+      "passed": true
+    },
+    {
+      "check": "seed11: completed budget",
+      "passed": true
+    },
+    {
+      "check": "seed11: validation schedule",
+      "passed": true
+    },
+    {
+      "check": "seed11: finite optimizer metrics",
+      "passed": true
+    },
+    {
+      "check": "seed11: validation chunk count",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:100: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:200: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:300: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:400: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:500: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:600: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:700: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:800: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:900: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1000: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1100: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1200: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1300: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1400: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1500: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1600: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1700: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1800: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:1900: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:validation:2000: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed11: diagnostic chunk count",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:1500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11:diagnostic:2000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11: best identity",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed11: final: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed11: final completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11: final overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11: final preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11: final raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed11: final raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed11: success distribution",
+      "passed": true
+    },
+    {
+      "check": "seed11: validation manifest matches local",
+      "passed": true
+    },
+    {
+      "check": "seed11: test manifest matches local",
+      "passed": true
+    },
+    {
+      "check": "seed23: mainline",
+      "passed": true
+    },
+    {
+      "check": "seed23: saved config hash",
+      "passed": true
+    },
+    {
+      "check": "seed23: best checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed23: best finite weights",
+      "passed": true
+    },
+    {
+      "check": "seed23: evaluated best checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed23: last checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed23: last finite weights",
+      "passed": true
+    },
+    {
+      "check": "seed23: completed budget",
+      "passed": true
+    },
+    {
+      "check": "seed23: validation schedule",
+      "passed": true
+    },
+    {
+      "check": "seed23: finite optimizer metrics",
+      "passed": true
+    },
+    {
+      "check": "seed23: validation chunk count",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:100: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:200: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:300: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:400: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:500: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:600: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:700: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:800: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:900: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1000: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1100: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1200: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1300: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1400: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1500: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1600: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1700: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1800: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:1900: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:validation:2000: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed23: diagnostic chunk count",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:1500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23:diagnostic:2000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23: best identity",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed23: final: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed23: final completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23: final overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23: final preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23: final raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed23: final raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed23: success distribution",
+      "passed": true
+    },
+    {
+      "check": "seed23: validation manifest matches local",
+      "passed": true
+    },
+    {
+      "check": "seed23: test manifest matches local",
+      "passed": true
+    },
+    {
+      "check": "seed37: mainline",
+      "passed": true
+    },
+    {
+      "check": "seed37: saved config hash",
+      "passed": true
+    },
+    {
+      "check": "seed37: best checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed37: best finite weights",
+      "passed": true
+    },
+    {
+      "check": "seed37: evaluated best checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed37: last checkpoint",
+      "passed": true
+    },
+    {
+      "check": "seed37: last finite weights",
+      "passed": true
+    },
+    {
+      "check": "seed37: completed budget",
+      "passed": true
+    },
+    {
+      "check": "seed37: validation schedule",
+      "passed": true
+    },
+    {
+      "check": "seed37: finite optimizer metrics",
+      "passed": true
+    },
+    {
+      "check": "seed37: validation chunk count",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:100: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:200: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:300: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:400: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:500: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:600: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:700: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:800: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:900: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1000: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1100: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1200: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1300: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1400: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1500: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1600: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1700: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1800: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:1900: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:validation:2000: checkpoint decision",
+      "passed": true
+    },
+    {
+      "check": "seed37: diagnostic chunk count",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:1500: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: episode",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37:diagnostic:2000: raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37: best identity",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: count and uniqueness",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: full cells",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: no incomplete requests",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: physical safety",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: native quality formula",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: terminal failure score",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: chosen rows",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: stored flags",
+      "passed": true
+    },
+    {
+      "check": "seed37: final: saved chosen contents",
+      "passed": true
+    },
+    {
+      "check": "seed37: final completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37: final overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37: final preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37: final raw_overall_completion_rate",
+      "passed": true
+    },
+    {
+      "check": "seed37: final raw_preference_balanced_quality_score",
+      "passed": true
+    },
+    {
+      "check": "seed37: success distribution",
+      "passed": true
+    },
+    {
+      "check": "seed37: validation manifest matches local",
+      "passed": true
+    },
+    {
+      "check": "seed37: test manifest matches local",
+      "passed": true
+    },
+    {
+      "check": "exactly requested seeds",
+      "passed": true
+    },
+    {
+      "check": "configs equal except seed",
+      "passed": true
+    },
+    {
+      "check": "recorded source hash equal",
+      "passed": true
+    },
+    {
+      "check": "validation cohorts equal",
+      "passed": true
+    },
+    {
+      "check": "selection and diagnostic disjoint",
+      "passed": true
+    }
+  ],
+  "all_checks_passed": true,
+  "input_sha256": {
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\config.json": "104cb3c279d3e8500b01547f79eaa4863b978ca1a2951bf916a205f6dcb6314a",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\summary.json": "8d837f8c8fc33b79997ecff3974ac688f14db716cf4dc10162016df68267dc67",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\validation_subsets.json": "c9842eb7fbae2aa6cf88ea75ddb570e2f216a97a75c8022e167030740404d7b1",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\train_log.csv": "0a85d28fcb109a1ac94a1376e9733d001f984b456eea311b93ac0d69977e6ed9",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\update_log.csv": "098ec383e3de0fac9921692479a957a95b03a91f888db37b85475f8e383486e7",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\validation_log.csv": "6dcfcc014b0e36ed9256867442af1f52676cadcf0ba785622d52000f77e156d2",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\diagnostic_log.csv": "69446911ad48913e1792aea8e9937b798178bdb88a772a808e72137014f05247",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\final_sampled_instance_metrics.csv": "647277dc2a24f7a7337932b8d6db74e9760ef92e022a6f34717e194cc8ebb3ac",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\final_selected_instance_metrics.csv": "0f741bff9f1319b30c1721c7375f05a1fbe41008a414b9667930a3638f3eb047",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\sampled_validation_instance_metrics.csv": "6a8d1b2ae7d09c61b78d1cab89fad1b53a21cbba7169563808562321e4f61cd1",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\selected_validation_instance_metrics.csv": "e5d3ebcce2a0ea3401a098e9ea70462a7d5501b1d11f1a6b20a209fd2d2530e6",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\sampled_diagnostic_instance_metrics.csv": "d3d57cee065f03bb3e764a3d7ee69fd43bd749d6a8188f9b97271a75c6eeeb92",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\selected_diagnostic_instance_metrics.csv": "59497babc87de3dcdbc17c2e2fbcf3e5135091a45a655901e492c65abf7438eb",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\best_checkpoint.pt": "613c0473b2ef41ce3114c406f1097477709a2c0c905e8c3d34d652dc98ad52d2",
+    "result\\runs\\experiment_seed11_20261019_195939_701454_01_mixed_instances\\last_checkpoint.pt": "bc024e01ff2c4527445b82836058cb3666b312dd2fa2eac037fab7a14429b564",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\config.json": "c5de8c9ba9610ec8a942fa961190cb5fb1485135ae5e7d1663fc7aa6bdee4c32",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\summary.json": "38b43f5ea2cbb2581f93fc75b4e30cff8c6ca51981888dbae20ea8a493b40f05",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\validation_subsets.json": "c9842eb7fbae2aa6cf88ea75ddb570e2f216a97a75c8022e167030740404d7b1",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\train_log.csv": "fc64292e5aba52548ae825d8b524f5ab6245edd63edf68f9c4d773846f7f6f17",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\update_log.csv": "bc7357c2fe4d40fde850c511830a3203aae47076f9cca7bc8f8e85d0c059474d",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\validation_log.csv": "19acb9e029c640c0aa2e33762ac6784d588ac5f4d9892e17547c014b15fce3e9",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\diagnostic_log.csv": "6e0f18f991820423669b39d17b51695e282260d49dac7c182ef6cf530bbe64bd",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\final_sampled_instance_metrics.csv": "a685432c0f69c21ea0809a90c02ee91d621e068888347b92fb4f77fdae4ab2f2",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\final_selected_instance_metrics.csv": "9d74bcd8453e4fb93be4911d81dc923c5d69875ebd7c8167ad1effec0be478d8",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\sampled_validation_instance_metrics.csv": "2cd1e762581482138e2304866acfe3a762ffaa52922c989d80df3a0424451368",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\selected_validation_instance_metrics.csv": "1977e1990d452e434092fa993a75b5a62b6ccb3b8be3f3e2de2ec6d6f51befc8",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\sampled_diagnostic_instance_metrics.csv": "0c4617dc2e7c2b5bb8909c34a984f6f43c4f56fa744e0baaef69070480c7965f",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\selected_diagnostic_instance_metrics.csv": "69eb4ebdd4a66bd09b619a92007d6d98739cbe8ae495907e68774fdc7e89ac17",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\best_checkpoint.pt": "76bef03db2e28fc972d31571f7c9f484fdc953bd118665deb2939314ff864a93",
+    "result\\runs\\experiment_seed23_20261020_172009_642312_01_mixed_instances\\last_checkpoint.pt": "7f34bb7071a3b592babdb7491c797d0d8a87153da1a0d9d8ffbe5409d0f22def",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\config.json": "d413d94184f92a3631d969618cb98d448517b82bb08ac8721805c10db8fb1bb7",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\summary.json": "b3c96be43e5919bf4b944b8496b53eaa73b3501e4517bccad72f6c51f42978ab",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\validation_subsets.json": "c9842eb7fbae2aa6cf88ea75ddb570e2f216a97a75c8022e167030740404d7b1",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\train_log.csv": "be910b4c02cac5de860829481a5c002d4039aacda72205566cd3f65e6912a26b",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\update_log.csv": "44d459003ccf6ffba1264f6229fff8fd68021c06188d00f073ba272af56fa129",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\validation_log.csv": "bcd1ff496afefae210f8767bc9f7711220598b85515f00b0fdbc185f903b2238",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\diagnostic_log.csv": "86e28c43b734701b0fb7185e4797d5cf07d2ce5c3b54853469b0b66bb28c53aa",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\final_sampled_instance_metrics.csv": "7410983f38e4502f4e5e5d6713ce7e2097e741195785898ea2b2f3fa10db4e1d",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\final_selected_instance_metrics.csv": "987fc97f8e705735f185b898297c74990ad8d3dc1de3b0f7a16240fd42108f85",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\sampled_validation_instance_metrics.csv": "058df00eb01bd736581ce3252b2563be5eedcc462f86312687a058adb55bccff",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\selected_validation_instance_metrics.csv": "c04c0f48275a27efe79abf773d914032568e677e8bc93d88b302867d9053ec8d",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\sampled_diagnostic_instance_metrics.csv": "ceb36e91685b282d5624743d037d6a82404ecbfcbff01cb380cade041bd27f2f",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\selected_diagnostic_instance_metrics.csv": "3c96d36142ba8a968e488f1c060772d0fbb10d2105fffc4f0c3c37e9236f79ed",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\best_checkpoint.pt": "a8c6752fbf23f73fcd59cf693f7eefd9bbf3aaf08a489afff4f96e3d1252eefd",
+    "result\\runs\\experiment_seed37_20261021_141740_420983_01_mixed_instances\\last_checkpoint.pt": "0a78c9e98426dadf3f469c3b0de1919e78fc894ea51638c30bff8682ee81bc2d"
+  },
+  "common_success_cells": 1320,
+  "source_git": {
+    "commit": "58d5845e2370c2e155058e374642a2499c22c983",
+    "dirty": true
+  },
+  "source_state_sha256": "48f9b5e4be66ccab4169dedf7927fe97773ac1de7eb4b9679ea9c11e81af02ef",
+  "new_training": 0,
+  "new_evaluation_rollouts": 0
+}

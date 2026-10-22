@@ -1,0 +1,7 @@
+﻿arm,seed,split,instance_id,preference_flow,preference_cost,preference_workload,termination_reason,unfinished_orders
+mixed,11,diagnostic,validation_balanced_2000008,0.0,1.0,0.0,horizon,3
+mixed,23,validation,validation_machine_bottleneck_2000176,0.1,0.6,0.3,horizon,3
+mixed,23,validation,validation_balanced_2000289,0.0,0.0,1.0,horizon,1
+mixed,23,diagnostic,validation_balanced_2000008,0.0,1.0,0.0,horizon,2
+mixed,23,diagnostic,validation_machine_bottleneck_2000170,0.1,0.3,0.6,horizon,2
+mixed,23,diagnostic,validation_machine_bottleneck_2000359,0.1,0.6,0.3,horizon,1

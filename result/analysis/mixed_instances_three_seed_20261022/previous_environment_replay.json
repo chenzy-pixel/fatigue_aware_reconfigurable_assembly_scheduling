@@ -1,0 +1,9 @@
+{
+  "source_git": "58d5845",
+  "source_sha256": "71660e3fdf523b87f05c220325d92434fa3461bf18a78ec2973b795f284fbf98",
+  "replayed_trajectories": 84,
+  "all_actions_legal": true,
+  "all_objectives_match": true,
+  "max_metric_absolute_error": 0.0,
+  "new_policy_sampling": 0
+}
