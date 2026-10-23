@@ -1,4 +1,4 @@
-"""Shared experiment identity, atomic artifacts and schema-12 adapters."""
+"""Shared experiment identity, atomic artifacts and schema-13 adapters."""
 from copy import deepcopy
 import hashlib
 import json
@@ -9,10 +9,8 @@ import torch
 
 from environment import ASSEMBLY_NODE_TYPES, CAPABLE_EDGE, SERVICE_CANDIDATE_EDGE, DecisionType
 
-VERSION = "comparison_suite_v1"
+VERSION = "comparison_suite_v2"
 METHODS = ("ppo", "dcan", "rule_ddqn", "nsga2_ls", "moead", "mo_alns")
-TRAIN_STEPS = 350411
-PILOT_STEPS = 35041
 SEEDS = (11, 23, 37)
 FOUR = ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.), (1/3, 1/3, 1/3))
 
@@ -56,7 +54,9 @@ def method_config(config, method, seed=11, learning_rate=None):
 
 
 def observation_spec(obs):
-    return {"schema": 12, "node_names": {k: list(obs.node_feature_names[k]) for k in ASSEMBLY_NODE_TYPES},
+    from environment.time_context import TIME_CONTEXT_VERSION
+    return {"schema": 13, "time_context_version": TIME_CONTEXT_VERSION,
+            "node_names": {k: list(obs.node_feature_names[k]) for k in ASSEMBLY_NODE_TYPES},
             "global_names": list(obs.global_feature_names), "wait_names": list(obs.action_set_feature_names),
             "edges": {"|".join(k): list(v.feature_names) for k, v in obs.relations.items()}}
 

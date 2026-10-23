@@ -53,15 +53,17 @@ def _load_config_path(
     if not isinstance(raw, dict):
         raise TypeError(f"configuration root must be an object: {resolved}")
 
+    if "generator" in raw and raw["generator"].get("version", "3.0.0") != "3.0.0":
+        raise ValueError("generator schema 3 required; historical code is archived")
     saved = raw.get("runtime_manifest")
     if isinstance(saved, Mapping) and saved.get("observation_schema") != OBSERVATION_SCHEMA_VERSION:
-        raise ValueError("only observation schema 12 is supported; older models require retraining")
+        raise ValueError("only observation schema 13 is supported; older models require retraining")
     raw_network = raw.get("network", {})
     if not isinstance(raw_network, Mapping):
         raise TypeError("network config must be an object")
     declared = raw_network.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION)
     if isinstance(declared, bool) or declared != OBSERVATION_SCHEMA_VERSION:
-        raise ValueError("only observation schema 12 is supported; older models require retraining")
+        raise ValueError("only observation schema 13 is supported; older models require retraining")
 
     parent = raw.pop("extends", None)
     if parent is None:
@@ -115,10 +117,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if saved_manifest is not None and saved_manifest.get("observation_schema") not in SUPPORTED_OBSERVATION_SCHEMAS:
         raise ValueError(f"saved runtime_manifest is incompatible: schema {OBSERVATION_SCHEMA_VERSION} requires retraining; older observation snapshots cannot be migrated")
     if "workload_objective" not in config:
-        raise ValueError("workload_objective is required for observation schema 12")
+        raise ValueError("workload_objective is required for observation schema 13")
     selected_schema = observation_schema_version(config)
     if saved_manifest is not None and saved_manifest.get("observation_schema") != selected_schema:
         raise ValueError("saved runtime_manifest observation schema disagrees with workload_objective")
+    from data.distribution import validate_training_distribution
+    validate_training_distribution(config)
     apply_normalization_manifest(config, project_root=PROJECT_ROOT)
     attach_runtime_manifest(config)
     if saved_manifest is not None and config["runtime_manifest"].get("flow_mode") == "raw_v1":

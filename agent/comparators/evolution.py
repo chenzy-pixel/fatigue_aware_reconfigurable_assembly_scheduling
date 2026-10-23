@@ -200,7 +200,7 @@ class EvolutionSolver:
                 initial.append(evaluate(solution, HeuristicPolicy() if rule == "existing_heuristic" else None))
             population = list(initial)
             while len(population) < size:
-                solution = _rule_solution(instance, "same_wave_randomized", rng)
+                solution = _rule_solution(instance, "module_group_randomized", rng)
                 solution.operation_order = topology(instance, rng.sample(list(solution.operation_order), len(solution.operation_order)))
                 for field in ("machine_rankings", "disassembly_worker_rankings", "installation_worker_rankings"):
                     for opid, ranking in getattr(solution, field).items():

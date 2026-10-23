@@ -1,0 +1,1 @@
+{"calibration_manifest_sha256":"8a67de7cc9cf4d9b0275cf78e98bc3645a4e4506056c823a7d3e3946c54321ae","flow_mode":"excess_proportional_lb_v1","scales":{"cost":1393.7120629561937,"flow":4479.251851851852,"workload":10.67797039323274},"schema_version":"factorial27_scales_v1","selection":"calibration_54_reference_mean","workload_objective":{"mode":"variance","q":null}}

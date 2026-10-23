@@ -19,7 +19,7 @@ _RUNTIME_MANIFEST: dict[str, Any] = {
     "policy_head": 8,
     "candidate_ranker": "shared_preference_mlp_v1",
     "worker_feasibility": "instant_physical_pair_mask_v1",
-    "wait_mask": "progress_certified_wait_v2",
+    "wait_mask": "batch_progress_wait_v3",
     "observation_schema": OBSERVATION_SCHEMA_VERSION,
     "time_context": TIME_CONTEXT_VERSION,
     "reward": "single_stage_progress_quality_workload_failure_v6",
@@ -55,6 +55,7 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Return implementation identity and the configured task-failure penalty."""
 
     manifest = deepcopy(_RUNTIME_MANIFEST)
+    manifest.update(data_schema=3,physics="batch_event_v1",distribution="factorial27_v1")
     manifest.update(message_identity())
     if config is not None:
         manifest["observation_schema"] = observation_schema_version(config)
@@ -198,7 +199,7 @@ def validate_latest_only_config(config: Mapping[str, Any]) -> None:
 
 def attach_runtime_manifest(config: dict[str, Any]) -> dict[str, Any]:
     validate_latest_only_config(config)
-    config.setdefault("network", {})["global_objective_encoding"] = configured_global_objective_encoding(config, 12)
+    config.setdefault("network", {})["global_objective_encoding"] = configured_global_objective_encoding(config, 13)
     config["runtime_manifest"] = runtime_manifest(config)
     return config
 

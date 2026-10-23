@@ -10,7 +10,7 @@ import numpy as np
 
 from data.feasibility import maximum_matching_size as _maximum_matching_size
 from data.models import (
-    AssemblyInstance,
+    AssemblyInstance, instance_time_scale, validate_instance,
 )
 from environment.fatigue_monitor import audit_fatigue
 from environment.observation_schema import (
@@ -51,13 +51,11 @@ from environment.types import (
     LOCKED_EDGE,
     MACHINE_MODULE_EDGE,
     OPERATION_ORDER_EDGE,
-    ORDER_WAVE_EDGE,
     PRECEDES_EDGE,
     REQUIRES_MODULE_EDGE,
     SERVICE_CANDIDATE_EDGE,
     PROCESSING_ON_EDGE,
     SERVED_BY_EDGE,
-    WAVE_MODULE_EDGE,
     WORKER_MODULE_EDGE,
     DecisionType,
     EdgeStore,
@@ -146,7 +144,7 @@ class AssemblySchedulingEnv:
         self.preference: PreferenceVector = self.preference_context.preference
         self.instance: AssemblyInstance | None = None
         self.current_tick = 0
-        self.horizon_tick = 0
+        self.time_scale_tick = 1
         self.decision_type = DecisionType.TERMINAL
         self.terminated = False
         self.truncated = False
@@ -175,7 +173,6 @@ class AssemblySchedulingEnv:
         self._machine_module_constant_features = np.empty(
             (0, 3), dtype=np.float32
         )
-        self._wave_module_operation_indices: tuple[np.ndarray, ...] = ()
         self._events: list[tuple[int, int, int, EventType, dict[str, Any]]] = []
         self._event_serial = 0
         self._decision_count = 0
@@ -202,7 +199,6 @@ class AssemblySchedulingEnv:
         self._wait_reason_counts: dict[str, int] = {}
         self._wait_mask_reason_counts: dict[str, int] = {}
         self._wait_masked_states: set[tuple[int, str]] = set()
-        self._wait_min_estimated_deadline_slack_ticks: int | None = None
         self._last_wait_certificate: dict[str, Any] | None = None
         self._wait_certificate_cache_key: tuple[int, int, int, DecisionType] | None = None
         self._wait_certificate_cache: dict[str, Any] | None = None
@@ -344,7 +340,11 @@ class AssemblySchedulingEnv:
             )
         self.instance = instance
         self.current_tick = 0
-        self.horizon_tick = quantize_to_ticks(instance.horizon, instance.resolution)
+        validate_instance(instance)
+        self.time_scale = instance_time_scale(instance)
+        self.time_scale_tick = quantize_to_ticks(self.time_scale,instance.resolution)
+        self.decision_limit = max(self.config["environment"]["max_decisions"],100*len(instance.operations))
+        self.zero_time_limit = len(instance.machines)+min(len(instance.machines),len(instance.workers))+2
         self.decision_type = DecisionType.PRODUCTION
         self.terminated = False
         self.truncated = False
@@ -414,7 +414,6 @@ class AssemblySchedulingEnv:
         self._wait_reason_counts = {}
         self._wait_mask_reason_counts = {}
         self._wait_masked_states = set()
-        self._wait_min_estimated_deadline_slack_ticks = None
         self._last_wait_certificate = None
         self._first_unrecoverable_deadlock_diagnostic = None
         self._reconfiguration_reuse_count = 0
@@ -437,13 +436,7 @@ class AssemblySchedulingEnv:
         self.schedule_log = []
         self.reconfiguration_log = []
         for order in instance.orders:
-            release_tick = quantize_to_ticks(order.release_time, instance.resolution)
-            self._push_event(
-                release_tick,
-                EventType.ORDER_RELEASE,
-                {"order_id": order.id},
-                priority=1,
-            )
+            self._release_order(order.id)
         self._process_events_at_current_tick()
         self._resolve_terminal_or_deadlock()
         self._initial_objectives = self._objective_vector()
@@ -492,7 +485,7 @@ class AssemblySchedulingEnv:
             return self._build_observation()
 
     def _build_observation(self) -> Observation:
-        horizon = float(self.instance.horizon)
+        time_scale = self.time_scale
         total_operations = max(1, len(self.operations))
         total_machines = max(1, len(self.machines))
         total_orders = max(1, len(self.instance.orders))
@@ -512,10 +505,8 @@ class AssemblySchedulingEnv:
         )
 
         operation_feature_names = (
-            tuple(f"required_module_{module}" for module in self.instance.modules)
-            + tuple(f"state_{state.value}" for state in operation_states)
+            tuple(f"state_{state.value}" for state in operation_states)
             + (
-                "order_release_time_norm",
                 "base_processing_time_norm",
                 "sequence_norm",
                 "is_last_operation",
@@ -523,68 +514,29 @@ class AssemblySchedulingEnv:
         )
         operation_features = []
         for operation in self.operations:
-            module_one_hot = [
-                float(operation.spec.required_module == module)
-                for module in self.instance.modules
-            ]
             state_one_hot = [
                 float(operation.state == state) for state in operation_states
             ]
             order = self._order_by_id(operation.spec.order_id)
             operation_features.append(
-                module_one_hot
-                + state_one_hot
+                state_one_hot
                 + [
-                    order.release_time / self.instance.horizon,
-                    operation.spec.base_processing_time / horizon,
+                    operation.spec.base_processing_time / time_scale,
                     operation.spec.sequence / maximum_order_operations,
                     float(operation.spec.sequence == len(order.operations)),
                 ]
             )
 
-        machine_feature_names = (
-            tuple(f"current_module_{module}" for module in module_values)
-            + tuple(f"state_{state.value}" for state in machine_states)
-            + tuple(f"target_module_{module}" for module in module_values)
-            + ("remaining_busy_time_norm", "downtime_cost_rate_norm")
-            + tuple(
-                f"supports_module_{module}" for module in self.instance.modules
-            )
-        )
+        machine_feature_names = tuple(f"state_{v.value}" for v in machine_states) + ("remaining_busy_time_norm", "downtime_cost_rate_norm", "current_no_module", "target_no_module")
         machine_features = []
         for machine in self.machines:
-            current_one_hot = [
-                float(machine.current_module == module) for module in module_values
-            ]
-            state_one_hot = [
-                float(machine.state == state) for state in machine_states
-            ]
-            target = machine.target_module or machine.current_module
-            target_one_hot = [float(target == module) for module in module_values]
-            remaining = max(0, (machine.busy_until_tick or self.current_tick) - self.current_tick)
-            machine_features.append(
-                current_one_hot
-                + state_one_hot
-                + target_one_hot
-                + [
-                    ticks_to_minutes(remaining, self.resolution)
-                    / self.instance.horizon,
-                    machine.spec.downtime_cost_per_minute * horizon
-                    / cost_scale,
-                ]
-                + [
-                    float(module in machine.spec.module_parameters)
-                    for module in self.instance.modules
-                ]
-            )
+            remaining = max(0,(machine.busy_until_tick or self.current_tick)-self.current_tick)
+            machine_features.append([float(machine.state==v) for v in machine_states]+[ticks_to_minutes(remaining,self.resolution)/time_scale,machine.spec.downtime_cost_per_minute*time_scale/cost_scale,float(machine.current_module==self.instance.no_module_state),float((machine.target_module or machine.current_module)==self.instance.no_module_state)])
 
         worker_feature_names = (
             ("fatigue_ratio",)
             + tuple(f"state_{state.value}" for state in worker_states)
             + ("remaining_busy_time_norm",)
-            + tuple(
-                f"qualified_module_{module}" for module in self.instance.modules
-            )
             + ("load_norm", "labor_cost_rate_norm")
         )
         worker_features = []
@@ -598,26 +550,22 @@ class AssemblySchedulingEnv:
                 + state_one_hot
                 + [
                     ticks_to_minutes(remaining, self.resolution)
-                    / self.instance.horizon
+                    / self.time_scale
                 ]
                 + [
-                    float(module in worker.spec.qualified_modules)
-                    for module in self.instance.modules
-                ]
-                + [
-                    worker.load / self.instance.horizon,
-                    worker.spec.labor_cost_per_minute * horizon / cost_scale,
+                    worker.load / self.time_scale,
+                    worker.spec.labor_cost_per_minute * time_scale / cost_scale,
                 ]
             )
 
         order_feature_names = (
-            "released",
             "completed",
             "age_norm",
             "completion_ratio",
             "remaining_operation_ratio",
             "remaining_workload_norm",
             ORDER_TIME_FEATURE,
+            "projection_valid",
         )
         order_features = []
         for order in self.instance.orders:
@@ -639,17 +587,17 @@ class AssemblySchedulingEnv:
             )
             order_features.append(
                 [
-                    float(released),
                     float(completed),
-                    age / horizon,
+                    age / time_scale,
                     done_count / max(1, len(order.operations)),
                     len(remaining_operations) / total_operations,
                     sum(
                         operation.base_processing_time
                         for operation in remaining_operations
                     )
-                    / horizon,
-                    self.estimated_order_slack_norm(order.id),
+                    / time_scale,
+                    self.estimated_order_remaining_time_norm(order.id),
+                    float(self.estimated_order_finish_ticks()[order.id] is not None),
                 ]
             )
 
@@ -658,8 +606,6 @@ class AssemblySchedulingEnv:
             "fixed_installation_cost_norm",
             "released_remaining_operation_ratio",
             "released_remaining_workload_norm",
-            "future_remaining_operation_ratio",
-            "future_remaining_workload_norm",
             "ready_operation_ratio",
             "installed_machine_ratio",
             "target_machine_ratio",
@@ -677,11 +623,6 @@ class AssemblySchedulingEnv:
                 for operation in remaining
                 if self._order_released[operation.spec.order_id]
             ]
-            future_remaining = [
-                operation
-                for operation in remaining
-                if not self._order_released[operation.spec.order_id]
-            ]
             ready = [
                 operation
                 for operation in remaining
@@ -697,13 +638,7 @@ class AssemblySchedulingEnv:
                         operation.spec.base_processing_time
                         for operation in released_remaining
                     )
-                    / horizon,
-                    len(future_remaining) / total_operations,
-                    sum(
-                        operation.spec.base_processing_time
-                        for operation in future_remaining
-                    )
-                    / horizon,
+                    / time_scale,
                     len(ready) / total_operations,
                     sum(
                         machine.current_module == module
@@ -718,68 +653,6 @@ class AssemblySchedulingEnv:
                 ]
             )
 
-        wave_ids = tuple(self.instance.waves)
-        wave_feature_names = (
-            "release_start_norm",
-            "release_end_norm",
-            "time_until_release_norm",
-            "released_order_ratio",
-            "active_order_ratio",
-            "completed_order_ratio",
-            "remaining_operation_ratio",
-            "remaining_workload_norm",
-        )
-        wave_features = []
-        for wave_id in wave_ids:
-            wave_orders = [
-                order for order in self.instance.orders if order.wave == wave_id
-            ]
-            release_interval = self.instance.waves[wave_id].get(
-                "release_interval"
-            )
-            if release_interval is None:
-                release_interval = (
-                    [
-                        min(order.release_time for order in wave_orders),
-                        max(order.release_time for order in wave_orders),
-                    ]
-                    if wave_orders
-                    else [0.0, 0.0]
-                )
-            released_count = sum(
-                self._order_released[order.id] for order in wave_orders
-            )
-            completed_count = sum(
-                order.id in self._order_completion_tick for order in wave_orders
-            )
-            active_count = sum(
-                self._order_released[order.id]
-                and order.id not in self._order_completion_tick
-                for order in wave_orders
-            )
-            remaining_specs = [
-                operation
-                for order in wave_orders
-                for operation in order.operations
-                if runtime_by_id[operation.id].state != OperationState.DONE
-            ]
-            wave_features.append(
-                [
-                    float(release_interval[0]) / horizon,
-                    float(release_interval[1]) / horizon,
-                    max(0.0, float(release_interval[0]) - self.current_time)
-                    / horizon,
-                    released_count / max(1, len(wave_orders)),
-                    active_count / max(1, len(wave_orders)),
-                    completed_count / max(1, len(wave_orders)),
-                    len(remaining_specs) / total_operations,
-                    sum(
-                        operation.base_processing_time
-                        for operation in remaining_specs
-                    )
-                    / horizon,
-                ]
-            )
         pending_reconfigurations = sum(
             reconfiguration.stage
             in {ReconfigurationStage.WAIT_DIS, ReconfigurationStage.WAIT_INS}
@@ -801,7 +674,7 @@ class AssemblySchedulingEnv:
         )
         global_features = np.asarray(
             [
-                self.current_time / self.instance.horizon,
+                self.current_time / self.time_scale,
                 pending_reconfigurations / max(1, len(self.machines)),
                 completed_operations / max(1, len(self.operations)),
                 float(self.decision_type == DecisionType.PRODUCTION),
@@ -809,7 +682,8 @@ class AssemblySchedulingEnv:
                 resource_snapshot.minimum_worker_alternatives
                 / max(1, len(self.workers)),
                 *encoded_objectives,
-                self.minimum_unfinished_order_slack_norm(),
+                self.maximum_unfinished_order_remaining_norm(),
+                sum(v is None for v in self.estimated_order_finish_ticks().values()) / total_orders,
             ],
             dtype=np.float32,
         )
@@ -824,7 +698,6 @@ class AssemblySchedulingEnv:
                 "worker": np.asarray(worker_features, dtype=np.float32),
                 "order": np.asarray(order_features, dtype=np.float32),
                 "module": np.asarray(module_features, dtype=np.float32),
-                "wave": np.asarray(wave_features, dtype=np.float32),
             },
             global_features=global_features,
             decision_type=self.decision_type,
@@ -835,7 +708,6 @@ class AssemblySchedulingEnv:
                 "worker": worker_feature_names,
                 "order": order_feature_names,
                 "module": module_feature_names,
-                "wave": wave_feature_names,
             },
             global_feature_names=global_feature_names(self.observation_schema_version, self.global_objective_encoding),
             node_ids={
@@ -846,7 +718,6 @@ class AssemblySchedulingEnv:
                 "worker": tuple(worker.spec.id for worker in self.workers),
                 "order": tuple(order.id for order in self.instance.orders),
                 "module": tuple(self.instance.modules),
-                "wave": wave_ids,
             },
             relations=relations,
             action_set_features=action_set_features,
@@ -862,33 +733,15 @@ class AssemblySchedulingEnv:
             self._order_finish_tick_cache = OrderTimeEstimator(self).finish_ticks()
         return dict(self._order_finish_tick_cache)
 
-    def estimated_order_slack_norm(self, order_id: str) -> float:
-        if self._order_finish_tick_cache is None:
-            self._order_finish_tick_cache = OrderTimeEstimator(self).finish_ticks()
-        return (self.horizon_tick - self._order_finish_tick_cache[order_id]) / max(1, self.horizon_tick)
+    def estimated_order_remaining_time_norm(self, order_id: str) -> float:
+        finish = self.estimated_order_finish_ticks()[order_id]
+        return 0.0 if finish is None else max(0,finish-self.current_tick)/self.time_scale_tick
 
-    def minimum_active_order_slack_norm(self) -> float:
-        active = [order.id for order in self.instance.orders
-                  if self._order_released[order.id] and order.id not in self._order_completion_tick]
-        if not active:
-            return (self.horizon_tick - self.current_tick) / max(1, self.horizon_tick)
-        finishes = self._order_finish_tick_cache
-        if finishes is None:
-            # WAIT only consumes active-order slack. Do not fill the full cache
-            # with this subset: order nodes may subsequently request future orders.
-            finishes = OrderTimeEstimator(self).finish_ticks(active)
-        return min((self.horizon_tick - finishes[order]) / max(1, self.horizon_tick) for order in active)
+    def maximum_active_order_remaining_norm(self) -> float:
+        return self.maximum_unfinished_order_remaining_norm()
 
-    def minimum_unfinished_order_slack_norm(self) -> float:
-        """Soft slack for all unfinished orders, including future releases."""
-        unfinished = [order.id for order in self.instance.orders
-                      if order.id not in self._order_completion_tick]
-        if not unfinished:
-            return 0.0
-        if self._order_finish_tick_cache is None:
-            self._order_finish_tick_cache = OrderTimeEstimator(self).finish_ticks()
-        return min((self.horizon_tick - self._order_finish_tick_cache[order])
-                   / max(1, self.horizon_tick) for order in unfinished)
+    def maximum_unfinished_order_remaining_norm(self) -> float:
+        return max((self.estimated_order_remaining_time_norm(j.id) for j in self.instance.orders if j.id not in self._order_completion_tick),default=0.0)
 
     def _build_static_edge_indices(self) -> dict[EdgeType, np.ndarray]:
         self._require_instance()
@@ -898,9 +751,6 @@ class AssemblySchedulingEnv:
         }
         module_index = {
             module: index for index, module in enumerate(self.instance.modules)
-        }
-        wave_index = {
-            wave: index for index, wave in enumerate(self.instance.waves)
         }
         precedence_pairs: list[tuple[int, int]] = []
         for order in self.instance.orders:
@@ -930,10 +780,6 @@ class AssemblySchedulingEnv:
             for order in self.instance.orders
             for operation in order.operations
         ]
-        order_wave_pairs = [
-            (order_index[order.id], wave_index[order.wave])
-            for order in self.instance.orders
-        ]
         operation_module_pairs = [
             (
                 operation_index[operation.id],
@@ -953,21 +799,14 @@ class AssemblySchedulingEnv:
             for module in self.instance.modules
             if module in worker.spec.qualified_modules
         ]
-        wave_module_pairs = [
-            (wave_index[wave], module_index[module])
-            for wave in self.instance.waves
-            for module in self.instance.modules
-        ]
         return {
             PRECEDES_EDGE: _as_edge_index(precedence_pairs),
             CAPABLE_EDGE: _as_edge_index(capability_pairs),
             CAN_INSTALL_EDGE: _as_edge_index(installation_pairs),
             OPERATION_ORDER_EDGE: _as_edge_index(operation_order_pairs),
-            ORDER_WAVE_EDGE: _as_edge_index(order_wave_pairs),
             REQUIRES_MODULE_EDGE: _as_edge_index(operation_module_pairs),
             MACHINE_MODULE_EDGE: _as_edge_index(machine_module_pairs),
             WORKER_MODULE_EDGE: _as_edge_index(worker_module_pairs),
-            WAVE_MODULE_EDGE: _as_edge_index(wave_module_pairs),
         }
 
     def _initialize_static_graph_cache(self) -> None:
@@ -999,11 +838,6 @@ class AssemblySchedulingEnv:
             OPERATION_ORDER_EDGE: unit_relation(
                 OPERATION_ORDER_EDGE,
                 "belongs_to_order",
-                bidirectional=True,
-            ),
-            ORDER_WAVE_EDGE: unit_relation(
-                ORDER_WAVE_EDGE,
-                "belongs_to_wave",
                 bidirectional=True,
             ),
             REQUIRES_MODULE_EDGE: unit_relation(
@@ -1076,11 +910,11 @@ class AssemblySchedulingEnv:
                     self.machines[int(machine)].spec.module_parameters[
                         self.instance.modules[int(module)]
                     ].installation_base_time
-                    / self.instance.horizon,
+                    / self.time_scale,
                     self.machines[int(machine)].spec.module_parameters[
                         self.instance.modules[int(module)]
                     ].disassembly_base_time
-                    / self.instance.horizon,
+                    / self.time_scale,
                     self.machines[int(machine)].spec.module_parameters[
                         self.instance.modules[int(module)]
                     ].processing_speed_factor,
@@ -1090,31 +924,13 @@ class AssemblySchedulingEnv:
             dtype=np.float32,
         ).reshape(-1, 3)
 
-        order_wave = {order.id: order.wave for order in self.instance.orders}
-        wave_ids = tuple(self.instance.waves)
-        wave_module_index = self._static_edge_indices[WAVE_MODULE_EDGE]
-        self._wave_module_operation_indices = tuple(
-            np.asarray(
-                [
-                    operation_index
-                    for operation_index, operation in enumerate(self.operations)
-                    if order_wave[operation.spec.order_id]
-                    == wave_ids[int(wave_index)]
-                    and operation.spec.required_module
-                    == self.instance.modules[int(module_index_value)]
-                ],
-                dtype=np.int64,
-            )
-            for wave_index, module_index_value in wave_module_index.T
-        )
-
     def _build_capability_relation(self) -> EdgeStore:
         """Build candidate features from one sequential service path per edge."""
         edge_index = self._static_edge_indices[CAPABLE_EDGE]
         feature_names = (
             "processing_time_norm", "configuration_match", "earliest_start_time_norm",
             "resource_ready_time_norm", "predicted_finish_time_norm", "safe_disassembly_worker_ratio",
-            "safe_installation_worker_ratio", "matching_deficit_after_commit_norm", "horizon_slack_norm",
+            "safe_installation_worker_ratio", "matching_deficit_after_commit_norm", "projection_valid",
             "reconfiguration_time_norm", "fixed_disassembly_cost_norm", "fixed_installation_cost_norm",
             "estimated_labor_cost_norm", "estimated_downtime_cost_norm",
             "estimated_worker_load_objective_delta_norm", ORDER_TIME_FEATURE,
@@ -1123,19 +939,19 @@ class AssemblySchedulingEnv:
             (len(self._capability_candidate_groups), len(feature_names)),
             dtype=np.float64,
         )
-        h = max(1, self.horizon_tick)
+        h = max(1, self.time_scale_tick)
         nw = max(1, len(self.workers))
         scales = objective_scalarizer_config(self.config)["scales"]
         projector = ResourceProjector(self)
         # Future candidates sharing machine/module/release have the same
         # service path. Actual PROCESSING/LOCKED operations retain their own
         # identity because their projection is tied to the committed task.
-        order_slacks = {
-            order.id: self.estimated_order_slack_norm(order.id)
+        order_remaining = {
+            order.id: self.estimated_order_remaining_time_norm(order.id)
             for order in self.instance.orders
         }
-        slacks_by_operation = np.asarray([
-            order_slacks[operation.spec.order_id] for operation in self.operations
+        remaining_by_operation = np.asarray([
+            order_remaining[operation.spec.order_id] for operation in self.operations
         ])
         actual_edges = {
             self._capability_pair_edges[oi, self.instance.machine_index[operation.machine_id]]
@@ -1160,14 +976,14 @@ class AssemblySchedulingEnv:
             profile = self._production_resource_profile(mi, target_module)
             path = candidate.path
             dis, ins, labor, downtime, load_delta = projector.path_costs(mi, path)
-            start = candidate.processing_start_tick if candidate.processing_start_tick is not None else h + 1
-            finish = candidate.finish_tick if candidate.finish_tick is not None else h + 1
+            start = candidate.processing_start_tick if candidate.processing_start_tick is not None else self.current_tick
+            finish = candidate.finish_tick if candidate.finish_tick is not None else self.current_tick
             return [
                 0., float(self.machines[mi].current_module == target_module),
-                start / h, candidate.resource_ready_tick / h, finish / h,
+                max(0,start-self.current_tick) / h, (0 if candidate.resource_ready_tick is None else max(0,candidate.resource_ready_tick-self.current_tick)) / h, max(0,finish-self.current_tick) / h,
                 (path.safe_disassembly_workers if path and path.stages else nw if path else 0) / nw,
                 (path.safe_installation_workers if path and path.stages else nw if path else 0) / nw,
-                profile.matching_deficit_after_commit / nw, (h - finish) / h,
+                profile.matching_deficit_after_commit / nw, float(candidate.finish_tick is not None),
                 (path.end_tick - path.start_tick) / h if path else 0,
                 dis / scales["cost"], ins / scales["cost"], labor / scales["cost"],
                 downtime / scales["cost"], load_delta / workload_scale(self.config), 0.,
@@ -1189,15 +1005,15 @@ class AssemblySchedulingEnv:
             if representative in actual_edges:
                 actual_rows[representative] = values
             reachable[group] = candidate.processing_start_tick is not None
-            starts[group] = candidate.processing_start_tick if reachable[group] else h + 1
+            starts[group] = candidate.processing_start_tick if reachable[group] else self.current_tick
 
         groups = self._capability_candidate_group_indices
         rows = group_rows[groups]
         finishes = np.where(
-            reachable[groups], starts[groups] + self._capability_processing_ticks, h + 1
+            reachable[groups], starts[groups] + self._capability_processing_ticks, self.current_tick
         )
-        rows[:, 4] = finishes / h
-        rows[:, 8] = (h - finishes) / h
+        rows[:, 4] = np.maximum(0,finishes-self.current_tick) / h
+        rows[:, 8] = reachable[groups].astype(float)
         # Committed operations have actual start/finish semantics. Override
         # only their edges after broadcasting the ordinary future candidates.
         for edge in actual_edges:
@@ -1210,10 +1026,7 @@ class AssemblySchedulingEnv:
             values, _ = shared_row(oi, mi, self.operations[oi].spec.required_module, release_tick, True)
             rows[edge] = values
         rows[:, 0] = self._capability_processing_ticks / h
-        rows[:, 15] = slacks_by_operation[edge_index[0]]
-        time_columns = (0, 2, 3, 4)
-        rows[:, time_columns] = np.clip(rows[:, time_columns], 0, 2)
-        rows[:, 8] = np.clip(rows[:, 8], -1, 1)
+        rows[:, 15] = remaining_by_operation[edge_index[0]]
         return EdgeStore(edge_index=edge_index.copy(),
                          edge_features=rows.astype(np.float32),
                          feature_names=feature_names, bidirectional=True)
@@ -1262,7 +1075,7 @@ class AssemblySchedulingEnv:
                     [
                         1.0,
                         self._worker_disassembly_ticks(machine, worker)
-                        / self.horizon_tick,
+                        / self.time_scale_tick,
                     ]
                 )
         disassembly = EdgeStore(
@@ -1274,7 +1087,6 @@ class AssemblySchedulingEnv:
         )
 
         operation_order = self._static_relations[OPERATION_ORDER_EDGE].copy()
-        order_wave = self._static_relations[ORDER_WAVE_EDGE].copy()
         requires_module = self._static_relations[REQUIRES_MODULE_EDGE].copy()
 
         machine_module_index = self._static_edge_indices[MACHINE_MODULE_EDGE]
@@ -1308,48 +1120,6 @@ class AssemblySchedulingEnv:
         )
 
         worker_module = self._static_relations[WORKER_MODULE_EDGE].copy()
-
-        wave_module_index = self._static_edge_indices[WAVE_MODULE_EDGE]
-        wave_module_features: list[list[float]] = []
-        total_operations = max(1, len(self.operations))
-        for matching_indices in self._wave_module_operation_indices:
-            matching = [
-                self.operations[int(index)]
-                for index in matching_indices
-                if self.operations[int(index)].state != OperationState.DONE
-            ]
-            released = [
-                operation
-                for operation in matching
-                if self._order_released[operation.spec.order_id]
-            ]
-            future = [
-                operation
-                for operation in matching
-                if not self._order_released[operation.spec.order_id]
-            ]
-            wave_module_features.append(
-                [
-                    len(matching) / total_operations,
-                    sum(value.spec.base_processing_time for value in matching)
-                    / self.instance.horizon,
-                    len(released) / total_operations,
-                    len(future) / total_operations,
-                ]
-            )
-        wave_module = EdgeStore(
-            edge_index=wave_module_index.copy(),
-            edge_features=np.asarray(
-                wave_module_features, dtype=np.float32
-            ).reshape(-1, 4),
-            feature_names=(
-                "remaining_operation_ratio",
-                "remaining_workload_norm",
-                "released_operation_ratio",
-                "future_operation_ratio",
-            ),
-            bidirectional=True,
-        )
 
         service_pairs: list[tuple[int, int]] = []
         service_features: list[list[float]] = []
@@ -1421,18 +1191,18 @@ class AssemblySchedulingEnv:
                         reconfiguration.stage
                         == ReconfigurationStage.WAIT_INS
                     ),
-                    duration / self.instance.horizon,
+                    duration / self.time_scale,
                     projected_fatigue / safe_fatigue,
                     fixed_cost / cost_scale,
                     labor_cost / cost_scale,
                     downtime_cost / cost_scale,
                     (projected_workload - current_load_objective)
                     / active_workload_scale,
-                    self.estimated_order_slack_norm(
+                    self.estimated_order_remaining_time_norm(
                         self._operation_by_id(reconfiguration.operation_id).spec.order_id
                     ),
                     (self.current_tick - self._reconfiguration_stage_start_tick(reconfiguration))
-                    / max(1, self.horizon_tick),
+                    / max(1, self.time_scale_tick),
                 ]
                 service_pairs.append((machine_index, worker_index))
                 service_features.append(values)
@@ -1464,11 +1234,9 @@ class AssemblySchedulingEnv:
             CAN_INSTALL_EDGE: installation,
             CAN_DISASSEMBLE_EDGE: disassembly,
             OPERATION_ORDER_EDGE: operation_order,
-            ORDER_WAVE_EDGE: order_wave,
             REQUIRES_MODULE_EDGE: requires_module,
             MACHINE_MODULE_EDGE: machine_module,
             WORKER_MODULE_EDGE: worker_module,
-            WAVE_MODULE_EDGE: wave_module,
             SERVICE_CANDIDATE_EDGE: service_candidate,
             **self._actual_resource_relations(),
         }
@@ -1578,16 +1346,6 @@ class AssemblySchedulingEnv:
             * recovering
             / max(1, len(self.workers))
         )
-        future_release_ticks = [
-            event[0]
-            for event in self._events
-            if event[3] == EventType.ORDER_RELEASE and event[0] > self.current_tick
-        ]
-        future_release_delta = (
-            (min(future_release_ticks) - self.current_tick) / max(1, self.horizon_tick)
-            if future_release_ticks
-            else 1.0
-        )
         reusable = sum(
             operation.state == OperationState.READY
             and any(
@@ -1634,27 +1392,26 @@ class AssemblySchedulingEnv:
             "released_machine_ratio",
             "recovering_worker_ratio",
             "worker_recovery_gain",
-            "future_wave_release_delta_norm",
             "configuration_reuse_gain",
         ) + WAIT_TIME_FEATURES
-        current_slack = self.minimum_active_order_slack_norm()
+        current_remaining = self.maximum_active_order_remaining_norm()
         if self.flow_mode == FLOW_EXCESS:
             if wait_projection is None or wait_projection.task_done:
-                after_slack, slack_delta = 0.0, 0.0
+                after_remaining, remaining_delta = 0.0, 0.0
             else:
-                after_slack = wait_projection.minimum_active_order_slack_norm()
-                slack_delta = after_slack - current_slack
+                after_remaining = wait_projection.maximum_active_order_remaining_norm()
+                remaining_delta = after_remaining - current_remaining
         else:
             if wait_ticks > 0:
-                slack_projection = (
+                remaining_projection = (
                     wait_projection
                     if wait_projection is not None and not wait_projection.task_done
                     else project_wait_state(self, wait_ticks)
                 )
-                after_slack = slack_projection.minimum_active_order_slack_norm()
+                after_remaining = remaining_projection.maximum_active_order_remaining_norm()
             else:
-                after_slack = current_slack
-            slack_delta = after_slack - current_slack
+                after_remaining = current_remaining
+            remaining_delta = after_remaining - current_remaining
         values = np.asarray(
             [
                 flow_delta / scalarizer["scales"]["flow"],
@@ -1662,74 +1419,32 @@ class AssemblySchedulingEnv:
                 (workload_delta(self._committed_worker_loads, wait_projection._committed_worker_loads, self.config)
                  / workload_scale(self.config)
                  if wait_projection is not None else 0.0),
-                wait_ticks / max(1, self.horizon_tick),
-                wait_ticks / max(1, self.horizon_tick),
+                wait_ticks / max(1, self.time_scale_tick),
+                wait_ticks / max(1, self.time_scale_tick),
                 len(active_orders) / max(1, len(self.instance.orders)),
-                active_workload / max(EPSILON, self.instance.horizon),
+                active_workload / max(EPSILON, self.time_scale),
                 new_ready / max(1, len(self.operations)),
                 released_machines / max(1, len(self.machines)),
                 recovering / max(1, len(self.workers)),
                 recovery_gain,
-                future_release_delta,
                 reusable / max(1, len(self.operations)),
-                after_slack,
-                slack_delta,
+                after_remaining,
+                remaining_delta,
             ],
             dtype=np.float32,
         )
         return values, names
 
     def _build_locked_edges(self) -> EdgeStore:
-        self._require_instance()
-        module_values = (self.instance.no_module_state, *self.instance.modules)
-        feature_names = (
-            tuple(f"source_module_{module}" for module in module_values)
-            + tuple(f"target_module_{module}" for module in module_values)
-            + tuple(f"stage_{stage.value}" for stage in ACTIVE_RECONFIGURATION_STAGES)
-            + ("stage_elapsed_time_norm",)
-        )
-        records: list[tuple[tuple[int, int], list[float]]] = []
-        for reconfiguration in self.reconfigurations.values():
-            if reconfiguration.stage not in ACTIVE_RECONFIGURATION_STAGES:
-                continue
-            pair = (
-                observation_operation_index(self.instance)[reconfiguration.operation_id],
-                self.instance.machine_index[reconfiguration.machine_id],
-            )
-            source_one_hot = [
-                float(reconfiguration.source_module == module)
-                for module in module_values
-            ]
-            target_one_hot = [
-                float(reconfiguration.target_module == module)
-                for module in module_values
-            ]
-            stage_one_hot = [
-                float(reconfiguration.stage == stage)
-                for stage in ACTIVE_RECONFIGURATION_STAGES
-            ]
-            elapsed = (
-                self.current_tick
-                - self._reconfiguration_stage_start_tick(reconfiguration)
-            ) / self.horizon_tick
-            records.append(
-                (
-                    pair,
-                    source_one_hot
-                    + target_one_hot
-                    + stage_one_hot
-                    + [elapsed],
-                )
-            )
-        records.sort(key=lambda record: record[0])
-        return EdgeStore(
-            edge_index=_as_edge_index([pair for pair, _ in records]),
-            edge_features=np.asarray(
-                [features for _, features in records], dtype=np.float32
-            ).reshape(-1, len(feature_names)),
-            feature_names=feature_names,
-            bidirectional=True,
-        )
+        names=tuple("stage_"+x.value for x in ACTIVE_RECONFIGURATION_STAGES)+("stage_elapsed_time_norm",)
+        records=[]
+        for rec in self.reconfigurations.values():
+            if rec.stage not in ACTIVE_RECONFIGURATION_STAGES: continue
+            pair=(self.instance.operation_index[rec.operation_id],self.instance.machine_index[rec.machine_id])
+            features=[float(rec.stage==v) for v in ACTIVE_RECONFIGURATION_STAGES]+[(self.current_tick-self._reconfiguration_stage_start_tick(rec))/self.time_scale_tick]
+            records.append((pair,features))
+        records.sort(key=lambda x:x[0])
+        return EdgeStore(_as_edge_index([x[0] for x in records]),np.asarray([x[1] for x in records],dtype=np.float32).reshape(-1,len(names)),names,bidirectional=True)
 
     def get_action_mask(self) -> np.ndarray:
         """Return True for illegal actions and False for feasible actions."""
@@ -2116,9 +1831,9 @@ class AssemblySchedulingEnv:
             self._zero_time_actions = 0
         self._resolve_terminal_or_deadlock()
         if not self.task_done:
-            if self._decision_count >= self.config["environment"]["max_decisions"]:
+            if self._decision_count >= self.decision_limit:
                 self._apply_sampling_truncation("decision_limit")
-            elif self._zero_time_actions >= self.config["environment"]["max_zero_time_actions"]:
+            elif self._zero_time_actions >= self.zero_time_limit:
                 self._apply_sampling_truncation("zero_time_action_limit")
         self._invalidate_resource_snapshot()
         after = self._objective_vector()
@@ -2211,7 +1926,7 @@ class AssemblySchedulingEnv:
     def estimate_earliest_start_tick(self, operation_index: int, machine_index: int) -> int:
         """Observation projection honoring commitments and sequential worker fatigue."""
         value = self._candidate_resource_projection(operation_index, machine_index).processing_start_tick
-        return self.horizon_tick+1 if value is None else value
+        return value
 
     def estimate_reconfiguration_ticks(
         self, operation_index: int, machine_index: int
@@ -2644,9 +2359,6 @@ class AssemblySchedulingEnv:
             "wait_reason_counts": dict(sorted(self._wait_reason_counts.items())),
             "wait_mask_reason_counts": dict(
                 sorted(self._wait_mask_reason_counts.items())
-            ),
-            "wait_min_estimated_deadline_slack_ticks": (
-                self._wait_min_estimated_deadline_slack_ticks
             ),
             "first_unrecoverable_deadlock_diagnostic": (
                 dict(self._first_unrecoverable_deadlock_diagnostic)
@@ -3253,7 +2965,7 @@ class AssemblySchedulingEnv:
         worker = self.workers[worker_index]
         fatigue = self._worker_fatigue_at_tick(worker_index, tick)
         if fatigue is None:
-            return self.horizon_tick + 1
+            return None
         temporary = ReconfigurationRuntime(
             id=task.task_id,
             machine_id=self.machines[task.machine_index].spec.id,
@@ -3404,44 +3116,43 @@ class AssemblySchedulingEnv:
             lock_tick=self.current_tick,
             stage=stage,
         )
-        if start_tick <= self.horizon_tick:
-            lower = start_tick
-            upper = self.horizon_tick
-            upper_safe, _ = self._safe_stage_projection_at_tick(
-                temporary,
-                worker,
-                available_tick=available_tick,
-                available_fatigue=available_fatigue,
-                recovery_rate=recovery_rate,
-                tick=upper,
-            )
-            if upper_safe:
-                while lower < upper:
-                    middle = (lower + upper) // 2
-                    safe, _ = self._safe_stage_projection_at_tick(
-                        temporary,
-                        worker,
-                        available_tick=available_tick,
-                        available_fatigue=available_fatigue,
-                        recovery_rate=recovery_rate,
-                        tick=middle,
-                    )
-                    if safe:
-                        upper = middle
-                    else:
-                        lower = middle + 1
-                safe, duration_ticks = self._safe_stage_projection_at_tick(
+        lower = start_tick
+        upper = max(start_tick, available_tick + (math.ceil(available_fatigue/recovery_rate/self.resolution)+1 if recovery_rate>0 else 0))
+        upper_safe, _ = self._safe_stage_projection_at_tick(
+            temporary,
+            worker,
+            available_tick=available_tick,
+            available_fatigue=available_fatigue,
+            recovery_rate=recovery_rate,
+            tick=upper,
+        )
+        if upper_safe:
+            while lower < upper:
+                middle = (lower + upper) // 2
+                safe, _ = self._safe_stage_projection_at_tick(
                     temporary,
                     worker,
                     available_tick=available_tick,
                     available_fatigue=available_fatigue,
                     recovery_rate=recovery_rate,
-                    tick=lower,
+                    tick=middle,
                 )
-                if safe and lower + duration_ticks <= self.horizon_tick:
-                    result = (lower, duration_ticks)
-                    self._stage_projection_cache[key] = result
-                    return result
+                if safe:
+                    upper = middle
+                else:
+                    lower = middle + 1
+            safe, duration_ticks = self._safe_stage_projection_at_tick(
+                temporary,
+                worker,
+                available_tick=available_tick,
+                available_fatigue=available_fatigue,
+                recovery_rate=recovery_rate,
+                tick=lower,
+            )
+            if safe:
+                result = (lower, duration_ticks)
+                self._stage_projection_cache[key] = result
+                return result
         self._stage_projection_cache[key] = None
         return None
 
@@ -3508,7 +3219,7 @@ class AssemblySchedulingEnv:
             deficit = len(edges)-_maximum_matching_size([list(e) for e in edges], len(self.workers))
         ready = route.stages[0].start_tick if route and route.stages else available if route else None
         return ProductionResourceProfile(
-            resource_ready_tick=self.horizon_tick+1 if ready is None else ready,
+            resource_ready_tick=None if ready is None else ready,
             processing_start_tick=route.end_tick if route else None,
             safe_disassembly_workers=route.safe_disassembly_workers if route and route.stages else len(self.workers) if route else 0,
             safe_installation_workers=route.safe_installation_workers if route and route.stages else len(self.workers) if route else 0,
@@ -3533,81 +3244,7 @@ class AssemblySchedulingEnv:
         return progress / order_count
 
     def feasibility_potential(self) -> float:
-        if self.terminated:
-            return 0.0
-        completed = sum(
-            operation.state == OperationState.DONE
-            for operation in self.operations
-        )
-        operation_progress = completed / max(1, len(self.operations))
-        snapshot = self._resource_feasibility_snapshot()
-        resource_margin = (
-            1.0
-            if not snapshot.tasks
-            else snapshot.minimum_worker_alternatives
-            / max(1, len(self.workers))
-        )
-        slacks: list[float] = []
-        for operation_index, operation in enumerate(self.operations):
-            if operation.state != OperationState.READY:
-                continue
-            for machine_index, machine in enumerate(self.machines):
-                if (
-                    machine.state == MachineState.IDLE
-                    and machine.current_module != self.instance.no_module_state
-                    and operation.spec.required_module
-                    in machine.spec.module_parameters
-                ):
-                    profile = self._production_resource_profile(
-                        machine_index,
-                        operation.spec.required_module,
-                    )
-                    predicted_finish_tick = (
-                        profile.processing_start_tick
-                        + self.estimate_processing_ticks(
-                            operation_index, machine_index
-                        )
-                        if profile.processing_start_tick is not None
-                        else self.horizon_tick + 1
-                    )
-                    slacks.append(
-                        max(
-                            0.0,
-                            min(
-                                1.0,
-                                (self.horizon_tick - predicted_finish_tick)
-                                / max(1, self.horizon_tick),
-                            ),
-                        )
-                    )
-        slack_health = min(slacks) if slacks else 0.0
-        weights = self.config.get("reward", {}).get(
-            "feasibility_shaping", {}
-        ).get(
-            "weights",
-            {
-                "operation_progress": 0.50,
-                "resource_margin": 0.25,
-                "horizon_slack": 0.25,
-            },
-        )
-        operation_weight = float(weights.get("operation_progress", 0.50))
-        resource_weight = float(weights.get("resource_margin", 0.25))
-        slack_weight = float(weights.get("horizon_slack", 0.25))
-        if min(operation_weight, resource_weight, slack_weight) < 0.0:
-            raise ValueError("feasibility shaping weights must be non-negative")
-        if not math.isclose(
-            operation_weight + resource_weight + slack_weight,
-            1.0,
-            rel_tol=0.0,
-            abs_tol=1e-9,
-        ):
-            raise ValueError("feasibility shaping weights must sum to one")
-        return (
-            operation_weight * operation_progress
-            + resource_weight * resource_margin
-            + slack_weight * slack_health
-        )
+        return 0.0
 
     def _worker_can_start(
         self,
@@ -3684,7 +3321,7 @@ class AssemblySchedulingEnv:
             in {ReconfigurationStage.WAIT_DIS, ReconfigurationStage.WAIT_INS}
         ]
         recovery_rate = self.instance.fatigue.idle_recovery_rate_per_minute
-        if not pending or recovery_rate <= 0.0 or self.current_tick >= self.horizon_tick:
+        if not pending or recovery_rate <= 0.0:
             return None
         earliest_tick: int | None = None
         for reconfiguration in pending:
@@ -3710,7 +3347,9 @@ class AssemblySchedulingEnv:
                     )[0]
 
                 lower = self.current_tick + 1
-                upper = self.horizon_tick if earliest_tick is None else earliest_tick - 1
+                upper = self.current_tick+math.ceil(worker.fatigue/recovery_rate/self.resolution)+1
+                if earliest_tick is not None:
+                    upper=min(upper,earliest_tick-1)
                 if upper < lower or not safe(upper):
                     continue
                 # With nonnegative fatigue coefficients/accumulation, recovery
@@ -3736,8 +3375,6 @@ class AssemblySchedulingEnv:
     def _wait_opportunity(self) -> tuple[int, str] | None:
         """Return the earliest deterministic transition that WAIT can reach."""
 
-        if self.current_tick >= self.horizon_tick:
-            return None
         if (
             self.decision_type == DecisionType.PRODUCTION
             and self._has_pending_worker_task()
@@ -3783,7 +3420,7 @@ class AssemblySchedulingEnv:
         feasible = [
             candidate
             for candidate in candidates
-            if self.current_tick < candidate[0] <= self.horizon_tick
+            if self.current_tick < candidate[0]
         ]
         if not feasible:
             return None
@@ -3793,7 +3430,7 @@ class AssemblySchedulingEnv:
     def _wait_certificate(self) -> dict[str, Any]:
         """Certify that WAIT reaches a deterministic state transition."""
 
-        key = (self._state_version, self.current_tick, self.horizon_tick, self.decision_type)
+        key = (self._state_version, self.current_tick, self.time_scale_tick, self.decision_type)
         if self._wait_certificate_cache_key != key or self._wait_certificate_cache is None:
             self._wait_certificate_cache = self._compute_wait_certificate()
             self._wait_certificate_cache_key = key
@@ -3801,235 +3438,23 @@ class AssemblySchedulingEnv:
         return dict(self._wait_certificate_cache)
 
     def _compute_wait_certificate(self) -> dict[str, Any]:
-        """Build the certificate once for the current physical state and phase."""
-
-        opportunity = self._wait_opportunity()
-        estimate = self._remaining_completion_estimate_ticks()
-        estimated_completion_tick = self.current_tick + estimate
-        estimated_deadline_slack_ticks = (
-            self.horizon_tick - estimated_completion_tick
-        )
+        opportunity=self._wait_opportunity()
         if opportunity is None:
-            certificate = {
-                "allowed": False,
-                "reason": "no_state_progress",
-                "progress_kind": "",
-                "next_tick": None,
-                "wait_ticks": 0,
-                "remaining_completion_estimate_ticks": estimate,
-                "estimated_completion_tick": estimated_completion_tick,
-                "horizon_tick": self.horizon_tick,
-                "estimated_deadline_slack_ticks": (
-                    estimated_deadline_slack_ticks
-                ),
-            }
-        else:
-            next_tick, progress_kind = opportunity
-            wait_ticks = next_tick - self.current_tick
-            phase_handoff = progress_kind == "worker_phase_handoff"
-            allowed = bool(
-                (phase_handoff and next_tick == self.current_tick)
-                or (
-                    not phase_handoff
-                    and self.current_tick < next_tick <= self.horizon_tick
-                )
-            )
-            certificate = {
-                "allowed": allowed,
-                "reason": progress_kind if allowed else "no_state_progress",
-                "progress_kind": progress_kind,
-                "next_tick": next_tick,
-                "wait_ticks": wait_ticks,
-                "remaining_completion_estimate_ticks": estimate,
-                "estimated_completion_tick": estimated_completion_tick,
-                "horizon_tick": self.horizon_tick,
-                "estimated_deadline_slack_ticks": (
-                    estimated_deadline_slack_ticks
-                ),
-            }
-        return certificate
+            return {"allowed":False,"reason":"no_state_progress","progress_kind":"","next_tick":None,"wait_ticks":0}
+        tick,kind=opportunity
+        return {"allowed":True,"reason":kind,"progress_kind":kind,"next_tick":tick,"wait_ticks":tick-self.current_tick}
 
-    def _record_wait_mask_certificate(
-        self,
-        certificate: dict[str, Any],
-    ) -> None:
-        """Record one WAIT-mask decision per environment state."""
+    def _record_wait_mask_certificate(self, certificate: dict[str, Any]) -> None:
+        reason=str(certificate["reason"]);key=(self._state_version,reason)
+        if key not in self._wait_masked_states:
+            self._wait_masked_states.add(key)
+            self._wait_mask_reason_counts[reason]=self._wait_mask_reason_counts.get(reason,0)+1
 
-        reason = str(certificate["reason"])
-        key = (self._state_version, reason)
-        if key in self._wait_masked_states:
-            return
-        self._wait_masked_states.add(key)
-        self._wait_mask_reason_counts[reason] = (
-            self._wait_mask_reason_counts.get(reason, 0) + 1
-        )
-        slack = int(certificate["estimated_deadline_slack_ticks"])
-        if (
-            self._wait_min_estimated_deadline_slack_ticks is None
-            or slack < self._wait_min_estimated_deadline_slack_ticks
-        ):
-            self._wait_min_estimated_deadline_slack_ticks = slack
 
-    def _remaining_work_lower_bound_ticks(self) -> int:
-        """Return an optimistic resource/precedence lower bound in ticks."""
 
-        minimum_processing: dict[int, int] = {}
-        for operation_index in range(len(self.operations)):
-            values = self._capability_processing_ticks[
-                self._capability_operation_indices == operation_index
-            ]
-            minimum_processing[operation_index] = (
-                int(values.min()) if values.size else self.horizon_tick + 1
-            )
-        remaining_by_order: dict[str, int] = {}
-        total_processing = 0
-        for operation_index, operation in enumerate(self.operations):
-            if operation.state == OperationState.DONE:
-                continue
-            ticks = minimum_processing[operation_index]
-            if operation.state == OperationState.PROCESSING:
-                machine = (
-                    self._machine_by_id(operation.machine_id)
-                    if operation.machine_id is not None
-                    else None
-                )
-                if machine is not None and machine.busy_until_tick is not None:
-                    ticks = max(0, machine.busy_until_tick - self.current_tick)
-            total_processing += ticks
-            remaining_by_order[operation.spec.order_id] = (
-                remaining_by_order.get(operation.spec.order_id, 0) + ticks
-            )
-        order_chain_bound = max(remaining_by_order.values(), default=0)
-        machine_bound = math.ceil(
-            total_processing / max(1, len(self.machines))
-        )
-        active_reconfiguration_bound = max(
-            (
-                self._remaining_reconfiguration_ticks(reconfiguration)
-                for reconfiguration in self.reconfigurations.values()
-                if reconfiguration.stage != ReconfigurationStage.DONE
-            ),
-            default=0,
-        )
-        return int(
-            max(order_chain_bound, machine_bound, active_reconfiguration_bound)
-        )
 
-    def _minimum_module_transition_ticks(
-        self,
-        source_module: str,
-        target_module: str,
-    ) -> int:
-        """Return an optimistic per-chain module transition estimate.
 
-        A transition is not charged when an idle or busy machine already carries
-        the target module: that machine could complete its current work in
-        parallel and then service the successor operation.
-        """
-        if source_module == target_module:
-            return 0
-        if any(
-            machine.current_module == target_module
-            for machine in self.machines
-        ):
-            return 0
-        candidates: list[int] = []
-        for machine in self.machines:
-            parameters = machine.spec.module_parameters
-            if target_module not in parameters:
-                continue
-            if (
-                source_module != self.instance.no_module_state
-                and source_module not in parameters
-            ):
-                continue
-            if not any(
-                target_module in worker.spec.qualified_modules
-                for worker in self.workers
-            ):
-                continue
-            if (
-                source_module != self.instance.no_module_state
-                and not any(
-                    source_module in worker.spec.qualified_modules
-                    for worker in self.workers
-                )
-            ):
-                continue
-            disassembly = (
-                0
-                if source_module == self.instance.no_module_state
-                else max(
-                    1,
-                    quantize_to_ticks(
-                        parameters[source_module].disassembly_base_time,
-                        self.resolution,
-                    ),
-                )
-            )
-            installation = max(
-                1,
-                quantize_to_ticks(
-                    parameters[target_module].installation_base_time,
-                    self.resolution,
-                ),
-            )
-            candidates.append(disassembly + installation)
-        return min(candidates, default=self.horizon_tick + 1)
 
-    def _remaining_completion_estimate_ticks(self) -> int:
-        """Return a soft completion estimate including remaining module chains.
-
-        Cross-order module transitions may be shared or overlap with processing,
-        so this value is diagnostic guidance rather than a certified lower bound.
-        """
-        baseline = self._remaining_work_lower_bound_ticks()
-        # Native decoders skip observe(), whose scoped index cache would otherwise
-        # hide this cost. The immutable instance mapping is shared by this query.
-        operation_index = observation_operation_index(self.instance)
-        chain_bounds: list[int] = []
-        for order in self.instance.orders:
-            pending = [
-                operation
-                for operation in order.operations
-                if self.operations[operation_index[operation.id]].state
-                != OperationState.DONE
-            ]
-            if not pending:
-                continue
-            chain = 0
-            previous_module = self.instance.no_module_state
-            for operation in pending:
-                runtime = self.operations[
-                    operation_index[operation.id]
-                ]
-                if runtime.state == OperationState.PROCESSING:
-                    machine = (
-                        self._machine_by_id(runtime.machine_id)
-                        if runtime.machine_id is not None
-                        else None
-                    )
-                    chain += (
-                        max(0, machine.busy_until_tick - self.current_tick)
-                        if machine is not None and machine.busy_until_tick is not None
-                        else 0
-                    )
-                    previous_module = operation.required_module
-                    continue
-                values = self._capability_processing_ticks[
-                    self._capability_operation_indices
-                    == operation_index[operation.id]
-                ]
-                chain += (
-                    int(values.min()) if values.size else self.horizon_tick + 1
-                )
-                chain += self._minimum_module_transition_ticks(
-                    previous_module,
-                    operation.required_module,
-                )
-                previous_module = operation.required_module
-            chain_bounds.append(chain)
-        return int(max(baseline, max(chain_bounds, default=0)))
 
     def _earliest_reconfiguration_duration_improvement_tick(
         self,
@@ -4045,20 +3470,10 @@ class AssemblySchedulingEnv:
         )
         self._reconfiguration_duration_improvement_cache = None
         recovery_rate = self.instance.fatigue.idle_recovery_rate_per_minute
-        if recovery_rate <= 0.0 or self.current_tick >= self.horizon_tick:
+        if recovery_rate <= 0.0:
             return None
 
-        scan_end_tick = min(
-            self.horizon_tick,
-            min(
-                [
-                    event[0]
-                    for event in self._events
-                    if event[0] > self.current_tick
-                ]
-                or [self.horizon_tick]
-            ),
-        )
+        scan_end_tick = min((event[0] for event in self._events if event[0]>self.current_tick), default=self.current_tick+math.ceil(self.instance.fatigue.maximum_safe_fatigue/recovery_rate/self.resolution)+1)
         mismatch_candidates: list[tuple[MachineRuntime, str, int]] = []
         seen_mismatches: set[tuple[int, str]] = set()
         for operation_index, operation in enumerate(self.operations):
@@ -4231,9 +3646,6 @@ class AssemblySchedulingEnv:
             self.terminal_reason = "completed"
             self.decision_type = DecisionType.TERMINAL
             return
-        if self.current_tick >= self.horizon_tick:
-            self._apply_truncation("horizon")
-            return
         if self.decision_type != DecisionType.TERMINAL:
             mask = self.get_action_mask()
             if bool(mask.all()):
@@ -4241,92 +3653,16 @@ class AssemblySchedulingEnv:
                 self._record_unrecoverable_deadlock_diagnostic(
                     classified_terminal_reason=reason
                 )
-                self._truncate_at_horizon(reason)
+                self._terminate_deadlock(reason)
 
     def _masked_state_terminal_reason(self) -> str:
-        """Return the primary failure cause without claiming recoverability.
-
-        If the next deterministic event falls after the horizon, the current
-        schedule has already missed its time budget. Later structural
-        feasibility remains a separate diagnostic axis.
-        """
-
-        if any(tick > self.horizon_tick for tick, *_ in self._events):
-            return "horizon"
         return "unrecoverable_deadlock"
 
-    def _record_unrecoverable_deadlock_diagnostic(
-        self,
-        *,
-        classified_terminal_reason: str = "unrecoverable_deadlock",
-    ) -> None:
-        if self._first_unrecoverable_deadlock_diagnostic is not None:
-            return
-        unfinished = [
-            {
-                "operation_id": operation.spec.id,
-                "order_id": operation.spec.order_id,
-                "required_module": operation.spec.required_module,
-                "state": operation.state.value,
-            }
-            for operation in self.operations
-            if operation.state != OperationState.DONE
-        ]
-        future_events = sorted(self._events)
-        within_horizon_events = [
-            event for event in future_events if event[0] <= self.horizon_tick
-        ]
-        post_horizon_events = [
-            event for event in future_events if event[0] > self.horizon_tick
-        ]
-        next_event = future_events[0] if future_events else None
-        self._first_unrecoverable_deadlock_diagnostic = {
-            "state_version": int(self._state_version),
-            "time": float(self.current_time),
-            "tick": int(self.current_tick),
-            "unfinished_operations": unfinished,
-            "machine_modules": {
-                machine.spec.id: machine.current_module
-                for machine in self.machines
-            },
-            "completion_estimate_ticks": (
-                self._remaining_completion_estimate_ticks()
-            ),
-            "estimated_completion_slack_ticks": (
-                self.horizon_tick
-                - self.current_tick
-                - self._remaining_completion_estimate_ticks()
-            ),
-            "certificate_reason": (
-                self._last_wait_certificate or {}
-            ).get("reason"),
-            "wait_certificate": dict(self._last_wait_certificate or {}),
-            "classified_terminal_reason": classified_terminal_reason,
-            "future_event_count": len(future_events),
-            "within_horizon_event_count": len(within_horizon_events),
-            "post_horizon_event_count": len(post_horizon_events),
-            "next_future_event_tick": (
-                None if next_event is None else int(next_event[0])
-            ),
-            "next_future_event_type": (
-                None if next_event is None else next_event[3].value
-            ),
-            "horizon_overrun_evidence": bool(
-                post_horizon_events and not within_horizon_events
-            ),
-            "structural_recoverability": (
-                "not_assessed_beyond_horizon"
-                if post_horizon_events
-                else "not_assessed_no_future_event"
-            ),
-        }
+    def _record_unrecoverable_deadlock_diagnostic(self, *, classified_terminal_reason="unrecoverable_deadlock") -> None:
+        if self._first_unrecoverable_deadlock_diagnostic is None:
+            self._first_unrecoverable_deadlock_diagnostic={"time":self.current_time,"reason":classified_terminal_reason,"events":len(self._events),"wait_certificate":self._last_wait_certificate}
 
-    def _truncate_at_horizon(self, reason: str) -> None:
-        if self.terminated or self.truncated:
-            return
-        if self.current_tick < self.horizon_tick:
-            self._advance_interval(self.horizon_tick)
-            self.current_tick = self.horizon_tick
+    def _terminate_deadlock(self, reason: str) -> None:
         self._apply_truncation(reason)
 
     def _apply_truncation(self, reason: str) -> None:

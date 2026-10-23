@@ -1,3 +1,5 @@
+> 历史 schema12 说明。2026-10-23 起的默认主线采用[三因子批次调度协议](factorial27_migration.md)；本文以下内容保留用于解释历史实现和产物。
+
 # MO-ALNS 修改与验证规格 v1（2026-10-17）
 
 2026-10-21 默认训练变更：采用完整参数范围的固定七场景采样，每100个episode按easy/balanced/machine/reconfiguration/worker/fatigue/arrival分配5/35/15/15/10/10/10，全程severity=1。训练配比直接复用generator.dataset_pressure_weights，移除课程锚点与独立训练预设。默认预算、模型、目标及固定评测数据身份沿用既有契约；继承默认配置的后续训练使用此分布，已有结果按保存配置解释。历史课程配置支持评测和分析，训练复现使用原代码版本。全项目清理的快照与迁移清单位于result/analysis/default_training_cleanup_20261021/。

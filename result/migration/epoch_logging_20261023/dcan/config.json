@@ -1,0 +1,378 @@
+{
+  "experiment_name": "factorial27",
+  "experiment_suite_version": "single_stage_progress_quality_workload_failure_v6",
+  "method_version": "M1_hgnn_shared_preference_v8",
+  "seed": 11,
+  "algorithm_seeds": [
+    11,
+    23,
+    37,
+    53,
+    71
+  ],
+  "device": "cpu",
+  "paths": {
+    "fixed_instance": "data/instances/v3/validation/C01.json",
+    "manifests_root": "data/manifests/v3",
+    "instances_root": "data/instances/v3",
+    "result_root": "result/runs",
+    "training_instances_cache": "data/instances/train_cache/v3"
+  },
+  "dataset": {
+    "schema_version": "3.0.0",
+    "template_instance": "factorial27_v1",
+    "profiles": {
+      "dev": {
+        "calibration": 54,
+        "validation": 27,
+        "test": 27
+      }
+    },
+    "factor_levels": {
+      "N": [
+        12,
+        24,
+        48
+      ],
+      "K": [
+        3,
+        4,
+        5
+      ],
+      "M": [
+        4,
+        8,
+        12
+      ]
+    }
+  },
+  "generator": {
+    "version": "3.0.0",
+    "resolution": 0.1,
+    "processing_time": [
+      8,
+      14
+    ],
+    "processing_factor": [
+      0.9,
+      1.1
+    ],
+    "disassembly_time": [
+      3.0,
+      4.0
+    ],
+    "installation_time": [
+      2.0,
+      4.0
+    ],
+    "downtime_cost": [
+      4.0,
+      4.5
+    ],
+    "labor_cost": [
+      0.9,
+      1.1
+    ],
+    "fixed_disassembly_cost": [
+      3,
+      4
+    ],
+    "fixed_installation_cost": [
+      5,
+      7
+    ],
+    "initial_fatigue": [
+      0.05,
+      0.15
+    ],
+    "fatigue": {
+      "maximum_safe_fatigue": 0.75,
+      "disassembly_time_coefficient": 0.12,
+      "installation_time_coefficient": 0.1,
+      "disassembly_accumulation_rate_per_minute": 0.035,
+      "installation_accumulation_rate_per_minute": 0.03,
+      "idle_recovery_rate_per_minute": 0.006
+    }
+  },
+  "environment": {
+    "max_decisions": 5000,
+    "max_zero_time_actions": 1000
+  },
+  "preference": {
+    "quality": {
+      "mode": "universal_sobol_v1",
+      "fixed": [
+        0.3333333333333333,
+        0.3333333333333333,
+        0.3333333333333334
+      ],
+      "block_size": 20,
+      "endpoint_repeats": 2,
+      "sobol_count": 14
+    }
+  },
+  "objective_scalarizer": {
+    "type": "normalized_augmented_tchebycheff_v1",
+    "rho": 0.05,
+    "scale_source": "frozen_manifest",
+    "scales": {
+      "cost": 1393.7120629561937,
+      "flow": 4479.251851851852,
+      "workload": 36.93053642901436
+    },
+    "normalization_manifest": "configs/factorial27_normalization.json",
+    "normalization_manifest_sha256": "bc4739bc2b78a145ac6ce91cec0e8e403c81951f99d7087acb6014df4dcd79ee",
+    "flow_mode": "excess_proportional_lb_v1"
+  },
+  "reward": {
+    "mode": "single_stage_progress_quality_workload_failure_v6",
+    "terminal_failure_penalty": 2.0,
+    "feasibility_shaping": {
+      "enabled": false
+    }
+  },
+  "evaluation": {
+    "result_schema_version": "10.0.0",
+    "quality_metric": null
+  },
+  "network": {
+    "hidden_dim": 128,
+    "message_passing_layers": 2,
+    "dropout": 0.0,
+    "policy_head_version": 8,
+    "residual_gate_initial_logit": 0.0,
+    "residual_std_floor": 0.001,
+    "worker_flow_time_normalization": "candidate_zscore_v1",
+    "worker_flow_time_std_floor": 0.001,
+    "observation_schema_version": 13,
+    "global_objective_encoding": "log2_v1",
+    "actor_head_variant": "shared_preference",
+    "workload_mode": "geometric_owa",
+    "workload_q": 0.5,
+    "workload_order": "descending",
+    "workload_weight_rule": "normalized_geometric_by_worker_count_v1",
+    "workload_version": "workload_objective_v1",
+    "objective_names": [
+      "flow",
+      "cost",
+      "workload"
+    ],
+    "objective_scales": [
+      4479.251851851852,
+      1393.7120629561937,
+      36.93053642901436
+    ],
+    "workload_scale": 36.93053642901436,
+    "flow_mode": "excess_proportional_lb_v1",
+    "normalization_manifest_sha256": "bc4739bc2b78a145ac6ce91cec0e8e403c81951f99d7087acb6014df4dcd79ee"
+  },
+  "ppo": {
+    "learning_rate": 0.0001,
+    "gamma": 1.0,
+    "gae_lambda": 0.95,
+    "clip_epsilon": 0.2,
+    "epochs": 2,
+    "batch_size": 64,
+    "value_coefficient": 0.5,
+    "entropy_coefficient": 0.01,
+    "max_grad_norm": 0.5
+  },
+  "training": {
+    "resource_projection_cache_entries": 1024,
+    "online_instances": true,
+    "episodes": 2000,
+    "smoke_episodes": 2,
+    "smoke_rollout_steps": 64,
+    "validation_split": "validation",
+    "validation_interval_episodes": 100,
+    "validation_instance_limit": 27,
+    "smoke_validation_instance_limit": 2,
+    "parallel_envs": 20,
+    "smoke_parallel_envs": 2,
+    "validation_parallel_envs": 20,
+    "forced_action_compression": false,
+    "worker_local_physical_forced_actions": true,
+    "formal_evaluation": {
+      "sample_aggregation": "best_of_3_v1",
+      "decode_mode": "sampled",
+      "temperature": 1.0,
+      "validation_seed_offset": 100000,
+      "validation_repeats": 3,
+      "final_test_seed_offset": 300000,
+      "final_test_repeats": 3,
+      "validation_preferences": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.5,
+          0.5,
+          0.0
+        ],
+        [
+          0.5,
+          0.0,
+          0.5
+        ],
+        [
+          0.0,
+          0.5,
+          0.5
+        ],
+        [
+          0.3333333333333333,
+          0.3333333333333333,
+          0.3333333333333333
+        ],
+        [
+          0.6,
+          0.3,
+          0.1
+        ],
+        [
+          0.6,
+          0.1,
+          0.3
+        ],
+        [
+          0.3,
+          0.6,
+          0.1
+        ],
+        [
+          0.3,
+          0.1,
+          0.6
+        ],
+        [
+          0.1,
+          0.6,
+          0.3
+        ],
+        [
+          0.1,
+          0.3,
+          0.6
+        ]
+      ],
+      "final_test_lattice_denominator": 10
+    },
+    "validation_control": {
+      "learning_rate_plateau": {
+        "patience_validations": 15,
+        "factor": 0.5,
+        "minimum": 2.5e-05
+      }
+    },
+    "worker_timeout_seconds": 600,
+    "worker_stall_timeout_seconds": 60,
+    "slow_instance_seconds": 30,
+    "multiprocessing_start_method": "spawn",
+    "torch_num_threads": 4,
+    "policy_execution_version": "phase_batched_v1",
+    "policy_precision": "float32",
+    "validation_selection": {
+      "mode": "factorial_v1",
+      "diagnostic_instance_limit": 0,
+      "diagnostic_interval_validations": 5
+    },
+    "episodes_per_update": 20
+  },
+  "logging": {
+    "worker_progress": {
+      "debug_steps": false
+    },
+    "visdom": {
+      "enabled": false,
+      "server": "http://localhost",
+      "port": 8097,
+      "base_url": "/",
+      "env_prefix": "fatigue_assembly",
+      "connection_timeout_seconds": 2.0,
+      "fail_fast": false,
+      "update_every": 1,
+      "rolling_window_updates": 20,
+      "diagnostic_every_validations": 5,
+      "representative_instance_index": 0,
+      "save_environment": true
+    }
+  },
+  "workload_objective": {
+    "mode": "geometric_owa",
+    "q": 0.5
+  },
+  "runtime_manifest": {
+    "core_profile": "v8_preference_conditioned_multiobjective",
+    "production_action": "pair_plus_wait_v1",
+    "worker_action": "pair_plus_wait_v1",
+    "policy_head": 8,
+    "candidate_ranker": "shared_preference_mlp_v1",
+    "worker_feasibility": "instant_physical_pair_mask_v1",
+    "wait_mask": "batch_progress_wait_v3",
+    "observation_schema": 13,
+    "time_context": "order_chain_remaining_context_v3",
+    "reward": "single_stage_progress_quality_workload_failure_v6",
+    "terminal_failure_penalty": 2.0,
+    "training_protocol": "single_stage_lexicographic_workload_failure_v6_best_of_3_v1",
+    "data_schema": 3,
+    "physics": "batch_event_v1",
+    "distribution": "factorial27_v1",
+    "message_function": "conditional_dual_and_service_attention_v1",
+    "message_aggregation": "preference_conditioned_attention_v1",
+    "global_objective_encoding": "log2_v1",
+    "flow_mode": "excess_proportional_lb_v1",
+    "normalization_manifest_sha256": "bc4739bc2b78a145ac6ce91cec0e8e403c81951f99d7087acb6014df4dcd79ee",
+    "workload_objective": {
+      "mode": "geometric_owa",
+      "q": 0.5,
+      "version": "workload_objective_v1",
+      "order": "descending",
+      "weights": "normalized_geometric_by_worker_count_v1"
+    },
+    "objective_names": [
+      "flow",
+      "cost",
+      "workload"
+    ],
+    "objective_scales": [
+      4479.251851851852,
+      1393.7120629561937,
+      36.93053642901436
+    ],
+    "encoder_variant": "dcan_assembly_v1",
+    "actor_head_variant": "learned_phase_candidate_v1",
+    "fatigue_mode": "full",
+    "sample_aggregation": "best_of_3_v1",
+    "sampling_budget": 3,
+    "comparison": {
+      "version": "comparison_suite_v2",
+      "method": "dcan",
+      "delivery_protocol": "best_of_3_v1",
+      "training_steps": 24
+    }
+  },
+  "comparison": {
+    "ddqn": {
+      "warmup": 2,
+      "batch_size": 2,
+      "update_every": 1
+    },
+    "version": "comparison_suite_v2",
+    "method": "dcan",
+    "delivery_protocol": "best_of_3_v1",
+    "learning_rate": 0.0001,
+    "training_steps": 24
+  }
+}

@@ -55,11 +55,9 @@ CAN_DISASSEMBLE_EDGE: EdgeType = (
     "machine",
 )
 OPERATION_ORDER_EDGE: EdgeType = ("operation", "belongs_to", "order")
-ORDER_WAVE_EDGE: EdgeType = ("order", "belongs_to", "wave")
 REQUIRES_MODULE_EDGE: EdgeType = ("operation", "requires", "module")
 MACHINE_MODULE_EDGE: EdgeType = ("machine", "supports", "module")
 WORKER_MODULE_EDGE: EdgeType = ("worker", "qualified_for", "module")
-WAVE_MODULE_EDGE: EdgeType = ("wave", "demands", "module")
 SERVICE_CANDIDATE_EDGE: EdgeType = (
     "machine",
     "service_candidate",
@@ -75,11 +73,9 @@ ASSEMBLY_EDGE_TYPES: tuple[EdgeType, ...] = (
     CAN_INSTALL_EDGE,
     CAN_DISASSEMBLE_EDGE,
     OPERATION_ORDER_EDGE,
-    ORDER_WAVE_EDGE,
     REQUIRES_MODULE_EDGE,
     MACHINE_MODULE_EDGE,
     WORKER_MODULE_EDGE,
-    WAVE_MODULE_EDGE,
     SERVICE_CANDIDATE_EDGE,
     PROCESSING_ON_EDGE,
     SERVED_BY_EDGE,
@@ -91,7 +87,6 @@ ASSEMBLY_NODE_TYPES: tuple[str, ...] = (
     "worker",
     "order",
     "module",
-    "wave",
 )
 
 
@@ -504,10 +499,6 @@ class HeterogeneousGraphObservation:
     def modules(self) -> np.ndarray:
         return self.node_features["module"]
 
-    @property
-    def waves(self) -> np.ndarray:
-        return self.node_features["wave"]
-
     def copy(self) -> "HeterogeneousGraphObservation":
         return HeterogeneousGraphObservation(
             node_features={
@@ -580,17 +571,17 @@ class HeterogeneousGraphObservation:
         expected_node_types = set(ASSEMBLY_NODE_TYPES)
         if set(node_features) != expected_node_types:
             raise ValueError(
-                "node_features must contain exactly the six M1 node types"
+                "node_features must contain exactly the five batch node types"
             )
         if self.node_feature_names and (
             set(self.node_feature_names) != expected_node_types
         ):
             raise ValueError(
-                "node_feature_names must contain exactly the six M1 node types"
+                "node_feature_names must contain exactly the five batch node types"
             )
         if self.node_ids and set(self.node_ids) != expected_node_types:
             raise ValueError(
-                "node_ids must contain exactly the six M1 node types"
+                "node_ids must contain exactly the five batch node types"
             )
         for node_type, features in node_features.items():
             if features.ndim != 2:
@@ -658,16 +649,13 @@ class HeterogeneousGraphObservation:
             expected = np.flatnonzero(column(kind, "state_PROCESSING") == 1)
             if set(indices.tolist()) != set(expected.tolist()):
                 raise ValueError(f"processing_on must cover exactly PROCESSING {kind} nodes")
-        for op, machine in processing.T:
-            names = self.node_feature_names["operation"]
-            for name in (n for n in names if n.startswith("required_module_")):
-                module = name.removeprefix("required_module_")
-                if column("operation", name)[op] == 1 and (
-                    column("machine", f"current_module_{module}")[machine] != 1
-                    or column("machine", f"supports_module_{module}")[machine] != 1
-                ):
-                    raise ValueError("processing_on module is incompatible with actual machine")
-
+        required={int(op):int(a) for op,a in self.relations[REQUIRES_MODULE_EDGE].edge_index.T}
+        mm=self.relations[MACHINE_MODULE_EDGE]
+        installed={(int(m),int(a)) for (m,a),f in zip(mm.edge_index.T,mm.edge_features) if f[mm.feature_names.index("currently_installed")]==1}
+        qualified={tuple(map(int,x)) for x in self.relations[WORKER_MODULE_EDGE].edge_index.T}
+        for op,machine in processing.T:
+            if (int(machine),required[int(op)]) not in installed:
+                raise ValueError("processing module differs from installed module")
         serving = self.relations[SERVED_BY_EDGE].edge_index
         for indices, kind in zip(serving, ("machine", "worker")):
             expected = np.flatnonzero((column(kind, "state_DIS") == 1) | (column(kind, "state_INS") == 1))
@@ -689,14 +677,10 @@ class HeterogeneousGraphObservation:
             op = locked.edge_index[0, position]
             if column("operation", "state_LOCKED")[op] != 1:
                 raise ValueError("served_by operation must be LOCKED")
-            prefix = "source_module_" if phase == "DIS" else "target_module_"
-            for name in (n for n in locked.feature_names if n.startswith(prefix)):
-                if locked.edge_features[position, locked.feature_names.index(name)] != 1:
-                    continue
-                module = name.removeprefix(prefix)
-                if (column("worker", f"qualified_module_{module}")[worker] != 1
-                    or column("machine", f"supports_module_{module}")[machine] != 1):
-                    raise ValueError("served_by resource lacks the required module qualification/support")
+            modules=[a for m,a in installed if m==int(machine)] if phase=="DIS" else [required[int(op)]]
+            if len(modules)!=1 or (int(worker),modules[0]) not in qualified:
+                raise ValueError("actual service lacks module qualification")
+
 
 
 

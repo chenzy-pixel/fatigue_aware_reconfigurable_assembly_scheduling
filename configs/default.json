@@ -1,5 +1,5 @@
 {
-  "experiment_name": "universal",
+  "experiment_name": "factorial27",
   "experiment_suite_version": "single_stage_progress_quality_workload_failure_v6",
   "method_version": "M1_hgnn_shared_preference_v8",
   "seed": 11,
@@ -12,345 +12,87 @@
   ],
   "device": "cuda",
   "paths": {
-    "fixed_instance": "data/instances/fixed_instance.yaml",
-    "instance_cache": "data/instances/fixed_15x4_v1.pkl",
-    "manifests_root": "data/manifests/v2",
-    "instances_root": "data/instances/v2",
+    "fixed_instance": "data/instances/v3/validation/C01.json",
+    "manifests_root": "data/manifests/v3",
+    "instances_root": "data/instances/v3",
     "result_root": "result/runs",
-    "training_instances_cache": "data/instances/train_cache/v2"
+    "training_instances_cache": "data/instances/train_cache/v3"
   },
   "dataset": {
-    "schema_version": "2.0.0",
-    "template_instance": "fixed_15x4_v1",
+    "schema_version": "3.0.0",
+    "template_instance": "factorial27_v1",
     "profiles": {
       "dev": {
-        "validation": 500,
-        "test": 20,
-        "ood": 20,
-        "stress": 20
-      },
-      "publication": {
-        "validation": 500,
-        "test": 1000,
-        "ood": 500,
-        "stress": 500
+        "calibration": 54,
+        "validation": 27,
+        "test": 27
       }
     },
-    "splits": {
-      "train": {
-        "seed_start": 1000000,
-        "seed_end": 2000000,
-        "persist": false
-      },
-      "validation": {
-        "seed_start": 2000000,
-        "seed_end": 3000000,
-        "persist": true
-      },
-      "test": {
-        "seed_start": 3000000,
-        "seed_end": 4000000,
-        "persist": true
-      },
-      "ood": {
-        "seed_start": 4000000,
-        "seed_end": 5000000,
-        "persist": true
-      },
-      "stress": {
-        "seed_start": 5000000,
-        "seed_end": 6000000,
-        "persist": true
-      }
+    "factor_levels": {
+      "N": [
+        12,
+        24,
+        48
+      ],
+      "K": [
+        3,
+        4,
+        5
+      ],
+      "M": [
+        4,
+        8,
+        12
+      ]
     }
   },
   "generator": {
-    "version": "2.0.0",
-    "max_generation_attempts": 100,
-    "max_counterfactual_candidates": 3,
-    "wave_count": 3,
+    "version": "3.0.0",
+    "resolution": 0.1,
     "processing_time": [
       8,
       14
+    ],
+    "processing_factor": [
+      0.9,
+      1.1
+    ],
+    "disassembly_time": [
+      3.0,
+      4.0
+    ],
+    "installation_time": [
+      2.0,
+      4.0
+    ],
+    "downtime_cost": [
+      4.0,
+      4.5
+    ],
+    "labor_cost": [
+      0.9,
+      1.1
+    ],
+    "fixed_disassembly_cost": [
+      3,
+      4
+    ],
+    "fixed_installation_cost": [
+      5,
+      7
     ],
     "initial_fatigue": [
       0.05,
       0.15
     ],
-    "processing_factor_local": [
-      0.95,
-      1.05
-    ],
-    "reconfiguration_factor_local": [
-      0.9,
-      1.1
-    ],
-    "cost_factor_local": [
-      0.9,
-      1.1
-    ],
-    "cost_profile_weights": {
-      "balanced_cost": 0.4,
-      "downtime_dominant": 0.2,
-      "labor_dominant": 0.2,
-      "fixed_cost_dominant": 0.2
-    },
-    "dataset_pressure_weights": {
-      "balanced": 0.35,
-      "machine_bottleneck": 0.15,
-      "reconfiguration_bottleneck": 0.15,
-      "worker_bottleneck": 0.1,
-      "fatigue_bottleneck": 0.1,
-      "high_arrival_pressure": 0.1,
-      "easy": 0.05
-    },
-    "pressure_profiles": {
-      "easy": {
-        "order_count": [
-          12,
-          14
-        ],
-        "operations_per_order": [
-          3,
-          4
-        ],
-        "dominant_module_share": [
-          0.6,
-          0.68
-        ],
-        "release_windows": [
-          [
-            0.0,
-            0.08
-          ],
-          [
-            0.25,
-            0.32
-          ],
-          [
-            0.5,
-            0.57
-          ]
-        ],
-        "reconfiguration_scale": [
-          0.85,
-          1.0
-        ]
-      },
-      "balanced": {
-        "order_count": [
-          12,
-          18
-        ],
-        "operations_per_order": [
-          3,
-          5
-        ],
-        "dominant_module_share": [
-          0.62,
-          0.72
-        ],
-        "release_windows": [
-          [
-            0.0,
-            0.2
-          ],
-          [
-            0.2,
-            0.45
-          ],
-          [
-            0.45,
-            0.7
-          ]
-        ],
-        "reconfiguration_scale": [
-          0.9,
-          1.1
-        ]
-      },
-      "machine_bottleneck": {
-        "order_count": [
-          16,
-          18
-        ],
-        "operations_per_order": [
-          4,
-          5
-        ],
-        "dominant_module_share": [
-          0.7,
-          0.75
-        ],
-        "release_windows": [
-          [
-            0.0,
-            0.12
-          ],
-          [
-            0.15,
-            0.3
-          ],
-          [
-            0.32,
-            0.48
-          ]
-        ],
-        "reconfiguration_scale": [
-          0.9,
-          1.1
-        ]
-      },
-      "reconfiguration_bottleneck": {
-        "order_count": [
-          15,
-          18
-        ],
-        "operations_per_order": [
-          4,
-          5
-        ],
-        "dominant_module_share": [
-          0.65,
-          0.75
-        ],
-        "release_windows": [
-          [
-            0.0,
-            0.12
-          ],
-          [
-            0.18,
-            0.3
-          ],
-          [
-            0.35,
-            0.48
-          ]
-        ],
-        "reconfiguration_scale": [
-          1.2,
-          1.6
-        ]
-      },
-      "worker_bottleneck": {
-        "order_count": [
-          15,
-          18
-        ],
-        "operations_per_order": [
-          4,
-          5
-        ],
-        "dominant_module_share": [
-          0.65,
-          0.75
-        ],
-        "release_windows": [
-          [
-            0.0,
-            0.04
-          ],
-          [
-            0.08,
-            0.12
-          ],
-          [
-            0.16,
-            0.22
-          ]
-        ],
-        "reconfiguration_scale": [
-          0.95,
-          1.1
-        ]
-      },
-      "fatigue_bottleneck": {
-        "order_count": [
-          15,
-          18
-        ],
-        "operations_per_order": [
-          4,
-          5
-        ],
-        "dominant_module_share": [
-          0.65,
-          0.75
-        ],
-        "release_windows": [
-          [
-            0.0,
-            0.04
-          ],
-          [
-            0.08,
-            0.12
-          ],
-          [
-            0.16,
-            0.22
-          ]
-        ],
-        "reconfiguration_scale": [
-          1.1,
-          1.3
-        ]
-      },
-      "high_arrival_pressure": {
-        "order_count": [
-          16,
-          18
-        ],
-        "operations_per_order": [
-          4,
-          5
-        ],
-        "dominant_module_share": [
-          0.6,
-          0.7
-        ],
-        "release_windows": [
-          [
-            0.0,
-            0.04
-          ],
-          [
-            0.07,
-            0.11
-          ],
-          [
-            0.14,
-            0.18
-          ]
-        ],
-        "reconfiguration_scale": [
-          0.9,
-          1.1
-        ]
-      }
-    },
-    "ood": {
-      "factors": [
-        "processing_time_heterogeneity",
-        "reconfiguration_time_scale",
-        "arrival_overlap",
-        "worker_qualification_sparsity",
-        "initial_fatigue",
-        "module_demand_imbalance"
-      ]
-    },
-    "diagnostics": {
-      "enabled_splits": [
-        "validation",
-        "test",
-        "ood",
-        "stress"
-      ],
-      "classify_reconfiguration_value": false
-    },
-    "sampling_window_episodes": 100,
-    "random_stream_version": "independent_pressure_cost_preference_v2"
+    "fatigue": {
+      "maximum_safe_fatigue": 0.75,
+      "disassembly_time_coefficient": 0.12,
+      "installation_time_coefficient": 0.1,
+      "disassembly_accumulation_rate_per_minute": 0.035,
+      "installation_accumulation_rate_per_minute": 0.03,
+      "idle_recovery_rate_per_minute": 0.006
+    }
   },
   "environment": {
     "max_decisions": 5000,
@@ -374,12 +116,12 @@
     "rho": 0.05,
     "scale_source": "frozen_manifest",
     "scales": {
-      "flow": 368.3143,
-      "cost": 353.27,
-      "workload": 21.03145448655653
+      "flow": 4479.251851851852,
+      "cost": 1393.7120629561937,
+      "workload": 36.93053642901436
     },
-    "normalization_manifest": "configs/manifests/workload_excess_q50_20261011.json",
-    "normalization_manifest_sha256": "d90a3c93e9458fcff6b7608e856ec5166e009a7cca17695c37a813a470944f19",
+    "normalization_manifest": "configs/factorial27_normalization.json",
+    "normalization_manifest_sha256": "bc4739bc2b78a145ac6ce91cec0e8e403c81951f99d7087acb6014df4dcd79ee",
     "flow_mode": "excess_proportional_lb_v1"
   },
   "reward": {
@@ -390,7 +132,7 @@
     }
   },
   "evaluation": {
-    "result_schema_version": "9.0.0",
+    "result_schema_version": "10.0.0",
     "quality_metric": null
   },
   "network": {
@@ -402,7 +144,7 @@
     "residual_std_floor": 0.001,
     "worker_flow_time_normalization": "candidate_zscore_v1",
     "worker_flow_time_std_floor": 0.001,
-    "observation_schema_version": 12,
+    "observation_schema_version": 13,
     "global_objective_encoding": "log2_v1",
     "actor_head_variant": "shared_preference"
   },
@@ -425,7 +167,7 @@
     "smoke_rollout_steps": 64,
     "validation_split": "validation",
     "validation_interval_episodes": 100,
-    "validation_instance_limit": 50,
+    "validation_instance_limit": 27,
     "smoke_validation_instance_limit": 2,
     "parallel_envs": 20,
     "smoke_parallel_envs": 2,
@@ -524,8 +266,8 @@
     "policy_execution_version": "phase_batched_v1",
     "policy_precision": "float32",
     "validation_selection": {
-      "mode": "stratified_v2",
-      "diagnostic_instance_limit": 49,
+      "mode": "factorial_v1",
+      "diagnostic_instance_limit": 0,
       "diagnostic_interval_validations": 5
     },
     "episodes_per_update": 20

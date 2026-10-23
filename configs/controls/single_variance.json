@@ -11,8 +11,8 @@
     }
   },
   "objective_scalarizer": {
-    "normalization_manifest": "configs/manifests/flow_excess_scales_20261008.json",
-    "normalization_manifest_sha256": "17367f71e7a529ee504feb2b531a6a44fdf7458f323797ca9be33508723ce61b"
+    "normalization_manifest": "configs/factorial27_variance_normalization.json",
+    "normalization_manifest_sha256": "4469dd8a2bbdb73b05ebf409383618e4d94e978d3308fa7636c8da01ba4918b4"
   },
   "training": {
     "episodes": 1000,

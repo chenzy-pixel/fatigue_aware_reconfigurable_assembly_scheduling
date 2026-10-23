@@ -1,65 +1,28 @@
-"""Stable, strategy-independent instance subsets and explicit evaluation indices."""
+"""Stable explicit factorial validation subsets."""
+from data.dataset import canonical_json_bytes, sha256_bytes
+from data.distribution import stable_seed
 
-from __future__ import annotations
-
-from collections import Counter
-import operator
-from typing import Any, Sequence
-
-from data.dataset import InstanceDataset, canonical_json_bytes, sha256_bytes
-from data.distribution import PRESSURE_TYPES, stable_seed, weighted_labels
-
-
-def resolve_instance_indices(dataset: InstanceDataset, *, instance_indices: Sequence[int] | None = None,
-                             instance_limit: int | None = None, instance_offset: int | None = None) -> list[int]:
+def resolve_instance_indices(dataset, *, instance_indices=None, instance_limit=None, instance_offset=None):
     if instance_indices is not None:
         if instance_limit is not None or instance_offset is not None:
-            raise ValueError("instance_indices and offset/limit are mutually exclusive")
-        indices = [operator.index(index) for index in instance_indices]
+            raise ValueError('indices and offset/limit are exclusive')
+        result = list(instance_indices)
     else:
-        offset = 0 if instance_offset is None else operator.index(instance_offset)
-        count = len(dataset) - offset if instance_limit is None else operator.index(instance_limit)
-        indices = list(range(offset, offset + count))
-    if not indices or len(set(indices)) != len(indices) or any(index < 0 or index >= len(dataset) for index in indices):
-        raise ValueError("instance selection must be nonempty, unique, and within the dataset")
-    return indices
+        start = instance_offset or 0
+        result = list(range(start, min(len(dataset), start + (instance_limit if instance_limit is not None else len(dataset)))))
+    if not result or len(set(result)) != len(result) or any((i < 0 or i >= len(dataset) for i in result)):
+        raise ValueError('invalid dataset indices')
+    return result
 
+def subset_snapshot(dataset, indices, *, role):
+    p = {'selection_version': 'factorial_v1', 'dataset_manifest_sha256': sha256_bytes(canonical_json_bytes(dataset.manifest)), 'instance_indices': list(indices), 'files': [dataset.manifest['files'][i] for i in indices]}
+    return {**p, 'role': role, 'subset_sha256': sha256_bytes(canonical_json_bytes(p))}
 
-def subset_snapshot(dataset: InstanceDataset, indices: Sequence[int], *, role: str) -> dict[str, Any]:
-    payload = {
-        "selection_version": "stratified_v2",
-        "dataset_manifest_sha256": sha256_bytes(canonical_json_bytes(dataset.manifest)),
-        "instance_indices": list(indices),
-        "files": [dataset.manifest["files"][index] for index in indices],
-    }
-    return {**payload, "role": role, "subset_sha256": sha256_bytes(canonical_json_bytes(payload))}
-
-
-def select_validation_subsets(dataset: InstanceDataset, weights: dict[str, float], *,
-                              target_count: int = 50, diagnostic_count: int = 49) -> dict[str, dict[str, Any]]:
-    if diagnostic_count < 0:
-        raise ValueError("diagnostic_count must be nonnegative")
-    digest = sha256_bytes(canonical_json_bytes(dataset.manifest))
-    groups = {name: [] for name in PRESSURE_TYPES}
-    for index, record in enumerate(dataset):
-        groups[record.metadata["pressure_type"]].append(index)
-    chosen: set[int] = set()
-    selections = {}
-    for role, count, distribution in (
-        ("target", target_count, weights),
-        ("diagnostic", diagnostic_count, {name: 1.0 for name in PRESSURE_TYPES}),
-    ):
-        if count == 0:
-            continue
-        quotas = Counter(weighted_labels(count, distribution))
-        indices = []
-        for name in PRESSURE_TYPES:
-            candidates = sorted((index for index in groups[name] if index not in chosen),
-                                key=lambda index: (stable_seed(digest, dataset.manifest["files"][index]["seed"], role), index))
-            if len(candidates) < quotas[name]:
-                raise ValueError(f"insufficient {name} instances for {role} quota {quotas[name]}")
-            indices.extend(candidates[:quotas[name]])
-        indices.sort()
-        chosen.update(indices)
-        selections[role] = {**subset_snapshot(dataset, indices, role=role), "pressure_counts": dict(quotas)}
-    return selections
+def select_validation_subsets(dataset, weights=None, *, target_count=27, diagnostic_count=0):
+    if target_count + diagnostic_count > len(dataset):
+        raise ValueError('insufficient independent validation instances')
+    indices = list(range(len(dataset)))
+    result = {'target': subset_snapshot(dataset, indices[:target_count], role='target')}
+    if diagnostic_count:
+        result['diagnostic'] = subset_snapshot(dataset, indices[target_count:target_count + diagnostic_count], role='diagnostic')
+    return result

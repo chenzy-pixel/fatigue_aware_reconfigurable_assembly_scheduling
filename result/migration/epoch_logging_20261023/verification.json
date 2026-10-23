@@ -1,0 +1,24 @@
+{
+  "identity": "fd98efa23ef7bdb6cebe65d4f3c991c7aacfb1068bcc3b95c0a0ec6428a2309b",
+  "purpose": "bounded_logging_integration",
+  "methods": {
+    "ppo": {
+      "training_steps": 24,
+      "epochs": 5,
+      "episode_records": 10,
+      "optimizer_updates": 10
+    },
+    "dcan": {
+      "training_steps": 24,
+      "epochs": 5,
+      "episode_records": 10,
+      "optimizer_updates": 10
+    },
+    "rule_ddqn": {
+      "training_steps": 24,
+      "epochs": 5,
+      "episode_records": 10,
+      "optimizer_updates": 23
+    }
+  }
+}

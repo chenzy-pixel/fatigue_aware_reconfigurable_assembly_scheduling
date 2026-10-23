@@ -24,3 +24,6 @@ data/instances/train_cache/
 data/manifests/.build/
 data/instances/v2/.build/
 data/manifests/v2/.build/
+
+.pytest_batch13*/
+result/migration/**/smoke*/

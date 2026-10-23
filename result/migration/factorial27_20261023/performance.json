@@ -1,0 +1,34 @@
+{
+  "platform": "Windows-11-10.0.26300-SP0",
+  "torch": "2.14.1+cu132",
+  "cuda_available": true,
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "profile": [
+    {
+      "cell_id": "C01",
+      "operations": 36,
+      "reset_observation_seconds": 0.016260699999747885,
+      "forward_seconds": 0.006622899999911169
+    },
+    {
+      "cell_id": "C27",
+      "operations": 240,
+      "reset_observation_seconds": 0.03889340000023367,
+      "forward_seconds": 0.009643800000048941
+    }
+  ],
+  "calibration_bounded_coordinate_ranges": {
+    "flow": {
+      "min": 0.05236153869660705,
+      "max": 0.8308698428432261
+    },
+    "cost": {
+      "min": 0.19797117269620867,
+      "max": 0.717883730278702
+    },
+    "workload": {
+      "min": 0.3107282878889497,
+      "max": 0.6692563899389474
+    }
+  }
+}

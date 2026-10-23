@@ -12,7 +12,7 @@ from .formal_preferences import formal_preferences
 from .network_contract import MESSAGE_IDENTITY_FIELDS
 
 ABLATION_MANIFEST = "configs/manifests/ablation_mainline.json"
-ABLATION_PROTOCOL = "schema12_shared_excess_owa_best_of_3_v1"
+ABLATION_PROTOCOL = "schema13_factorial_shared_excess_owa_best_of_3_v1"
 
 
 def training_contract(config: Mapping[str, Any]) -> dict[str, Any]:

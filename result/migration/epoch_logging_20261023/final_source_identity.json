@@ -1,0 +1,4 @@
+{
+  "identity": "e1375e3edecb7f3a9ca56998cb9ea22547ec673de3b660dc01e85aa95f5cf6ac",
+  "note": "Final source after direct-entry budget guard and missing-count export fixes; real training integration identity is separately preserved in verification.json."
+}
