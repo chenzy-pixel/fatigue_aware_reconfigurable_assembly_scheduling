@@ -1,33 +1,73 @@
-# 疲劳感知可重构装配批次调度
+# Fatigue-aware reconfigurable assembly scheduling
 
-当前主线采用三因子27例设计：订单数12/24/48，每单工序3/4/5，机器4/8/12；工人与模块随资源规模派生。全部订单初始可用，全部工序完成即成功。优化Excess Flow、重构费用与geometric OWA劳动负荷，疲劳安全保持硬约束。
+**疲劳感知的可重构装配调度**
 
-小、中、大规模按订单数12、24、48划分，每种规模包含9组工序数与机器数组合。工人数为机器数的3/4，模块数为机器数的3/2；加工、拆装、费用与疲劳参数采用统一范围。
+本项目研究多个模块化装配工位共享有限换型工人的多目标调度问题。机器通过更换工艺模块执行不同工序，普通加工由机器完成，工人负责模块拆卸与安装。调度需要综合考虑工序先后关系、设备兼容性、人员资质及疲劳积累与恢复，协调生产安排、机器重构、工人分配和等待时机，在订单流经时间、重构费用与人员劳动负担之间进行权衡。
 
-- [完整规格](docs/factorial27_spec.md)
-- [迁移、数据、启动与历史恢复](docs/factorial27_migration.md)
-- [当前证明与边界](data/docs/BATCH_PROTOCOL.md)
-- [27例参数表](data/tables/factorial27_parameters.csv)
-- [公共参数](data/tables/factorial27_common_parameters.csv)
-- [实际参考调度诊断](data/tables/factorial27_diagnostics.csv)
-- [Epoch记录与三目标训练曲线](docs/training_history.md)
-- [环境、图观测与数据生成审计](docs/batch_migration_audit_20261023.md)
+主方法采用支持目标偏好输入的异质图 PPO，表示工序、机器、工人、订单和模块之间的关系，并依据仿真环境给出的合法动作生成调度方案。同一模型可在不同偏好下产生候选方案。仓库同时提供事件驱动仿真、启发式与强化学习对照、固定评测数据，以及从训练、选模到质量和耗时比较的实验流程。
 
-使用工程的PyTorch环境：
+## 方法与目标
+
+| 内容 | 说明 |
+|---|---|
+| 主方法 | 偏好条件异质图 PPO，联合处理工序—机器配对、重构机器—工人配对及等待决策 |
+| 优化目标 | Excess Flow、重构费用、基于实际拆装劳动时间的几何 OWA；劳动目标兼顾总投入与负荷集中程度 |
+| 搜索对照 | MO-ALNS、NSGA-II＋局部搜索、MOEA/D |
+| 学习对照 | DCAN 适配版、规则选择型 DDQN |
+| 评价方式 | 多种子、固定实例与偏好网格，分别报告交付质量、完成覆盖和计算成本 |
+
+当前[默认配置](configs/default.json)采用图观测 schema13、log2 观测编码、HGNN shared-head 和 OWA(q=.5)，训练在线生成覆盖全部27种参数组合的算例。全部订单在时刻0可用，全部工序完成即成功，疲劳安全保持硬约束。目标定义、冻结尺度及参数见[当前实验规格](docs/factorial27_spec.md)。主线与对照已完成本地集成和一致性检查，正式性能仍待实验验证，详见[环境、图观测与数据审计](docs/batch_migration_audit_20261023.md)。
+
+## 快速开始
+
+以下为 PowerShell 示例，在项目根目录运行，并使用已激活的 Python 环境。默认配置使用 CUDA；正式训练在远端实验机器执行。本机也可将 `python` 替换为 `.venv/Scripts/python.exe` 使用项目环境。
+
+**1. 安装依赖**
 
 ```powershell
-.venv/Scripts/python.exe -m scripts.audit_factorial27
-.venv/Scripts/python.exe -m scripts.run_experiments --stage preflight --device cpu
-.venv/Scripts/python.exe -m pytest test -q --basetemp=.pytest_batch13
-.venv/Scripts/python.exe -m scripts.check_training_history --output result/smoke/epoch_history_v3_1
+python -m pip install -r requirements.txt
 ```
 
-数据已冻结于`data/instances/v3`：标定54、验证27、正式测试27。当前使用数据schema3、图观测schema13及预测语义`order_chain_remaining_context_v3_1`。配置、缓存、标定来源与模型身份均进行校验；不同预测语义的模型不能直接混用。正式训练通过`scripts.run_experiments`或`scripts.comparison_suite`核验独立预算清单，具体命令见迁移文档。
+**2. 预检配置、数据与运行环境**
 
-每个epoch对应一次采样与学习批次，PPO内部优化轮数单独记录。逐算例保存三个目标值、决策次数、环境步数、奖励、耗时、停止原因、疲劳和工人负荷等；`episodes.csv`提供明细，`epoch_objectives.csv`提供按规模、参数组合与偏好分组的曲线数据。完整合法解与截断阶段值分开记录，完整目标缺失时留空。固定验证沿用交互预算20%、40%、60%、80%、100%的节点，结果保存到`validation_instances.csv`和`validation_objectives.csv`。
+```powershell
+python -m scripts.audit_factorial27
+python -m scripts.run_experiments --stage preflight --device cpu
+```
 
-2026-10-23审计通过64项回归测试、108个固定实例证书重放，以及27个随机调度轨迹的25,761次交互与408个图快照检查。上述本地检查验证实现一致性，不表示训练收敛或方法优势；正式训练和搜索预算仍需标定。
+审计会重放当前固定实例的调度证书，并核对已提供的历史材料。首次克隆未包含的本地历史缓存会单独计数；当前固定数据或现存历史文件的哈希不一致会报错。正式训练前可用 `--device cuda` 检查实验机器。
 
-旧代码、配置及3836个历史产物的身份见`result/migration/factorial27_20261023/before.json`与`source_before.zip`，旧测试和退休入口位于`archive/schema12`。复现历史实验需使用归档代码和原配置。
+**3. 完成预算标定后，启动三种子训练**
 
-审计入口严格检查当前固定算例和证书；历史文件逐项核对已保存哈希，并报告已验证与未提供的数量。首次克隆未包含的本地历史缓存计入`protected_unavailable`，不计为已验证；任何现存文件哈希变化都会报错。
+先按[预算标定与启动说明](docs/factorial27_migration.md#正式实验入口)生成与当前源码和数据身份匹配的预算清单，再将下例的 `path/to/budget.json` 替换为实际路径：
+
+```powershell
+foreach ($seed in 11, 23, 37) {
+    python -m scripts.comparison_suite --stage train --method ppo --seed $seed --budget-manifest path/to/budget.json --remote-run --output-dir "result/formal_seed$seed"
+    if ($LASTEXITCODE -ne 0) { throw "Training failed for seed $seed" }
+}
+```
+
+以上依次运行种子 **11、23、37**，任一失败即停止。通过 `--config` 指定配置、`--method` 选择方法；当前[消融与对照配置表](configs/factorial27_ablations.json)列出可用变体。每项实验都需要匹配的预算身份。
+
+## 实验与评估
+
+当前采用三因子全组合设计：订单数 **12/24/48**、每单工序数 **3/4/5**、机器数 **4/8/12**，共 **27组**。小、中、大规模按订单数划分，每种规模包含9组工序数与机器数组合；工人数为机器数的3/4，模块数为机器数的3/2。其余参数共享统一范围，详见[27例参数表](data/tables/factorial27_parameters.csv)和[公共参数](data/tables/factorial27_common_parameters.csv)。
+
+固定数据包含 **54个标定实例、27个验证实例、27个正式测试实例**，保存在 `data/instances/v3`，三个集合独立生成。训练算例在线构造，每27次算例启动覆盖全部组合。标定集用于确定预算，验证集用于选模，测试集用于最终评价；参考调度与可重放证书用于数据审计。
+
+训练保存验证选出的 best 模型；正式测试通过独立 `evaluate` 阶段加载模型执行。PPO/DCAN 主交付采用同实例、同偏好三次采样取优，DDQN 采用单次贪心；搜索方法通过标定集研究计算预算。所有方法均记录完成覆盖、原始目标和计算耗时。当前选模、交付与独立测试命令见[实验运行说明](docs/factorial27_migration.md#正式实验入口)。
+
+主线与对照通过 `python -m scripts.comparison_suite` 统一运行，默认仅预检；`calibrate-budget`、`train` 和 `evaluate` 分别执行预算标定、训练与评价，正式实验要求显式指定 `--remote-run`。当前数据使用 schema3，预测语义为 `order_chain_remaining_context_v3_1`；模型和预算清单均检查对应身份。
+
+结果保留配置、源码/数据/权重身份、训练与验证日志、原始候选及选中交付。每个采样与学习批次记为一个 epoch，逐算例记录三个目标、决策次数、环境步数、奖励、耗时、完成状态、疲劳与工人负荷，并导出分组 CSV。完整解目标与截断阶段值分别记录；固定验证在交互预算20%、40%、60%、80%、100%处执行。论文曲线字段与统计口径见[Epoch与三目标训练记录](docs/training_history.md)。
+
+历史 schema12 实验及独立挑战集按原配置和代码解释，归档位置与复现方法见[历史恢复说明](docs/factorial27_migration.md#历史恢复)。
+
+## 文档导航
+
+- **理解问题**：[工业背景](docs/research_background_cesa3r.md) · [数学定义与证明索引](data/docs/README.md) · [当前证明与边界](data/docs/BATCH_PROTOCOL.md)
+- **了解实现**：[当前实现与迁移说明](docs/factorial27_migration.md) · [环境、图观测与数据审计](docs/batch_migration_audit_20261023.md)
+- **运行实验**：[当前实验规格](docs/factorial27_spec.md) · [预算、训练与评价命令](docs/factorial27_migration.md#正式实验入口) · [消融与对照配置表](configs/factorial27_ablations.json)
+- **解释结果**：[目标与参数定义](docs/factorial27_spec.md) · [Epoch与三目标训练记录](docs/training_history.md) · [参考调度诊断](data/tables/factorial27_diagnostics.csv)
+- **历史实验资料**：[schema12架构](docs/ARCHITECTURE.md) · [对照方法实施契约](docs/comparator_implementation_spec.md) · [完整实验清单](docs/experiment_runlist.md) · [三种子运行清单](docs/experiment_three_seeds.md) · [对照远端启动](docs/comparator_remote_startup.md) · [瓶颈测试与重构倍率外推](docs/challenge_suite_protocol.md) · [历史主线协议](docs/experiment_protocol.md) · [三次取优与选模](docs/default_best_of_three.md) · [选模证明](data/docs/SELECTION.md) · [历史消融协议](docs/ablation_protocol.md)
