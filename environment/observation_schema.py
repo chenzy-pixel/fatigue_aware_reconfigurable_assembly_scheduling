@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 
 import numpy as np
 
-OBSERVATION_SCHEMA_VERSION = 12
+OBSERVATION_SCHEMA_VERSION = 13
 SUPPORTED_OBSERVATION_SCHEMAS = (OBSERVATION_SCHEMA_VERSION,)
 GLOBAL_OBJECTIVE_ENCODINGS = ("log2_v1", "bounded_v1")
 STATE_GLOBAL_FEATURE_NAMES = (
@@ -15,7 +15,7 @@ STATE_GLOBAL_FEATURE_NAMES = (
 
 def normalize_global_objective_encoding(version: int, encoding: str | None = None) -> str:
     if isinstance(version, bool) or version not in SUPPORTED_OBSERVATION_SCHEMAS:
-        raise ValueError("only observation schema 12 is supported; older models require retraining")
+        raise ValueError("only observation schema 13 is supported; older models require retraining")
     selected = "log2_v1" if encoding is None else encoding
     if selected not in GLOBAL_OBJECTIVE_ENCODINGS:
         raise ValueError("global_objective_encoding must be log2_v1 or bounded_v1")
@@ -32,7 +32,7 @@ def global_feature_names(version: int, encoding: str | None = None) -> tuple[str
     suffix = selected.removesuffix("_v1")
     return STATE_GLOBAL_FEATURE_NAMES + (
         f"objective_flow_{suffix}_norm", f"objective_cost_{suffix}_norm",
-        f"objective_committed_workload_{suffix}_norm", "minimum_unfinished_order_slack_norm",
+        f"objective_committed_workload_{suffix}_norm", "maximum_unfinished_order_remaining_norm", "unprojectable_order_ratio",
     )
 
 

@@ -1,0 +1,18 @@
+﻿parameter,value
+version,"""3.0.0"""
+resolution,0.1
+processing_time,"[8, 14]"
+processing_factor,"[0.9, 1.1]"
+disassembly_time,"[3.0, 4.0]"
+installation_time,"[2.0, 4.0]"
+downtime_cost,"[4.0, 4.5]"
+labor_cost,"[0.9, 1.1]"
+fixed_disassembly_cost,"[3, 4]"
+fixed_installation_cost,"[5, 7]"
+initial_fatigue,"[0.05, 0.15]"
+fatigue.maximum_safe_fatigue,0.75
+fatigue.disassembly_time_coefficient,0.12
+fatigue.installation_time_coefficient,0.1
+fatigue.disassembly_accumulation_rate_per_minute,0.035
+fatigue.installation_accumulation_rate_per_minute,0.03
+fatigue.idle_recovery_rate_per_minute,0.006

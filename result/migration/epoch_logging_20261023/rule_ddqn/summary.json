@@ -1,0 +1,26 @@
+{
+  "job_id": "5367df07402809df5d748bf673861aae0869b7ba6eb6ca586d18fef2bba7b5d7",
+  "method": "rule_ddqn",
+  "seed": 11,
+  "learning_rate": 0.0001,
+  "training_steps": 24,
+  "epochs": 5,
+  "epoch_definition": "one_collection_and_learning_batch",
+  "log_schema_version": "epoch_history_v1",
+  "episodes_started": 10,
+  "validation_count": 5,
+  "optimizer_updates": 23,
+  "sample_presentations": 46,
+  "seconds": 14.537694499999816,
+  "training_sufficiency": "not_established",
+  "training_seconds": 0.48853849999977683,
+  "validation_seconds": 5.8127185000012105,
+  "best_validation": {
+    "worst_preference_success": 1.0,
+    "quality": 0.2360537290429296,
+    "all_preferences_covered": true,
+    "safe": true,
+    "delivery_count": 1,
+    "evaluation_seconds": 0.9977107000004253
+  }
+}

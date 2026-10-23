@@ -1,0 +1,11 @@
+{
+  "counts": {
+    "calibration": 54,
+    "validation": 27,
+    "test": 27
+  },
+  "certificates_replayed": 108,
+  "protected_verified": 1586,
+  "protected_unavailable": 2250,
+  "history_status": "partial_archive"
+}

@@ -1,0 +1,12 @@
+{
+  "version": "schema13_factorial_ablation_v1",
+  "arms": {
+    "main": "configs/default.json",
+    "node_mlp_pool": "configs/ablations/no_graph.json",
+    "neutral_flow": "configs/ablations/neutral_flow.json",
+    "neutral_cost": "configs/ablations/neutral_cost.json",
+    "neutral_workload": "configs/ablations/neutral_workload.json",
+    "variance_control": "configs/controls/single_variance.json"
+  },
+  "budget_status": "requires_new_calibration"
+}

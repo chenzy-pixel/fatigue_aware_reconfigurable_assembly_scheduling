@@ -10,3 +10,9 @@ data/manifests/v2/** -text whitespace=cr-at-eol
 # Preserve challenge index, manifests and audit bytes referenced by SHA256.
 data/manifests/challenge_v1/** -text whitespace=cr-at-eol
 configs/archive/*.json -text whitespace=cr-at-eol
+# Keep schema-3 datasets and migration provenance hashes stable across platforms.
+data/instances/v3/** -text whitespace=cr-at-eol
+data/manifests/v3/** -text whitespace=cr-at-eol
+configs/factorial27_normalization.json -text whitespace=cr-at-eol
+configs/factorial27_variance_normalization.json -text whitespace=cr-at-eol
+result/migration/** -text whitespace=cr-at-eol

@@ -1,0 +1,26 @@
+{
+  "job_id": "bfc443ccdc0fa892e7d1c66f6dd16dcfee4b527d586e7947db09913a73a120be",
+  "method": "ppo",
+  "seed": 11,
+  "learning_rate": 0.0001,
+  "training_steps": 24,
+  "epochs": 5,
+  "epoch_definition": "one_collection_and_learning_batch",
+  "log_schema_version": "epoch_history_v1",
+  "episodes_started": 10,
+  "validation_count": 5,
+  "optimizer_updates": 10,
+  "sample_presentations": 48,
+  "seconds": 46.71570030000021,
+  "training_sufficiency": "no_large_gain_in_last_interval",
+  "training_seconds": 1.1796156000009432,
+  "validation_seconds": 37.37153339999986,
+  "best_validation": {
+    "worst_preference_success": 1.0,
+    "quality": 0.2318289902736885,
+    "all_preferences_covered": true,
+    "safe": true,
+    "delivery_count": 1,
+    "evaluation_seconds": 7.479879500000607
+  }
+}

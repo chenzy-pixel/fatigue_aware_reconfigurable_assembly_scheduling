@@ -1,3 +1,5 @@
+> 历史 schema12 说明。2026-10-23 起的默认主线采用[三因子批次调度协议](factorial27_migration.md)；本文以下内容保留用于解释历史实现和产物。
+
 # 主线实验协议
 
 更新：2026-10-21。本文前半部分对应原有PPO主线；新对照套件的交互预算和数据划分在下文单列。执行矩阵见[实验清单](experiment_runlist.md)，远端操作见[对照启动说明](comparator_remote_startup.md)。

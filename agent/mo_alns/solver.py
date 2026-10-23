@@ -79,7 +79,7 @@ DESTROY_OPERATORS = (
     "high_reconfiguration_segment",
     "fatigue_critical_worker",
     "load_imbalance_worker",
-    "same_wave_related",
+    "same_module_related",
 )
 REPAIR_OPERATORS = (
     "regret_2",
@@ -97,7 +97,7 @@ INITIAL_RULES = (
     "minimum_reconfiguration_cost",
     "lowest_predicted_fatigue",
     "minimum_workload_delta",
-    "same_wave_randomized",
+    "module_group_randomized",
 )
 
 
@@ -316,10 +316,6 @@ def _candidate_diagnostics(env: AssemblySchedulingEnv) -> dict[str, Any]:
         "worker_tasks": {key: tuple(value) for key, value in worker_tasks.items()},
         "worker_load": {worker.spec.id: float(worker.load) for worker in env.workers},
         "worker_peak_fatigue": {worker.spec.id: float(worker.peak_fatigue) for worker in env.workers},
-        "operation_wave": {
-            operation.id: order_by_id[operation.order_id].wave
-            for operation in instance.operations
-        },
         "operation_module": {
             operation.id: operation.required_module for operation in instance.operations
         },
@@ -600,8 +596,8 @@ def _rule_solution(
             return (fatigue, minimum_processing, operation.id)
         if rule == "minimum_workload_delta":
             return (operation.sequence, operation.id)
-        if rule == "same_wave_randomized":
-            return (order.wave, rng.random(), operation.id)
+        if rule == "module_group_randomized":
+            return (operation.required_module, rng.random(), operation.id)
         return (order.release_time, minimum_processing, operation.sequence, operation.id)
 
     order = _topological_order(instance, {operation_id: operation_score(operation) for operation_id, operation in operations.items()})
@@ -644,7 +640,7 @@ def _rule_solution(
         dis_rankings[operation_id] = tuple(sorted(workers, key=lambda value: worker_score(value, installation=False)))
         ins_rankings[operation_id] = tuple(sorted(workers, key=lambda value: worker_score(value, installation=True)))
     waits = {
-        operation_id: rule in {"configuration_reuse", "same_wave_randomized"}
+        operation_id: rule in {"configuration_reuse", "module_group_randomized"}
         for operation_id in operations
     }
     worker_waits = {
@@ -758,13 +754,12 @@ def destroy_operations(
         worker = max(loads, key=lambda value: (float(loads[value]), value)) if loads else ""
         tasks = diagnostics.get("worker_tasks", {}).get(worker, ())
         return _fill_removed(tasks, solution, count)
-    if name == "same_wave_related":
+    if name == "same_module_related":
         anchor = rng.choice(list(solution.operation_order))
-        waves = diagnostics.get("operation_wave", {})
         modules = diagnostics.get("operation_module", {})
-        same_wave = [operation_id for operation_id in solution.operation_order if waves.get(operation_id) == waves.get(anchor)]
+        same_module = [operation_id for operation_id in solution.operation_order if modules.get(operation_id) == modules.get(anchor)]
         related = sorted(
-            same_wave,
+            same_module,
             key=lambda value: (
                 0 if modules.get(value) == modules.get(anchor) else 1,
                 abs(solution.operation_order.index(value) - solution.operation_order.index(anchor)),

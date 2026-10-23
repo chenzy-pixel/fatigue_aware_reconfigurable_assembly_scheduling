@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import time
 
 from agent.ppo.buffer import RolloutBuffer
-from agent.ppo.parallel import _WorkerResetRequest, _WorkerStepRequest
+from agent.ppo.parallel import _WorkerResetRequest, _WorkerStepRequest, EVALUATION_WORKER_TIMING_FIELDS
 from environment import quality_preference_for_episode
 
 
@@ -14,6 +14,7 @@ class Collected:
     episodes_started: int
     episodes: list
     seconds: float
+    losses: dict
 
 
 def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, episodes_per_batch=20):
@@ -27,6 +28,7 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
     total = RolloutBuffer()
     active, histories, summary = {}, {}, []
     indices, used = 0, 0
+    ddqn_losses = []
 
     def fill(lanes):
         nonlocal indices
@@ -37,7 +39,9 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
             episode = start_episode+indices
             pref = quality_preference_for_episode(config, algorithm_seed=config["seed"], quality_episode_index=episode)
             commands[lane] = ("reset_online", _WorkerResetRequest(episode, preference=pref))
-            histories[lane] = {"episode": episode, "steps": 0, "reward_sum": 0., "buffer": RolloutBuffer()}
+            histories[lane] = {"episode": episode, "steps": 0, "reward_sum": 0., "buffer": RolloutBuffer(),
+                               "started": time.perf_counter(), "preference": pref.as_dict(),
+                               **{k: 0. for k in EVALUATION_WORKER_TIMING_FIELDS}}
             indices += 1
         if commands:
             for lane, response in runner._exchange(commands).items():
@@ -48,6 +52,10 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
                 active[lane] = response
                 histories[lane]["instance_id"] = response.instance_id
                 histories[lane]["metadata"] = response.metadata
+                histories[lane]["generation_time_seconds"] = response.generation_time_seconds
+                histories[lane]["record_sha256"] = response.record_sha256
+                for key in EVALUATION_WORKER_TIMING_FIELDS:
+                    histories[lane][key] += float(getattr(response, key, 0.))
 
     def finish(lane, response, cutoff=False):
         context = histories[lane]
@@ -58,7 +66,11 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
         summary.append({"episode": context["episode"], "steps": context["steps"],
                         "reward_sum": context["reward_sum"], "instance_id": context["instance_id"], "metadata": context["metadata"],
                         "budget_truncated": cutoff, "terminated": response.terminated,
-                        "metrics": response.metrics if response.terminated or response.truncated else None})
+                        "preference": context["preference"], "record_sha256": context["record_sha256"],
+                        "episode_wall_seconds": time.perf_counter()-context["started"],
+                        "generation_time_seconds": context["generation_time_seconds"],
+                        **{k: context[k] for k in EVALUATION_WORKER_TIMING_FIELDS},
+                        "metrics": response.metrics})
         active.pop(lane, None)
 
     fill(range(runner.worker_count))
@@ -80,17 +92,28 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
                 raise RuntimeError("worker violated reserved one-step allowance")
             reward = response.reward_vector.scalarize(config["reward"])
             if ddqn:
-                agent.remember(observations[i], rules[i], reward, response.observation, response.action_mask, response.terminated)
+                loss = agent.remember(observations[i], rules[i], reward, response.observation, response.action_mask, response.terminated)
+                if loss is not None:
+                    ddqn_losses.append(loss)
             else:
                 histories[lane]["buffer"].add(observations[i], masks[i], actions[i], logps[i], values[i], reward, response.terminated)
             histories[lane]["steps"] += 1
             histories[lane]["reward_sum"] += reward
+            for key in EVALUATION_WORKER_TIMING_FIELDS:
+                histories[lane][key] += float(getattr(response, key, 0.))
             active[lane] = response
             if response.terminated or response.truncated:
                 finish(lane, response)
                 completed.append(lane)
         if used < allowance:
             fill(completed)
+    snapshots = runner._exchange({lane: ("snapshot", None) for lane in active}) if active else {}
     for lane, response in list(active.items()):
+        response.metrics = snapshots[lane].metrics
+        if response.metrics is None:
+            raise RuntimeError("cutoff worker returned no snapshot metrics")
+        for key in EVALUATION_WORKER_TIMING_FIELDS:
+            histories[lane][key] += float(getattr(snapshots[lane], key, 0.))
         finish(lane, response, cutoff=True)
-    return Collected(total, used, indices, summary, time.perf_counter()-started)
+    return Collected(total, used, indices, summary, time.perf_counter()-started,
+                     {"td_loss": sum(ddqn_losses)/len(ddqn_losses)} if ddqn_losses else {})

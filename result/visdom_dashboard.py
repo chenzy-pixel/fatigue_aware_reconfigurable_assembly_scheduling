@@ -862,9 +862,9 @@ class TrainingDashboard:
         )
         profiles = sorted(
             {
-                str(row["pressure_type"])
+                str(row["cell_id"])
                 for row in episode_rows
-                if row.get("pressure_type") is not None
+                if row.get("cell_id") is not None
             }
         )
         self._line(
@@ -876,7 +876,7 @@ class TrainingDashboard:
                     [
                         row
                         for row in episode_rows
-                        if str(row.get("pressure_type")) == profile
+                        if str(row.get("cell_id")) == profile
                     ],
                     "completed_order_ratio",
                 )
@@ -892,7 +892,7 @@ class TrainingDashboard:
                     [
                         row
                         for row in episode_rows
-                        if str(row.get("pressure_type")) == profile
+                        if str(row.get("cell_id")) == profile
                     ],
                     "quality_score",
                 )

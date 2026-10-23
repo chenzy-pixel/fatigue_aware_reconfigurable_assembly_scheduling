@@ -24,9 +24,7 @@ from environment import (
     CAPABLE_EDGE,
     MACHINE_MODULE_EDGE,
     OPERATION_ORDER_EDGE,
-    ORDER_WAVE_EDGE,
     REQUIRES_MODULE_EDGE,
-    WAVE_MODULE_EDGE,
     WORKER_MODULE_EDGE,
     LOCKED_EDGE,
     SERVICE_CANDIDATE_EDGE,
@@ -53,7 +51,7 @@ RESIDUAL_STD_FLOOR = 1e-3
 
 PRODUCTION_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
     "flow": (("processing_time_norm", -1), ("reconfiguration_time_norm", -1),
-             ("predicted_finish_time_norm", -1), ("horizon_slack_norm", 1)),
+             ("predicted_finish_time_norm", -1)),
     "cost": (("fixed_reconfiguration_cost_norm", -1), ("estimated_labor_cost_norm", -1),
              ("estimated_downtime_cost_norm", -1)),
     "workload": (("estimated_worker_load_objective_delta_norm", -1),),
@@ -73,7 +71,7 @@ WAIT_DIRECT_SCHEMA: dict[str, tuple[tuple[str, int], ...]] = {
 
 def direct_feature_schemas(version: int) -> tuple[dict, dict, dict]:
     if version != OBSERVATION_SCHEMA_VERSION:
-        raise ValueError("only observation schema 12 is supported; older models require retraining")
+        raise ValueError("only observation schema 13 is supported; older models require retraining")
     return PRODUCTION_DIRECT_SCHEMA, WORKER_DIRECT_SCHEMA, WAIT_DIRECT_SCHEMA
 
 
@@ -85,7 +83,7 @@ WORKLOAD_IDENTITY_FIELDS = (
 
 def _network_workload_identity(config: Mapping[str, Any]) -> dict[str, Any]:
     if "workload_mode" not in config:
-        raise ValueError("schema-12 network config requires workload_mode")
+        raise ValueError("schema-13 network config requires workload_mode")
     selected = workload_config(config)
     mode, q = selected["mode"], selected["q"]
     rule = selected["weights"]
@@ -102,7 +100,7 @@ def _network_workload_identity(config: Mapping[str, Any]) -> dict[str, Any]:
         scales = tuple(float(value) for value in config["objective_scales"])
         scale = float(config["workload_scale"])
     except (KeyError, TypeError, ValueError, OverflowError) as error:
-        raise ValueError("schema-12 network requires workload_scale and objective_scales") from error
+        raise ValueError("schema-13 network requires workload_scale and objective_scales") from error
     if len(scales) != 3 or any(not np.isfinite(value) or value <= 0 for value in scales):
         raise ValueError("network objective_scales must contain three finite positive scales")
     if not np.isfinite(scale) or scale <= 0 or scale != scales[2]:
@@ -114,11 +112,9 @@ BIDIRECTIONAL_EDGE_TYPES = frozenset(
         CAPABLE_EDGE,
         LOCKED_EDGE,
         OPERATION_ORDER_EDGE,
-        ORDER_WAVE_EDGE,
         REQUIRES_MODULE_EDGE,
         MACHINE_MODULE_EDGE,
         WORKER_MODULE_EDGE,
-        WAVE_MODULE_EDGE,
         SERVICE_CANDIDATE_EDGE,
         PROCESSING_ON_EDGE,
         SERVED_BY_EDGE,
@@ -1214,8 +1210,7 @@ class HeteroGraphActorCritic(nn.Module):
     ) -> dict[str, torch.Tensor]:
         result: dict[str, torch.Tensor] = {}
         signed = {
-            "horizon_slack_norm",
-            "estimated_worker_load_objective_delta_norm",
+                        "estimated_worker_load_objective_delta_norm",
             "incremental_workload_objective_norm",
             "estimated_workload_objective_delta_if_wait",
         }

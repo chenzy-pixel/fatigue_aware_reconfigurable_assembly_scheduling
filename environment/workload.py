@@ -75,7 +75,7 @@ def observation_schema_version(config: Mapping) -> int:
     network = _network(config)
     value = network.get("observation_schema_version", OBSERVATION_SCHEMA_VERSION)
     if isinstance(value, bool) or value not in SUPPORTED_OBSERVATION_SCHEMAS:
-        raise ValueError("only observation schema 12 is supported; older models require retraining")
+        raise ValueError("only observation schema 13 is supported; older models require retraining")
     workload_config(config)
     return OBSERVATION_SCHEMA_VERSION
 

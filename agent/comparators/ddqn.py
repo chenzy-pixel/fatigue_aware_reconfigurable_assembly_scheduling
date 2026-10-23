@@ -11,7 +11,7 @@ from environment import ASSEMBLY_NODE_TYPES, OPERATION_ORDER_EDGE, DecisionType
 from .common import candidates, feature_column, pooled_state, observation_spec, physical_identity, save_torch
 
 RULE_NAMES = ("earliest_finish_or_shortest_stage", "shortest_total_or_lowest_fatigue",
-              "most_remaining_work_or_least_workload", "earliest_release_or_least_cost",
+              "most_remaining_work_or_least_workload", "shortest_remaining_work_or_least_cost",
               "least_cost_or_oldest_lock", "least_workload_or_scarcest_service", "wait")
 
 
@@ -24,13 +24,12 @@ def rule_actions(obs, native_mask):
     if len(indices):
         col = lambda name: feature_column(edge, name)
         if obs.decision_type == DecisionType.PRODUCTION:
-            release = obs.node_features["operation"][:, obs.node_feature_names["operation"].index("order_release_time_norm")]
-            remain = np.zeros(len(release))
+            remain = np.zeros(len(obs.node_features["operation"]))
             links = obs.relations[OPERATION_ORDER_EDGE].edge_index
             values = obs.node_features["order"][:, obs.node_feature_names["order"].index("remaining_workload_norm")]
             remain[links[0]] = values[links[1]]
             scores = (col("predicted_finish_time_norm"), col("processing_time_norm")+col("reconfiguration_time_norm"),
-                      -remain[edge.edge_index[0]], release[edge.edge_index[0]],
+                      -remain[edge.edge_index[0]], remain[edge.edge_index[0]],
                       col("fixed_disassembly_cost_norm")+col("fixed_installation_cost_norm")+col("estimated_labor_cost_norm")+col("estimated_downtime_cost_norm"),
                       col("estimated_worker_load_objective_delta_norm"))
         else:
@@ -42,7 +41,7 @@ def rule_actions(obs, native_mask):
                       col("fixed_cost_norm")+col("incremental_labor_cost_norm")+col("incremental_downtime_cost_norm"),
                       -col("stage_wait_time_norm"), counts[edge.edge_index[0]])
         for rule, score in enumerate(scores):
-            winner = min(indices, key=lambda i: (float(score[i]), int(ids[i])))
+            winner = min(indices, key=lambda i: ((0 if col("projection_valid")[i] else 1) if obs.decision_type == DecisionType.PRODUCTION else 0, float(score[i]), int(ids[i])))
             result[rule] = ids[winner]
     if not native_mask[-1]:
         result[6] = len(native_mask)-1
@@ -70,7 +69,7 @@ class RuleDDQN:
     def __init__(self, obs, config):
         self.config, self.device = config, torch.device(config["device"])
         settings = config.get("comparison", {}).get("ddqn", {})
-        self.spec = {"family": "rule_ddqn_v1", "observation": observation_spec(obs),
+        self.spec = {"family": "rule_ddqn_v2", "observation": observation_spec(obs),
                      "physics": physical_identity(config), "rules": RULE_NAMES, "state_dim": len(pooled_state(obs)),
                      "hidden": [256, 256]}
         self.online = nn.Sequential(nn.Linear(self.spec["state_dim"], 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU(), nn.Linear(256, 7)).to(self.device)
@@ -92,7 +91,7 @@ class RuleDDQN:
         with torch.no_grad():
             q = self.online(torch.as_tensor(state, device=self.device))
             rules = q.masked_fill(~torch.as_tensor(legal, device=self.device), torch.finfo(q.dtype).min).argmax(1).cpu().tolist()
-        epsilon = max(.05, 1-.95*self.steps/(.5*int(self.config.get("comparison", {}).get("training_steps", 350411))))
+        epsilon = max(.05, 1-.95*self.steps/(.5*int(self.config.get("comparison", {}).get("training_steps", 1))))
         for i in range(len(rules)):
             if explore and self.rng.random() < epsilon:
                 rules[i] = self.rng.choice(np.flatnonzero(legal[i]).tolist())

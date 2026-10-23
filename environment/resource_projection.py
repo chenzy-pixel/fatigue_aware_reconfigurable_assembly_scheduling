@@ -68,11 +68,11 @@ class TimeReconfigurationProjection:
 class CandidateProjection:
     processing_start_tick: int | None
     finish_tick: int | None
-    resource_ready_tick: int
+    resource_ready_tick: int | None
     path: ReconfigurationProjection | None
     resources: ProjectedResources
     baseline_loads: np.ndarray
-    machine_available_tick: int
+    machine_available_tick: int | None
     source_module: str
 
 
@@ -230,10 +230,11 @@ class ResourceProjector:
         if not routes:
             return None
 
-        def route_key(route: tuple[ProjectedStage, ...]) -> tuple[int, int, int]:
+        def route_key(route: tuple[ProjectedStage, ...]) -> tuple[int, str, str]:
             end = route[-1].end_tick if route else earliest_tick
-            dis = next((stage.worker_index for stage in route if not stage.installation), -1)
-            ins = next((stage.worker_index for stage in route if stage.installation), -1)
+            # Array order is storage, not a physical scheduling preference.
+            dis = next((env.workers[stage.worker_index].spec.id for stage in route if not stage.installation), "")
+            ins = next((env.workers[stage.worker_index].spec.id for stage in route if stage.installation), "")
             return end, dis, ins
 
         stages = min(routes, key=route_key)
@@ -448,20 +449,20 @@ class ResourceProjector:
         if op.state == OperationState.LOCKED and op.machine_id == machine.spec.id:
             path = self.active(mi, state)
             start = path.end_tick if path is not None else None
-            ready = path.stages[0].start_tick if path and path.stages else env.current_tick if path else env.horizon_tick+1
+            ready = path.stages[0].start_tick if path and path.stages else env.current_tick if path else None
             return CandidateProjection(start, start+env.estimate_processing_ticks(oi, mi) if start is not None else None,
                                        ready, path, path.resources if path else state, state.loads.copy(),
                                        env.current_tick, machine.current_module)
         available, source, state = self.machine_release(mi, state)
         baseline = state.loads.copy()
         if available is None:
-            return CandidateProjection(None, None, env.horizon_tick+1, None, state, baseline,
-                                       env.horizon_tick+1, source)
+            return CandidateProjection(None, None, None, None, state, baseline,
+                                       None, source)
         release = quantize_to_ticks(env._order_by_id(op.spec.order_id).release_time, env.resolution)
         earliest = max(available, release)
         path = self.transition(mi, source, op.spec.required_module, earliest, state)
         start = path.end_tick if path else None
-        ready = path.stages[0].start_tick if path and path.stages else earliest if path else env.horizon_tick+1
+        ready = path.stages[0].start_tick if path and path.stages else earliest if path else None
         return CandidateProjection(start, start+env.estimate_processing_ticks(oi, mi) if start is not None else None,
                                    ready, path, path.resources if path else state, baseline, available, source)
 

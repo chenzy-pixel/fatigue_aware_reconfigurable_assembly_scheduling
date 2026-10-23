@@ -15,14 +15,14 @@ from .types import OperationState
 if TYPE_CHECKING:
     from .env import AssemblySchedulingEnv
 
-TIME_CONTEXT_VERSION = "order_chain_action_context_v2"
+TIME_CONTEXT_VERSION = "order_chain_remaining_context_v3_1"
 
 
-ORDER_TIME_FEATURE = "estimated_order_slack_norm"
+ORDER_TIME_FEATURE = "estimated_order_remaining_time_norm"
 WORKER_WAIT_FEATURE = "stage_wait_time_norm"
 WAIT_TIME_FEATURES = (
-    "minimum_order_slack_after_wait_norm",
-    "minimum_order_slack_delta_if_wait_norm",
+    "maximum_order_remaining_after_wait_norm",
+    "maximum_order_remaining_delta_if_wait_norm",
 )
 TIME_CONTEXT_FEATURE_SCHEMA = {
     "order": [ORDER_TIME_FEATURE],
@@ -84,14 +84,14 @@ class OrderTimeEstimator:
     def _transition_finish(self, machine: int, source: str, target: str, earliest: int, resources: _Resources) -> int:
         route = self.projector.transition(machine, source, target, earliest, self._state(resources))
         if route is None:
-            return max(earliest, self.env.horizon_tick)+self.env.horizon_tick+1
+            return None
         self._save(resources, route.resources)
         return route.end_tick
 
     def _reconfiguration_finish(self, machine: int, reconfiguration: ReconfigurationRuntime, resources: _Resources) -> int:
         route = self.projector.active(machine, self._state(resources))
         if route is None:
-            return max(self.env.current_tick, self.env.horizon_tick)+self.env.horizon_tick+1
+            return None
         self._save(resources, route.resources)
         return route.end_tick
 
@@ -101,7 +101,7 @@ class OrderTimeEstimator:
             machine, source, target, earliest, resources.workers
         )
         if route is None:
-            return max(earliest, self.env.horizon_tick) + self.env.horizon_tick + 1
+            return None
         resources.workers = route.workers
         return route.end_tick
 
@@ -110,7 +110,7 @@ class OrderTimeEstimator:
                                       resources: _TimeResources) -> int:
         route = self.projector.active_time(machine, resources.workers)
         if route is None:
-            return max(self.env.current_tick, self.env.horizon_tick) + self.env.horizon_tick + 1
+            return None
         resources.workers = route.workers
         return route.end_tick
 
@@ -123,7 +123,7 @@ class OrderTimeEstimator:
             )
             resources.workers = workers
             resources.machines[machine] = (
-                tick if tick is not None else 2 * self.env.horizon_tick + 1,
+                tick,
                 module,
             )
             resources.materialized.add(machine)
@@ -135,7 +135,7 @@ class OrderTimeEstimator:
         if mi not in resources.materialized:
             tick, module, state = self.projector.machine_release(mi, self._state(resources))
             self._save(resources, state)
-            resources.machines[mi] = (tick if tick is not None else 2*self.env.horizon_tick+1, module)
+            resources.machines[mi] = (tick, module)
             resources.materialized.add(mi)
         return resources.machines[mi]
 
@@ -171,7 +171,11 @@ class OrderTimeEstimator:
                 if operation.state == OperationState.LOCKED:
                     mi = self.machine_indices[operation.machine_id]
                     rec = env._active_reconfiguration(operation.machine_id)
-                    cursor = max(cursor, self._reconfiguration_finish_time(mi, rec, resources))
+                    projected_finish = self._reconfiguration_finish_time(mi, rec, resources)
+                    if projected_finish is None:
+                        cursor = None
+                        break
+                    cursor = max(cursor, projected_finish)
                     cursor += env.estimate_processing_ticks(oi, mi)
                     resources.machines[mi] = (cursor, spec.required_module)
                     resources.materialized.add(mi)
@@ -185,15 +189,20 @@ class OrderTimeEstimator:
                         set(resources.materialized or ()),
                     )
                     available, source = self._release_time(mi, branch)
+                    if available is None:
+                        continue
                     start = self._transition_finish_time(
                         mi, source, spec.required_module, max(cursor, available), branch
                     )
+                    if start is None:
+                        continue
                     choices.append((start + env.estimate_processing_ticks(oi, mi), mi, branch))
                 if choices:
-                    cursor, mi, resources = min(choices, key=lambda item: (item[0], item[1]))
+                    cursor, mi, resources = min(choices, key=lambda item: (item[0], env.machines[item[1]].spec.id))
                     resources.machines[mi] = (cursor, spec.required_module)
                 else:
-                    cursor += env.horizon_tick+1
+                    cursor = None
+                    break
             result[order.id] = cursor
         return result
 

@@ -1,3 +1,5 @@
+> 历史 schema12 说明。2026-10-23 起的默认主线采用[三因子批次调度协议](factorial27_migration.md)；本文以下内容保留用于解释历史实现和产物。
+
 # 订单时间上下文
 
 主线采用 schema12、十维全局向量与十四类关系。冻结尺度、目标与训练设置见[实验协议](experiment_protocol.md)，图输入与评分结构见[当前架构](ARCHITECTURE.md)。

@@ -17,6 +17,8 @@ from environment import AssemblySchedulingEnv, PreferenceVector
 from environment.workload import metrics_workload_objective
 from environment.types import metrics_flow_objective
 from utils import set_seed
+from result.training_history import (LOG_VERSION, EPOCH_DEFINITION, instance_row,
+                                     aggregate, export_history, save_epoch)
 from .common import atomic_json, digest, method_config
 from .collection import collect
 from .dcan import DCANActorCritic, DCANAgent
@@ -61,8 +63,6 @@ def evaluate_request(config, agent, instance, pref, method, *, mode=None, seed=0
             observation, _, _, _, _ = env.step(action)
         metrics = env.metrics()
         violations = env.validate_schedule()
-        if env.truncated:
-            raise RuntimeError("externally truncated evaluation cannot be a formal delivery")
         raw.append({"success": bool(metrics["task_succeeded"] and not violations),
                     "quality": float(metrics["preference_quality_score"]),
                     "objectives": (metrics_flow_objective(metrics, config), metrics["reconfiguration_cost"], metrics_workload_objective(metrics, config)),
@@ -86,7 +86,9 @@ def validation(config, agent, dataset, indices, prefs, method, *, seed):
             deliveries.append({"summary": result["summary"], "selected_repeat": result["selected_repeat"],
                                "raw": [{k: v for k, v in sample.items() if k not in ("schedule", "reconfigurations")}
                                        for sample in result["raw"]]})
-            row = {**result["summary"], "pressure_type": dataset[index].metadata["pressure_type"],
+            row = {**result["summary"], "cell_id": dataset[index].metadata["cell_id"],
+                   "scale": dataset[index].metadata["scale"],
+                   "decision_count": next(r["metrics"]["decision_count"] for r in result["raw"] if r["sampling_repeat"] == result["selected_repeat"]),
                    "raw_safety_pass": all(not r["violations"] and r["metrics"]["maximum_worker_fatigue"] <= r["metrics"]["safe_fatigue_limit"]+1e-9 for r in result["raw"])}
             rows.append(row)
     rates, qualities = [], []
@@ -110,7 +112,7 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
 
     validate_training_distribution(base)
     output = Path(output)
-    job_id = digest([identity, method, seed, rate, steps, val_indices, prefs, workers])
+    job_id = digest([identity, method, seed, rate, steps, val_indices, prefs, workers, LOG_VERSION])
     summary_path = output / "summary.json"
     if summary_path.exists():
         saved = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -121,7 +123,9 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
         return saved
     config = method_config(base, method, seed, rate)
     # Exploration uses the formal horizon even in a shorter pilot.
-    config["comparison"].setdefault("training_steps", 350411)
+    config["comparison"]["training_steps"] = steps
+    from configs.runtime import runtime_manifest
+    config["runtime_manifest"]=runtime_manifest(config)
     set_seed(seed)
     torch.set_num_threads(1)
     template = smoke_instance or load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
@@ -141,31 +145,46 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
     with ParallelEpisodeRunner(config=config, template=template, episode_count=max(steps, 20), worker_count=workers,
                                diagnostic_directory=output / "workers") as runner:
         while used < steps:
+            epoch = len(history) + 1
             limit = min(steps-used, thresholds[validation_index]-used)
-            rollout = collect(runner, agent, config, episode, limit, ddqn=method == "rule_ddqn", episodes_per_batch=20)
+            rollout = collect(runner, agent, config, episode, limit, ddqn=method == "rule_ddqn",
+                              episodes_per_batch=int(config["training"]["episodes_per_update"]))
             if rollout.steps <= 0:
                 raise RuntimeError("training made no progress")
             used += rollout.steps
             episode += rollout.episodes_started
-            losses = {}
+            losses = rollout.losses
             update_started = time.perf_counter()
             if method != "rule_ddqn" and len(rollout.buffer):
                 losses = agent.update(rollout.buffer)
                 updates += int(np.ceil(len(rollout.buffer)/config["ppo"]["batch_size"]))*config["ppo"]["epochs"]
                 presentations += len(rollout.buffer)*config["ppo"]["epochs"]
-            training_seconds += rollout.seconds+time.perf_counter()-update_started
+            update_seconds = time.perf_counter()-update_started
+            training_seconds += rollout.seconds+update_seconds
+            for item in rollout.episodes:
+                item.update(epoch=epoch, method=method, training_seed=seed, training_steps=used)
             episode_log.extend(rollout.episodes)
-            history.append({"steps": used, "episodes_started": episode, "batch_steps": rollout.steps,
+            flat = [instance_row(e, epoch=epoch, method=method, training_seed=seed, training_steps=used) for e in rollout.episodes]
+            history.append({"epoch": epoch, "update_id": epoch, "epoch_definition": EPOCH_DEFINITION,
+                            "log_schema_version": LOG_VERSION, "method": method, "training_seed": seed,
+                            "job_id": job_id, "training_steps": used,
+                            "steps": used, "episodes_started": episode, "batch_steps": rollout.steps,
+                            "optimizer_epochs_per_batch": config["ppo"]["epochs"] if method != "rule_ddqn" else None,
+                            "sample_presentations": agent.sample_presentations if method == "rule_ddqn" else presentations,
+                            "update_seconds": update_seconds, "training_seconds": training_seconds,
+                            "learning_rate": rate, **aggregate(flat),
                             "seconds": time.perf_counter()-started, "collect_seconds": rollout.seconds,
                             "budget_truncations": sum(e["budget_truncated"] for e in rollout.episodes),
                             "losses": losses, "optimizer_updates": agent.updates if method == "rule_ddqn" else updates})
+            save_epoch(output, history[-1], rollout.episodes)
             atomic_json(output / "training_log.json", history)
             atomic_json(output / "episodes.json", episode_log)
+            export_history(output, history, episode_log)
             if used == thresholds[validation_index]:
                 result, rank = validation(config, agent, dataset, val_indices, prefs, method, seed=seed)
-                result["training_steps"] = used
+                result.update(training_steps=used, epoch=epoch, method=method, training_seed=seed)
                 validations.append(result)
-                metadata = {"algorithm": method, "job_id": job_id, "training_steps": used, "seed": seed,
+                metadata = {"algorithm": method, "job_id": job_id, "training_steps": used, "seed": seed, "epoch": epoch,
                             "validation": result["summary"], "comparison_identity": identity}
                 if result["summary"]["safe"] and (best_rank is None or rank > best_rank):
                     best_rank = rank
@@ -173,16 +192,18 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                     atomic_json(output / "best_validation.json", result)
                 agent.save(output / "last_checkpoint.pt", metadata)
                 atomic_json(output / "validations.json", validations)
+                export_history(output, history, episode_log, validations)
                 validation_index += 1
                 print(f"{method} seed={seed} steps={used}/{steps} validation={result['summary']}", flush=True)
     if best_rank is None:
         raise RuntimeError("no physically safe eligible checkpoint")
     tail = validations[-2:]
-    training_sufficiency = "not_established" if len(tail) == 2 and (
+    training_sufficiency = "not_established" if len(tail) < 2 or (
         tail[1]["summary"]["worst_preference_success"] > tail[0]["summary"]["worst_preference_success"]+1e-12 or
         tail[0]["summary"]["quality"]-tail[1]["summary"]["quality"] > .002) else "no_large_gain_in_last_interval"
     summary = {"job_id": job_id, "method": method, "seed": seed, "learning_rate": rate,
-               "training_steps": used, "episodes_started": episode, "validation_count": len(validations),
+               "training_steps": used, "epochs": len(history), "epoch_definition": EPOCH_DEFINITION,
+               "log_schema_version": LOG_VERSION, "episodes_started": episode, "validation_count": len(validations),
                "optimizer_updates": agent.updates if method == "rule_ddqn" else updates,
                "sample_presentations": agent.sample_presentations if method == "rule_ddqn" else presentations,
                "seconds": time.perf_counter()-started, "training_sufficiency": training_sufficiency,

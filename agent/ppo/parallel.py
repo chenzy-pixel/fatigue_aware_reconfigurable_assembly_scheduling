@@ -21,6 +21,7 @@ from agent.ppo.buffer import RolloutBuffer
 from agent.ppo.agent import summarize_policy_decision_diagnostics
 from agent.ppo.network import network_requires_graph_observation
 from data.dataset import GeneratedInstanceRecord, OnlineInstanceDataset
+from data.distribution import stable_seed
 from data.models import AssemblyInstance
 from environment import (
     AssemblySchedulingEnv,
@@ -518,7 +519,7 @@ def _worker_main(
                 episode_index = int(request.value)
                 progress_context = {
                     "episode": episode_index,
-                    "seed": dataset.seed_start + episode_index,
+                    "seed": stable_seed('factorial27_v1','train',episode_index),
                     "phase": "instance_generation",
                 }
                 generation_start = time.perf_counter()
@@ -536,9 +537,8 @@ def _worker_main(
                     key: record.metadata.get(key)
                     for key in (
                         "seed",
-                        "pressure_type",
-                        "cost_profile",
-                        "severity",
+                        "cell_id", "N", "K", "M", "W", "A",
+                        "scale",
                         "feasibility_status",
                         "diagnostic_status",
                         "sampled_parameters",
@@ -575,7 +575,7 @@ def _worker_main(
                 episode_index = int(payload)
                 progress_context = {
                     "episode": episode_index,
-                    "seed": dataset.seed_start + episode_index,
+                    "seed": stable_seed('factorial27_v1','train',episode_index),
                     "phase": "instance_generation",
                 }
                 generation_start = time.perf_counter()
@@ -868,8 +868,7 @@ class ParallelEpisodeRunner:
             "instance_id": None if online else value.instance_id,
             "episode_index": int(value) if online else None,
             "seed": (
-                int(self.config["dataset"]["splits"]["train"]["seed_start"])
-                + int(value) if online else None
+                stable_seed('factorial27_v1','train',int(value)) if online else None
             ),
             "environment_step_count": 0,
             "_started_at": started,
@@ -975,7 +974,7 @@ class ParallelEpisodeRunner:
             if response.instance_id is not None:
                 context["instance_id"] = response.instance_id
             if response.metadata is not None:
-                for key in ("seed", "generation_attempt", "pressure_type", "cost_profile"):
+                for key in ("seed", "generation_attempt", "cell_id", "scale"):
                     context[key] = response.metadata.get(key)
             if command in {"reset_online", "reset_instance", "generate_online"}:
                 context["generation_time_seconds"] = response.generation_time_seconds
@@ -1159,8 +1158,7 @@ class ParallelEpisodeRunner:
                         "sha256": response.record_sha256,
                         "cache_hit": bool(response.cache_hit),
                         "generation_time_seconds": duration,
-                        "pressure_type": metadata.get("pressure_type"),
-                        "severity": metadata.get("severity"),
+                        "cell_id": metadata.get("cell_id"),
                         "diagnostic_status": metadata.get("diagnostic_status"),
                         "feasibility_status": metadata.get("feasibility_status"),
                         "generation_attempt": metadata.get(

@@ -10,7 +10,7 @@ import json
 from typing import Any
 
 
-EVALUATION_SCHEMA_VERSION = "9.0.0"
+EVALUATION_SCHEMA_VERSION = "10.0.0"
 WORKLOAD_QUALITY_METRIC_VERSION = "canonical_bounded_workload_quality_v1"
 QUALITY_METRIC_VERSION = WORKLOAD_QUALITY_METRIC_VERSION
 CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
@@ -22,7 +22,6 @@ CURRENT_RUNTIME_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "production_wait_time",
     "worker_wait_ticks",
     "worker_wait_time",
-    "wait_min_estimated_deadline_slack_ticks",
 )
 
 
@@ -309,7 +308,7 @@ def aggregate_evaluation_rows(
             "completed_metrics": {}, "all_instance_metrics": {},
             "preference_quality_by_key": {}, "preference_balanced_quality_score": None,
             "gap_metrics": {}, "tail_metrics": {},
-            "by_pressure_type": {}, "by_feasibility_status": {},
+            "by_cell_id": {}, "by_feasibility_status": {},
             "failure_reasons": dict(Counter(failure_reason(row) for row in rows if row["task_failed"])),
         }
     completed = [
@@ -591,7 +590,7 @@ def aggregate_evaluation_rows(
         "preference_quality_by_key": preference_quality_means,
         "preference_balanced_quality_score": preference_balanced_quality,
         "gap_metrics": gap_metrics,
-        "by_pressure_type": grouped_outcomes(rows, "pressure_type"),
+        "by_cell_id": grouped_outcomes(rows, "cell_id"),
         "by_feasibility_status": grouped_outcomes(rows, "feasibility_status"),
         "failure_reasons": dict(Counter(failure_reason(row) for row in rows if not successful_row(row))),
         "tail_metrics": tail_metrics,

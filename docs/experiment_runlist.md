@@ -1,3 +1,5 @@
+> 历史 schema12 说明。2026-10-23 起的默认主线采用[三因子批次调度协议](factorial27_migration.md)；本文以下内容保留用于解释历史实现和产物。
+
 # 当前主线完整实验执行清单
 
 独立测试补充：[瓶颈与重构倍率外推套件](challenge_suite_protocol.md)已物化100例test_hard及20组四档倍率外推，共180例，完成数据审计及9例smoke。当前仅支持冻结PPO和启发式，完整66偏好评价单独执行，不计入训练矩阵，也不由comparison_suite的all/formal-evaluate自动展开。

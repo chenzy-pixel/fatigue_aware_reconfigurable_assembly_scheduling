@@ -125,16 +125,7 @@ def _preserve_rng_for_sampled(function):
 
 
 def load_configured_instance(config: dict[str, Any]):
-    cache = project_path(config["paths"]["instance_cache"])
-    source = project_path(config["paths"]["fixed_instance"])
-    if cache.exists() and cache.stat().st_mtime >= source.stat().st_mtime:
-        try:
-            return load_instance_pickle(cache)
-        except (OSError, TypeError, ValueError):
-            pass
-    instance = load_instance_yaml(source)
-    save_instance_pickle(instance, cache)
-    return instance
+    return load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
 
 
 class EvaluationPolicy:
@@ -519,7 +510,7 @@ def _evaluation_row(
     quality_metric: dict[str, Any],
 ) -> dict[str, Any]:
     heuristic = record.metadata.get("heuristic_metrics") or {}
-    pressure = record.metadata["pressure_metrics"]
+    parameters = record.metadata
     heuristic_flow_time = heuristic.get("heuristic_flow_time")
     heuristic_makespan = heuristic.get("heuristic_makespan")
     heuristic_cost = heuristic.get(
@@ -543,12 +534,10 @@ def _evaluation_row(
     # Frozen historical metadata without loads cannot identify OWA.
     heuristic_workload = workload_value(list(loads.values()), config) if isinstance(loads, dict) else None
     reference_valid = bool(heuristic.get("heuristic_completed")) and not bool(heuristic.get("heuristic_truncated", True)) and not heuristic.get("schedule_violations", [])
-    reference_valid = reference_valid and float(heuristic.get("heuristic_makespan", math.inf)) <= record.instance.horizon + 1e-9
     reference_valid = reference_valid and float(heuristic.get("maximum_worker_fatigue", math.inf)) <= record.instance.fatigue.maximum_safe_fatigue + 1e-9
     comparison_valid = (reference_valid and bool(metrics["terminated"]) and not bool(metrics["truncated"])
                         and not metrics.get("schedule_violation_count", 0)
                         and not metrics.get("schedule_violations", [])
-                        and metrics["time"] <= record.instance.horizon + 1e-9
                         and metrics.get("maximum_worker_fatigue", math.inf) <= record.instance.fatigue.maximum_safe_fatigue + 1e-9)
     def comparison_gap(value, reference):
         return relative_gap_percent(value, reference) if comparison_valid else None
@@ -566,7 +555,6 @@ def _evaluation_row(
         "instance_id": record.instance.instance_id,
         "seed": record.metadata["seed"],
         "generator_version": record.metadata.get("generator_version"),
-        "severity": record.metadata.get("severity", 1.0),
         "feasibility_status": record.metadata.get("feasibility_status", "unknown"),
         "diagnostic_status": record.metadata.get("diagnostic_status", "not_run"),
         "diagnostic_terminal_reason": record.metadata.get("diagnostic_terminal_reason"),
@@ -594,8 +582,8 @@ def _evaluation_row(
             "workload_objective_value_heuristic_gap_percent": comparison_gap(active_workload, heuristic_workload)}),
         "candidate_id": f"{metrics.get('preference_key', '')}:{metrics.get('sampling_repeat', metrics.get('sampling_seed', 0))}",
         "candidate_source": metrics.get("decode_mode", "sampled"),
-        "pressure_type": record.metadata["pressure_type"],
-        "cost_profile": record.metadata["cost_profile"],
+        "cell_id": record.metadata["cell_id"],
+        "scale": record.metadata["scale"],
         "ood_factor": record.metadata.get("ood_factor"),
         "terminated": metrics["terminated"],
         "truncated": metrics["truncated"],
@@ -606,7 +594,7 @@ def _evaluation_row(
         "decision_count": metrics["decision_count"],
         "zero_time_action_count": metrics["zero_time_action_count"],
         "termination_reason": metrics["terminal_reason"],
-        "decisions": metrics["decisions"],
+        "decisions": metrics.get("decisions",metrics["decision_count"]),
         "makespan": metrics["time"],
         "completed_orders": metrics["completed_orders"],
         "unfinished_orders": metrics["unfinished_orders"],
@@ -782,9 +770,6 @@ def _evaluation_row(
         "production_wait_time": metrics["production_wait_time"],
         "worker_wait_ticks": metrics["worker_wait_ticks"],
         "worker_wait_time": metrics["worker_wait_time"],
-        "wait_min_estimated_deadline_slack_ticks": metrics[
-            "wait_min_estimated_deadline_slack_ticks"
-        ],
         **{
             name: metrics.get(name, 0)
             for name in (
@@ -849,13 +834,10 @@ def _evaluation_row(
         "schedule_violation_count": len(
             metrics["schedule_violations"]
         ),
-        "total_effective_load": pressure[
-            "total_effective_load"
-        ],
-        "max_module_load": pressure["max_module_load"],
+        **{k:parameters.get(k) for k in ("N","K","M","W","A")},
+        "operations":len(record.instance.operations),
         "ready_configuration_gap_ratio": heuristic.get("ready_configuration_gap_ratio"),
         "heuristic_reconfiguration_ratio": heuristic.get("heuristic_reconfiguration_ratio"),
-        "mean_wave_overlap_ratio": heuristic.get("mean_wave_overlap_ratio"),
     }
 
 
@@ -1301,7 +1283,7 @@ def _run_formal_grid_cli(config: dict[str, Any], args: Any, decode_mode: str) ->
         indices = resolve_instance_indices(dataset, instance_indices=args.instance_indices,
             instance_limit=args.instance_limit, instance_offset=args.instance_offset)
     elif args.preference_set == "validation":
-        indices = select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+        indices = select_validation_subsets(dataset, None,
             target_count=default_count, diagnostic_count=0)["target"]["instance_indices"]
     else:
         indices = list(range(default_count))

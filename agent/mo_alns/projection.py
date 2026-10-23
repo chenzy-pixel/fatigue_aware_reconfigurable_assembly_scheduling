@@ -107,7 +107,7 @@ class SerialPredictor:
             if flow_mode(self.config) == FLOW_EXCESS:
                 flow = max(0, flow - env._total_processing_lower_bound_ticks * ins.resolution)
             result = PredictedSchedule((flow, cost, workload_value(resources.loads, self.config)),
-                                       all(t <= env.horizon_tick for t in order_times.values()), assignments)
+                                       all(t is not None for t in order_times.values()), assignments)
         if len(self.cache) >= 256:
             self.cache.pop(next(iter(self.cache)))
         self.cache[solution.digest()] = result

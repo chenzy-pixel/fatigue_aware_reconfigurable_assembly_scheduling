@@ -42,6 +42,8 @@ from result import (
     TrainingConsoleReporter,
 )
 from result.io import write_config, write_csv, write_json
+from result.training_history import (EPOCH_DEFINITION, LOG_VERSION, instance_row,
+                                     aggregate, grouped_rows, csv_rows, save_epoch)
 from result.terminal_log import capture_terminal_output
 from result.visdom_dashboard import (
     create_training_dashboard,
@@ -112,7 +114,7 @@ def _validation_manifest_path(config: dict, split: str) -> Path:
 def _select_training_validation_subsets(config, dataset, *, target_count, diagnostic_count):
     explicit = config["training"].get("validation_instance_indices")
     if explicit is None:
-        return select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+        return select_validation_subsets(dataset, None,
             target_count=target_count, diagnostic_count=diagnostic_count)
     if not isinstance(explicit, (list, tuple)) or any(isinstance(index, bool) for index in explicit):
         raise ValueError("validation_instance_indices must be a list of integer dataset indices")
@@ -121,7 +123,7 @@ def _select_training_validation_subsets(config, dataset, *, target_count, diagno
         raise ValueError("validation_instance_indices count must match the configured validation instance limit")
     subsets = {"target": subset_snapshot(dataset, indices, role="target")}
     if diagnostic_count:
-        diagnostic = select_validation_subsets(dataset, config["generator"]["dataset_pressure_weights"],
+        diagnostic = select_validation_subsets(dataset, None,
             target_count=0, diagnostic_count=diagnostic_count)["diagnostic"]
         if set(indices).intersection(diagnostic["instance_indices"]):
             raise ValueError("explicit target validation indices overlap the diagnostic subset")
@@ -542,12 +544,12 @@ def training_distribution_summary(rows):
     parameters = sorted({key for row in rows for key in row if key.startswith("instance_") and key != "instance_id"})
     return {
         "episode_count": len(rows),
-        "pressure_counts": dict(Counter(row.get("pressure_type", "unknown") for row in rows)),
-        "pressure_preference_counts": dict(Counter(str(row.get("pressure_type")) + ":" + str(row.get("preference_group")) for row in rows)),
+        "cell_counts": dict(Counter(row.get("cell_id", "unknown") for row in rows)),
+        "cell_preference_counts": dict(Counter(str(row.get("cell_id")) + ":" + str(row.get("preference_group")) for row in rows)),
         "parameter_ranges": {key: {"min": min(row[key] for row in rows if row.get(key) is not None),
                                   "max": max(row[key] for row in rows if row.get(key) is not None)}
                              for key in parameters if any(row.get(key) is not None for row in rows)},
-        "by_pressure_type": grouped_outcomes(rows, "pressure_type"),
+        "by_cell_id": grouped_outcomes(rows, "cell_id"),
         "failure_reasons": dict(Counter(row.get("terminal_reason", "unknown") for row in rows if row.get("truncated") or not row.get("terminated"))),
         "generation_time_seconds": sum(row.get("generation_time_seconds", 0) for row in rows),
         **{name: sum(row.get(name, 0.0) for row in rows)
@@ -562,9 +564,9 @@ def _episode_log_row(episode) -> dict[str, Any]:
     row = {
         "episode": int(episode.episode_index) + 1,
         "instance_id": episode.instance_id,
-        **{name: episode.metadata.get(name) for name in ("seed", "pressure_type", "cost_profile", "severity", "feasibility_status", "diagnostic_status")},
+        **{name: episode.metadata.get(name) for name in ("seed", "cell_id", "scale", "N", "K", "M", "W", "A", "feasibility_status", "diagnostic_status")},
         **{name: episode.metadata.get(name) for name in ("generator_config_sha256", "environment_config_sha256", "distribution_contract_sha256", "training_cache_fingerprint")},
-        "result_schema_version": "9.0.0" if "workload_mode" in metrics else EVALUATION_SCHEMA_VERSION,
+        "result_schema_version": "10.0.0" if "workload_mode" in metrics else EVALUATION_SCHEMA_VERSION,
         **{"instance_" + name: value for name, value in (episode.metadata.get("sampled_parameters") or {}).items()},
         "generation_time_seconds": episode.generation_time_seconds,
         **{name: float(getattr(episode, name, 0.0))
@@ -793,6 +795,8 @@ def _train_single_stage(
     episodes_per_update: int,
     initial_checkpoint: str | Path | None,
 ) -> Path:
+    if not smoke:
+        raise ValueError("formal schema13 training uses scripts.comparison_suite to validate the budget identity and exact interaction limit")
     started_at = time.perf_counter()
     template = load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
     from environment import AssemblySchedulingEnv
@@ -868,6 +872,8 @@ def _train_single_stage(
     last_checkpoint = run_directory / "last_checkpoint.pt"
     episode_rows: list[dict[str, Any]] = []
     update_rows: list[dict[str, Any]] = []
+    epoch_curves: list[dict[str, Any]] = []
+    cumulative_environment_steps = 0
     validation_rows: list[dict[str, Any]] = []
     sampled_validation_rows: list[dict[str, Any]] = []
     best_checkpoint_metadata: dict[str, Any] | None = None
@@ -909,10 +915,28 @@ def _train_single_stage(
             losses = agent.update(rollout.buffer) if rollout.transition_count else {}
             ppo_update_seconds = time.perf_counter() - update_started
             batch_rows = [_episode_log_row(episode) for episode in rollout.episodes]
+            cumulative_environment_steps += rollout.environment_step_count
+            raw_episodes = []
+            for row, item in zip(batch_rows, rollout.episodes):
+                record = {"episode": item.episode_index, "instance_id": item.instance_id,
+                          "metadata": item.metadata, "steps": item.step_count,
+                          "reward_sum": item.reward_sum, "metrics": item.metrics,
+                          "budget_truncated": not (item.metrics.get("terminated") or item.metrics.get("truncated")),
+                          "cutoff_reason": "episode_step_limit",
+                          "epoch": update_id, "method": "ppo", "training_seed": config["seed"],
+                          "training_steps": cumulative_environment_steps}
+                raw_episodes.append(record)
+                row.update(instance_row(record, epoch=update_id, method="ppo", training_seed=config["seed"],
+                                        training_steps=cumulative_environment_steps))
             episode_rows.extend(batch_rows)
             completed_episodes = indices[-1] + 1
             training_seconds = rollout.sampling_wall_time_seconds + ppo_update_seconds
             update_row = {
+                "epoch": update_id, "epoch_definition": EPOCH_DEFINITION, "log_schema_version": LOG_VERSION,
+                "method": "ppo", "training_seed": config["seed"],
+                "training_steps": cumulative_environment_steps,
+                "optimizer_epochs_per_batch": config["ppo"]["epochs"],
+                **aggregate(batch_rows),
                 "update_id": update_id,
                 "episode_start": indices[0],
                 "episode_end": indices[-1],
@@ -939,9 +963,12 @@ def _train_single_stage(
                 **losses,
             }
             update_rows.append(update_row)
-            write_csv(run_directory / "train_log.csv", episode_rows)
+            save_epoch(run_directory, update_row, raw_episodes)
+            epoch_curves.extend(grouped_rows(batch_rows, {k: update_row[k] for k in ("epoch", "method", "training_seed", "training_steps")}))
+            write_csv(run_directory / "epoch_objectives.csv", csv_rows(epoch_curves))
+            write_csv(run_directory / "train_log.csv", csv_rows(episode_rows))
             write_json(run_directory / "training_distribution.json", training_distribution_summary(episode_rows))
-            write_csv(run_directory / "update_log.csv", update_rows)
+            write_csv(run_directory / "update_log.csv", csv_rows(update_rows))
             dashboard.log_update(update_row, batch_rows, selector.as_dict())
             reporter.training_update(update_row, batch_rows)
 
@@ -961,12 +988,14 @@ def _train_single_stage(
                 sampling_seeds=validation_seeds,
             )
             sampled_validation_rows.extend(
-                {"validation_episode": completed_episodes, **row}
+                {"epoch": update_id, "training_steps": cumulative_environment_steps,
+                 "validation_episode": completed_episodes, **row}
                 for row in formal_rows
             )
             validation_row = _validation_log_row(
                 formal, episode=completed_episodes
             )
+            validation_row.update(epoch=update_id, training_steps=cumulative_environment_steps)
             event = selector.observe(
                 formal,
                 completed_episodes=completed_episodes,
@@ -1062,8 +1091,8 @@ def _train_single_stage(
                 stage="final_test",
             )
 
-    write_csv(run_directory / "train_log.csv", episode_rows)
-    write_csv(run_directory / "update_log.csv", update_rows)
+    write_csv(run_directory / "train_log.csv", csv_rows(episode_rows))
+    write_csv(run_directory / "update_log.csv", csv_rows(update_rows))
     write_csv(run_directory / "validation_log.csv", validation_rows)
     write_csv(
         run_directory / "sampled_validation_instance_metrics.csv",
@@ -1099,6 +1128,8 @@ def _train_single_stage(
         "experiment_name": config["experiment_name"],
         "seed": int(config["seed"]),
         "episodes": episodes,
+        "epochs": len(update_rows), "epoch_definition": EPOCH_DEFINITION,
+        "log_schema_version": LOG_VERSION, "training_steps": cumulative_environment_steps,
         "training_distribution": training_distribution_summary(episode_rows),
         "validation_subsets": subsets,
         "diagnostic_validation_count": len(diagnostic_log),

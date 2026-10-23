@@ -2,9 +2,7 @@
   "extends": "../default.json",
   "experiment_name": "comparison_suite_v1",
   "comparison": {
-    "version": "comparison_suite_v1",
-    "training_steps": 350411,
-    "pilot_steps": 35041,
+    "version": "comparison_suite_v2",
     "evolution": {
       "population_size": 32,
       "crossover_probability": 0.9,
@@ -25,6 +23,8 @@
   "training": {
     "forced_action_compression": false,
     "episodes_per_update": 20,
-    "formal_evaluation": {"sample_aggregation": "best_of_3_v1"}
+    "formal_evaluation": {
+      "sample_aggregation": "best_of_3_v1"
+    }
   }
 }

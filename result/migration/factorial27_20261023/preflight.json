@@ -1,0 +1,70 @@
+{
+  "main": {
+    "study_identity": "e24278e610137f6fb1ffb021178ba17fa76915d6c19174c7d80146cdeadb0575",
+    "schema": 13,
+    "counts": {
+      "calibration": 54,
+      "validation": 27,
+      "test": 27
+    },
+    "scales": {
+      "cost": 1393.7120629561937,
+      "flow": 4479.251851851852,
+      "workload": 36.93053642901436
+    },
+    "budget_status": "requires_new_calibration",
+    "runtime": {
+      "core_profile": "v8_preference_conditioned_multiobjective",
+      "production_action": "pair_plus_wait_v1",
+      "worker_action": "pair_plus_wait_v1",
+      "policy_head": 8,
+      "candidate_ranker": "shared_preference_mlp_v1",
+      "worker_feasibility": "instant_physical_pair_mask_v1",
+      "wait_mask": "batch_progress_wait_v3",
+      "observation_schema": 13,
+      "time_context": "order_chain_remaining_context_v3",
+      "reward": "single_stage_progress_quality_workload_failure_v6",
+      "terminal_failure_penalty": 2.0,
+      "training_protocol": "single_stage_lexicographic_workload_failure_v6_best_of_3_v1",
+      "data_schema": 3,
+      "physics": "batch_event_v1",
+      "distribution": "factorial27_v1",
+      "message_function": "attributed_joint_relu_v1",
+      "message_aggregation": "total_degree_mean_v1",
+      "global_objective_encoding": "log2_v1",
+      "flow_mode": "excess_proportional_lb_v1",
+      "normalization_manifest_sha256": "bc4739bc2b78a145ac6ce91cec0e8e403c81951f99d7087acb6014df4dcd79ee",
+      "workload_objective": {
+        "mode": "geometric_owa",
+        "q": 0.5,
+        "version": "workload_objective_v1",
+        "order": "descending",
+        "weights": "normalized_geometric_by_worker_count_v1"
+      },
+      "objective_names": [
+        "flow",
+        "cost",
+        "workload"
+      ],
+      "objective_scales": [
+        4479.251851851852,
+        1393.7120629561937,
+        36.93053642901436
+      ],
+      "encoder_variant": "hetero_gnn",
+      "actor_head_variant": "shared_preference",
+      "fatigue_mode": "full",
+      "sample_aggregation": "best_of_3_v1",
+      "sampling_budget": 3
+    },
+    "network_probe_finite": true,
+    "feature_dimensions": {
+      "operation": 9,
+      "machine": 10,
+      "worker": 7,
+      "order": 7,
+      "module": 7,
+      "global": 11
+    }
+  }
+}

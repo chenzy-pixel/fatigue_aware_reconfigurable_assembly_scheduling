@@ -1,0 +1,229 @@
+{
+  "trajectories": [
+    {
+      "cell": "C01",
+      "steps": 244,
+      "snapshots": 5,
+      "cmax": 212.4
+    },
+    {
+      "cell": "C02",
+      "steps": 370,
+      "snapshots": 7,
+      "cmax": 378.20000000000005
+    },
+    {
+      "cell": "C03",
+      "steps": 537,
+      "snapshots": 9,
+      "cmax": 595.6
+    },
+    {
+      "cell": "C04",
+      "steps": 301,
+      "snapshots": 6,
+      "cmax": 151.70000000000002
+    },
+    {
+      "cell": "C05",
+      "steps": 381,
+      "snapshots": 7,
+      "cmax": 196.8
+    },
+    {
+      "cell": "C06",
+      "steps": 526,
+      "snapshots": 9,
+      "cmax": 329.5
+    },
+    {
+      "cell": "C07",
+      "steps": 260,
+      "snapshots": 5,
+      "cmax": 105.5
+    },
+    {
+      "cell": "C08",
+      "steps": 314,
+      "snapshots": 6,
+      "cmax": 155.9
+    },
+    {
+      "cell": "C09",
+      "steps": 466,
+      "snapshots": 8,
+      "cmax": 179.5
+    },
+    {
+      "cell": "C10",
+      "steps": 587,
+      "snapshots": 10,
+      "cmax": 569.7
+    },
+    {
+      "cell": "C11",
+      "steps": 749,
+      "snapshots": 12,
+      "cmax": 761.2
+    },
+    {
+      "cell": "C12",
+      "steps": 1192,
+      "snapshots": 19,
+      "cmax": 1293.7
+    },
+    {
+      "cell": "C13",
+      "steps": 674,
+      "snapshots": 11,
+      "cmax": 405.1
+    },
+    {
+      "cell": "C14",
+      "steps": 818,
+      "snapshots": 13,
+      "cmax": 429.1
+    },
+    {
+      "cell": "C15",
+      "steps": 1035,
+      "snapshots": 16,
+      "cmax": 590.1
+    },
+    {
+      "cell": "C16",
+      "steps": 627,
+      "snapshots": 10,
+      "cmax": 258.3
+    },
+    {
+      "cell": "C17",
+      "steps": 731,
+      "snapshots": 12,
+      "cmax": 355.3
+    },
+    {
+      "cell": "C18",
+      "steps": 926,
+      "snapshots": 15,
+      "cmax": 337.90000000000003
+    },
+    {
+      "cell": "C19",
+      "steps": 1301,
+      "snapshots": 20,
+      "cmax": 1282.6000000000001
+    },
+    {
+      "cell": "C20",
+      "steps": 1846,
+      "snapshots": 28,
+      "cmax": 1837.9
+    },
+    {
+      "cell": "C21",
+      "steps": 2224,
+      "snapshots": 33,
+      "cmax": 2323.2000000000003
+    },
+    {
+      "cell": "C22",
+      "steps": 1344,
+      "snapshots": 21,
+      "cmax": 722.7
+    },
+    {
+      "cell": "C23",
+      "steps": 1571,
+      "snapshots": 24,
+      "cmax": 901.9000000000001
+    },
+    {
+      "cell": "C24",
+      "steps": 1994,
+      "snapshots": 30,
+      "cmax": 1100.3
+    },
+    {
+      "cell": "C25",
+      "steps": 1239,
+      "snapshots": 19,
+      "cmax": 445.3
+    },
+    {
+      "cell": "C26",
+      "steps": 1525,
+      "snapshots": 23,
+      "cmax": 546.4
+    },
+    {
+      "cell": "C27",
+      "steps": 1979,
+      "snapshots": 30,
+      "cmax": 788.1
+    }
+  ],
+  "permutations": {
+    "C01": {
+      "modules": {
+        "logits_max_error": 4.470348358154297e-08,
+        "value_error": 0.0
+      },
+      "machines": {
+        "logits_max_error": 1.4901161193847656e-08,
+        "value_error": 2.9802322387695312e-08
+      },
+      "workers": {
+        "logits_max_error": 9.685754776000977e-08,
+        "value_error": 7.450580596923828e-09
+      },
+      "orders": {
+        "logits_max_error": 5.21540641784668e-08,
+        "value_error": 0.0
+      }
+    },
+    "C14": {
+      "modules": {
+        "logits_max_error": 4.470348358154297e-08,
+        "value_error": 7.450580596923828e-09
+      },
+      "machines": {
+        "logits_max_error": 3.3527612686157227e-08,
+        "value_error": 0.0
+      },
+      "workers": {
+        "logits_max_error": 5.960464477539063e-08,
+        "value_error": 1.4901161193847656e-08
+      },
+      "orders": {
+        "logits_max_error": 5.960464477539063e-08,
+        "value_error": 7.450580596923828e-09
+      }
+    },
+    "C27": {
+      "modules": {
+        "logits_max_error": 4.470348358154297e-08,
+        "value_error": 2.9802322387695312e-08
+      },
+      "machines": {
+        "logits_max_error": 2.2351741790771484e-08,
+        "value_error": 2.9802322387695312e-08
+      },
+      "workers": {
+        "logits_max_error": 3.725290298461914e-08,
+        "value_error": 0.0
+      },
+      "orders": {
+        "logits_max_error": 7.450580596923828e-08,
+        "value_error": 0.0
+      }
+    }
+  },
+  "node_widths": {
+    "operation": 9,
+    "machine": 10,
+    "worker": 7,
+    "order": 7,
+    "module": 7
+  }
+}

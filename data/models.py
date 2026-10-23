@@ -61,7 +61,6 @@ class OperationSpec:
 @dataclass(frozen=True)
 class OrderSpec:
     id: str
-    wave: str
     release_time: float
     operations: tuple[OperationSpec, ...]
 
@@ -72,13 +71,11 @@ class AssemblyInstance:
     instance_id: str
     instance_type: str
     resolution: float
-    horizon: float
     modules: tuple[str, ...]
     no_module_state: str
     machines: tuple[MachineSpec, ...]
     workers: tuple[WorkerSpec, ...]
     orders: tuple[OrderSpec, ...]
-    waves: dict[str, dict[str, Any]]
     fatigue: FatigueSpec
     module_costs: dict[str, ModuleCostSpec]
     unfinished_order_penalty: float
@@ -121,9 +118,11 @@ def _require_positive(value: Any, name: str) -> float:
 def parse_instance_dict(
     raw: dict[str, Any],
     *,
-    minimum_compatible_machines: int = 3,
-    minimum_qualified_workers: int = 3,
+    minimum_compatible_machines: int = 2,
+    minimum_qualified_workers: int = 2,
 ) -> AssemblyInstance:
+    if raw.get("schema_version") != "3.0.0" or "horizon" in raw.get("time", {}) or "waves" in raw:
+        raise ValueError("data schema 3 required; use archived code for historical instances")
     fatigue_raw = raw["fatigue"]
     fatigue = FatigueSpec(
         maximum_safe_fatigue=_as_float(
@@ -202,7 +201,7 @@ def parse_instance_dict(
                 f"{worker['id']}.labor_cost_per_minute",
             ),
             initial_fatigue=_as_float(
-                worker.get("initial_fatigue", fatigue_raw["initial_fatigue"]),
+                worker.get("initial_fatigue", fatigue_raw.get("initial_fatigue", 0.0)),
                 f"{worker['id']}.initial_fatigue",
             ),
         )
@@ -226,7 +225,6 @@ def parse_instance_dict(
         orders.append(
             OrderSpec(
                 id=str(order["id"]),
-                wave=str(order["wave"]),
                 release_time=_as_float(
                     order["release_time"], f"{order['id']}.release_time"
                 ),
@@ -238,13 +236,11 @@ def parse_instance_dict(
         instance_id=str(raw["instance_id"]),
         instance_type=str(raw["instance_type"]),
         resolution=_as_float(raw["time"]["resolution"], "time.resolution"),
-        horizon=_as_float(raw["time"]["horizon"], "time.horizon"),
         modules=tuple(str(value) for value in raw["sets"]["modules"]),
         no_module_state=str(raw["sets"]["no_module_state"]),
         machines=tuple(machines),
         workers=workers,
         orders=tuple(orders),
-        waves={str(key): dict(value) for key, value in raw["waves"].items()},
         fatigue=fatigue,
         module_costs=module_costs,
         unfinished_order_penalty=_as_float(
@@ -263,14 +259,14 @@ def parse_instance_dict(
 def load_instance_yaml(path: str | Path) -> AssemblyInstance:
     with Path(path).open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
-    return parse_instance_dict(raw)
+    return parse_instance_dict(raw.get("instance",raw))
 
 
 def load_instance_json(
     path: str | Path,
     *,
-    minimum_compatible_machines: int = 3,
-    minimum_qualified_workers: int = 3,
+    minimum_compatible_machines: int = 2,
+    minimum_qualified_workers: int = 2,
 ) -> AssemblyInstance:
     with Path(path).open("r", encoding="utf-8") as handle:
         raw = json.load(handle)
@@ -290,7 +286,6 @@ def instance_to_dict(instance: AssemblyInstance) -> dict[str, Any]:
         "time": {
             "unit": "minute",
             "resolution": instance.resolution,
-            "horizon": instance.horizon,
         },
         "sets": {
             "modules": list(instance.modules),
@@ -298,7 +293,6 @@ def instance_to_dict(instance: AssemblyInstance) -> dict[str, Any]:
             "machines": [machine.id for machine in instance.machines],
             "workers": [worker.id for worker in instance.workers],
             "orders": [order.id for order in instance.orders],
-            "waves": list(instance.waves),
         },
         "fatigue": {
             "initial_fatigue": (
@@ -353,17 +347,9 @@ def instance_to_dict(instance: AssemblyInstance) -> dict[str, Any]:
             }
             for worker in instance.workers
         ],
-        "waves": {
-            wave_id: {
-                key: list(value) if isinstance(value, tuple) else value
-                for key, value in wave.items()
-            }
-            for wave_id, wave in instance.waves.items()
-        },
         "orders": [
             {
                 "id": order.id,
-                "wave": order.wave,
                 "release_time": order.release_time,
                 "operations": [
                     {
@@ -402,16 +388,28 @@ def load_instance_pickle(path: str | Path) -> AssemblyInstance:
 def validate_instance(
     instance: AssemblyInstance,
     *,
-    minimum_compatible_machines: int = 3,
-    minimum_qualified_workers: int = 3,
+    minimum_compatible_machines: int = 2,
+    minimum_qualified_workers: int = 2,
 ) -> None:
     if minimum_compatible_machines < 1 or minimum_qualified_workers < 1:
         raise ValueError("minimum resource counts must be positive")
+    for name, identifiers in (
+        ("module", instance.modules),
+        ("machine", tuple(m.id for m in instance.machines)),
+        ("worker", tuple(w.id for w in instance.workers)),
+    ):
+        if not identifiers or len(set(identifiers)) != len(identifiers):
+            raise ValueError(f"{name} ids must be nonempty and unique")
+    if not instance.orders:
+        raise ValueError("instance must contain orders")
+    if instance.no_module_state in instance.modules:
+        raise ValueError("no_module_state must be distinct from real modules")
     modules = set(instance.modules)
     if not modules:
         raise ValueError("instance must define at least one module")
     _require_positive(instance.resolution, "time.resolution")
-    _require_positive(instance.horizon, "time.horizon")
+    if instance.schema_version != "3.0.0":
+        raise ValueError("data schema 3 required")
     _require_non_negative(
         instance.unfinished_order_penalty,
         "unfinished_order_penalty_per_order",
@@ -450,8 +448,8 @@ def validate_instance(
             f"{module}.fixed_installation_cost",
         )
     for machine in instance.machines:
-        if len(machine.module_parameters) != 2:
-            raise ValueError(f"{machine.id} must support exactly two modules")
+        if len(machine.module_parameters) != 3:
+            raise ValueError(f"{machine.id} must support exactly three modules")
         if machine.initial_module not in machine.module_parameters:
             raise ValueError(f"{machine.id} initial module is not compatible")
         _require_non_negative(
@@ -517,14 +515,12 @@ def validate_instance(
         if order.id in order_ids:
             raise ValueError(f"duplicate order id {order.id}")
         order_ids.add(order.id)
-        if order.wave not in instance.waves:
-            raise ValueError(f"{order.id} references unknown wave {order.wave}")
         _require_non_negative(
             order.release_time,
             f"{order.id}.release_time",
         )
-        if order.release_time > instance.horizon:
-            raise ValueError(f"{order.id} releases after the scheduling horizon")
+        if order.release_time != 0:
+            raise ValueError("batch orders must release at zero")
         if not order.operations:
             raise ValueError(f"{order.id} has no operations")
         expected_sequences = list(range(1, len(order.operations) + 1))
@@ -586,80 +582,13 @@ def validate_instance(
                 ready.append(successor)
     if visited != len(operation_ids):
         raise ValueError("operation precedence graph contains a cycle")
-    for wave_id, wave in instance.waves.items():
-        dominant_module = str(wave["dominant_module"])
-        if dominant_module not in modules:
-            raise ValueError(
-                f"{wave_id} has unknown dominant module {dominant_module}"
-            )
-        referenced_order_ids = [
-            str(value) for value in wave.get("order_ids", [])
-        ]
-        if len(referenced_order_ids) != len(set(referenced_order_ids)):
-            raise ValueError(f"{wave_id} contains duplicate order ids")
-        expected_order_ids = {
-            order.id for order in instance.orders if order.wave == wave_id
-        }
-        if not expected_order_ids:
-            raise ValueError(f"{wave_id} has no orders")
-        if set(referenced_order_ids) != expected_order_ids:
-            raise ValueError(
-                f"{wave_id} order_ids do not match orders assigned to the wave"
-            )
-        release_interval = wave.get("release_interval")
-        if not isinstance(release_interval, (list, tuple)) or len(release_interval) != 2:
-            raise ValueError(f"{wave_id} release_interval must contain two values")
-        release_low = _as_float(
-            release_interval[0], f"{wave_id}.release_interval[0]"
-        )
-        release_high = _as_float(
-            release_interval[1], f"{wave_id}.release_interval[1]"
-        )
-        if release_low > release_high or release_high > instance.horizon:
-            raise ValueError(f"{wave_id} has an invalid release interval")
-        wave_orders = [
-            order for order in instance.orders if order.wave == wave_id
-        ]
-        expected_release_interval = [
-            min(order.release_time for order in wave_orders),
-            max(order.release_time for order in wave_orders),
-        ]
-        if [release_low, release_high] != expected_release_interval:
-            raise ValueError(
-                f"{wave_id} release interval does not exactly match its orders"
-            )
-        wave_operations = [
-            operation
-            for order in wave_orders
-            for operation in order.operations
-        ]
-        dominant_share = sum(
-            operation.required_module == dominant_module
-            for operation in wave_operations
-        ) / len(wave_operations)
-        if dominant_share + 1e-12 < 0.60:
-            raise ValueError(
-                f"{wave_id} dominant module share is below 0.60"
-            )
-    if instance.instance_type == "fixed_standard":
-        if (len(instance.machines), len(instance.workers), len(instance.orders)) != (
-            8,
-            6,
-            15,
-        ):
-            raise ValueError("fixed instance must contain 8 machines, 6 workers, 15 orders")
-        if len(instance.operations) != 60:
-            raise ValueError("fixed instance must contain 60 operations")
-        for wave_id, wave in instance.waves.items():
-            dominant = str(wave["dominant_module"])
-            order_ids = set(str(value) for value in wave["order_ids"])
-            dominant_count = sum(
-                operation.required_module == dominant
-                for order in instance.orders
-                if order.id in order_ids
-                for operation in order.operations
-            )
-            if dominant_count != 15:
-                raise ValueError(
-                    f"{wave_id} must contain 15 operations for dominant module {dominant}"
-                )
+
+
+def instance_time_scale(instance: AssemblyInstance) -> float:
+    from environment.dynamics import quantize_to_ticks
+    r = instance.resolution
+    times = {o.id: min(max(1, quantize_to_ticks(o.base_processing_time*m.module_parameters[o.required_module].processing_speed_factor,r))*r for m in instance.machines if o.required_module in m.module_parameters) for o in instance.operations}
+    bounds = [r, sum(times.values())/len(instance.machines)]
+    bounds += [sum(times[o.id] for o in j.operations) for j in instance.orders]
+    bounds += [sum(times[o.id] for o in instance.operations if o.required_module==a)/sum(a in m.module_parameters for m in instance.machines) for a in instance.modules]
+    return quantize_to_ticks(max(bounds),r)*r
