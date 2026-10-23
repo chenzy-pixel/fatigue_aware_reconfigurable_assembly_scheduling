@@ -1,5 +1,7 @@
 # 对照与消融
 
+2026-10-23：当前schema13三因子27例实验使用[实验体系v1](experiment_suite_v1.md)及`configs/experiment_suite_v1.json`，包括35次按2000算例尝试训练、五规则和两类搜索。以下保留历史协议记录。
+
 更新：2026-10-17。原有PPO单因素消融与新增跨方法比较分别按下述契约解释。
 
 主线为 HGNN + shared-head + excess Flow + OWA(q=.5)。[当前消融清单](../configs/manifests/ablation_mainline.json) 定义八组训练和四组配对，配置路径见[迁移说明](project_cleanup.md)。

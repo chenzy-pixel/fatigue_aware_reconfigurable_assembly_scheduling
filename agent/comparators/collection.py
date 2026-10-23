@@ -17,13 +17,15 @@ class Collected:
     losses: dict
 
 
-def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, episodes_per_batch=20):
+def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False, episodes_per_batch=20):
     """Every issued command reserves exactly one real step, including WAIT.
 
     Policy freezes during each PPO batch. At the final global boundary, active
     trajectories bootstrap from their current observation; no fake failure.
     DDQN learns online at its configured raw-interaction cadence.
     """
+    if episodes_per_batch <= 0 or (allowance is not None and allowance <= 0):
+        raise ValueError("positive collection allowance and batch size required")
     started = time.perf_counter()
     total = RolloutBuffer()
     active, histories, summary = {}, {}, []
@@ -34,7 +36,7 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
         nonlocal indices
         commands = {}
         for lane in lanes:
-            if indices >= episodes_per_batch or allowance-used <= len(active)+len(commands):
+            if indices >= episodes_per_batch or (allowance is not None and allowance-used <= len(active)+len(commands)):
                 break
             episode = start_episode+indices
             pref = quality_preference_for_episode(config, algorithm_seed=config["seed"], quality_episode_index=episode)
@@ -61,7 +63,7 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
         context = histories[lane]
         if not ddqn:
             bootstrap = 0. if response.terminated else agent.value(response.observation, response.action_mask)
-            context["buffer"].compute_gae(last_value=bootstrap, gamma=1., gae_lambda=config["ppo"]["gae_lambda"])
+            context["buffer"].compute_gae(last_value=bootstrap, gamma=config['ppo']['gamma'], gae_lambda=config["ppo"]["gae_lambda"])
             total.extend(context["buffer"])
         summary.append({"episode": context["episode"], "steps": context["steps"],
                         "reward_sum": context["reward_sum"], "instance_id": context["instance_id"], "metadata": context["metadata"],
@@ -74,8 +76,8 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
         active.pop(lane, None)
 
     fill(range(runner.worker_count))
-    while active and used < allowance:
-        lanes = sorted(active)[:allowance-used]
+    while active and (allowance is None or used < allowance):
+        lanes = sorted(active) if allowance is None else sorted(active)[:allowance-used]
         observations = [active[lane].observation for lane in lanes]
         masks = [active[lane].action_mask for lane in lanes]
         if ddqn:
@@ -105,7 +107,7 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
             if response.terminated or response.truncated:
                 finish(lane, response)
                 completed.append(lane)
-        if used < allowance:
+        if allowance is None or used < allowance:
             fill(completed)
     snapshots = runner._exchange({lane: ("snapshot", None) for lane in active}) if active else {}
     for lane, response in list(active.items()):
@@ -115,5 +117,7 @@ def collect(runner, agent, config, start_episode, allowance, *, ddqn=False, epis
         for key in EVALUATION_WORKER_TIMING_FIELDS:
             histories[lane][key] += float(getattr(snapshots[lane], key, 0.))
         finish(lane, response, cutoff=True)
-    return Collected(total, used, indices, summary, time.perf_counter()-started,
+    if allowance is None and (len(summary) != episodes_per_batch or indices != episodes_per_batch):
+        raise RuntimeError("episode batch did not finish all requested attempts")
+    return Collected(total, used, indices, sorted(summary, key=lambda e: e['episode']), time.perf_counter()-started,
                      {"td_loss": sum(ddqn_losses)/len(ddqn_losses)} if ddqn_losses else {})

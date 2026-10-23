@@ -796,7 +796,7 @@ def _train_single_stage(
     initial_checkpoint: str | Path | None,
 ) -> Path:
     if not smoke:
-        raise ValueError("formal schema13 training uses scripts.comparison_suite to validate the budget identity and exact interaction limit")
+        raise ValueError("formal schema13 training uses scripts.comparison_suite to validate the budget identity and episode training protocol")
     started_at = time.perf_counter()
     template = load_instance_yaml(project_path(config["paths"]["fixed_instance"]))
     from environment import AssemblySchedulingEnv

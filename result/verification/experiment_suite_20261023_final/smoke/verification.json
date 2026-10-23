@@ -1,0 +1,90 @@
+{
+  "purpose": "local_interface_and_mechanism_verification",
+  "performance_evidence": false,
+  "arms": {
+    "full": {
+      "training_steps": 615,
+      "updates": 20,
+      "evaluation_candidates": 3,
+      "reload_passed": true
+    },
+    "no_graph": {
+      "training_steps": 482,
+      "updates": 16,
+      "evaluation_candidates": 3,
+      "reload_passed": true
+    },
+    "no_direct": {
+      "training_steps": 669,
+      "updates": 22,
+      "evaluation_candidates": 3,
+      "reload_passed": true
+    },
+    "no_residual": {
+      "training_steps": 615,
+      "updates": 20,
+      "evaluation_candidates": 3,
+      "reload_passed": true
+    },
+    "a2c": {
+      "training_steps": 615,
+      "updates": 1,
+      "evaluation_candidates": 3,
+      "reload_passed": true
+    },
+    "rule_ddqn": {
+      "training_steps": 493,
+      "updates": 492,
+      "evaluation_candidates": 1,
+      "reload_passed": true
+    },
+    "dcan": {
+      "training_steps": 692,
+      "updates": 22,
+      "evaluation_candidates": 3,
+      "reload_passed": true
+    }
+  },
+  "source_identity": "15f15f2d991873fe2f8428003cce0d3bff0f0bd8c459a4cbb3741012487d2a6b",
+  "rules": {
+    "eft_lf": {
+      "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+      "steps": 6
+    },
+    "srw_lf": {
+      "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+      "steps": 6
+    },
+    "mc_mc": {
+      "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+      "steps": 6
+    },
+    "mwl_mwl": {
+      "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+      "steps": 6
+    },
+    "existing_heuristic": {
+      "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+      "steps": 6
+    }
+  },
+  "search": {
+    "nsga2_ls_frontier": {
+      "paid_hv": 0.9997098571687185,
+      "seconds": 0.25569560000440106
+    },
+    "nsga2_ls_independent_request": {
+      "paid_hv": 0.9997098571687185,
+      "seconds": 0.5305888999937451
+    },
+    "moead_frontier": {
+      "paid_hv": 0.9997098571687185,
+      "seconds": 0.1931297999981325
+    },
+    "moead_independent_request": {
+      "paid_hv": 0.9997098571687185,
+      "seconds": 0.3809592000034172
+    }
+  },
+  "paired_training_streams": true
+}

@@ -75,6 +75,13 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         manifest["encoder_variant"] = network.get("encoder_variant", "hetero_gnn")
         manifest.update(validate_message_identity(network))
         manifest["actor_head_variant"] = network.get("actor_head_variant", "shared_preference")
+        # Full defaults retain the historical manifest; explicit interventions
+        # carry their identity in both the manifest and network checkpoint spec.
+        for key in ("direct_features_enabled", "residual_enabled"):
+            if key in network:
+                if type(network[key]) is not bool:
+                    raise ValueError(f"network.{key} must be a boolean")
+                manifest[key] = network[key]
         manifest["fatigue_mode"] = config.get("environment", {}).get("fatigue_mode", "full")
         if manifest["fatigue_mode"] == "neutral":
             manifest["worker_feasibility"] = "qualification_and_availability_no_fatigue_v1"
@@ -90,7 +97,7 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         comparison = config.get("comparison")
         if comparison is not None:
             manifest["comparison"] = {key: comparison[key] for key in
-                ("version", "method", "delivery_protocol", "training_steps") if key in comparison}
+                ("version", "method", "delivery_protocol", "training_steps", "training_budget") if key in comparison}
             method = comparison.get("method")
             if method in {"dcan", "rule_ddqn"}:
                 manifest["encoder_variant"] = "dcan_assembly_v1" if method == "dcan" else "pooled_rule_state_v1"

@@ -10,7 +10,10 @@ def startup_preflight(configs, *, probe_network=False, **kwargs):
         validate_training_distribution(c)
         pools = {s: load_dataset_split(c, s) for s in ('calibration', 'validation', 'test')}
         from scripts.comparison_suite import study_identity
-        row = {'study_identity':study_identity(c),'schema': 13, 'counts': {s: len(d) for s, d in pools.items()}, 'scales': c['objective_scalarizer']['scales'], 'budget_status': 'requires_new_calibration', 'runtime': c['runtime_manifest']}
+        from agent.comparators.training_budget import training_budget
+        row = {'study_identity':study_identity(c),'schema': 13, 'counts': {s: len(d) for s, d in pools.items()}, 'scales': c['objective_scalarizer']['scales'],
+               'training_budget': training_budget(c), 'budget_status': 'configured_episode_training',
+               'search_budget_status': 'requires_calibration_manifest', 'runtime': c['runtime_manifest']}
         if probe_network:
             import torch
             from environment import AssemblySchedulingEnv

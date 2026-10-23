@@ -37,30 +37,30 @@ python -m scripts.run_experiments --stage preflight --device cpu
 
 审计会重放当前固定实例的调度证书，并核对已提供的历史材料。首次克隆未包含的本地历史缓存会单独计数；当前固定数据或现存历史文件的哈希不一致会报错。正式训练前可用 `--device cuda` 检查实验机器。
 
-**3. 完成预算标定后，启动三种子训练**
+**3. 启动三种子训练**
 
-先按[预算标定与启动说明](docs/factorial27_migration.md#正式实验入口)生成与当前源码和数据身份匹配的预算清单，再将下例的 `path/to/budget.json` 替换为实际路径：
+PPO、DCAN、Rule-DDQN统一按每方法、每种子2000次调度尝试训练，每批20例，共100个Epoch；在第5、10、……、100个Epoch验证，共20次。成功、物理失败和工程保护截断均计入尝试次数。以下命令在远端执行：
 
 ```powershell
 foreach ($seed in 11, 23, 37) {
-    python -m scripts.comparison_suite --stage train --method ppo --seed $seed --budget-manifest path/to/budget.json --remote-run --output-dir "result/formal_seed$seed"
+    python -m scripts.comparison_suite --stage train --method ppo --seed $seed --remote-run --output-dir "result/formal_episodes_seed$seed"
     if ($LASTEXITCODE -ne 0) { throw "Training failed for seed $seed" }
 }
 ```
 
-以上依次运行种子 **11、23、37**，任一失败即停止。通过 `--config` 指定配置、`--method` 选择方法；当前[消融与对照配置表](configs/factorial27_ablations.json)列出可用变体。每项实验都需要匹配的预算身份。
+以上依次运行种子 **11、23、37**，任一失败即停止。通过 `--config` 指定配置、`--method` 选择方法；当前[消融与对照配置表](configs/factorial27_ablations.json)列出可用变体。训练协议及验证间隔纳入运行与checkpoint身份；`--method dcan`、`--method rule_ddqn`使用相同训练例数。
 
 ## 实验与评估
 
 当前采用三因子全组合设计：订单数 **12/24/48**、每单工序数 **3/4/5**、机器数 **4/8/12**，共 **27组**。小、中、大规模按订单数划分，每种规模包含9组工序数与机器数组合；工人数为机器数的3/4，模块数为机器数的3/2。其余参数共享统一范围，详见[27例参数表](data/tables/factorial27_parameters.csv)和[公共参数](data/tables/factorial27_common_parameters.csv)。
 
-固定数据包含 **54个标定实例、27个验证实例、27个正式测试实例**，保存在 `data/instances/v3`，三个集合独立生成。训练算例在线构造，每27次算例启动覆盖全部组合。标定集用于确定预算，验证集用于选模，测试集用于最终评价；参考调度与可重放证书用于数据审计。
+固定数据包含 **54个标定实例、27个验证实例、27个正式测试实例**，保存在 `data/instances/v3`，三个集合独立生成。训练算例在线构造，每27次算例启动覆盖全部组合。标定集用于开发与搜索预算研究，验证集用于选模，测试集用于最终评价；参考调度与可重放证书用于数据审计。
 
 训练保存验证选出的 best 模型；正式测试通过独立 `evaluate` 阶段加载模型执行。PPO/DCAN 主交付采用同实例、同偏好三次采样取优，DDQN 采用单次贪心；搜索方法通过标定集研究计算预算。所有方法均记录完成覆盖、原始目标和计算耗时。当前选模、交付与独立测试命令见[实验运行说明](docs/factorial27_migration.md#正式实验入口)。
 
-主线与对照通过 `python -m scripts.comparison_suite` 统一运行，默认仅预检；`calibrate-budget`、`train` 和 `evaluate` 分别执行预算标定、训练与评价，正式实验要求显式指定 `--remote-run`。当前数据使用 schema3，预测语义为 `order_chain_remaining_context_v3_1`；模型和预算清单均检查对应身份。
+主线与对照通过 `python -m scripts.comparison_suite` 统一运行，默认仅预检；`calibrate-budget`、`train` 和 `evaluate` 分别执行预算标定、训练与评价，正式实验要求显式指定 `--remote-run`。当前数据使用 schema3，预测语义为 `order_chain_remaining_context_v3_1`；学习模型检查训练协议身份，搜索预算清单检查源码与数据身份。
 
-结果保留配置、源码/数据/权重身份、训练与验证日志、原始候选及选中交付。每个采样与学习批次记为一个 epoch，逐算例记录三个目标、决策次数、环境步数、奖励、耗时、完成状态、疲劳与工人负荷，并导出分组 CSV。完整解目标与截断阶段值分别记录；固定验证在交互预算20%、40%、60%、80%、100%处执行。论文曲线字段与统计口径见[Epoch与三目标训练记录](docs/training_history.md)。
+结果保留配置、源码/数据/权重身份、训练与验证日志、原始候选及选中交付。每个采样与学习批次记为一个 epoch，逐算例记录三个目标、决策次数、环境步数、奖励、耗时、完成状态、疲劳与工人负荷，并导出分组 CSV。完整解目标与截断阶段值分别记录；固定验证在每5个Epoch学习更新后执行，并在训练末尾保证执行一次。训练环境交互、全部验证候选的环境交互及其耗时分别记录；完成计划仅表示训练额度执行完毕，收敛需依据曲线判断。论文曲线字段与统计口径见[Epoch与三目标训练记录](docs/training_history.md)。
 
 历史 schema12 实验及独立挑战集按原配置和代码解释，归档位置与复现方法见[历史恢复说明](docs/factorial27_migration.md#历史恢复)。
 

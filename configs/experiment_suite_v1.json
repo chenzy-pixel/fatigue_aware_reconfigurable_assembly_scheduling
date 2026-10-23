@@ -1,0 +1,30 @@
+{
+  "version": "factorial27_experiment_suite_v1",
+  "base_config": "configs/comparators/suite.json",
+  "seeds": [11, 23, 37, 53, 71],
+  "training": {"budget_unit": "episodes", "episodes": 2000, "episodes_per_update": 20, "validation_interval_epochs": 5},
+  "arms": {
+    "full": {"method": "ppo", "network": {}},
+    "no_graph": {"method": "ppo", "network": {"encoder_variant": "node_mlp_pool"}},
+    "no_direct": {"method": "ppo", "network": {"direct_features_enabled": false}},
+    "no_residual": {"method": "ppo", "network": {"residual_enabled": false}},
+    "a2c": {"method": "a2c", "network": {}},
+    "rule_ddqn": {"method": "rule_ddqn", "network": {}},
+    "dcan": {"method": "dcan", "network": {}}
+  },
+  "rules": ["eft_lf", "srw_lf", "mc_mc", "mwl_mwl", "existing_heuristic"],
+  "search_methods": ["nsga2_ls", "moead"],
+  "search": {
+    "seconds": 600,
+    "checkpoints": [60, 180, 600],
+    "development_cells": ["C01", "C14", "C27"],
+    "development_seed": 11,
+    "minimum_distinct_feasible": 2,
+    "minimum_iterations": 1,
+    "budget_sufficiency": "not_established"
+  },
+  "statistics": {"bootstrap_samples": 10000, "bootstrap_seed": 20261023, "confidence": 0.95, "correction": "holm"},
+  "representative_cells": ["C01", "C14", "C27"],
+  "tuning": "frozen_parameters",
+  "execution": {"torch_threads": 1, "training_workers": 20, "concurrent_jobs": 1, "timing_resources": "exclusive"}
+}

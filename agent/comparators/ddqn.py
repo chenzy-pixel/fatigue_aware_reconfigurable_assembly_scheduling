@@ -83,6 +83,18 @@ class RuleDDQN:
         self.sync_every = int(settings.get("sync_every", 1000))
         self.steps, self.updates, self.sample_presentations = 0, 0, 0
         self.rng = random.Random(config["seed"])
+        self.batch_epsilon = None
+
+    def set_episode_progress(self, completed, total):
+        if total <= 0 or not 0 <= completed <= total:
+            raise ValueError("invalid episode exploration progress")
+        self.batch_epsilon = max(.05, 1-.95*completed/(.5*total))
+
+    @property
+    def exploration_epsilon(self):
+        if self.batch_epsilon is not None:
+            return self.batch_epsilon
+        return max(.05, 1-.95*self.steps/(.5*int(self.config.get("comparison", {}).get("training_steps", 1))))
 
     def act_rules(self, observations, masks, *, explore=False):
         state = np.stack([pooled_state(o) for o in observations])
@@ -91,7 +103,7 @@ class RuleDDQN:
         with torch.no_grad():
             q = self.online(torch.as_tensor(state, device=self.device))
             rules = q.masked_fill(~torch.as_tensor(legal, device=self.device), torch.finfo(q.dtype).min).argmax(1).cpu().tolist()
-        epsilon = max(.05, 1-.95*self.steps/(.5*int(self.config.get("comparison", {}).get("training_steps", 1))))
+        epsilon = self.exploration_epsilon
         for i in range(len(rules)):
             if explore and self.rng.random() < epsilon:
                 rules[i] = self.rng.choice(np.flatnonzero(legal[i]).tolist())

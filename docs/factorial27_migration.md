@@ -48,21 +48,39 @@ DDQN的释放优先规则改为最短剩余订单工作量。MO-ALNS的波次相
 
 ## 正式实验入口
 
-长实验必须显式设置`--remote-run`。预算研究使用标定集，完整训练的选模使用验证集，正式评价使用测试集。例如下列数值仅是调用语法示例，不是经确认的正式预算：
+长实验必须显式设置`--remote-run`。PPO/DCAN/Rule-DDQN每方法每种子训练2000次算例调度尝试，每批20例，共100个Epoch，在Epoch 5、10、……、100验证。物理失败与工程保护截断计入例数，进程异常按运行中断处理。验证不占训练额度。实际训练交互量、全部验证候选交互量与耗时分别保存。
+
+配置字段为`training.budget_unit="episodes"`、`episodes=2000`、`episodes_per_update=20`、`validation_interval_epochs=5`。三种方法同种子使用相同的在线实例和偏好序列，27组合洗牌计划对应74轮完整覆盖加下一轮2例。默认训练种子11/23/37。
 
 ```powershell
-.venv/Scripts/python.exe -m scripts.comparison_suite --stage calibrate-budget --method ppo --steps 10000 --remote-run --output-dir result/budget_pilot
-.venv/Scripts/python.exe -m scripts.comparison_suite --stage calibrate-budget --method nsga2_ls --seconds 60 --remote-run --output-dir result/search_budget_pilot
+foreach ($method in 'ppo', 'dcan', 'rule_ddqn') {
+    foreach ($seed in 11, 23, 37) {
+        python -m scripts.comparison_suite --stage train --method $method --seed $seed --remote-run --output-dir "result/formal_episodes_seed$seed"
+        if ($LASTEXITCODE -ne 0) { throw "Training failed: $method seed=$seed" }
+    }
+}
+python -m scripts.comparison_suite --stage evaluate --method ppo --seed 11 --checkpoint result/formal_episodes_seed11/ppo/best_checkpoint.pt --remote-run --output-dir result/formal_episodes_test_seed11
 ```
 
-冻结预算清单需要`identity`（preflight对应的study_identity）、`status="frozen"`、正整数`training_steps`及`search_seconds`字典，三个搜索键为mo_alns/nsga2_ls/moead。根据开发曲线形成清单后，再运行：
+学习训练与评价按当前配置、源码、固定数据及checkpoint训练协议核验身份。改变训练例数、每批例数、验证间隔或DDQN探索调度时另建输出目录；已有完整请求仅在身份匹配时复用。PPO/DCAN三次采样取优，DDQN单次贪心；验证沿用安全、最差偏好完成率、质量排序。DDQN每批固定探索率，按已结束算例数线性衰减，前1000例从1降至0.05；回放与目标网络更新仍按实际交互和优化次数执行。
+
+开发标定使用标定集，可互斥指定`--episodes`或`--steps`。下面仅是小型开发调用示例：
 
 ```powershell
-.venv/Scripts/python.exe -m scripts.comparison_suite --stage train --method ppo --budget-manifest path/to/budget.json --remote-run --output-dir result/formal_seed11
-.venv/Scripts/python.exe -m scripts.comparison_suite --stage evaluate --method ppo --checkpoint result/formal_seed11/ppo/best_checkpoint.pt --budget-manifest path/to/budget.json --remote-run --output-dir result/formal_test
+python -m scripts.comparison_suite --stage calibrate-budget --method ppo --episodes 40 --remote-run --output-dir result/development_episode_pilot
+python -m scripts.comparison_suite --stage calibrate-budget --method ppo --steps 10000 --remote-run --output-dir result/development_step_pilot
+python -m scripts.comparison_suite --stage calibrate-budget --method nsga2_ls --seconds 60 --remote-run --output-dir result/search_budget_pilot
 ```
 
-PPO/DCAN使用三次采样取优，DDQN单次贪心；全部候选计费。算法种子用`--seed`指定。正式训练预算和搜索充分性尚待开发实验确定，本次实施不自动启动这些实验。
+搜索的正式评价仍要求冻结预算清单，包含preflight对应的`identity`、`status="frozen"`以及`search_seconds`字典，键为mo_alns/nsga2_ls/moead；搜索充分性仍需开发实验确定。学习方法的训练例数由配置冻结，不依赖搜索预算清单。
+
+```powershell
+python -m scripts.comparison_suite --stage evaluate --method nsga2_ls --budget-manifest path/to/search_budget.json --remote-run --output-dir result/formal_search
+```
+
+PowerShell包装入口`./scripts/run_comparison_suite.ps1`支持相同的Stage、Method、Config、Seed、Device、TrainingWorkers、Episodes、Steps、Seconds、BudgetManifest、Checkpoint及RemoteRun参数。默认仅预检；也可通过`python -m scripts.run_experiments`调用相同Python入口。
+
+完成2000例表示计划执行完成，不能据末两次验证的短期变化声明收敛或预算充分。本地仅进行小规模集成与回归验证；正式实验由用户在远端启动。
 
 ## 历史恢复
 
@@ -72,4 +90,4 @@ PPO/DCAN使用三次采样取优，DDQN单次贪心；全部候选计费。算�
 
 未跟踪的原始三因子DOCX草稿和其他并发文件未覆盖。当前规格与机器可读配置替代其中的波次设定。
 
-当前消融入口清单为`configs/factorial27_ablations.json`，包括节点MLP、三种单目标的疲劳中性控制以及具有独立冻结尺度的variance控制。历史参数扫描配置继续按原协议复现。原`train.py`仍可用于小型集成采样；正式匹配步数训练使用comparison_suite入口。正式结果目录可用`python -m scripts.summarize_factorial27 <目录>`导出逐请求及逐实例CSV。
+当前消融入口清单为`configs/factorial27_ablations.json`，包括节点MLP、三种单目标的疲劳中性控制以及具有独立冻结尺度的variance控制。历史参数扫描配置继续按原协议复现。原`train.py`仍可用于小型集成采样；正式算例预算训练使用comparison_suite入口。正式结果目录可用`python -m scripts.summarize_factorial27 <目录>`导出逐请求及逐实例CSV。

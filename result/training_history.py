@@ -6,7 +6,7 @@ import statistics
 
 from result.io import write_csv, write_json
 
-LOG_VERSION = "epoch_history_v1"
+LOG_VERSION = "epoch_history_v2"
 EPOCH_DEFINITION = "one_collection_and_learning_batch"
 OBJECTIVES = {
     "flow": "flow_excess_objective",
@@ -124,7 +124,9 @@ def export_history(output, history, episodes, validations=None):
         write_csv(output / "validation_instances.csv", csv_rows(records))
         write_csv(output / "validation_objectives.csv", csv_rows(curves))
         write_csv(output / "validation_log.csv", csv_rows([
-            {**{k: v.get(k) for k in ("epoch", "training_steps")}, **v["summary"]} for v in validations]))
+            {**{k: v.get(k) for k in ("epoch", "training_steps")}, **v["summary"],
+             **{f"cumulative_{k}": v[k] for k in ('validation_env_steps', 'validation_seconds') if k in v}}
+            for v in validations]))
 
 
 def save_epoch(output, context, episodes):

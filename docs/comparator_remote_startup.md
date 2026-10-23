@@ -1,5 +1,7 @@
 # 四类对照的远端启动与结果核验
 
+2026-10-23：当前schema13三因子27例实验使用[实验体系v1](experiment_suite_v1.md)及`configs/experiment_suite_v1.json`，包括35次按2000算例尝试训练、五规则和两类搜索。以下保留历史协议记录。
+
 2026-10-21：已返回600秒结果后的NSGA-II＋LS / MOEA/D扩展采用独立的[效率预检与1800秒启动入口](heuristic_search_runtime.md)，复用原批次保存配置、7例、4偏好及种群16/32；先测远端并行吞吐，再运行每请求1800秒。下文完整suite入口及其历史匹配训练协议另行保留。
 
 本套件实现NSGA-II-LS、MOEA/D、DCAN适配版和规则DDQN，并重新训练PPO作为匹配参照。源码说明及实验合同见[实施契约](comparator_implementation_spec.md)；文献和改造边界见[候选方法审查](baseline_candidates_20261017.md)。用户在远端手动启动，本机smoke只是链路检查，远端实验完成前没有正式性能结论。全项目矩阵与交付协议见[实验清单](experiment_runlist.md)和[三次取优说明](default_best_of_three.md)。
