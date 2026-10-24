@@ -297,8 +297,8 @@ def figures(root, suite, units, instances):
 
 def report(root, suite, identity, device='cpu'):
     from data import load_dataset_split
-    from scripts.comparison_suite import check_learning_checkpoint
-    from scripts.summarize_factorial27 import export_training
+    from agent.comparators.learning import check_learning_checkpoint
+    from result.training_history import export_training
     root = Path(root)
     from scripts.experiment_suite import check_frozen_budget
     check_frozen_budget(suite,root,identity)

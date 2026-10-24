@@ -1,4 +1,4 @@
-"""Replay every frozen witness and verify protected historical artifacts."""
+"""Replay and verify the frozen factorial-27 dataset certificates."""
 import hashlib,json
 from pathlib import Path
 from configs import load_config
@@ -7,23 +7,8 @@ from data.dataset import sha256_file,canonical_json_bytes
 from scripts.prepare_factorial27 import reference
 
 
-def audit_history(hashes, *, require_all=False):
-    report = {'protected_verified': 0, 'protected_unavailable': 0}
-    for path, expected in hashes.items():
-        if not Path(path).is_file():
-            if require_all:
-                raise FileNotFoundError('historical artifact unavailable: '+path)
-            report['protected_unavailable'] += 1
-            continue
-        if sha256_file(path) != expected:
-            raise ValueError('historical artifact changed: '+path)
-        report['protected_verified'] += 1
-    report['history_status'] = 'complete' if not report['protected_unavailable'] else 'partial_archive'
-    return report
-
-
-def audit(config,*,replay=True,require_history=False):
-    report={'counts':{},'certificates_replayed':0,'protected_verified':0}
+def audit(config,*,replay=True):
+    report={'counts':{},'certificates_replayed':0}
     for split in ('calibration','validation','test'):
         dataset=load_dataset_split(config,split);report['counts'][split]=len(dataset)
         for row,record in zip(dataset.manifest['files'],dataset):
@@ -38,14 +23,13 @@ def audit(config,*,replay=True,require_history=False):
                 for key in ('time','flow_excess_objective','reconfiguration_cost','worker_loads','maximum_worker_fatigue','completed_operations'):
                     if metrics[key]!=old[key]: raise ValueError(f'witness replay differs: {key}')
                 report['certificates_replayed']+=1
-    before=json.loads(Path('result/migration/factorial27_20261023/before.json').read_text(encoding='utf-8'))
-    report.update(audit_history(before['protected_hashes'], require_all=require_history))
     return report
 
 
 def main():
     report=audit(load_config('configs/default.json'))
-    path=Path('result/migration/factorial27_20261023/audit.json')
+    path=Path('.cache/data_audit.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report,indent=2),encoding='utf-8');print(json.dumps(report,indent=2))
 
 

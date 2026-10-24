@@ -13,7 +13,7 @@ from data.dataset import OnlineInstanceDataset
 from data.distribution import CELLS, training_sampling_plan
 from data.generate_orders import generate_instance
 from data.models import validate_instance
-from scripts.audit_batch_migration import check_permutations, check_graph
+from test.support import check_permutations, check_graph
 from environment import AssemblySchedulingEnv, DecisionType
 
 
@@ -143,16 +143,3 @@ def test_previous_projection_semantics_checkpoint_is_rejected(config, tmp_path, 
     target['time_context_version'] = 'order_chain_remaining_context_v3'
     torch.save(payload, path)
     with pytest.raises(ValueError): agent.load(path)
-
-
-def test_historical_audit_reports_unavailable_files_and_rejects_changes(tmp_path):
-    from scripts.audit_factorial27 import audit_history
-    from data.dataset import sha256_file
-    existing = tmp_path/'saved.json'; existing.write_text('{}', encoding='utf-8')
-    missing = tmp_path/'local_cache.json'
-    hashes = {str(existing): sha256_file(existing), str(missing): '0'*64}
-    result = audit_history(hashes)
-    assert result == {'protected_verified': 1, 'protected_unavailable': 1, 'history_status': 'partial_archive'}
-    with pytest.raises(FileNotFoundError): audit_history(hashes, require_all=True)
-    existing.write_text('{"changed":true}', encoding='utf-8')
-    with pytest.raises(ValueError, match='changed'): audit_history(hashes)

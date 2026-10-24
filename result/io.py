@@ -1,27 +1,9 @@
-from __future__ import annotations
-
+"""CSV and JSON result writers."""
 import csv
 import json
 import os
-from datetime import datetime
 from pathlib import Path
-from typing import Any
-
-from configs.config import public_config
-
-
-def create_run_directory(
-    root: str | Path,
-    *,
-    label: str,
-    run_name: str | None = None,
-) -> Path:
-    root_path = Path(root)
-    name = run_name or f"{datetime.now():%Y%m%d_%H%M%S}_{label}"
-    output = root_path / name
-    output.mkdir(parents=True, exist_ok=False)
-    return output
-
+from typing import Any, Mapping, Sequence
 
 def write_json(path: str | Path, value: Any) -> None:
     output = Path(path)
@@ -29,10 +11,6 @@ def write_json(path: str | Path, value: Any) -> None:
     with temporary.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
     os.replace(temporary, output)
-
-
-def write_config(run_directory: str | Path, config: dict[str, Any]) -> None:
-    write_json(Path(run_directory) / "config.json", public_config(config))
 
 
 def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
@@ -52,36 +30,3 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
         writer.writeheader()
         writer.writerows(rows)
     os.replace(temporary, output)
-
-
-def append_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
-    """Append fixed-schema research rows from a single training coordinator."""
-    if not rows:
-        return
-    output = Path(path)
-    fields = list(rows[0])
-    existing = output.exists() and output.stat().st_size > 0
-    if existing:
-        with output.open(encoding="utf-8-sig",newline="") as stream:
-            if next(csv.reader(stream)) != fields:
-                raise ValueError("appended CSV research schema changed")
-    with output.open("a",encoding="utf-8-sig",newline="") as stream:
-        writer = csv.DictWriter(stream,fieldnames=fields)
-        if not existing:
-            writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_evaluation_outputs(
-    run_directory: str | Path,
-    *,
-    config: dict[str, Any],
-    metrics: dict[str, Any],
-    schedule: list[dict[str, Any]],
-    reconfigurations: list[dict[str, Any]],
-) -> None:
-    run_path = Path(run_directory)
-    write_config(run_path, config)
-    write_json(run_path / "metrics.json", metrics)
-    write_csv(run_path / "schedule.csv", schedule)
-    write_csv(run_path / "reconfigurations.csv", reconfigurations)

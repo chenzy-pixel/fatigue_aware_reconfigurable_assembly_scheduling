@@ -134,3 +134,16 @@ def save_epoch(output, context, episodes):
     folder = Path(output) / "epochs"
     folder.mkdir(parents=True, exist_ok=True)
     write_json(folder / f"epoch_{context['epoch']:06d}.json", {"summary": context, "episodes": episodes})
+
+
+def export_training(directory):
+    """Rebuild current training CSV files from their saved epoch records."""
+    from pathlib import Path
+    import json
+    for file in Path(directory).rglob('training_log.json'):
+        folder = file.parent
+        history = json.loads(file.read_text(encoding='utf-8'))
+        episodes = json.loads((folder/'episodes.json').read_text(encoding='utf-8'))
+        path = folder/'validations.json'
+        validations = json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+        export_history(folder, history, episodes, validations)

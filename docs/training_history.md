@@ -14,7 +14,7 @@ PPO/DCAN 训练目标来自本 epoch 更新前的采样策略，随后进行学�
 
 ## 文件与字段
 
-正式入口 `scripts.comparison_suite` / `scripts.run_experiments` 的每个训练目录产生：
+正式入口 `scripts.experiment_suite` 的每个训练目录产生：
 
 | 文件 | 内容 |
 |---|---|
@@ -33,9 +33,7 @@ PPO/DCAN 训练目标来自本 epoch 更新前的采样策略，随后进行学�
 
 环境指标另以 `metric_` 前缀保留，含完成比例、重构/复用/等待次数、最大疲劳、疲劳阈值、工人负荷及峰值疲劳分布、奖励分项、终止原因等。字典和列表在 CSV 内用 JSON 编码；原始 JSON 保留嵌套结构。耗时包含采样、学习更新、生成、重置、环境步进、观测与指标计算等；并行实例墙钟耗时不能直接相加当作整轮耗时。
 
-`train.py --smoke` 保留 `train_log.csv` / `update_log.csv` 命名，增加相同 epoch、有效目标列、`epoch_objectives.csv` 和逐 epoch 原始记录；验证明细增加 epoch 和累计环境步数。
 
-正式训练统一通过 `scripts.comparison_suite` / `scripts.run_experiments` 核验配置与运行身份，按2000次算例尝试执行100个Epoch；`train.py` 不接受通过任意非空 `budget_manifest` 开启正式训练。
 
 ## 论文作图
 
@@ -58,3 +56,5 @@ CSV 每批刷新，单文件原子替换，逐 epoch JSON 可独立读取。中�
 ```
 
 旧运行无法补出当时未记录的快照或 epoch 数据；新运行使用新日志身份。
+
+训练统一通过`scripts.experiment_suite`按2000次调度尝试执行100个Epoch。唯一smoke使用同一训练实现，以小实例和少量episode检查日志及模型链路。

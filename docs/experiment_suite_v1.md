@@ -1,6 +1,6 @@
 # 三因子27例实验体系 v1
 
-确认日期：2026-10-23。机器清单：`configs/experiment_suite_v1.json`。入口：`python -m scripts.experiment_suite`，也可使用`python -m scripts.comparison_suite --suite`。正式性能和预算充分性需要远端实验产物。
+确认日期：2026-10-23。机器清单：`configs/experiment_suite_v1.json`。入口：`python -m scripts.experiment_suite`。正式性能和预算充分性需要远端实验产物。
 
 ## 实验矩阵与训练合同
 
@@ -56,7 +56,7 @@ Rule-DDQN是状态、规则动作及更新机制共同改变的整体方法对�
 
 Full前沿sample1复用已支付的repeat 0，保存原始轨迹、`cost_reference=full`及零增量求解步数/时间。其表中时间标记`shared_best_of_3_wall`，沿用完整母实验成本；单次采样自身时延来自独立请求实验。此复用少求解8910条轨迹，最终评测实际求解189540条；加上验证共856440条。固定数据每阶段只加载一次；已完成评测重启直接复用，缺失的sample1派生文件可从母实验重建。每Epoch合并重复导出，验证表只在验证更新后重写。
 
-2026-10-24并行修订改变源码/运行身份。旧目录已有预检时，三个启动入口统一指定一个新目录（例如`-OutputDir result/experiment_suite_v1_parallel20`），重新预检后运行。
+2026-10-24并行修订改变源码/运行身份。旧目录已有预检时，三个启动入口统一指定一个新目录（例如`-OutputDir result/experiments`），重新预检后运行。
 
 本地实测、验证证据与剩余瓶颈见[20路评测效率核查](evaluation_parallel_efficiency_20261024.md)。
 
@@ -81,9 +81,9 @@ Full前沿sample1复用已支付的repeat 0，保存原始轨迹、`cost_referen
 
 验证原始请求按Epoch单独保存，累计验证文件保留摘要、逐实例行及原始文件路径。报告逐文件读取，仅在内存保留统计与绘图信息。
 
-控制台沿用原训练入口的`[RUN]`、`[train]`、`[val]`、`[DONE]`格式。每Epoch完成后展示完成率、平均奖励、工序进度、公共Q，以及PPO/A2C/DCAN的策略损失、价值损失、熵和KL；DDQN展示TD损失和探索率。worker启动、采集、更新及验证在开始和结束时各输出一次阶段状态与耗时。采集结束展示已完成算例数/当前批次数、活动环境和实际步数；验证结束展示已完成原始轨迹数（Full默认27×13×3=1053），并给出交付完成率、Q和安全状态。模型写入完成后打印`[checkpoint]`事件及已保存文件路径。
+控制台使用27算例迁移前的紧凑布局：启动时显示`[RUN]`、训练例数、验证规模、采样方式、奖励、gamma与学习率；每批输出两行`[train]`指标（完成率、平均奖励、工序进度、公共Q和损失）；验证完成后输出`[val]`摘要、安全状态、选模事件及原始候选与交付计数；结束时输出`[DONE]`和best/last模型位置。PPO/A2C/DCAN显示策略损失、价值损失、熵、KL和学习率，DDQN显示TD损失与探索率。数量和指标使用当前27算例协议的真实值。
 
-日志由当前执行线程在对应事件发生时打印，阶段结束的计数来自采集与评测回调。每5个Epoch及训练结束的验证触发规则、采样和更新流程保持既定协议。运行中的旧进程继续使用已加载版本；显示修订在下一次启动生效，源码身份变化时使用新结果目录重新预检。
+每5个Epoch及训练结束的验证触发规则、采样、更新和文件记录保持既定协议。终端布局在下一次启动时生效。
 
 - 请求指标：完成率、公共Q、原始三目标、交付时间；失败Q=1，共同成功质量与目标差值另列：先在每个实例/偏好内分别平均各方法的成功重复，双方均有成功解才进入该条件统计；随后按实例汇总。
 - 前沿指标：付费解HV、交付HV、覆盖率；统一`x/(scale+x)`变换、参考点(1,1,1)，只纳入合法完成解。
@@ -94,7 +94,7 @@ Full前沿sample1复用已支付的repeat 0，保存原始轨迹、`cost_referen
 
 ## 三个PowerShell启动入口
 
-三个入口共用默认结果目录`result/experiment_suite_v1`、实验清单和预检身份；默认各使用五种子11/23/37/53/71，自动选择仓库内的`.venv` Python。可以用`-Python`指定解释器。
+三个入口共用默认结果目录`result/experiments`、实验清单和预检身份；默认各使用五种子11/23/37/53/71，自动选择仓库内的`.venv` Python。可以用`-Python`指定解释器。
 
 |启动文件|内容|默认流程|
 |---|---|---|
@@ -129,11 +129,14 @@ Full前沿sample1复用已支付的repeat 0，保存原始轨迹、`cost_referen
 .\scripts\run_ablations_a2c.ps1 -Stage train -Device cuda -Seeds 11 -TrainingWorkers 8 -RemoteRun
 ```
 
-启动脚本及共享模块纳入源码快照和身份校验。默认单作业、单Torch线程，计时评测使用独占资源。保留通用Python入口用于Linux或其他编排：`python -m scripts.experiment_suite --stage <stage> --device cuda --output-dir result/experiment_suite_v1`，正式执行阶段增加`--remote-run`，学习子组通过`--arms`指定。
+启动快捷入口纳入源码快照；数值执行源码、有效配置和数据参与身份校验。默认单作业、单Torch线程，计时评测使用独占资源。保留通用Python入口用于Linux或其他编排：`python -m scripts.experiment_suite --stage <stage> --device cuda --output-dir result/experiments`，正式执行阶段增加`--remote-run`，学习子组通过`--arms`指定。
 
 本地小实例验收：
 
 ```powershell
-& $py -m scripts.experiment_suite --stage smoke --device cpu --output-dir result/verification/experiment_suite_local
-& $py -m pytest test/test_experiment_suite.py test/test_episode_training.py test/test_factorial27.py -q --basetemp=.ep
+python -m scripts.experiment_suite --stage smoke --device cpu
+python -m pytest -q
 ```
+
+
+2026-10-24主线整理：执行身份版本为`experiment_execution_v2`，默认输出`result/experiments/`。smoke固定使用`.cache/smoke/`，pytest临时文件使用`.cache/pytest_tmp/`。报告绘图、文档、测试、控制台显示及快捷入口不参与执行身份；源码快照记录完整当前实现。历史模型和结果的读取方式见[历史恢复](project_cleanup.md)。

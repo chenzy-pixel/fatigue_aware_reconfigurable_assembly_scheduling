@@ -60,16 +60,14 @@ def preferences(config, task):
 
 def identity_payload(suite, device='cpu'):
     from data import load_dataset_split
-    from result.provenance import source_files
+    from result.provenance import execution_source_files
     c = arm_config(suite, 'full', suite['seeds'][0], device)
-    selected = set(source_files(PROJECT_ROOT))
-    for extension in ('*.ps1', '*.psm1'):
-        selected.update(p for p in (PROJECT_ROOT/'scripts').rglob(extension) if p.is_file())
+    selected = execution_source_files(PROJECT_ROOT)
     sources = {p.relative_to(PROJECT_ROOT).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
                for p in sorted(selected)}
     pools = {split: load_dataset_split(c, split).manifest for split in ('calibration', 'validation', 'test')}
     configs = {arm: public_config(arm_config(suite, arm, suite['seeds'][0], device)) for arm in suite['arms']}
-    return {'suite': suite, 'configs': configs, 'sources': sources, 'data': pools}
+    return {'identity_version':'experiment_execution_v2', 'suite': suite, 'configs': configs, 'sources': sources, 'data': pools}
 
 
 def suite_identity(suite, device='cpu'):

@@ -1,7 +1,0 @@
-{
-  "extends": "../e1/single_cost.json",
-  "experiment_name": "neutral_cost",
-  "environment": {
-    "fatigue_mode": "neutral"
-  }
-}

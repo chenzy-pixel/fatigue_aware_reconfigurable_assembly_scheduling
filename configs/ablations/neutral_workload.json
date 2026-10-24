@@ -1,7 +1,0 @@
-{
-  "extends": "../e1/single_workload.json",
-  "experiment_name": "neutral_workload",
-  "environment": {
-    "fatigue_mode": "neutral"
-  }
-}

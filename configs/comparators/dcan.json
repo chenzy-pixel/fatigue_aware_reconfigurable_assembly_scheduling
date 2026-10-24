@@ -1,1 +1,0 @@
-{"extends":"suite.json","comparison":{"method":"dcan","delivery_protocol":"best_of_3_v1"}}

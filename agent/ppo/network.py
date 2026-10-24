@@ -249,13 +249,8 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         raise ValueError("checkpoint global feature names/order are incompatible")
     if spec.get("actor_head_variant") != "shared_preference":
         raise ValueError("checkpoint actor_head_variant must be shared_preference")
-    # Read the metadata key used by existing shared-head checkpoints.
-    legacy_parameterization = spec.pop("expert_weight_parameterization", None)
-    if spec.get("actor_head_parameterization", legacy_parameterization) != SHARED_HEAD_PARAMETERIZATION:
+    if spec.get("actor_head_parameterization") != SHARED_HEAD_PARAMETERIZATION:
         raise ValueError("checkpoint actor head parameterization is incompatible")
-    if legacy_parameterization not in (None, SHARED_HEAD_PARAMETERIZATION):
-        raise ValueError("checkpoint actor head parameterization is incompatible")
-    spec["actor_head_parameterization"] = SHARED_HEAD_PARAMETERIZATION
     if int(spec.get("preference_embedding_dim", 0)) != PREFERENCE_ENCODER_DIM:
         raise ValueError("checkpoint preference encoder is not V8 3->32->ReLU->32")
     expected_schemas = dict(zip(

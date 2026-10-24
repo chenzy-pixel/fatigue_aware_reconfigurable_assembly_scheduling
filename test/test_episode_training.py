@@ -138,7 +138,7 @@ def test_training_releases_observations_before_validation_and_next_batch(config,
         return original_validation(*args, **kwargs)
     monkeypatch.setattr(learning, 'collect', collect_checked)
     monkeypatch.setattr(learning, 'validation', validation_checked)
-    learning.train_request(config, 'ppo', 11, 1e-4, None, None, [0], [(1.,0.,0.)],
+    learning.train_request(config, 'ppo', 11, 1e-4, None, [0], [(1.,0.,0.)],
                            tmp_path, 'release-test', episodes=101, workers=3)
     assert len(buffers) == 6 and all(len(buffer) == 0 for buffer in buffers)
 
@@ -168,7 +168,7 @@ def install_training_fakes(monkeypatch):
 @pytest.mark.parametrize('method', ['ppo', 'a2c', 'dcan', 'rule_ddqn'])
 def test_2000_attempts_100_epochs_20_validations(config, tmp_path, monkeypatch, method):
     agent, calls, saved = install_training_fakes(monkeypatch)
-    result = learning.train_request(config, method, 11, 1e-4, None, None, [0], [(1.,0.,0.)],
+    result = learning.train_request(config, method, 11, 1e-4, None, [0], [(1.,0.,0.)],
                                     tmp_path, 'identity', episodes=2000, workers=3)
     assert result['episodes_started'] == 2000 and result['epochs'] == 100
     assert result['validation_count'] == len(calls) == 20
@@ -188,14 +188,14 @@ def test_2000_attempts_100_epochs_20_validations(config, tmp_path, monkeypatch, 
     changed = deepcopy(config)
     changed['training']['validation_interval_epochs'] = 10
     with pytest.raises(ValueError, match='identity differs'):
-        learning.train_request(changed, method, 11, 1e-4, None, None, [0], [(1.,0.,0.)],
+        learning.train_request(changed, method, 11, 1e-4, None, [0], [(1.,0.,0.)],
                                tmp_path, 'identity', episodes=2000)
 
 
 @pytest.mark.parametrize('episodes,expected', [(1,[1]), (21,[2]), (101,[5,6])])
 def test_tail_batch_and_final_validation(config, tmp_path, monkeypatch, episodes, expected):
     _, _, saved = install_training_fakes(monkeypatch)
-    result = learning.train_request(config, 'ppo', 11, 1e-4, None, None, [0], [],
+    result = learning.train_request(config, 'ppo', 11, 1e-4, None, [0], [],
                                     tmp_path, 'tail', episodes=episodes, workers=2)
     assert result['episodes_started'] == episodes
     assert [v['epoch'] for v in saved['validations.json']] == expected
@@ -210,37 +210,8 @@ def test_episode_exploration_is_fixed_within_batch():
         assert a.exploration_epsilon == pytest.approx(epsilon)
 
 
-def test_budget_arguments_and_checkpoint_gate(config, tmp_path):
-    from scripts.comparison_suite import check_learning_checkpoint, study_identity
-    with pytest.raises(ValueError, match='mutually exclusive'):
-        training_budget(config, steps=10, episodes=10)
-    original = study_identity(config)
-    for key, value in [('episodes',1000), ('episodes_per_update',10), ('validation_interval_epochs',10)]:
-        alternate = deepcopy(config); alternate['training'][key] = value
-        assert study_identity(alternate) != original
-    path = tmp_path/'checkpoint.pt'
-    torch.save({'metadata': {'comparison_identity': original, 'algorithm': 'ppo', 'seed':11,
-                            'training_budget': training_budget(config)}}, path)
-    check_learning_checkpoint(path, config, 'ppo', 11, original)
-    with pytest.raises(ValueError, match='identity mismatch'):
-        check_learning_checkpoint(path, alternate, 'ppo', 11, original)
 
 
-def test_formal_cli_uses_episode_config_without_search_manifest(config, tmp_path, monkeypatch):
-    import sys
-    import scripts.comparison_suite as suite
-    import scripts.run_experiments as launcher
-    calls = []
-    monkeypatch.setattr(suite, 'load_config', lambda _: config)
-    monkeypatch.setattr(suite, 'study_identity', lambda _: 'cli_identity')
-    monkeypatch.setattr(launcher, 'startup_preflight', lambda *a,**k: {'main': {'study_identity': 'cli_identity'}})
-    monkeypatch.setattr(suite, 'train_request', lambda *a,**k: calls.append((a,k)))
-    monkeypatch.setattr(suite, 'load_dataset_split', lambda *a: [])
-    monkeypatch.setattr(sys, 'argv', ['suite', '--stage','train','--method','dcan','--remote-run',
-                                     '--training-workers','7','--output-dir',str(tmp_path)])
-    suite.main()
-    args, kwargs = calls[0]
-    assert args[4] is None and kwargs['episodes'] == 2000 and kwargs['workers'] == 7
 
 
 @pytest.mark.parametrize('arguments', [
@@ -250,7 +221,7 @@ def test_formal_cli_uses_episode_config_without_search_manifest(config, tmp_path
 ])
 def test_cli_rejects_ambiguous_budget_arguments(arguments, monkeypatch):
     import sys
-    from scripts.comparison_suite import main
+    from scripts.experiment_suite import main
     monkeypatch.setattr(sys, 'argv', ['suite', *arguments])
     with pytest.raises(SystemExit) as exc:
         main()
@@ -278,7 +249,7 @@ def test_worker_exception_leaves_request_incomplete(config, tmp_path, monkeypatc
         raise RuntimeError('worker transport disconnected')
     monkeypatch.setattr(Runner, '_exchange', disconnected)
     with pytest.raises(RuntimeError, match='disconnected'):
-        learning.train_request(config, 'ppo', 11, 1e-4, None, None, [0], [],
+        learning.train_request(config, 'ppo', 11, 1e-4, None, [0], [],
                                tmp_path, 'interrupted', episodes=20)
     assert not (tmp_path/'summary.json').exists()
     assert 'running' in (tmp_path/'status.json').read_text(encoding='utf-8')
@@ -289,6 +260,39 @@ def test_incomplete_identity_mismatch_is_preserved(config, tmp_path):
     status.write_text('{"job_id": "other", "status": "running"}', encoding='utf-8')
     original = status.read_bytes()
     with pytest.raises(ValueError, match='incomplete training identity differs'):
-        learning.train_request(config, 'ppo', 11, 1e-4, None, None, [0], [],
+        learning.train_request(config, 'ppo', 11, 1e-4, None, [0], [],
                                tmp_path, 'current', episodes=20)
     assert status.read_bytes() == original
+
+
+def test_episode_budget_and_checkpoint_gate(config, tmp_path):
+    from agent.comparators.learning import check_learning_checkpoint
+    from agent.comparators.common import digest
+    original = digest(training_budget(config))
+    for key, value in [('episodes',1000), ('episodes_per_update',10), ('validation_interval_epochs',10)]:
+        alternate = deepcopy(config)
+        alternate['training'][key] = value
+        assert digest(training_budget(alternate)) != original
+    path = tmp_path/'checkpoint.pt'
+    torch.save({'metadata': {'comparison_identity':original,'algorithm':'ppo','seed':11,
+                            'training_budget':training_budget(config)}}, path)
+    check_learning_checkpoint(path, config, 'ppo', 11, original)
+    with pytest.raises(ValueError, match='identity mismatch'):
+        check_learning_checkpoint(path, alternate, 'ppo', 11, original)
+    with pytest.raises(ValueError, match='positive integer'):
+        training_budget(config, episodes=0)
+
+
+def test_suite_train_dispatch_preserves_arm_seed_and_worker_selection(tmp_path, monkeypatch):
+    import sys
+    import scripts.experiment_suite as suite
+    calls=[]
+    monkeypatch.setattr(suite,'suite_identity',lambda *a:'id')
+    monkeypatch.setattr(suite,'check_preflight',lambda *a:None)
+    monkeypatch.setattr(suite,'train',lambda *a:calls.append(a))
+    monkeypatch.setattr(sys,'argv',['suite','--stage','train','--arms','dcan','--seeds','23',
+                                  '--training-workers','7','--remote-run','--output-dir',str(tmp_path)])
+    suite.main()
+    spec, root, identity, device, arms, seeds=calls[0]
+    assert spec['execution']['training_workers']==7 and spec['training']['episodes']==2000
+    assert arms==['dcan'] and seeds==[23] and identity=='id' and root==tmp_path

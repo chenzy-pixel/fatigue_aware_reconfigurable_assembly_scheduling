@@ -9,8 +9,8 @@ from environment.types import bounded_quality_score
 from agent.comparators.evolution import EvolutionSolver
 from agent.comparators.learning import evaluate_request, synchronize
 from agent.comparators.parallel_evaluation import evaluate_requests
-from agent.mo_alns import SearchBudget
-from agent.mo_alns.types import preference_key
+from agent.search import SearchBudget
+from agent.search.types import preference_key
 
 
 def quality(config, objectives, preference):

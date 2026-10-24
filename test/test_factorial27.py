@@ -186,30 +186,3 @@ def test_ddqn_actual_update_and_checkpoint(config,data,tmp_path):
     assert a.updates>=1
     p=tmp_path/'ddqn.pt';a.save(p);b=RuleDDQN(o,c);b.load(p)
     assert all(torch.equal(v,b.online.state_dict()[k]) for k,v in a.online.state_dict().items())
-
-
-def test_evaluation_adapter_and_controls(config,data):
-    from eval import evaluate_instance,build_evaluation_row
-    from result import evaluation_quality_metric,aggregate_evaluation_rows
-    e,m=evaluate_instance(config,instance=data[0].instance,policy_name='heuristic')
-    row=build_evaluation_row(data[0],m,config,evaluation_quality_metric(config))
-    assert row['cell_id']=='C01' and row['result_schema_version']=='10.0.0'
-    assert not any('wave' in k or 'deadline' in k for k in row)
-    summary=aggregate_evaluation_rows([row],dataset='validation',policy='heuristic',manifest=str(data.manifest_path),quality_metric=evaluation_quality_metric(config))
-    assert summary['by_cell_id']
-    for path in ('configs/ablations/no_graph.json','configs/ablations/neutral_flow.json','configs/controls/single_variance.json'):
-        c=load_config(path);o=AssemblySchedulingEnv(c).reset(data[0].instance)
-        build_actor_critic(o,c['network'])
-
-
-def test_module_related_search_operator(config,data):
-    import random
-    from types import SimpleNamespace
-    from agent.mo_alns.solver import _rule_solution,destroy_operations,DEFAULT_SETTINGS
-    i=data[0].instance
-    solution=_rule_solution(i,'module_group_randomized',random.Random(3))
-    modules={o.id:o.required_module for o in i.operations}
-    candidate=SimpleNamespace(diagnostics={'operation_module':modules})
-    removed=destroy_operations('same_module_related',solution,candidate,i,DEFAULT_SETTINGS,random.Random(3))
-    assert len(removed)>=2 and len(set(removed))==len(removed)
-    assert set(removed)<=set(modules)

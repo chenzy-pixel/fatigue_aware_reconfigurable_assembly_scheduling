@@ -10,7 +10,7 @@ import torch
 from environment import ASSEMBLY_NODE_TYPES, CAPABLE_EDGE, SERVICE_CANDIDATE_EDGE, DecisionType
 
 VERSION = "comparison_suite_v2"
-METHODS = ("ppo", "a2c", "dcan", "rule_ddqn", "nsga2_ls", "moead", "mo_alns")
+METHODS = ("ppo", "a2c", "dcan", "rule_ddqn", "nsga2_ls", "moead")
 SEEDS = (11, 23, 37)
 FOUR = ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.), (1/3, 1/3, 1/3))
 

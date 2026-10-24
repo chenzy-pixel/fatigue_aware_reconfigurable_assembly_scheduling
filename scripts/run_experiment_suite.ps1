@@ -2,7 +2,7 @@ param(
     [ValidateSet('preflight','train','evaluate','rules','develop-search','freeze-budget','search','report','smoke')]
     [string]$Stage = 'preflight',
     [string]$Python = 'python',
-    [string]$OutputDir = 'result/experiment_suite_v1',
+    [string]$OutputDir = 'result/experiments',
     [string]$Manifest = 'configs/experiment_suite_v1.json',
     [string]$Device = 'cuda',
     [string[]]$Arms,

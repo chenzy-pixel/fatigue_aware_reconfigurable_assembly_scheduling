@@ -40,7 +40,7 @@ def test_dry_run_groups_and_stage_order(script,tmp_path):
     assert [j['Stage'] for j in jobs] == stages
     for job in jobs:
         assert job['Parameters'].get('Arms',[]) == arms
-        assert job['Parameters']['OutputDir'] == 'result/experiment_suite_v1'
+        assert job['Parameters']['OutputDir'] == 'result/experiments'
         assert job['Parameters']['Task'] == 'both'
         assert job['Parameters']['TrainingWorkers'] == 20
 
@@ -124,25 +124,22 @@ def test_report_is_explicit_and_group_training_matrix_complete():
     assert len(arms)*len(suite['seeds'])==35
 
 
-def test_launchers_in_frozen_source_manifest():
-    from configs.experiment_suite import load_suite, identity_payload
-    payload=identity_payload(load_suite(),'cpu')
-    assert all('scripts/'+name in payload['sources'] for name in GROUPS)
-    assert 'scripts/ExperimentLaunch.psm1' in payload['sources']
-
-
-def test_source_identity_tracks_entry_modules_and_ignores_result_caches(tmp_path,monkeypatch):
+def test_execution_identity_and_full_source_archive_have_distinct_boundaries(tmp_path,monkeypatch):
     import configs.experiment_suite as suite
-    (tmp_path/'utils.py').write_text('RNG_VERSION=1\n',encoding='utf-8')
-    (tmp_path/'result').mkdir()
-    (tmp_path/'result/runtime.py').write_text('VERSION=1\n',encoding='utf-8')
+    from result.provenance import source_files
+    for name in ('utils.py','agent/solver.py','analysis/experiment_suite.py',
+                 'result/console_reporter.py','scripts/run_main_experiment.ps1','README.md'):
+        path=tmp_path/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('VERSION=1\n',encoding='utf-8')
     monkeypatch.setattr(suite,'PROJECT_ROOT',tmp_path)
     spec=suite.load_suite()
     before=suite.identity_payload(spec,'cpu')
-    cache=tmp_path/'result/analysis/cached_main';cache.mkdir(parents=True)
-    (cache/'old.py').write_text('OLD=1\n',encoding='utf-8')
+    assert set(before['sources'])=={'utils.py','agent/solver.py'}
+    for name in ('analysis/experiment_suite.py','result/console_reporter.py','scripts/run_main_experiment.ps1','README.md'):
+        (tmp_path/name).write_text('VERSION=2\n',encoding='utf-8')
+    assert suite.identity_payload(spec,'cpu')==before
+    assert {p.relative_to(tmp_path).as_posix() for p in source_files(tmp_path)} >= {'analysis/experiment_suite.py','result/console_reporter.py'}
+    (tmp_path/'agent/solver.py').write_text('VERSION=2\n',encoding='utf-8')
     after=suite.identity_payload(spec,'cpu')
-    assert before==after
-    assert set(after['sources'])=={'utils.py','result/runtime.py'}
-    (tmp_path/'utils.py').write_text('RNG_VERSION=2\n',encoding='utf-8')
+    assert after!=before
+    spec['training']['episodes']=1000
     assert suite.identity_payload(spec,'cpu')!=after

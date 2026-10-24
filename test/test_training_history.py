@@ -63,7 +63,7 @@ def test_epoch_export_rebuild_and_missing_validation(tmp_path):
     assert rows[0]['epoch'] == '1' and rows[0]['episode'] == '1'
     for name, data in [('training_log',history), ('episodes',[r])]:
         (tmp_path/f'{name}.json').write_text(json.dumps(data), encoding='utf-8')
-    from scripts.summarize_factorial27 import export_training
+    from result.training_history import export_training
     export_training(tmp_path)
     val = {'epoch': 1, 'training_steps': 10, 'summary': {'quality': .2},
            'rows': [{'instance_id': 'v', 'cell_id': 'C01', 'scale': 'small', 'success': True,
@@ -71,81 +71,3 @@ def test_epoch_export_rebuild_and_missing_validation(tmp_path):
     export_history(tmp_path, history, [r], [val])
     curve = list(csv.DictReader((tmp_path/'validation_objectives.csv').open(encoding='utf-8-sig')))[0]
     assert curve['flow_mean'] == '100.0' and curve['epoch'] == '1'
-
-
-class LocalRunner:
-    """Real physics with in-process transport, keeping the logging test small."""
-    worker_count = 1
-
-    def __init__(self, config, instance):
-        self.env = AssemblySchedulingEnv(config)
-        self.instance = instance
-        self.calls = []
-
-    def _exchange(self, commands):
-        result = {}
-        for lane, (command, request) in commands.items():
-            self.calls.append(command)
-            reward = None
-            if command == 'reset_online':
-                obs = self.env.reset(self.instance, preference=request.preference)
-            elif command == 'step':
-                obs, reward, _, _, _ = self.env.step(request.action)
-            elif command == 'snapshot':
-                result[lane] = WorkerResponse(lane_id=lane, metrics=self.env.metrics())
-                continue
-            else: raise AssertionError(command)
-            result[lane] = WorkerResponse(lane_id=lane, observation=obs,
-                action_mask=self.env.get_action_mask(), reward_vector=reward,
-                terminated=self.env.terminated, truncated=self.env.truncated,
-                metrics=self.env.metrics() if self.env.terminated or self.env.truncated else None,
-                instance_id=self.instance.instance_id, metadata={'cell_id': 'C01', 'scale': 'small'},
-                environment_step_count=int(command == 'step'))
-        return result
-
-
-@pytest.mark.parametrize('allowance', [1, 10000])
-def test_collection_snapshot_preserves_step_budget_and_complete_goals(allowance):
-    torch.set_num_threads(1)
-    config = load_config('configs/default.json'); config['device'] = 'cpu'
-    runner = LocalRunner(config, load_dataset_split(config, 'validation')[0].instance)
-    class Heuristic:
-        def act_rules(self, observations, masks, explore=False):
-            return [HeuristicPolicy().select_action(runner.env)], [0]
-        def remember(self, *args): return None
-    result = collect(runner, Heuristic(), config, 0, allowance, ddqn=True, episodes_per_batch=1)
-    r = result.episodes[0]
-    assert result.steps == runner.calls.count('step') == r['metrics']['decision_count']
-    assert result.steps <= allowance
-    assert (runner.calls.count('snapshot') == 1) == (allowance == 1)
-    row = instance_row(r, epoch=1, method='rule_ddqn', training_seed=11, training_steps=result.steps)
-    assert row['objective_valid'] == (allowance == 10000)
-    assert row['snapshot_flow'] is not None
-
-
-def test_direct_training_cannot_bypass_budget_manifest():
-    from train import _train_single_stage
-    with pytest.raises(ValueError, match='budget identity'):
-        _train_single_stage({'training': {'budget_manifest': True}}, smoke=False,
-                            run_name=None, episodes=1, parallel_envs=1, episodes_per_update=1, initial_checkpoint=None)
-
-
-def test_direct_smoke_records_epoch_before_validation(tmp_path, monkeypatch):
-    import train
-    torch.set_num_threads(1)
-    config = load_config('configs/default.json'); config['device'] = 'cpu'
-    config['paths']['result_root'] = str(tmp_path)
-    config['training']['smoke_rollout_steps'] = 2
-    config['training']['validation_parallel_envs'] = 1
-    class StopBeforeValidation(Exception): pass
-    def stop(*args, **kwargs): raise StopBeforeValidation()
-    monkeypatch.setattr(train, '_evaluate_policy', stop)
-    with pytest.raises(StopBeforeValidation):
-        train._train_single_stage(config, smoke=True, run_name='epoch_test', episodes=1,
-                                  parallel_envs=1, episodes_per_update=1, initial_checkpoint=None)
-    folder = tmp_path/'epoch_test'
-    with (folder/'train_log.csv').open(encoding='utf-8-sig') as stream:
-        row = next(csv.DictReader(stream))
-    assert row['epoch'] == '1' and row['objective_flow'] == ''
-    assert row['snapshot_flow'] != '' and row['stop_reason'] == 'episode_step_limit'
-    assert (folder/'epochs/epoch_000001.json').exists()

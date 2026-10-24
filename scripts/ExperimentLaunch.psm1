@@ -6,7 +6,7 @@ function Invoke-ExperimentGroup {
         [string]$Group,
         [string]$Stage = 'all',
         [string]$Python = '',
-        [string]$OutputDir = 'result/experiment_suite_v1',
+        [string]$OutputDir = 'result/experiments',
         [string]$Manifest = 'configs/experiment_suite_v1.json',
         [string]$Device = 'cuda',
         [int[]]$Seeds,

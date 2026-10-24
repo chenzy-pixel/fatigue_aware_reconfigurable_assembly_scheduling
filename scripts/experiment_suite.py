@@ -109,7 +109,7 @@ def check_preflight(root, identity):
         raise ValueError('run the complete same-identity preflight first')
     value = read_json(path)
     if value.get('status') != 'passed' or value.get('identity') != identity:
-        raise ValueError('preflight source/config/data identity differs; use a new output directory')
+        raise ValueError('experiment identity differs; use the original Git revision or a new output directory')
 
 
 @contextmanager
@@ -139,20 +139,27 @@ def snapshot_sources(root, suite, identity, device):
     import zipfile
     from configs.config import PROJECT_ROOT
     from configs.experiment_suite import identity_payload
+    from result.provenance import source_files
     payload = identity_payload(suite,device)
     if digest(payload) != identity:
         raise ValueError('source files changed during preflight')
     archive = root/'source.zip'
     with zipfile.ZipFile(archive.with_suffix('.zip.tmp'),'w',zipfile.ZIP_DEFLATED) as zipped:
-        for path in payload['sources']:
-            zipped.write(PROJECT_ROOT/path,path)
+        for path in source_files(PROJECT_ROOT):
+            zipped.write(path,path.relative_to(PROJECT_ROOT).as_posix())
+        for path in sorted((PROJECT_ROOT/'scripts').glob('*.ps*')):
+            zipped.write(path,path.relative_to(PROJECT_ROOT).as_posix())
+        for name in ('requirements.txt','pytest.ini','README.md','configs/default.json',
+                     'configs/comparators/suite.json','configs/experiment_suite_v1.json',
+                     'configs/factorial27_normalization.json'):
+            zipped.write(PROJECT_ROOT/name,name)
         zipped.writestr('experiment_identity.json',json.dumps(payload,ensure_ascii=False,indent=2))
     archive.with_suffix('.zip.tmp').replace(archive)
     return payload['sources']
 
 
 def load_agent(root, suite, arm, seed, identity, device, *, record=None):
-    from scripts.comparison_suite import check_learning_checkpoint
+    from agent.comparators.learning import check_learning_checkpoint
     c = arm_config(suite, arm, seed, device)
     method = suite['arms'][arm]['method']
     path = root/'training'/arm/str(seed)/'best_checkpoint.pt'
@@ -184,7 +191,7 @@ def train(suite, root, identity, device, arms, seeds):
         for seed in seeds:
             c = arm_config(suite, arm, seed, device)
             print(f'train {arm} seed={seed}', flush=True)
-            train_request(c, suite['arms'][arm]['method'], seed, c['ppo']['learning_rate'], None,
+            train_request(c, suite['arms'][arm]['method'], seed, c['ppo']['learning_rate'],
                           dataset, list(range(27)),
                           [p.as_tuple() for p in formal_preferences(c, 'validation')], root/'training'/arm/str(seed), identity,
                           episodes=2000, workers=suite['execution']['training_workers'])
@@ -353,7 +360,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stage', choices=('preflight','train','evaluate','rules','develop-search','freeze-budget','search','report','smoke'), default='preflight')
     p.add_argument('--manifest', default=DEFAULT_MANIFEST)
-    p.add_argument('--output-dir', default='result/experiment_suite_v1')
+    p.add_argument('--output-dir', default='result/experiments')
     p.add_argument('--device', default='cuda')
     p.add_argument('--arms', nargs='+')
     p.add_argument('--seeds', nargs='+', type=int)
@@ -369,8 +376,8 @@ def main():
     torch.set_num_threads(suite['execution']['torch_threads'])
     root = project_path(args.output_dir)
     if args.stage == 'smoke':
-        from scripts.check_experiment_suite import run_smoke
-        run_smoke(suite, root/'smoke')
+        from scripts.smoke import run_smoke
+        run_smoke(suite, Path('.cache/smoke'))
         return
     arms, seeds = args.arms or list(suite['arms']), args.seeds or suite['seeds']
     if len(set(arms)) != len(arms) or any(a not in suite['arms'] for a in arms):
@@ -381,7 +388,7 @@ def main():
     tasks = TASKS if args.task == 'both' else [args.task]
     if args.stage == 'preflight':
         if (root/'preflight.json').exists() and read_json(root/'preflight.json').get('identity') != identity:
-            p.error('output directory identity differs; use a new directory')
+            p.error('experiment identity differs; use the original Git revision or a new output directory')
         result = preflight(suite, identity, args.device)
         root.mkdir(parents=True,exist_ok=True)
         result['source_hashes'] = snapshot_sources(root,suite,identity,args.device)

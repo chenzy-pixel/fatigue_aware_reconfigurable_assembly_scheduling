@@ -7,11 +7,11 @@ import random
 import numpy as np
 
 from agent.baselines import HeuristicPolicy
-from agent.mo_alns import SearchBudget, BudgetExhausted
-from agent.mo_alns.archive import ParetoArchive
-from agent.mo_alns.search import CandidateEvaluator
-from agent.mo_alns.solver import INITIAL_RULES, _rule_solution, _topological_order
-from agent.mo_alns.types import SearchResult, GridSearchResult, preference_key
+from agent.search import SearchBudget, BudgetExhausted
+from agent.search.archive import ParetoArchive
+from agent.search.evaluation import CandidateEvaluator
+from agent.search.decoder import INITIAL_RULES, _rule_solution, _topological_order
+from agent.search.types import SearchResult, GridSearchResult, preference_key
 from environment import normalize_preference, simplex_lattice
 
 

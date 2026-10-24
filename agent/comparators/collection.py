@@ -17,16 +17,16 @@ class Collected:
     losses: dict
 
 
-def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False, episodes_per_batch=20,
-            max_parallelism=None, progress_callback=None):
+def collect(runner, agent, config, start_episode, *, ddqn=False, episodes_per_batch=20,
+            max_parallelism=None, progress_callback=None, instance_override=None):
     """Every issued command reserves exactly one real step, including WAIT.
 
-    Policy freezes during each PPO batch. At the final global boundary, active
-    trajectories bootstrap from their current observation; no fake failure.
+    Policy freezes during each PPO batch. Engineering truncations bootstrap
+    from their final observation; every requested attempt finishes.
     DDQN learns online at its configured raw-interaction cadence.
     """
-    if episodes_per_batch <= 0 or (allowance is not None and allowance <= 0):
-        raise ValueError("positive collection allowance and batch size required")
+    if episodes_per_batch <= 0:
+        raise ValueError("positive episode batch size required")
     parallelism = runner.worker_count if max_parallelism is None else int(max_parallelism)
     if not 1 <= parallelism <= runner.worker_count:
         raise ValueError('collection parallelism must be within worker pool size')
@@ -45,11 +45,12 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
         nonlocal indices
         commands = {}
         for lane in lanes:
-            if indices >= episodes_per_batch or (allowance is not None and allowance-used <= len(active)+len(commands)):
+            if indices >= episodes_per_batch:
                 break
             episode = start_episode+indices
             pref = quality_preference_for_episode(config, algorithm_seed=config["seed"], quality_episode_index=episode)
-            commands[lane] = ("reset_online", _WorkerResetRequest(episode, preference=pref))
+            commands[lane] = ("reset_online", _WorkerResetRequest(episode, preference=pref)) if instance_override is None else (
+                "reset_instance", _WorkerResetRequest(instance_override, preference=pref))
             histories[lane] = {"episode": episode, "steps": 0, "reward_sum": 0., "buffer": RolloutBuffer(),
                                "started": time.perf_counter(), "preference": pref.as_dict(),
                                **{k: 0. for k in EVALUATION_WORKER_TIMING_FIELDS}}
@@ -65,6 +66,10 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
                 histories[lane]["metadata"] = response.metadata
                 histories[lane]["generation_time_seconds"] = response.generation_time_seconds
                 histories[lane]["record_sha256"] = response.record_sha256
+                if instance_override is not None:
+                    from data.dataset import template_sha256
+                    histories[lane]["record_sha256"] = template_sha256(instance_override)
+                    histories[lane]["metadata"] = {"purpose": "local_smoke"}
                 for key in EVALUATION_WORKER_TIMING_FIELDS:
                     histories[lane][key] += float(getattr(response, key, 0.))
 
@@ -86,8 +91,8 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
 
     fill(range(parallelism))
     progress()
-    while active and (allowance is None or used < allowance):
-        lanes = sorted(active) if allowance is None else sorted(active)[:allowance-used]
+    while active:
+        lanes = sorted(active)
         observations = [active[lane].observation for lane in lanes]
         masks = [active[lane].action_mask for lane in lanes]
         if ddqn:
@@ -117,19 +122,10 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
             if response.terminated or response.truncated:
                 finish(lane, response)
                 completed.append(lane)
-        if allowance is None or used < allowance:
-            fill(completed)
+        fill(completed)
         progress()
-    snapshots = runner._exchange({lane: ("snapshot", None) for lane in active}) if active else {}
-    for lane, response in list(active.items()):
-        response.metrics = snapshots[lane].metrics
-        if response.metrics is None:
-            raise RuntimeError("cutoff worker returned no snapshot metrics")
-        for key in EVALUATION_WORKER_TIMING_FIELDS:
-            histories[lane][key] += float(getattr(snapshots[lane], key, 0.))
-        finish(lane, response, cutoff=True)
     progress()
-    if allowance is None and (len(summary) != episodes_per_batch or indices != episodes_per_batch):
+    if len(summary) != episodes_per_batch or indices != episodes_per_batch:
         raise RuntimeError("episode batch did not finish all requested attempts")
     return Collected(total, used, indices, sorted(summary, key=lambda e: e['episode']), time.perf_counter()-started,
                      {"td_loss": sum(ddqn_losses)/len(ddqn_losses)} if ddqn_losses else {})

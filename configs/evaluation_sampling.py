@@ -1,14 +1,13 @@
 """Versioned formal sampling aggregation, independent of reward/network identity."""
 from collections.abc import Mapping
 
-PER_SAMPLE = "per_sample_v1"
 BEST_OF_THREE = "best_of_3_v1"
+PER_SAMPLE = "per_sample_v1"
 
 
 def sample_aggregation(config: Mapping) -> str:
-    # Missing fields in full historical snapshots retain the historical meaning.
-    mode = config.get("training", {}).get("formal_evaluation", {}).get("sample_aggregation", PER_SAMPLE)
-    if mode not in {PER_SAMPLE, BEST_OF_THREE}:
+    mode = config["training"]["formal_evaluation"].get("sample_aggregation")
+    if mode not in {BEST_OF_THREE, PER_SAMPLE}:
         raise ValueError(f"unknown formal evaluation sample_aggregation: {mode!r}")
     return mode
 

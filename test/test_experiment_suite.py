@@ -16,7 +16,7 @@ from agent.comparators.common import FOUR, digest
 from agent.comparators.evolution import EvolutionSolver
 from agent.comparators.experiment_evaluation import search_snapshots, search_unit, learning_unit, frontier_metrics, quality
 from agent.baselines.experiment_rules import FixedRulePolicy, evaluate_rule, RULES
-from agent.mo_alns import SearchBudget
+from agent.search import SearchBudget
 from analysis.experiment_suite import stratified_interval, holm, audit_evaluations, instance_tables, common_success_statistics
 
 
@@ -316,8 +316,8 @@ def test_complete_report_pipeline_with_synthetic_results(config,tmp_path,monkeyp
     import json
     import data
     import analysis.experiment_suite as reporting
-    import scripts.comparison_suite as comparison
-    import scripts.summarize_factorial27 as summarizer
+    import agent.comparators.learning as comparison
+    import result.training_history as summarizer
     import scripts.experiment_suite as executor
     from scripts.experiment_suite import save_unit
     suite=load_suite();suite['seeds']=[11];suite['statistics']['bootstrap_samples']=100

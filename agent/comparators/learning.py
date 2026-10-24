@@ -1,4 +1,4 @@
-"""Native evaluation and explicit episode/interaction training requests."""
+"""Native evaluation and episode-budget training requests."""
 import json
 from pathlib import Path
 import time
@@ -117,13 +117,12 @@ def validation(config, agent, dataset, indices, prefs, method, *, seed, runner=N
     return {"summary": summary, "rows": rows, "deliveries": deliveries}, rank
 
 
-def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, output, identity, *, workers=20, smoke_instance=None, episodes=None):
+def train_request(base, method, seed, rate, dataset, val_indices, prefs, output, identity, *, workers=20, smoke_instance=None, episodes=None):
     from data.distribution import validate_training_distribution
 
     validate_training_distribution(base)
-    if (steps is None) == (episodes is None):
-        raise ValueError("exactly one of steps and episodes is required")
-    budget = training_budget(base, steps=steps, episodes=episodes)
+    budget = training_budget(base, episodes=episodes)
+    episodes = budget['budget_amount']
     batch_size = budget['episodes_per_update']
     output = Path(output)
     job_id = digest([identity, method, seed, rate, budget, val_indices, prefs, workers,
@@ -142,12 +141,9 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
         raise ValueError("incomplete training identity differs; use a new output directory")
     config = method_config(base, method, seed, rate)
     config['training']['budget_unit'] = budget['budget_unit']
-    if episodes is not None:
-        config['training']['episodes'] = episodes
+    config['training']['episodes'] = episodes
     config["comparison"].pop('training_steps', None)
     config["comparison"]["training_budget"] = budget
-    if steps is not None:
-        config["comparison"]["training_steps"] = steps
     from configs.runtime import runtime_manifest
     config["runtime_manifest"]=runtime_manifest(config)
     set_seed(seed)
@@ -160,8 +156,7 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
     # Interrupted training is deliberately restarted, rather than falsely
     # treating weights alone as an exact optimizer/replay/worker resume.
     atomic_json(output / "status.json", {"job_id": job_id, "status": "running", "restart_policy": "restart_incomplete_request"})
-    thresholds = sorted({max(1, int(steps*i/5)) for i in range(1, 6)}) if steps is not None else []
-    used, episode, validation_index, updates, presentations = 0, 0, 0, 0, 0
+    used, episode, updates, presentations = 0, 0, 0, 0
     best_rank = None
     best_episode = None
     history, validations, episode_log = [], [], []
@@ -170,35 +165,30 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
     pool_workers = max(workers, int(config['training'].get('validation_parallel_envs', 20)))
     reporter = ExperimentConsoleReporter(config, budget, method, workers, len(val_indices), len(prefs), started_at=started)
     reporter.start_run()
-    with reporter.phase('workers', total=pool_workers, unit='workers') as progress:
-        runner = ParallelEpisodeRunner(config=config, template=template, episode_count=episodes if episodes is not None else max(steps, batch_size), worker_count=pool_workers,
-                                       diagnostic_directory=output / "workers")
-        progress(dict(completed=pool_workers))
+    runner = ParallelEpisodeRunner(config=config, template=template, episode_count=episodes, worker_count=pool_workers,
+                                   diagnostic_directory=output / "workers")
     with runner:
         worker_pool_startup_seconds = time.perf_counter()-started
-        while (episode < episodes if episodes is not None else used < steps):
+        while episode < episodes:
             epoch = len(history) + 1
-            limit = min(steps-used, thresholds[validation_index]-used) if steps is not None else None
-            count = min(batch_size, episodes-episode) if episodes is not None else batch_size
-            if method == 'rule_ddqn' and episodes is not None:
+            count = min(batch_size, episodes-episode)
+            if method == 'rule_ddqn':
                 agent.set_episode_progress(episode, episodes)
-            with reporter.phase('collect', epoch=epoch, total=count) as progress:
-                rollout = collect(runner, agent, config, episode, limit, ddqn=method == "rule_ddqn",
-                                  episodes_per_batch=count, max_parallelism=workers, progress_callback=progress)
+            rollout = collect(runner, agent, config, episode, ddqn=method == "rule_ddqn",
+                              episodes_per_batch=count, max_parallelism=workers,
+                              instance_override=smoke_instance)
             if rollout.steps <= 0:
                 raise RuntimeError("training made no progress")
-            if episodes is not None and (rollout.episodes_started != count or len(rollout.episodes) != count
-                                         or any(e['budget_truncated'] for e in rollout.episodes)):
+            if rollout.episodes_started != count or len(rollout.episodes) != count:
                 raise RuntimeError("episode batch ended before all attempts finished")
             used += rollout.steps
             episode += rollout.episodes_started
             losses = rollout.losses
             update_started = time.perf_counter()
             if method != "rule_ddqn" and len(rollout.buffer):
-                with reporter.phase('update', epoch=epoch):
-                    losses = agent.update(rollout.buffer)
-                    updates += int(losses.get('optimizer_updates', 1))
-                    presentations += int(losses.get('sample_presentations', len(rollout.buffer)))
+                losses = agent.update(rollout.buffer)
+                updates += int(losses.get('optimizer_updates', 1))
+                presentations += int(losses.get('sample_presentations', len(rollout.buffer)))
             update_seconds = time.perf_counter()-update_started
             # Observations are no longer needed after learning. Release them
             # before validation and before allocating the next rollout batch.
@@ -225,12 +215,10 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
             reporter.epoch_update(history[-1], rollout.episodes)
             # Preserve completed collection evidence even if validation fails.
             save_epoch(output, history[-1], rollout.episodes)
-            due = (epoch % budget['validation_interval_epochs'] == 0 or episode == episodes) if episodes is not None else used == thresholds[validation_index]
+            due = epoch % budget['validation_interval_epochs'] == 0 or episode == episodes
             if due:
-                with reporter.phase('val', epoch=epoch, total=len(val_indices)*len(prefs)*reporter.validation_repeats,
-                                    unit='rollouts') as progress:
-                    result, rank = validation(config, agent, dataset, val_indices, prefs, method, seed=seed,
-                                              runner=runner, progress_callback=progress)
+                result, rank = validation(config, agent, dataset, val_indices, prefs, method, seed=seed,
+                                          runner=runner)
                 console_validation = reporter.validation_row(result, episode)
                 validation_env_steps += result['summary']['validation_env_steps']
                 validation_seconds += result['summary']['validation_seconds']
@@ -255,10 +243,6 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                     atomic_json(output / "best_validation.json", result)
                 agent.save(output / "last_checkpoint.pt", metadata)
                 atomic_json(output / "validations.json", validations)
-                reporter.checkpoint_saved(epoch, console_validation['checkpoint_event'],
-                                          last_checkpoint=output/'last_checkpoint.pt',
-                                          best_checkpoint=output/'best_checkpoint.pt' if improved else None)
-                validation_index += 1
                 reporter.validation(console_validation, selector_state={'best_episode': best_episode})
                 history[-1].update(validation_env_steps=validation_env_steps, validation_seconds=validation_seconds,
                                    seconds=time.perf_counter()-started)
@@ -290,3 +274,14 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                   run_directory=output, best_checkpoint=output/'best_checkpoint.pt', last_checkpoint=output/'last_checkpoint.pt',
                   elapsed_seconds=summary['seconds'])
     return summary
+
+
+def check_learning_checkpoint(path, config, method, seed, identity):
+    """Check request identity before an agent's weights can be changed."""
+    import torch
+    saved = torch.load(path, map_location='cpu', weights_only=False)
+    meta = saved.get('metadata', {})
+    if (meta.get('comparison_identity') != identity or meta.get('algorithm') != method
+            or meta.get('seed') != seed or meta.get('training_budget') != training_budget(config)):
+        raise ValueError('checkpoint training protocol/identity mismatch')
+    return meta

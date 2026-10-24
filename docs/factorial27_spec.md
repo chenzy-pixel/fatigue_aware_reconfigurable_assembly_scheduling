@@ -14,7 +14,7 @@
 
 ## 接口、数据与验收
 
-完整实现及复现说明见[factorial27_migration.md](factorial27_migration.md)。正式参数明细由[data/tables/factorial27_parameters.csv](../data/tables/factorial27_parameters.csv)导出，公共参数和108例诊断同目录。每实例JSON保存逐工序、机器、工人、模块数值。
+完整实现及复现说明见[当前架构](ARCHITECTURE.md)和[实验运行说明](experiment_suite_v1.md)。正式参数明细由[data/tables/factorial27_parameters.csv](../data/tables/factorial27_parameters.csv)导出，公共参数和108例诊断同目录。每实例JSON保存逐工序、机器、工人、模块数值。
 
 |算例|规模|N|K|M|W|A|工序数|
 |---|---|---:|---:|---:|---:|---:|---:|
