@@ -1812,6 +1812,8 @@ class ParallelEpisodeRunner:
         sampling_seed: int | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
         capture_trajectories: bool = False,
+        unit_sampling_seeds: Sequence[int] | None = None,
+        capture_actions: bool = False,
     ) -> list[FixedEvaluationRollout]:
         # Reject incompatible agents before starting any evaluation bookkeeping.
         agent.assert_evaluation_config(self.config)
@@ -1819,7 +1821,8 @@ class ParallelEpisodeRunner:
             return self._evaluate_records(
                 agent, records, max_parallelism=max_parallelism,
                 deterministic=deterministic, sampling_seed=sampling_seed, preferences=preferences,
-                capture_trajectories=capture_trajectories)
+                capture_trajectories=capture_trajectories,
+                unit_sampling_seeds=unit_sampling_seeds, capture_actions=capture_actions)
 
     def _evaluate_records(
         self,
@@ -1831,6 +1834,8 @@ class ParallelEpisodeRunner:
         sampling_seed: int | None = None,
         preferences: Sequence[PreferenceContextInput] | None = None,
         capture_trajectories: bool = False,
+        unit_sampling_seeds: Sequence[int] | None = None,
+        capture_actions: bool = False,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1841,12 +1846,14 @@ class ParallelEpisodeRunner:
             raise ValueError(
                 "max_parallelism must be within the worker pool size"
             )
-        if not deterministic and sampling_seed is None:
+        if not deterministic and sampling_seed is None and unit_sampling_seeds is None:
             raise ValueError(
                 "sampling_seed is required for sampled fixed evaluation"
             )
         if preferences is not None and len(preferences) != len(records):
             raise ValueError("evaluation preferences must align with records")
+        if unit_sampling_seeds is not None and len(unit_sampling_seeds) != len(records):
+            raise ValueError("unit sampling seeds must align with records")
         results: list[FixedEvaluationRollout] = []
         states: dict[int, WorkerResponse] = {}
         active: set[int] = set()
@@ -1883,7 +1890,7 @@ class ParallelEpisodeRunner:
                     None if preference is None else PreferenceContext.from_input(preference).key
                 )
                 if not deterministic:
-                    derived_sampling_seeds[lane] = derive_evaluation_sampling_seed(
+                    derived_sampling_seeds[lane] = int(unit_sampling_seeds[index]) if unit_sampling_seeds is not None else derive_evaluation_sampling_seed(
                         int(sampling_seed), records[index].instance.instance_id,
                         evaluation_keys[lane],
                     )
@@ -2013,7 +2020,7 @@ class ParallelEpisodeRunner:
                                 action_traces[lane]
                             ),
                             sampling_seed=(
-                                None if deterministic else int(sampling_seed)
+                                None if deterministic or sampling_seed is None else int(sampling_seed)
                             ),
                             derived_sampling_seed=(
                                 None
@@ -2021,7 +2028,7 @@ class ParallelEpisodeRunner:
                                 else derived_sampling_seeds[lane]
                             ),
                             sampling_evaluation_key=evaluation_keys[lane],
-                            actions=tuple(action_traces[lane]) if capture_trajectories else (),
+                            actions=tuple(action_traces[lane]) if capture_trajectories or capture_actions else (),
                             schedule=trajectory.get("schedule", []),
                             reconfigurations=trajectory.get("reconfigurations", []),
                             **worker_times[lane],

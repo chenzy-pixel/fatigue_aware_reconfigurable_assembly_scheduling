@@ -90,6 +90,21 @@ class RuleDDQN:
             raise ValueError("invalid episode exploration progress")
         self.batch_epsilon = max(.05, 1-.95*completed/(.5*total))
 
+    def assert_evaluation_config(self, config):
+        if physical_identity(config) != self.spec['physics']:
+            raise ValueError('DDQN evaluation physics differs')
+
+    def act_batch(self, observations, masks, *, deterministic=True):
+        if not deterministic:
+            raise ValueError('Rule-DDQN delivery is greedy')
+        if any(observation_spec(obs) != self.spec['observation'] for obs in observations):
+            raise ValueError('DDQN evaluation observation identity differs')
+        actions, _ = self.act_rules(observations, masks, explore=False)
+        return actions, [0.] * len(actions), [0.] * len(actions)
+
+    def consume_policy_decision_diagnostics(self):
+        return []
+
     @property
     def exploration_epsilon(self):
         if self.batch_epsilon is not None:

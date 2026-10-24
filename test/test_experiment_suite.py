@@ -293,6 +293,24 @@ def test_report_rejects_missing_duplicate_and_corrupt_quality(config):
     with pytest.raises(ValueError,match='quality'): audit_evaluations(damaged,suite,config,records,'id')
 
 
+def test_report_checks_reused_parent_and_trajectory_identity(config):
+    suite, records, units = fake_units(config)
+    parent = next(u for u in units if u['arm'] == 'full' and u['task'] == 'frontier')
+    derived = next(u for u in units if u['arm'] == 'full_sample1' and u['task'] == 'frontier')
+    parent['job_id'] = 'parent'
+    parent['content_sha256'] = digest(parent)
+    derived.update(cost_reference='full', source_job_id='parent', source_content_sha256=parent['content_sha256'])
+    # Streaming file order need not place the parent before the derived unit.
+    audit_evaluations(reversed(units), suite, config, records, 'id')
+    derived['source_content_sha256'] = 'stale'
+    with pytest.raises(ValueError, match='parent identity'):
+        audit_evaluations(units, suite, config, records, 'id')
+    derived['source_content_sha256'] = parent['content_sha256']
+    derived['requests'][0]['raw'][0]['actions'] = [123]
+    with pytest.raises(ValueError, match='first trajectories'):
+        audit_evaluations(units, suite, config, records, 'id')
+
+
 def test_complete_report_pipeline_with_synthetic_results(config,tmp_path,monkeypatch):
     """Exercise CSV, statistics and every figure; these are fixture values."""
     import json

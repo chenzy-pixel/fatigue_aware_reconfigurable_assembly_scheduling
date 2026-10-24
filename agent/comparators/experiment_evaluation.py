@@ -8,6 +8,7 @@ from environment import PreferenceVector
 from environment.types import bounded_quality_score
 from agent.comparators.evolution import EvolutionSolver
 from agent.comparators.learning import evaluate_request, synchronize
+from agent.comparators.parallel_evaluation import evaluate_requests
 from agent.mo_alns import SearchBudget
 from agent.mo_alns.types import preference_key
 
@@ -24,15 +25,22 @@ def frontier_metrics(config, candidates, deliveries):
             'coverage': sum(r['success'] for r in deliveries)/len(deliveries) if deliveries else 0.}
 
 
-def learning_unit(config, agent, record, method, prefs, seed, *, mode=None):
+def learning_unit(config, agent, record, method, prefs, seed, *, mode=None, runner=None, parallel=False):
     synchronize(config)
     began = time.perf_counter()
-    results = [evaluate_request(config, agent, record.instance, pref, method, mode=mode, seed=seed) for pref in prefs]
+    runtime = None
+    if parallel:
+        results, runtime = evaluate_requests(config, agent, [(record, p) for p in prefs], method,
+                                             runner=runner, mode=mode, seed=seed)
+    else:
+        results = [evaluate_request(config, agent, record.instance, pref, method, mode=mode, seed=seed) for pref in prefs]
     deliveries = [r['summary'] for r in results]
     candidates = [raw for r in results for raw in r['raw']]
     synchronize(config)
     elapsed = time.perf_counter()-began
     return {'deliveries': deliveries, 'requests': results, 'seconds': elapsed,
+            'timing_basis': 'parallel_frontier_wall' if parallel else 'exclusive_serial_requests',
+            'evaluation_runtime': runtime,
             'environment_steps': sum(r['environment_steps'] for r in deliveries),
             **frontier_metrics(config, candidates, deliveries)}
 

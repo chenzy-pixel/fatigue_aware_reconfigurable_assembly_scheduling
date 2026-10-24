@@ -23,6 +23,7 @@ from .dcan import DCANActorCritic, DCANAgent
 from .ddqn import RuleDDQN
 from .training_budget import training_budget
 from .a2c import A2CAgent
+from .parallel_evaluation import evaluate_requests, sampling_seed
 
 
 def build_agent(config, obs, method):
@@ -51,8 +52,7 @@ def evaluate_request(config, agent, instance, pref, method, *, mode=None, seed=0
         repeat_started = time.perf_counter()
         env = AssemblySchedulingEnv(config)
         observation = env.reset(instance, preference=PreferenceVector(*pref))
-        key = digest([seed, instance.instance_id, pref, repeat, "comparison_sampling_v1"])
-        generator = torch.Generator(device=config["device"]).manual_seed(int(key[:15], 16))
+        generator = torch.Generator(device=config["device"]).manual_seed(sampling_seed(seed, instance.instance_id, pref, repeat))
         actions = []
         while not (env.terminated or env.truncated):
             mask = env.get_action_mask()
@@ -82,20 +82,21 @@ def evaluate_request(config, agent, instance, pref, method, *, mode=None, seed=0
                          "environment_steps": sum(len(r['actions']) for r in raw)}, "raw": raw, "selected_repeat": selected["sampling_repeat"]}
 
 
-def validation(config, agent, dataset, indices, prefs, method, *, seed):
+def validation(config, agent, dataset, indices, prefs, method, *, seed, runner=None):
     began = time.perf_counter()
     rows, deliveries = [], []
-    for index in indices:
-        for pref in prefs:
-            result = evaluate_request(config, agent, dataset[index].instance, pref, method, seed=seed)
-            deliveries.append({"summary": result["summary"], "selected_repeat": result["selected_repeat"],
-                               "raw": [{k: v for k, v in sample.items() if k not in ("schedule", "reconfigurations")}
-                                       for sample in result["raw"]]})
-            row = {**result["summary"], "cell_id": dataset[index].metadata["cell_id"],
-                   "scale": dataset[index].metadata["scale"],
-                   "decision_count": next(r["metrics"]["decision_count"] for r in result["raw"] if r["sampling_repeat"] == result["selected_repeat"]),
-                   "raw_safety_pass": all(not r["violations"] and r["metrics"]["maximum_worker_fatigue"] <= r["metrics"]["safe_fatigue_limit"]+1e-9 for r in result["raw"])}
-            rows.append(row)
+    requests = [(dataset[index], pref) for index in indices for pref in prefs]
+    results, runtime = evaluate_requests(config, agent, requests, method, seed=seed, runner=runner,
+                                        capture_trajectories=False)
+    for (record, pref), result in zip(requests, results):
+        deliveries.append({"summary": result["summary"], "selected_repeat": result["selected_repeat"],
+                           "raw": [{k: v for k, v in sample.items() if k not in ("schedule", "reconfigurations")}
+                                   for sample in result["raw"]]})
+        row = {**result["summary"], "cell_id": record.metadata["cell_id"],
+               "scale": record.metadata["scale"],
+               "decision_count": next(r["metrics"]["decision_count"] for r in result["raw"] if r["sampling_repeat"] == result["selected_repeat"]),
+               "raw_safety_pass": all(not r["violations"] and r["metrics"]["maximum_worker_fatigue"] <= r["metrics"]["safe_fatigue_limit"]+1e-9 for r in result["raw"])}
+        rows.append(row)
     rates, qualities = [], []
     for pref in prefs:
         group = [r for r in rows if tuple(r["preference"]) == tuple(pref)]
@@ -105,7 +106,8 @@ def validation(config, agent, dataset, indices, prefs, method, *, seed):
     safe = all(r["raw_safety_pass"] for r in rows)
     summary = {"worst_preference_success": min(rates), "quality": float(np.mean(qualities)),
                "all_preferences_covered": all(any(r["success"] and tuple(r["preference"]) == tuple(p) for r in rows) for p in prefs),
-               "safe": safe, "delivery_count": len(rows), "evaluation_seconds": sum(r["search_seconds"] for r in rows),
+               "safe": safe, "delivery_count": len(rows), "evaluation_seconds": runtime['wall_seconds'],
+               "evaluation_runtime": runtime,
                "validation_seconds": time.perf_counter()-began,
                "validation_env_steps": sum(r['environment_steps'] for r in rows)}
     # If any preference has no successful delivery, its quality ranks after all
@@ -123,7 +125,8 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
     budget = training_budget(base, steps=steps, episodes=episodes)
     batch_size = budget['episodes_per_update']
     output = Path(output)
-    job_id = digest([identity, method, seed, rate, budget, val_indices, prefs, workers, LOG_VERSION])
+    job_id = digest([identity, method, seed, rate, budget, val_indices, prefs, workers,
+                     base['training'].get('validation_parallel_envs', 20), LOG_VERSION])
     summary_path = output / "summary.json"
     if summary_path.exists():
         saved = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -161,8 +164,10 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
     history, validations, episode_log = [], [], []
     training_seconds = validation_seconds = validation_env_steps = 0
     started = time.perf_counter()
-    with ParallelEpisodeRunner(config=config, template=template, episode_count=episodes if episodes is not None else max(steps, batch_size), worker_count=workers,
+    pool_workers = max(workers, int(config['training'].get('validation_parallel_envs', 20)))
+    with ParallelEpisodeRunner(config=config, template=template, episode_count=episodes if episodes is not None else max(steps, batch_size), worker_count=pool_workers,
                                diagnostic_directory=output / "workers") as runner:
+        worker_pool_startup_seconds = time.perf_counter()-started
         while (episode < episodes if episodes is not None else used < steps):
             epoch = len(history) + 1
             limit = min(steps-used, thresholds[validation_index]-used) if steps is not None else None
@@ -170,7 +175,7 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
             if method == 'rule_ddqn' and episodes is not None:
                 agent.set_episode_progress(episode, episodes)
             rollout = collect(runner, agent, config, episode, limit, ddqn=method == "rule_ddqn",
-                              episodes_per_batch=count)
+                              episodes_per_batch=count, max_parallelism=workers)
             if rollout.steps <= 0:
                 raise RuntimeError("training made no progress")
             if episodes is not None and (rollout.episodes_started != count or len(rollout.episodes) != count
@@ -185,6 +190,9 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                 updates += int(losses.get('optimizer_updates', 1))
                 presentations += int(losses.get('sample_presentations', len(rollout.buffer)))
             update_seconds = time.perf_counter()-update_started
+            # Observations are no longer needed after learning. Release them
+            # before validation and before allocating the next rollout batch.
+            rollout.buffer.clear()
             training_seconds += rollout.seconds+update_seconds
             for item in rollout.episodes:
                 item.update(epoch=epoch, method=method, training_seed=seed, training_steps=used)
@@ -204,13 +212,11 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                             "losses": losses, "optimizer_updates": agent.updates if method == "rule_ddqn" else updates})
             if method == 'rule_ddqn':
                 history[-1]['exploration_epsilon'] = agent.exploration_epsilon
+            # Preserve completed collection evidence even if validation fails.
             save_epoch(output, history[-1], rollout.episodes)
-            atomic_json(output / "training_log.json", history)
-            atomic_json(output / "episodes.json", episode_log)
-            export_history(output, history, episode_log, validations)
             due = (epoch % budget['validation_interval_epochs'] == 0 or episode == episodes) if episodes is not None else used == thresholds[validation_index]
             if due:
-                result, rank = validation(config, agent, dataset, val_indices, prefs, method, seed=seed)
+                result, rank = validation(config, agent, dataset, val_indices, prefs, method, seed=seed, runner=runner)
                 validation_env_steps += result['summary']['validation_env_steps']
                 validation_seconds += result['summary']['validation_seconds']
                 result.update(training_steps=used, epoch=epoch, method=method, training_seed=seed,
@@ -236,8 +242,10 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                 history[-1].update(validation_env_steps=validation_env_steps, validation_seconds=validation_seconds,
                                    seconds=time.perf_counter()-started)
                 save_epoch(output, history[-1], rollout.episodes)
-                atomic_json(output / 'training_log.json', history)
-                export_history(output, history, episode_log, validations)
+            atomic_json(output / 'training_log.json', history)
+            atomic_json(output / 'episodes.json', episode_log)
+            # Validation tables are unchanged between checkpoint evaluations.
+            export_history(output, history, episode_log, validations if due else None)
     if best_rank is None:
         raise RuntimeError("no physically safe eligible checkpoint")
     summary = {"job_id": job_id, "method": method, "seed": seed, "learning_rate": rate,
@@ -251,6 +259,7 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                "parameter_count": sum(p.numel() for p in (agent.online if method == 'rule_ddqn' else agent.network).parameters()) if hasattr(agent, 'network') or hasattr(agent, 'online') else None,
                "trainable_parameter_count": sum(p.numel() for p in (agent.online if method == 'rule_ddqn' else agent.network).parameters() if p.requires_grad) if hasattr(agent, 'network') or hasattr(agent, 'online') else None,
                "validation_seconds": validation_seconds, "validation_env_steps": validation_env_steps,
+               "worker_pool_startup_seconds": worker_pool_startup_seconds, "worker_pool_size": pool_workers,
                "best_validation": json.loads((output/"best_validation.json").read_text(encoding="utf-8"))["summary"]}
     atomic_json(summary_path, summary)
     atomic_json(output / "status.json", {"job_id": job_id, "status": "complete"})

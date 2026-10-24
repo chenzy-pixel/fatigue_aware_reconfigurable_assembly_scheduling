@@ -17,7 +17,7 @@ class Collected:
     losses: dict
 
 
-def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False, episodes_per_batch=20):
+def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False, episodes_per_batch=20, max_parallelism=None):
     """Every issued command reserves exactly one real step, including WAIT.
 
     Policy freezes during each PPO batch. At the final global boundary, active
@@ -26,6 +26,9 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
     """
     if episodes_per_batch <= 0 or (allowance is not None and allowance <= 0):
         raise ValueError("positive collection allowance and batch size required")
+    parallelism = runner.worker_count if max_parallelism is None else int(max_parallelism)
+    if not 1 <= parallelism <= runner.worker_count:
+        raise ValueError('collection parallelism must be within worker pool size')
     started = time.perf_counter()
     total = RolloutBuffer()
     active, histories, summary = {}, {}, []
@@ -75,7 +78,7 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
                         "metrics": response.metrics})
         active.pop(lane, None)
 
-    fill(range(runner.worker_count))
+    fill(range(parallelism))
     while active and (allowance is None or used < allowance):
         lanes = sorted(active) if allowance is None else sorted(active)[:allowance-used]
         observations = [active[lane].observation for lane in lanes]

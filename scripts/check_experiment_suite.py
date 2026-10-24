@@ -23,7 +23,7 @@ def run_smoke(suite, root):
     report['source_identity'] = source_identity
     for arm, definition in suite['arms'].items():
         c = arm_config(suite,arm,11,'cpu')
-        c['training'].update(episodes=2, episodes_per_update=2, validation_interval_epochs=1)
+        c['training'].update(episodes=2, episodes_per_update=2, validation_interval_epochs=1, validation_parallel_envs=2)
         c['comparison']['ddqn'].update(warmup=2,batch_size=2,update_every=1)
         # Small network only for HGNN smoke, explicitly outside the formal identity.
         c['network'].update(hidden_dim=16,message_passing_layers=1)

@@ -1,0 +1,230 @@
+{
+  "identity": "31a46411a427f9054ef0e7875d24378a0a2b807169cd157d3c9c44ce018ac48a",
+  "matrix": {
+    "training": [
+      {
+        "arm": "full",
+        "method": "ppo",
+        "seed": 11
+      },
+      {
+        "arm": "full",
+        "method": "ppo",
+        "seed": 23
+      },
+      {
+        "arm": "full",
+        "method": "ppo",
+        "seed": 37
+      },
+      {
+        "arm": "full",
+        "method": "ppo",
+        "seed": 53
+      },
+      {
+        "arm": "full",
+        "method": "ppo",
+        "seed": 71
+      },
+      {
+        "arm": "no_graph",
+        "method": "ppo",
+        "seed": 11
+      },
+      {
+        "arm": "no_graph",
+        "method": "ppo",
+        "seed": 23
+      },
+      {
+        "arm": "no_graph",
+        "method": "ppo",
+        "seed": 37
+      },
+      {
+        "arm": "no_graph",
+        "method": "ppo",
+        "seed": 53
+      },
+      {
+        "arm": "no_graph",
+        "method": "ppo",
+        "seed": 71
+      },
+      {
+        "arm": "no_direct",
+        "method": "ppo",
+        "seed": 11
+      },
+      {
+        "arm": "no_direct",
+        "method": "ppo",
+        "seed": 23
+      },
+      {
+        "arm": "no_direct",
+        "method": "ppo",
+        "seed": 37
+      },
+      {
+        "arm": "no_direct",
+        "method": "ppo",
+        "seed": 53
+      },
+      {
+        "arm": "no_direct",
+        "method": "ppo",
+        "seed": 71
+      },
+      {
+        "arm": "no_residual",
+        "method": "ppo",
+        "seed": 11
+      },
+      {
+        "arm": "no_residual",
+        "method": "ppo",
+        "seed": 23
+      },
+      {
+        "arm": "no_residual",
+        "method": "ppo",
+        "seed": 37
+      },
+      {
+        "arm": "no_residual",
+        "method": "ppo",
+        "seed": 53
+      },
+      {
+        "arm": "no_residual",
+        "method": "ppo",
+        "seed": 71
+      },
+      {
+        "arm": "a2c",
+        "method": "a2c",
+        "seed": 11
+      },
+      {
+        "arm": "a2c",
+        "method": "a2c",
+        "seed": 23
+      },
+      {
+        "arm": "a2c",
+        "method": "a2c",
+        "seed": 37
+      },
+      {
+        "arm": "a2c",
+        "method": "a2c",
+        "seed": 53
+      },
+      {
+        "arm": "a2c",
+        "method": "a2c",
+        "seed": 71
+      },
+      {
+        "arm": "rule_ddqn",
+        "method": "rule_ddqn",
+        "seed": 11
+      },
+      {
+        "arm": "rule_ddqn",
+        "method": "rule_ddqn",
+        "seed": 23
+      },
+      {
+        "arm": "rule_ddqn",
+        "method": "rule_ddqn",
+        "seed": 37
+      },
+      {
+        "arm": "rule_ddqn",
+        "method": "rule_ddqn",
+        "seed": 53
+      },
+      {
+        "arm": "rule_ddqn",
+        "method": "rule_ddqn",
+        "seed": 71
+      },
+      {
+        "arm": "dcan",
+        "method": "dcan",
+        "seed": 11
+      },
+      {
+        "arm": "dcan",
+        "method": "dcan",
+        "seed": 23
+      },
+      {
+        "arm": "dcan",
+        "method": "dcan",
+        "seed": 37
+      },
+      {
+        "arm": "dcan",
+        "method": "dcan",
+        "seed": 53
+      },
+      {
+        "arm": "dcan",
+        "method": "dcan",
+        "seed": 71
+      }
+    ],
+    "search": {
+      "frontier": 270,
+      "independent_request": 1080
+    },
+    "rule_solves": 135,
+    "search_budget_hours": 225,
+    "validation_calls": 700,
+    "validation_trajectories": 666900,
+    "evaluation_workers": 20,
+    "final_evaluation_unique_trajectories": 189540,
+    "reused_frontier_sample1_trajectories": 8910
+  },
+  "probes": {
+    "full": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 977353
+    },
+    "no_graph": {
+      "finite": true,
+      "parameter_count": 732617,
+      "trainable_parameter_count": 732617
+    },
+    "no_direct": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 977353
+    },
+    "no_residual": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 890789
+    },
+    "a2c": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 977353
+    },
+    "rule_ddqn": {
+      "finite": true,
+      "parameter_count": 96007,
+      "trainable_parameter_count": 96007
+    },
+    "dcan": {
+      "finite": true,
+      "parameter_count": 740252,
+      "trainable_parameter_count": 740252
+    }
+  }
+}

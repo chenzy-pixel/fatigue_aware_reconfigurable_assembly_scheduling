@@ -52,12 +52,21 @@ def audit_evaluations(units, suite, config, records, identity, *, compact_units=
                 for seed in ([None] if method in suite['rules'] else suite['seeds'])
                 for iid in cases for pref in preferences(config, task)}
     seen, rows = set(), []
+    full_sources, reused_sources = {}, {}
     for unit in units:
         method, task, seed, iid = (unit[k] for k in ('arm','task','seed','instance_id'))
         if unit['identity'] != identity or unit.get('status') != 'complete' or iid not in cases:
             raise ValueError('evaluation identity/status/instance differs')
         if 'content_sha256' in unit and unit['content_sha256'] != digest({k:v for k,v in unit.items() if k != 'content_sha256'}):
             raise ValueError('evaluation content hash differs')
+        if task == 'frontier' and method == 'full':
+            full_sources[seed, iid] = (unit.get('job_id'), unit.get('content_sha256'),
+                                      digest([r['raw'][0] for r in unit['requests']]))
+        if unit.get('cost_reference') == 'full':
+            if method != 'full_sample1' or task != 'frontier' or any(len(r['raw']) != 1 for r in unit['requests']):
+                raise ValueError('invalid reused sample1 artifact')
+            reused_sources[seed, iid] = (unit.get('source_job_id'), unit.get('source_content_sha256'),
+                                        digest([r['raw'][0] for r in unit['requests']]))
         record = cases[iid]
         if unit['cell_id'] != record.metadata['cell_id'] or unit['scale'] != record.metadata['scale']:
             raise ValueError('evaluation instance metadata differs')
@@ -106,6 +115,9 @@ def audit_evaluations(units, suite, config, records, identity, *, compact_units=
     if seen != expected:
         missing = len(expected-seen)
         raise ValueError(f'incomplete evaluation matrix: {missing} missing deliveries')
+    for key, source in reused_sources.items():
+        if not all(source[:2]) or source != full_sources.get(key):
+            raise ValueError('reused sample1 parent identity or first trajectories differ')
     return rows
 
 
@@ -125,6 +137,7 @@ def instance_tables(rows, units):
                   'quality': fmean(r['quality'] for r in group),
                   'success_rate': fmean(float(r['success']) for r in group),
                   'request_seconds': fmean(r['seconds'] for r in group),
+                  'timing_basis': '|'.join(sorted({r.get('timing_basis', 'measured_request') for r in group})),
                   'total_seconds': fmean(per_seed.values()),
                   'paid_hv': fmean(u['paid_hv'] for u in paid) if key[0] == 'frontier' else None,
                   'delivery_hv': fmean(u['delivery_hv'] for u in paid) if key[0] == 'frontier' else None}
@@ -189,7 +202,8 @@ def descriptive_tables(instances, rows):
     for r in rows: seed_groups[r['task'],r['arm'],r['seed']].append(r)
     table = []
     for (task,arm,factor,level), group in sorted(groups.items()):
-        out = {'task':task,'arm':arm,'factor':factor,'level':level,'instances':len(group)}
+        out = {'task':task,'arm':arm,'factor':factor,'level':level,'instances':len(group),
+               'timing_basis': '|'.join(sorted({r.get('timing_basis', 'measured_request') for r in group}))}
         for metric in ('quality','success_rate','request_seconds','total_seconds','paid_hv','delivery_hv','flow','cost','workload'):
             values = [r[metric] for r in group if r[metric] is not None]
             out[metric] = fmean(values) if values else None

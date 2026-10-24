@@ -10,7 +10,7 @@ from pathlib import Path
 import platform
 import subprocess
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 
@@ -25,6 +25,7 @@ from agent.baselines.experiment_rules import evaluate_rule
 from agent.comparators.common import atomic_json, digest
 from agent.comparators.learning import build_agent, train_request, synchronize
 from agent.comparators.experiment_evaluation import learning_unit, rule_unit, search_unit, development_pass
+from agent.comparators.parallel_evaluation import evaluation_pool, reuse_first_sample
 
 
 def read_json(path):
@@ -150,7 +151,7 @@ def snapshot_sources(root, suite, identity, device):
     return payload['sources']
 
 
-def load_agent(root, suite, arm, seed, identity, device):
+def load_agent(root, suite, arm, seed, identity, device, *, record=None):
     from scripts.comparison_suite import check_learning_checkpoint
     c = arm_config(suite, arm, seed, device)
     method = suite['arms'][arm]['method']
@@ -160,7 +161,7 @@ def load_agent(root, suite, arm, seed, identity, device):
         raise ValueError('formal evaluation requires completed training')
     check_learning_checkpoint(path, c, method, seed, identity)
     began = time.perf_counter()
-    record = load_dataset_split(c, 'validation')[0]
+    record = record if record is not None else load_dataset_split(c, 'validation')[0]
     env = AssemblySchedulingEnv(c)
     obs = env.reset(record.instance)
     agent = build_agent(c, obs, method)
@@ -178,38 +179,89 @@ def load_agent(root, suite, arm, seed, identity, device):
 
 
 def train(suite, root, identity, device, arms, seeds):
+    dataset = load_dataset_split(arm_config(suite, 'full', 11, device), 'validation')
     for arm in arms:
         for seed in seeds:
             c = arm_config(suite, arm, seed, device)
             print(f'train {arm} seed={seed}', flush=True)
             train_request(c, suite['arms'][arm]['method'], seed, c['ppo']['learning_rate'], None,
-                          load_dataset_split(c, 'validation'), list(range(27)),
+                          dataset, list(range(27)),
                           [p.as_tuple() for p in formal_preferences(c, 'validation')], root/'training'/arm/str(seed), identity,
                           episodes=2000, workers=suite['execution']['training_workers'])
 
 
 def evaluate(suite, root, identity, device, arms, seeds, tasks):
+    records = load_dataset_split(arm_config(suite, 'full', 11, device), 'test')
     for arm in arms:
         for seed in seeds:
-            c, agent, timing = load_agent(root, suite, arm, seed, identity, device)
+            modes = [(arm, None)] + ([('full_greedy', 'greedy'), ('full_sample1', 'sampled_single')] if arm == 'full' else [])
+            pending = set()
             for task in tasks:
-                modes = [(arm, None)] + ([('full_greedy', 'greedy'), ('full_sample1', 'sampled_single')] if arm == 'full' else [])
-                for label, mode in modes:
-                    for record in load_dataset_split(c, 'test'):
+                for record in records:
+                    saved_modes = {}
+                    for label, mode in modes:
                         path = root/'evaluation'/task/label/str(seed)/f'{record.instance.instance_id}.json'
                         job = digest([identity, task, label, seed, record.instance.instance_id, mode])
-                        if cached(path, job) is not None:
-                            continue
-                        payload = learning_unit(c, agent, record, suite['arms'][arm]['method'], preferences(c, task), seed, mode=mode)
-                        payload['model_timing'] = timing
-                        save_unit(path, payload, identity=identity, arm=label, seed=seed, task=task, record=record, job_id=job)
-                        print(f'evaluate {task} {label}/{seed}/{record.instance.instance_id}', flush=True)
+                        saved_modes[label] = cached(path, job)
+                        if saved_modes[label] is None:
+                            pending.add((task, label, record.instance.instance_id))
+                    if task == 'frontier' and arm == 'full' and saved_modes['full_sample1'] is not None:
+                        parent, derived = saved_modes['full'], saved_modes['full_sample1']
+                        if (parent is None or derived.get('source_job_id') != parent['job_id']
+                                or derived.get('source_content_sha256') != parent.get('content_sha256')):
+                            pending.add((task, 'full_sample1', record.instance.instance_id))
+            if not pending:
+                continue
+            if all(task == 'frontier' and label == 'full_sample1' for task, label, _ in pending):
+                c = arm_config(suite, arm, seed, device)
+                for record in records:
+                    iid = record.instance.instance_id
+                    if ('frontier', 'full_sample1', iid) not in pending:
+                        continue
+                    parent = cached(root/'evaluation'/'frontier'/'full'/str(seed)/f'{iid}.json',
+                                    digest([identity, 'frontier', 'full', seed, iid, None]))
+                    payload = reuse_first_sample(c, parent)
+                    payload['model_timing'] = parent['model_timing']
+                    save_unit(root/'evaluation'/'frontier'/'full_sample1'/str(seed)/f'{iid}.json', payload,
+                              identity=identity, arm='full_sample1', seed=seed, task='frontier', record=record,
+                              job_id=digest([identity, 'frontier', 'full_sample1', seed, iid, 'sampled_single']))
+                continue
+            c, agent, timing = load_agent(root, suite, arm, seed, identity, device, record=records[0])
+            for task in tasks:
+                if not any(t == task for t, _, _ in pending):
+                    continue
+                started = time.perf_counter()
+                needs_pool = task == 'frontier' and any(t == task and label != 'full_sample1' for t, label, _ in pending)
+                pool_context = evaluation_pool(c, records[0].instance) if needs_pool else nullcontext(None)
+                with pool_context as pool:
+                    if pool is not None:
+                        timing['evaluation_pool_startup_seconds'] = time.perf_counter()-started
+                    for record in records:
+                        full_unit = None
+                        for label, mode in modes:
+                            path = root/'evaluation'/task/label/str(seed)/f'{record.instance.instance_id}.json'
+                            job = digest([identity, task, label, seed, record.instance.instance_id, mode])
+                            if (task, label, record.instance.instance_id) not in pending:
+                                if label == 'full' and (task, 'full_sample1', record.instance.instance_id) in pending and task == 'frontier':
+                                    full_unit = cached(path, job)
+                                continue
+                            if task == 'frontier' and label == 'full_sample1':
+                                payload = reuse_first_sample(c, full_unit)
+                            else:
+                                payload = learning_unit(c, agent, record, suite['arms'][arm]['method'], preferences(c, task), seed,
+                                                        mode=mode, runner=pool, parallel=task == 'frontier')
+                            payload['model_timing'] = timing
+                            saved_value = save_unit(path, payload, identity=identity, arm=label, seed=seed, task=task, record=record, job_id=job)
+                            if label == 'full':
+                                full_unit = saved_value
+                            print(f'evaluate {task} {label}/{seed}/{record.instance.instance_id}', flush=True)
 
 
 def rules(suite, root, identity, device):
     c = arm_config(suite, 'full', 11, device)
+    records = load_dataset_split(c, 'test')
     for method in suite['rules']:
-        for record in load_dataset_split(c, 'test'):
+        for record in records:
             raw_path = root/'rules'/method/f'{record.instance.instance_id}.json'
             job = digest([identity, 'rule', method, record.instance.instance_id])
             raw = cached(raw_path, job)

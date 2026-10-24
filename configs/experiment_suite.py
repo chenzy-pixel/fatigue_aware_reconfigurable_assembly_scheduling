@@ -29,6 +29,8 @@ def load_suite(path=DEFAULT_MANIFEST):
         raise ValueError('formal search budget differs')
     if suite['execution']['concurrent_jobs'] != 1 or suite['execution']['torch_threads'] != 1:
         raise ValueError('v1 requires serial jobs and one torch thread')
+    if int(suite['execution'].get('evaluation_workers', 20)) < 1:
+        raise ValueError('evaluation_workers must be positive')
     return suite
 
 
@@ -38,6 +40,7 @@ def arm_config(suite, arm, seed, device='cpu'):
     c['network'].update(definition['network'])
     c['training'].update(suite['training'])
     c['training']['parallel_envs'] = suite['execution']['training_workers']
+    c['training']['validation_parallel_envs'] = suite['execution'].get('evaluation_workers', 20)
     c['device'] = device
     if definition['method'] == 'a2c':
         c['ppo']['epochs'] = 1
@@ -77,7 +80,10 @@ def matrix(suite):
     return {'training': [{'arm': arm, 'method': d['method'], 'seed': seed} for arm, d in suite['arms'].items() for seed in suite['seeds']],
             'search': {task: len(suite['search_methods']) * 27 * len(suite['seeds']) * (4 if task == 'independent_request' else 1) for task in TASKS},
             'rule_solves': 27 * len(suite['rules']), 'search_budget_hours': 225,
-            'validation_calls': 700, 'validation_trajectories': 666900}
+            'validation_calls': 700, 'validation_trajectories': 666900,
+            'evaluation_workers': suite['execution'].get('evaluation_workers', 20),
+            'final_evaluation_unique_trajectories': 189540,
+            'reused_frontier_sample1_trajectories': 8910}
 
 
 def validate_training_streams(root, suite):

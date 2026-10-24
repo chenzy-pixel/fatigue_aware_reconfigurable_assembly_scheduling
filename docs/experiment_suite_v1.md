@@ -50,6 +50,16 @@ Rule-DDQN是状态、规则动作及更新机制共同改变的整体方法对�
 
 学习前沿主报66偏好全部付费可行样本的HV，辅报交付前沿HV；DDQN采用greedy。Full额外比较greedy和sample1；sample1与best-of-3的repeat 0使用同一采样种子。图构建、候选生成、环境推进、合法性校验均计费，加载和预热另列。保存60/180/600秒快照，只纳入截止前完成验证的候选，初始化、局部搜索和失败尝试均记录成本。
 
+训练验证及学习前沿采用20路环境、集中批量推理和空闲通道续填；清单`execution.evaluation_workers=20`写入各方法的`training.validation_parallel_envs`。验证复用训练worker池，最终评测按模型复用一个池。`-TrainingWorkers`只控制训练采集通道数，验证仍按清单取20；池大小取二者最大值，训练采集仍受指定通道数限制。
+
+并行评测的`evaluation_runtime.wall_seconds`记录批次墙钟，`lane_elapsed_seconds`记录有重叠的通道用时，两者分列。各偏好的`search_seconds`为批次墙钟均摊，并标记`parallel_batch_wall_share`，用于吞吐成本归属。四偏好独立请求使用串行、独占的实际测时；该任务包括Full三种解码方式各自的实际求解。
+
+Full前沿sample1复用已支付的repeat 0，保存原始轨迹、`cost_reference=full`及零增量求解步数/时间。其表中时间标记`shared_best_of_3_wall`，沿用完整母实验成本；单次采样自身时延来自独立请求实验。此复用少求解8910条轨迹，最终评测实际求解189540条；加上验证共856440条。固定数据每阶段只加载一次；已完成评测重启直接复用，缺失的sample1派生文件可从母实验重建。每Epoch合并重复导出，验证表只在验证更新后重写。
+
+2026-10-24并行修订改变源码/运行身份。旧目录已有预检时，三个启动入口统一指定一个新目录（例如`-OutputDir result/experiment_suite_v1_parallel20`），重新预检后运行。
+
+本地实测、验证证据与剩余瓶颈见[20路评测效率核查](evaluation_parallel_efficiency_20261024.md)。
+
 开发检查使用标定集C01/C14/C27第一份实例、种子11，共30次600秒请求，额外5小时。每请求须完成初始化、至少一轮完整迭代和至少两个不同可行轨迹。`freeze-budget`检查完整覆盖后生成含证据哈希的`search_budget.json`；未通过则保留记录并分析，预算调整需要修订协议。600秒不代表充分收敛。
 
 ## 结果与统计

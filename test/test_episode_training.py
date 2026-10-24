@@ -106,6 +106,34 @@ def test_collection_finishes_each_attempt(config, workers):
         assert tail.return_value == (2. if e['metrics']['truncated'] else 0.)
 
 
+def test_collection_caps_training_lanes_in_shared_validation_pool(config):
+    runner, agent = Runner(worker_count=20), Agent()
+    result = collect(runner, agent, config, 0, episodes_per_batch=23, max_parallelism=3)
+    assert result.episodes_started == 23
+    assert max(runner.states) == 2
+    assert result.steps == sum(e['steps'] for e in result.episodes)
+
+
+def test_training_releases_observations_before_validation_and_next_batch(config, tmp_path, monkeypatch):
+    install_training_fakes(monkeypatch)
+    original_collect, original_validation = learning.collect, learning.validation
+    buffers = []
+    def collect_checked(*args, **kwargs):
+        assert all(len(buffer) == 0 for buffer in buffers)
+        result = original_collect(*args, **kwargs)
+        assert len(result.buffer) > 0
+        buffers.append(result.buffer)
+        return result
+    def validation_checked(*args, **kwargs):
+        assert buffers and all(len(buffer) == 0 for buffer in buffers)
+        return original_validation(*args, **kwargs)
+    monkeypatch.setattr(learning, 'collect', collect_checked)
+    monkeypatch.setattr(learning, 'validation', validation_checked)
+    learning.train_request(config, 'ppo', 11, 1e-4, None, None, [0], [(1.,0.,0.)],
+                           tmp_path, 'release-test', episodes=101, workers=3)
+    assert len(buffers) == 6 and all(len(buffer) == 0 for buffer in buffers)
+
+
 def install_training_fakes(monkeypatch):
     agent, calls, saved = Agent(), [], {}
     monkeypatch.setattr(learning, 'ParallelEpisodeRunner', Runner)
