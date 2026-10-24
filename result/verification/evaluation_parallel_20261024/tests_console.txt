@@ -1,0 +1,4 @@
+........................................................................ [ 53%]
+...............................................................          [100%]
+- generated xml file: C:\Users\chenz\Desktop\fatigue_aware_reconfigurable_assembly_scheduling\result\verification\evaluation_parallel_20261024\tests.xml -
+135 passed in 174.76s (0:02:54)

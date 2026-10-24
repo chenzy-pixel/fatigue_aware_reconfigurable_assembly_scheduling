@@ -1,0 +1,14 @@
+full: prepare data and model
+full: warm model
+full: start 20 workers
+full: pool ready after 18.064s; warm worker evaluation
+full serial 1/9
+full serial 2/9
+full serial 3/9
+full serial 4/9
+full serial 5/9
+full serial 6/9
+full serial 7/9
+full serial 8/9
+full serial 9/9
+full: {'serial_seconds': 35.66746419999981, 'parallel_seconds': 6.23957689999952, 'speedup': 5.7163273682871925, 'pool_startup_seconds': 18.063645600006566, 'runtime': {'main_send_seconds': 0.04215290003048722, 'main_receive_seconds': 1.3998899999860441, 'response_tail_seconds': 0.9111415999213932, 'policy_inference_seconds': 4.761153399871546, 'exchange_count': 111, 'policy_batch_count': 105, 'policy_observation_count': 1293, 'wall_seconds': 6.23957689999952, 'mean_policy_batch_size': 12.314285714285715, 'workers': 20, 'trajectory_count': 27, 'request_count': 9, 'lane_elapsed_seconds': 88.33688250010891}, 'requests': 9, 'cells': ['C01', 'C14', 'C27'], 'trajectory_parity': True, 'network_weights_sha256': '8b8a10074bd00517eaf9dfe136c7fc879ed8fa9e847ec6091dd0aae101d06d3d', 'environment_steps': 1293}

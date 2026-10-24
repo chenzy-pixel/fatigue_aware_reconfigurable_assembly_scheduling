@@ -7,11 +7,11 @@ import random
 import numpy as np
 
 from agent.baselines import HeuristicPolicy
-from agent.mo_alns import SearchBudget, BudgetExhausted
-from agent.mo_alns.archive import ParetoArchive
-from agent.mo_alns.search import CandidateEvaluator
-from agent.mo_alns.solver import INITIAL_RULES, _rule_solution, _topological_order
-from agent.mo_alns.types import SearchResult, GridSearchResult, preference_key
+from agent.search import SearchBudget, BudgetExhausted
+from agent.search.archive import ParetoArchive
+from agent.search.evaluation import CandidateEvaluator
+from agent.search.decoder import INITIAL_RULES, _rule_solution, _topological_order
+from agent.search.types import SearchResult, GridSearchResult, preference_key
 from environment import normalize_preference, simplex_lattice
 
 
@@ -151,12 +151,16 @@ class EvolutionSolver:
         self.config, self.method, self.seed, self.dataset = config, method, algorithm_seed, dataset_name
         self.settings = config.get("comparison", {}).get("evolution", {})
 
-    def solve(self, instance, preference, *, budget=None):
+    def solve(self, instance, preference, *, budget=None, task="independent_request"):
         preference = normalize_preference(preference)
         budget = budget or SearchBudget(seconds=self.settings.get("seconds", 600))
         token = f"{self.method}|{self.seed}|{self.dataset}|{instance.instance_id}|{preference_key(preference)}"
+        if task != 'independent_request':
+            token += f"|{task}"
         rng = random.Random(int.from_bytes(hashlib.sha256(token.encode()).digest()[:8], "big"))
         initial_token = f"population_initial|{self.seed}|{self.dataset}|{instance.instance_id}|{preference_key(preference)}"
+        if task != 'independent_request':
+            initial_token += f"|{task}"
         initial_rng = random.Random(int.from_bytes(hashlib.sha256(initial_token.encode()).digest()[:8], "big"))
         size = int(self.settings.get("population_size", 32))
         if size < 5:
@@ -276,6 +280,19 @@ class EvolutionSolver:
             tuple(events), status="completed" if selected else "no_feasible_solution", stop_reason=reason,
             accounting=budget.counters(), candidate_history=tuple(evaluator.history), initial_seconds=initial_seconds,
             initial_candidate_count=len(initial))
+
+    def solve_frontier(self, instance, preferences, *, budget=None):
+        """One population, one paid budget and one archive for the whole front."""
+        points = tuple(normalize_preference(p) for p in preferences)
+        if not points:
+            raise ValueError('frontier preferences must be nonempty')
+        if len({preference_key(p) for p in points}) != len(points):
+            raise ValueError('duplicate frontier preferences')
+        result = self.solve(instance, (1/3, 1/3, 1/3), budget=budget, task='frontier')
+        archive = ParetoArchive(self.config)
+        archive.extend(result.archive)
+        return GridSearchResult(points, {preference_key(p): archive.best(p) if archive.entries else None
+                                         for p in points}, archive.snapshots(), (result,))
 
     def solve_grid(self, instance, preferences):
         points = tuple(normalize_preference(p) for p in preferences)

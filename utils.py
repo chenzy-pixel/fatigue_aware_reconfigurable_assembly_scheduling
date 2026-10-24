@@ -37,45 +37,8 @@ def derive_evaluation_sampling_seed(
     )
 
 
-def formal_evaluation_sampling_seeds(
-    algorithm_seed: int,
-    *,
-    seed_offset: int,
-    repeats: int,
-) -> list[int]:
-    """Return one reproducible, positive seed namespace for formal evaluation."""
-
-    base = int(algorithm_seed)
-    offset = int(seed_offset)
-    count = int(repeats)
-    if offset < 1 or count < 1:
-        raise ValueError("formal evaluation seed offset/repeats must be positive")
-    return [base + offset + repeat for repeat in range(count)]
 
 
-def configured_formal_evaluation_sampling_seeds(
-    config: dict[str, Any],
-    namespace: str,
-) -> list[int]:
-    """Resolve a fixed validation or independent final-test seed namespace."""
-
-    fields = {
-        "validation": ("validation_seed_offset", "validation_repeats"),
-        "final_test": ("final_test_seed_offset", "final_test_repeats"),
-    }
-    if namespace not in fields:
-        raise ValueError(f"unknown formal evaluation namespace {namespace!r}")
-    settings = config["training"]["formal_evaluation"]
-    if str(settings.get("decode_mode")) != "sampled":
-        raise ValueError("formal PPO evaluation must use sampled decoding")
-    if float(settings.get("temperature", 1.0)) != 1.0:
-        raise ValueError("formal PPO evaluation requires temperature 1.0")
-    offset_field, repeats_field = fields[namespace]
-    return formal_evaluation_sampling_seeds(
-        int(config["seed"]),
-        seed_offset=int(settings[offset_field]),
-        repeats=int(settings[repeats_field]),
-    )
 
 
 def action_trace_sha256(actions: list[int]) -> str:
@@ -89,30 +52,8 @@ def action_trace_sha256(actions: list[int]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def capture_global_rng_state() -> dict[str, Any]:
-    import torch
-
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state().clone(),
-        "torch_cuda": (
-            [state.clone() for state in torch.cuda.get_rng_state_all()]
-            if torch.cuda.is_available()
-            else None
-        ),
-    }
 
 
-def restore_global_rng_state(state: dict[str, Any]) -> None:
-    import torch
-
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
-    cuda_states = state.get("torch_cuda")
-    if cuda_states is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(cuda_states)
 
 
 def set_seed(seed: int) -> None:

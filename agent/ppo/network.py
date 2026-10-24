@@ -137,6 +137,9 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
     layers = int(config.get("message_passing_layers", 2))
     encoder_variant = str(config.get("encoder_variant", "hetero_gnn"))
     actor_head_variant = str(config.get("actor_head_variant", "shared_preference"))
+    switches = {name: config.get(name, True) for name in ("direct_features_enabled", "residual_enabled")}
+    if any(type(value) is not bool for value in switches.values()):
+        raise ValueError("network ablation switches must be booleans")
     if encoder_variant not in {"hetero_gnn", "node_mlp_pool"}:
         raise ValueError("unknown network.encoder_variant")
     messages = validate_message_identity(config)
@@ -178,6 +181,7 @@ def normalize_network_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "encoder_type": encoder_variant,
         "encoder_variant": encoder_variant,
         "actor_head_variant": actor_head_variant,
+        **switches,
         **messages,
         "hidden_dim": hidden_dim,
         "message_passing_layers": layers,
@@ -245,13 +249,8 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         raise ValueError("checkpoint global feature names/order are incompatible")
     if spec.get("actor_head_variant") != "shared_preference":
         raise ValueError("checkpoint actor_head_variant must be shared_preference")
-    # Read the metadata key used by existing shared-head checkpoints.
-    legacy_parameterization = spec.pop("expert_weight_parameterization", None)
-    if spec.get("actor_head_parameterization", legacy_parameterization) != SHARED_HEAD_PARAMETERIZATION:
+    if spec.get("actor_head_parameterization") != SHARED_HEAD_PARAMETERIZATION:
         raise ValueError("checkpoint actor head parameterization is incompatible")
-    if legacy_parameterization not in (None, SHARED_HEAD_PARAMETERIZATION):
-        raise ValueError("checkpoint actor head parameterization is incompatible")
-    spec["actor_head_parameterization"] = SHARED_HEAD_PARAMETERIZATION
     if int(spec.get("preference_embedding_dim", 0)) != PREFERENCE_ENCODER_DIM:
         raise ValueError("checkpoint preference encoder is not V8 3->32->ReLU->32")
     expected_schemas = dict(zip(
@@ -265,6 +264,8 @@ def infer_checkpoint_network_spec(checkpoint: Mapping[str, Any]) -> dict[str, An
         if field not in spec:
             raise ValueError(f"checkpoint is missing {field}")
     normalized = normalize_network_config(spec)
+    for name in ("direct_features_enabled", "residual_enabled"):
+        spec[name] = normalized[name]
     for field in WORKLOAD_IDENTITY_FIELDS:
         spec[field] = normalized[field]
     spec["flow_mode"] = normalized["flow_mode"]
@@ -288,6 +289,8 @@ def assert_network_config_matches_spec(
     for name in (
         "encoder_variant",
         "actor_head_variant",
+        "direct_features_enabled",
+        "residual_enabled",
         *MESSAGE_IDENTITY_FIELDS,
         "hidden_dim",
         "message_passing_layers",
@@ -462,6 +465,8 @@ class HeteroGraphActorCritic(nn.Module):
         worker_flow_time_std_floor: float = 0.001,
         encoder_variant: str = "hetero_gnn",
         actor_head_variant: str = "shared_preference",
+        direct_features_enabled: bool = True,
+        residual_enabled: bool = True,
         global_feature_names: Sequence[str] | None = None,
         observation_schema_version: int = OBSERVATION_SCHEMA_VERSION,
         global_objective_encoding: str | None = None,
@@ -506,6 +511,7 @@ class HeteroGraphActorCritic(nn.Module):
         }
         normalized = normalize_network_config({
             "encoder_variant": encoder_variant, "actor_head_variant": actor_head_variant,
+            "direct_features_enabled": direct_features_enabled, "residual_enabled": residual_enabled,
             "observation_schema_version": observation_schema_version,
             "global_objective_encoding": self.global_objective_encoding,
             "flow_mode": flow_mode,
@@ -516,6 +522,8 @@ class HeteroGraphActorCritic(nn.Module):
         })
         self.encoder_variant = normalized["encoder_variant"]
         self.actor_head_variant = normalized["actor_head_variant"]
+        self.direct_features_enabled = normalized["direct_features_enabled"]
+        self.residual_enabled = normalized["residual_enabled"]
         self.actor_head_parameterization = normalized["actor_head_parameterization"]
         self.residual_gate_initial_logit = float(residual_gate_initial_logit)
         self.residual_std_floor = float(residual_std_floor)
@@ -613,6 +621,11 @@ class HeteroGraphActorCritic(nn.Module):
         self.worker_residual_gate = nn.Parameter(
             torch.tensor(float(residual_gate_initial_logit))
         )
+        if not self.residual_enabled:
+            for module in (self.action_preference_projector, self.production_residual, self.worker_residual):
+                module.requires_grad_(False)
+            self.production_residual_gate.requires_grad_(False)
+            self.worker_residual_gate.requires_grad_(False)
         self.critic = nn.Sequential(
             nn.Linear(graph_width + PREFERENCE_ENCODER_DIM, hidden_dim),
             nn.ReLU(),
@@ -632,6 +645,8 @@ class HeteroGraphActorCritic(nn.Module):
             "encoder_type": self.encoder_variant,
             "encoder_variant": self.encoder_variant,
             "actor_head_variant": self.actor_head_variant,
+            "direct_features_enabled": self.direct_features_enabled,
+            "residual_enabled": self.residual_enabled,
             **message_identity(self.encoder_variant),
             "hidden_dim": self.hidden_dim,
             "message_passing_layers": self.message_passing_layer_count,
@@ -840,6 +855,8 @@ class HeteroGraphActorCritic(nn.Module):
         prefix = "production" if phase == DecisionType.PRODUCTION else "worker"
         if wait:
             prefix += "_wait"
+        if not self.direct_features_enabled:
+            direct = {name: torch.zeros_like(value) for name, value in direct.items()}
         return getattr(self, prefix + "_shared")(
             action_embedding, direct, preference_embedding
         )
@@ -1013,11 +1030,13 @@ class HeteroGraphActorCritic(nn.Module):
         centered = (base - mean.index_select(0, merged_graph_ids)) * legal
         variance = base.new_zeros(len(observations)).index_add(0, merged_graph_ids, centered.square()) / legal_count.clamp_min(1)
         scale = variance.clamp_min(self.residual_std_floor ** 2).sqrt().index_select(0, merged_graph_ids)
-        hidden = graph_hidden.index_select(0, merged_graph_ids)
-        pref_embed = preference_embedding.index_select(0, merged_graph_ids)
-        interaction = self.action_preference_projector(merged_embeddings) * pref_embed
-        residual_input = torch.cat((merged_embeddings, hidden, pref_embed, interaction), dim=-1)
-        residual = 2.0 * torch.sigmoid(gate) * scale * torch.tanh(residual_mlp(residual_input).squeeze(-1))
+        residual = torch.zeros_like(base)
+        if self.residual_enabled:
+            hidden = graph_hidden.index_select(0, merged_graph_ids)
+            pref_embed = preference_embedding.index_select(0, merged_graph_ids)
+            interaction = self.action_preference_projector(merged_embeddings) * pref_embed
+            residual_input = torch.cat((merged_embeddings, hidden, pref_embed, interaction), dim=-1)
+            residual = 2.0 * torch.sigmoid(gate) * scale * torch.tanh(residual_mlp(residual_input).squeeze(-1))
         final = base + residual
         if not torch.is_grad_enabled():
             self._record_components_grouped(
@@ -1075,22 +1094,23 @@ class HeteroGraphActorCritic(nn.Module):
         )
         all_embeddings = torch.cat((action_embedding, wait_embedding), dim=0)
         base = torch.cat((pair_base, wait_base), dim=0)
-        interaction = self.action_preference_projector(all_embeddings) * preference_embedding
-        residual_input = torch.cat(
-            (
-                all_embeddings,
-                graph_hidden.reshape(1, -1).expand(all_embeddings.shape[0], -1),
-                preference_embedding.reshape(1, -1).expand(all_embeddings.shape[0], -1),
-                interaction,
-            ),
-            dim=-1,
-        )
-        raw_residual = torch.tanh(residual_mlp(residual_input).squeeze(-1))
-        legal_base = base[~mask]
-        scale = (
-            legal_base.std(unbiased=False) if legal_base.numel() >= 2 else base.new_zeros(())
-        ).clamp_min(self.residual_std_floor)
-        residual = 2.0 * torch.sigmoid(gate) * scale * raw_residual
+        residual = torch.zeros_like(base)
+        if self.residual_enabled:
+            interaction = self.action_preference_projector(all_embeddings) * preference_embedding
+            residual_input = torch.cat(
+                (
+                    all_embeddings,
+                    graph_hidden.reshape(1, -1).expand(all_embeddings.shape[0], -1),
+                    preference_embedding.reshape(1, -1).expand(all_embeddings.shape[0], -1),
+                    interaction,
+                ), dim=-1,
+            )
+            raw_residual = torch.tanh(residual_mlp(residual_input).squeeze(-1))
+            legal_base = base[~mask]
+            scale = (
+                legal_base.std(unbiased=False) if legal_base.numel() >= 2 else base.new_zeros(())
+            ).clamp_min(self.residual_std_floor)
+            residual = 2.0 * torch.sigmoid(gate) * scale * raw_residual
         final = base + residual
         self._record_components(
             observation.decision_type, mask, base, residual, final
@@ -1466,6 +1486,8 @@ class HeteroGraphActorCritic(nn.Module):
 
     def policy_head_diagnostics(self) -> dict[str, float]:
         result: dict[str, float] = {}
+        result['policy_head_direct_features_enabled'] = float(self.direct_features_enabled)
+        result['policy_head_residual_enabled'] = float(self.residual_enabled)
         result["policy_head_gate_production_residual"] = float(torch.sigmoid(self.production_residual_gate.detach()).cpu())
         result["policy_head_gate_worker_residual"] = float(torch.sigmoid(self.worker_residual_gate.detach()).cpu())
         return result
@@ -1550,6 +1572,8 @@ def build_actor_critic(
         worker_flow_time_std_floor=config["worker_flow_time_std_floor"],
         encoder_variant=config["encoder_variant"],
         actor_head_variant=config["actor_head_variant"],
+        direct_features_enabled=config["direct_features_enabled"],
+        residual_enabled=config["residual_enabled"],
         global_feature_names=observation.global_feature_names,
         observation_schema_version=selected_schema,
         global_objective_encoding=config.get("global_objective_encoding"),

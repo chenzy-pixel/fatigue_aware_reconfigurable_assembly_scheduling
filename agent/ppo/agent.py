@@ -135,7 +135,7 @@ class PPOAgent:
             )
         self.network.to(self.device)
         self.optimizer = torch.optim.Adam(
-            self.network.parameters(), lr=config["learning_rate"]
+            [p for p in self.network.parameters() if p.requires_grad], lr=config["learning_rate"]
         )
 
     @property
@@ -407,6 +407,8 @@ class PPOAgent:
             name: float(value)
             for name, value in zip(metric_names, means)
         }
+        result["optimizer_updates"] = len(metrics)
+        result["sample_presentations"] = len(buffer.transitions) * epochs
         result["gradient_norm_max"] = float(
             np.max(metric_array[:, metric_names.index("gradient_norm")])
         )
@@ -473,17 +475,19 @@ class PPOAgent:
         diagnostics = self.policy_head_diagnostics()
         if diagnostics:
             saved_metadata["policy_head_diagnostics"] = diagnostics
+        temporary = output.with_suffix(output.suffix + '.tmp')
         torch.save(
             {
                 "network": network_state,
                 "network_spec": self.network.network_spec(),
                 "optimizer": self.optimizer.state_dict(),
-                "optimizer_parameter_names": [name for name, _ in self.network.named_parameters()],
+                "optimizer_parameter_names": [name for name, p in self.network.named_parameters() if p.requires_grad],
                 "ppo_config": self.config,
                 "metadata": saved_metadata,
             },
-            output,
+            temporary,
         )
+        temporary.replace(output)
 
     def load(self, path: str | Path, *, load_optimizer: bool = False) -> dict[str, Any]:
         checkpoint = torch.load(

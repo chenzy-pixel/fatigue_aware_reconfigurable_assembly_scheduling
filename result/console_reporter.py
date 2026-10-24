@@ -1,14 +1,10 @@
+"""Console updates emitted by training execution events."""
 from __future__ import annotations
-
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from configs.formal_preferences import formal_preferences
-
 
 SEPARATOR = "-" * 72
 
@@ -49,65 +45,90 @@ def _elapsed(seconds: float) -> str:
     return f"{seconds}s"
 
 
-@dataclass
-class TrainingConsoleReporter:
-    config: Mapping[str, Any]
-    total_episodes: int
-    parallel_envs: int
-    validation_instance_limit: int
-    objective_name: str | None
-    started_at: float
-    writer: Callable[[str], None] = print
+def report_training_failure(
+    error: BaseException,
+    *,
+    run_directory: str | Path | None,
+    exit_code: int,
+    writer: Callable[[str], None] = print,
+) -> None:
+    writer(SEPARATOR)
+    writer(f"[FAILED] {type(error).__name__}")
+    writer(f"message={error}")
+    writer(f"exit_code={int(exit_code)}")
+    writer(f"artifacts={run_directory if run_directory is not None else 'unavailable'}")
+    writer(SEPARATOR)
+    writer("")
+
+class ExperimentConsoleReporter:
+    """Compact run, training, validation and completion summaries."""
+
+    def __init__(self, config, budget, method, workers, validation_instances, validation_preferences,
+                 *, started_at, writer=None):
+        self.config, self.total_episodes = config, budget['budget_amount']
+        self.parallel_envs, self.validation_instance_limit = workers, validation_instances
+        self.started_at = started_at
+        self.writer = writer if writer is not None else lambda line: print(line, flush=True)
+        self.budget, self.method = budget, method
+        self.validation_preferences = validation_preferences
 
     @property
-    def run_label(self) -> str:
-        return (
-            f"single_{self.objective_name}"
-            if self.objective_name is not None
-            else str(self.config.get("experiment_name", "universal"))
+    def run_label(self):
+        return str(self.config.get('comparison', {}).get('arm', self.method))
+
+
+    @property
+    def validation_repeats(self):
+        return 1 if self.method == 'rule_ddqn' else 3
+
+    def start_run(self):
+        formal = self.config['training']['formal_evaluation']
+        delivery = 'greedy_single_v1' if self.method == 'rule_ddqn' else 'best_of_3_v1'
+        decode = 'greedy' if self.method == 'rule_ddqn' else f'sampled T={float(formal["temperature"]):.1f}'
+        self._block(
+            SEPARATOR,
+            f'[RUN] {self.run_label} | seed={self.config["seed"]} | envs={self.parallel_envs} | {self.config["device"]}',
+            f'episodes={self.total_episodes} | val={self.validation_instance_limit} '
+            f'× repeats={self.validation_repeats} × prefs={self.validation_preferences} | {decode}',
+            f'reward=ΔP-ΔQ | gamma={float(self.config["ppo"]["gamma"]):.1f} '
+            f'| lr={float(self.config["ppo"]["learning_rate"]):.1e}',
+            f'formal aggregation={delivery}',
+            SEPARATOR,
         )
 
-    @property
-    def preference_count(self) -> int:
-        return len(formal_preferences(self.config, "validation"))
+    def epoch_update(self, row, episodes):
+        metrics = [{**(e.get('metrics') or {}), 'reward': e.get('reward_sum')} for e in episodes]
+        adapted = {**row, **row.get('losses', {}), 'episode_end': row['episodes_started']-1}
+        if self.method != 'rule_ddqn':
+            self.training_update(adapted, metrics)
+        else:
+            details = (f'        td_loss {_metric(row.get("losses", {}).get("td_loss"), 4)} '
+                       f'| epsilon {_metric(row.get("exploration_epsilon"))}' if self.method == 'rule_ddqn'
+                       else f'        p_loss {_metric(adapted.get("policy_loss"), 4)} '
+                            f'| v_loss {_metric(adapted.get("value_loss"))}')
+            self._block(f'[train] ep {row["episodes_started"]}/{self.total_episodes} '
+                        f'| upd {row["update_id"]} | complete {_percent(_mean(metrics, "task_succeeded"))} '
+                        f'| reward {_metric(_mean(metrics, "reward"))} '
+                        f'| progress {_metric(_mean(metrics, "operation_progress"))} '
+                        f'| quality {_metric(_mean(metrics, "preference_quality_score"))}', details)
+
+    def validation_row(self, result, episode):
+        raw = [r for delivery in result['deliveries'] for r in delivery['raw']]
+        rows = result['rows']
+        return {'episode': episode,
+                'sample_aggregation': 'greedy_single_v1' if self.method == 'rule_ddqn' else 'best_of_3_v1',
+                'completion_rate': _mean(rows, 'success'),
+                'preference_balanced_quality_score': result['summary'].get('quality'),
+                'mean_operation_progress': _mean([r['metrics'] for r in raw], 'operation_progress'),
+                'physical_safety_pass': result['summary']['safe'],
+                'request_count': len(raw), 'delivery_count': len(rows),
+                'raw_overall_completion_rate': _mean(raw, 'success'),
+                'raw_preference_balanced_quality_score': _mean(raw, 'quality')}
+
 
     def _block(self, *lines: str) -> None:
         for line in lines:
             self.writer(line)
-
-    def start_run(self) -> None:
-        formal = self.config["training"]["formal_evaluation"]
-        self._block(
-            SEPARATOR,
-            f"[RUN] {self.run_label} | seed={self.config['seed']} | "
-            f"envs={self.parallel_envs} | {self.config['device']}",
-            f"episodes={self.total_episodes} | val={self.validation_instance_limit} "
-            f"× repeats={int(formal['validation_repeats'])} "
-            f"× prefs={self.preference_count} | sampled T={float(formal['temperature']):.1f}",
-            f"reward=ΔP-ΔQ | gamma={float(self.config['ppo']['gamma']):.1f} "
-            f"| lr={float(self.config['ppo']['learning_rate']):.1e}",
-            f"formal aggregation={formal.get('sample_aggregation', 'per_sample_v1')}",
-            SEPARATOR,
-        )
-
-    def training_update(
-        self,
-        update_row: Mapping[str, Any],
-        episode_rows: Sequence[Mapping[str, Any]],
-    ) -> None:
-        end = int(update_row["episode_end"]) + 1
-        self._block(
-            f"[train] ep {end}/{self.total_episodes} | upd {int(update_row['update_id'])} "
-            f"| complete {_percent(_mean(episode_rows, 'task_succeeded'))} "
-            f"| reward {_metric(_mean(episode_rows, 'reward'))} "
-            f"| progress {_metric(_mean(episode_rows, 'operation_progress'))} "
-            f"| quality {_metric(_mean(episode_rows, 'preference_quality_score'))}",
-            f"        p_loss {_metric(update_row.get('policy_loss'), 4)} "
-            f"| v_loss {_metric(update_row.get('value_loss'))} "
-            f"| ent {_metric(update_row.get('entropy'), 2)} "
-            f"| kl {_metric(update_row.get('approx_kl'), 4)} "
-            f"| lr={float(update_row.get('learning_rate', 0.0)):.1e}",
-        )
 
     def validation(
         self,
@@ -170,17 +191,21 @@ class TrainingConsoleReporter:
         self._block(*lines)
 
 
-def report_training_failure(
-    error: BaseException,
-    *,
-    run_directory: str | Path | None,
-    exit_code: int,
-    writer: Callable[[str], None] = print,
-) -> None:
-    writer(SEPARATOR)
-    writer(f"[FAILED] {type(error).__name__}")
-    writer(f"message={error}")
-    writer(f"exit_code={int(exit_code)}")
-    writer(f"artifacts={run_directory if run_directory is not None else 'unavailable'}")
-    writer(SEPARATOR)
-    writer("")
+    def training_update(
+        self,
+        update_row: Mapping[str, Any],
+        episode_rows: Sequence[Mapping[str, Any]],
+    ) -> None:
+        end = int(update_row["episode_end"]) + 1
+        self._block(
+            f"[train] ep {end}/{self.total_episodes} | upd {int(update_row['update_id'])} "
+            f"| complete {_percent(_mean(episode_rows, 'task_succeeded'))} "
+            f"| reward {_metric(_mean(episode_rows, 'reward'))} "
+            f"| progress {_metric(_mean(episode_rows, 'operation_progress'))} "
+            f"| quality {_metric(_mean(episode_rows, 'preference_quality_score'))}",
+            f"        p_loss {_metric(update_row.get('policy_loss'), 4)} "
+            f"| v_loss {_metric(update_row.get('value_loss'))} "
+            f"| ent {_metric(update_row.get('entropy'), 2)} "
+            f"| kl {_metric(update_row.get('approx_kl'), 4)} "
+            f"| lr={float(update_row.get('learning_rate', 0.0)):.1e}",
+        )

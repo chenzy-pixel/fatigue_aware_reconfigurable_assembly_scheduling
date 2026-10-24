@@ -1,0 +1,10 @@
+{
+  "purpose": "local_console_integration",
+  "formal_experiment": false,
+  "episodes": 2,
+  "epochs": 1,
+  "validation_count": 1,
+  "training_steps": 615,
+  "validation_env_steps": 69,
+  "validation_trajectories": 3
+}

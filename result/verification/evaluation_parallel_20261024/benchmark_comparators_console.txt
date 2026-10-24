@@ -1,0 +1,28 @@
+dcan: prepare data and model
+dcan: warm model
+dcan: start 20 workers
+dcan: pool ready after 16.607s; warm worker evaluation
+dcan serial 1/9
+dcan serial 2/9
+dcan serial 3/9
+dcan serial 4/9
+dcan serial 5/9
+dcan serial 6/9
+dcan serial 7/9
+dcan serial 8/9
+dcan serial 9/9
+dcan: {'serial_seconds': 32.68875760000083, 'parallel_seconds': 33.11750019999454, 'speedup': 0.9870538960548181, 'pool_startup_seconds': 16.606690899992827, 'runtime': {'main_send_seconds': 0.060113900050055236, 'main_receive_seconds': 1.4358872999728192, 'response_tail_seconds': 0.9881888000527397, 'policy_inference_seconds': 31.591058800011524, 'exchange_count': 113, 'policy_batch_count': 108, 'policy_observation_count': 1308, 'wall_seconds': 33.11750019999454, 'mean_policy_batch_size': 12.11111111111111, 'workers': 20, 'trajectory_count': 27, 'request_count': 9, 'lane_elapsed_seconds': 535.4538603001129}, 'requests': 9, 'cells': ['C01', 'C14', 'C27'], 'trajectory_parity': True, 'network_weights_sha256': 'da50b2eacce05198dcb14f3d816eb43ab6a557cc77df28de326e6cbb3f4a0c42', 'environment_steps': 1308}
+rule_ddqn: prepare data and model
+rule_ddqn: warm model
+rule_ddqn: start 20 workers
+rule_ddqn: pool ready after 17.324s; warm worker evaluation
+rule_ddqn serial 1/9
+rule_ddqn serial 2/9
+rule_ddqn serial 3/9
+rule_ddqn serial 4/9
+rule_ddqn serial 5/9
+rule_ddqn serial 6/9
+rule_ddqn serial 7/9
+rule_ddqn serial 8/9
+rule_ddqn serial 9/9
+rule_ddqn: {'serial_seconds': 2.302825799997663, 'parallel_seconds': 0.5804040000075474, 'speedup': 3.967625653799281, 'pool_startup_seconds': 17.3239942999935, 'runtime': {'main_send_seconds': 0.01248769996163901, 'main_receive_seconds': 0.3692513999994844, 'response_tail_seconds': 0.1947396999312332, 'policy_inference_seconds': 0.1910055000189459, 'exchange_count': 39, 'policy_batch_count': 38, 'policy_observation_count': 288, 'wall_seconds': 0.5804040000075474, 'mean_policy_batch_size': 7.578947368421052, 'workers': 20, 'trajectory_count': 9, 'request_count': 9, 'lane_elapsed_seconds': 4.560094000014942}, 'requests': 9, 'cells': ['C01', 'C14', 'C27'], 'trajectory_parity': True, 'network_weights_sha256': 'cdc7cc9cd3f1e7c2eb676ae7a848cf0a32e97ae850df8cc0646eda2464d573fd', 'environment_steps': 288}

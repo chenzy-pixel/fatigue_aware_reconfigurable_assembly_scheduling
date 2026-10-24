@@ -27,3 +27,6 @@ data/manifests/v2/.build/
 
 .pytest_batch13*/
 result/migration/**/smoke*/
+
+.cache/
+result/experiments/

@@ -1,0 +1,10 @@
+full: prepare data and model
+full: warm model
+full: start 20 workers
+full: pool ready after 88.720s; warm worker evaluation
+full serial 1/9
+full serial 2/9
+full serial 3/9
+full serial 4/9
+full serial 5/9
+full serial 6/9

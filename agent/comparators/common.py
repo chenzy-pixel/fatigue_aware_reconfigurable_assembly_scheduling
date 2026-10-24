@@ -10,7 +10,7 @@ import torch
 from environment import ASSEMBLY_NODE_TYPES, CAPABLE_EDGE, SERVICE_CANDIDATE_EDGE, DecisionType
 
 VERSION = "comparison_suite_v2"
-METHODS = ("ppo", "dcan", "rule_ddqn", "nsga2_ls", "moead", "mo_alns")
+METHODS = ("ppo", "a2c", "dcan", "rule_ddqn", "nsga2_ls", "moead")
 SEEDS = (11, 23, 37)
 FOUR = ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.), (1/3, 1/3, 1/3))
 
@@ -41,7 +41,7 @@ def method_config(config, method, seed=11, learning_rate=None):
     result = deepcopy(config)
     result["seed"] = seed
     result.setdefault("comparison", {}).update(version=VERSION, method=method)
-    result["comparison"]["delivery_protocol"] = "greedy_single_v1" if method == "rule_ddqn" else "best_of_3_v1" if method in ("ppo", "dcan") else "independent_search_v1"
+    result["comparison"]["delivery_protocol"] = "greedy_single_v1" if method == "rule_ddqn" else "best_of_3_v1" if method in ("ppo", "a2c", "dcan") else "independent_search_v1"
     if method == "rule_ddqn":
         result["training"]["formal_evaluation"]["sample_aggregation"] = "per_sample_v1"
     result["training"]["forced_action_compression"] = False

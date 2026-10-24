@@ -17,8 +17,7 @@
       "warmup": 1024,
       "update_every": 4,
       "sync_every": 1000
-    },
-    "alns_seconds": 600
+    }
   },
   "training": {
     "forced_action_compression": false,

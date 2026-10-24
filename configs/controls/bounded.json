@@ -1,7 +1,0 @@
-{
-  "experiment_name": "bounded",
-  "network": {
-    "global_objective_encoding": "bounded_v1"
-  },
-  "extends": "../default.json"
-}

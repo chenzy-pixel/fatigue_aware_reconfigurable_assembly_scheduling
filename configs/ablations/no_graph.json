@@ -1,7 +1,0 @@
-{
-  "extends": "../default.json",
-  "experiment_name": "no_graph",
-  "network": {
-    "encoder_variant": "node_mlp_pool"
-  }
-}

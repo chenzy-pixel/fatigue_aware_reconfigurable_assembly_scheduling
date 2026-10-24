@@ -6,7 +6,7 @@ import statistics
 
 from result.io import write_csv, write_json
 
-LOG_VERSION = "epoch_history_v1"
+LOG_VERSION = "epoch_history_v2"
 EPOCH_DEFINITION = "one_collection_and_learning_batch"
 OBJECTIVES = {
     "flow": "flow_excess_objective",
@@ -124,7 +124,9 @@ def export_history(output, history, episodes, validations=None):
         write_csv(output / "validation_instances.csv", csv_rows(records))
         write_csv(output / "validation_objectives.csv", csv_rows(curves))
         write_csv(output / "validation_log.csv", csv_rows([
-            {**{k: v.get(k) for k in ("epoch", "training_steps")}, **v["summary"]} for v in validations]))
+            {**{k: v.get(k) for k in ("epoch", "training_steps")}, **v["summary"],
+             **{f"cumulative_{k}": v[k] for k in ('validation_env_steps', 'validation_seconds') if k in v}}
+            for v in validations]))
 
 
 def save_epoch(output, context, episodes):
@@ -132,3 +134,16 @@ def save_epoch(output, context, episodes):
     folder = Path(output) / "epochs"
     folder.mkdir(parents=True, exist_ok=True)
     write_json(folder / f"epoch_{context['epoch']:06d}.json", {"summary": context, "episodes": episodes})
+
+
+def export_training(directory):
+    """Rebuild current training CSV files from their saved epoch records."""
+    from pathlib import Path
+    import json
+    for file in Path(directory).rglob('training_log.json'):
+        folder = file.parent
+        history = json.loads(file.read_text(encoding='utf-8'))
+        episodes = json.loads((folder/'episodes.json').read_text(encoding='utf-8'))
+        path = folder/'validations.json'
+        validations = json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+        export_history(folder, history, episodes, validations)

@@ -89,20 +89,6 @@ def _load_config_path(
         stack=(*stack, resolved),
     )
     merged = _deep_merge(base, raw)
-    raw_manifest = raw.get("runtime_manifest")
-    if isinstance(raw_manifest, Mapping):
-        # Preserve a saved architecture identity before inheriting new defaults.
-        if "actor_head_variant" not in raw.get("network", {}) and "actor_head_variant" in raw_manifest:
-            merged.setdefault("network", {})["actor_head_variant"] = raw_manifest["actor_head_variant"]
-        if "flow_mode" not in raw.get("objective_scalarizer", {}):
-            if raw_manifest.get("flow_mode", "raw_v1") == "raw_v1":
-                merged.setdefault("objective_scalarizer", {}).pop("flow_mode", None)
-            else:
-                merged.setdefault("objective_scalarizer", {})["flow_mode"] = raw_manifest["flow_mode"]
-    # Historical snapshots may still extend a parent whose new default changed.
-    # Do not add even an explicit legacy field: historical effective hashes stay valid.
-    if isinstance(raw_manifest, Mapping) and "sample_aggregation" not in raw.get("training", {}).get("formal_evaluation", {}):
-        merged.get("training", {}).get("formal_evaluation", {}).pop("sample_aggregation", None)
     return merged, (*chain, resolved)
 
 
@@ -125,10 +111,6 @@ def load_config(path: str | Path) -> dict[str, Any]:
     validate_training_distribution(config)
     apply_normalization_manifest(config, project_root=PROJECT_ROOT)
     attach_runtime_manifest(config)
-    if saved_manifest is not None and config["runtime_manifest"].get("flow_mode") == "raw_v1":
-        saved_manifest = dict(saved_manifest)
-        saved_manifest.setdefault("flow_mode", "raw_v1")
-        saved_manifest.setdefault("normalization_manifest_sha256", config["objective_scalarizer"]["normalization_manifest_sha256"])
     if saved_manifest is not None and saved_manifest != config["runtime_manifest"]:
         raise ValueError("saved runtime_manifest does not match the current implementation; retraining is required")
     config["_config_path"] = str(config_path)

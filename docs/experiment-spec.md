@@ -1,4 +1,6 @@
-> 历史 schema12 说明。2026-10-23 起的默认主线采用[三因子批次调度协议](factorial27_migration.md)；本文以下内容保留用于解释历史实现和产物。
+2026-10-23：当前schema13实验的设计规格见[实验合同v1](experiment_suite_contract_v1.md)，完整实施与远端命令见[实验体系v1](experiment_suite_v1.md)，本地证据见[实施验收](experiment_suite_verification_20261023.md)。下列历史MO-ALNS规格正文保留。
+
+> 历史 schema12 说明。2026-10-23 起的默认主线采用[三因子批次调度协议](project_cleanup.md)；本文以下内容保留用于解释历史实现和产物。
 
 # MO-ALNS 修改与验证规格 v1（2026-10-17）
 
