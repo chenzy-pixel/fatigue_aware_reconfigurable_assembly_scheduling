@@ -1,0 +1,28 @@
+------------------------------------------------------------------------
+[RUN] full | method=ppo | seed=11 | envs=2 | cpu
+episodes=2 | epochs=1 | batch=2
+val=1 × repeats=3 × prefs=1 | envs=2 | schedule=every 1 epochs + final
+formal aggregation=best_of_3_v1 | lr=1.0e-04
+------------------------------------------------------------------------
+[workers] start | workers 0/2 | elapsed=0s
+[workers] done | workers 2/2 | elapsed=9s
+[collect] start | epoch 1/1 | episodes 0/2 | active=0 | steps=0 | elapsed=0s
+[collect] done | epoch 1/1 | episodes 2/2 | active=0 | steps=615 | elapsed=7s
+[update] start | epoch 1/1 | elapsed=0s
+[update] done | epoch 1/1 | elapsed=1s
+[train] ep 2/2 | upd 1 | complete 100.0% | reward 0.759 | progress 1.000 | quality 0.241
+        p_loss -0.0032 | v_loss 0.002 | ent 0.57 | kl 0.0001 | lr=1.0e-04
+        epoch 1/1 | steps=615 | samples=2 | collect=7s | update=1s | elapsed=18s
+[val] start | epoch 1/1 | rollouts 0/3 | active=0 | steps=0 | elapsed=0s
+[val] done | epoch 1/1 | rollouts 3/3 | active=0 | steps=69 | elapsed=0s
+[checkpoint] epoch 1 | event=best_initialized | last=result\verification\console_progress_events_20261024\live\last_checkpoint.pt | best=result\verification\console_progress_events_20261024\live\best_checkpoint.pt
+[val] ep 2 | best_of_3_v1 complete 100.0% | quality 0.003293 | progress 1.000
+      safety=PASS | event=best_initialized | best_ep=2
+      requests=3 | deliveries=1 | raw complete=100.0% | raw Q=0.006263
+------------------------------------------------------------------------
+[DONE] status=best_selected | time=19s
+best complete=100.0% | quality=0.003293 | ep=2
+checkpoint=best_checkpoint.pt
+last=last_checkpoint.pt
+artifacts=result\verification\console_progress_events_20261024\live
+------------------------------------------------------------------------

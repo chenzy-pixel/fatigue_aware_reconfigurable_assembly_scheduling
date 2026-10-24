@@ -114,6 +114,15 @@ def test_collection_caps_training_lanes_in_shared_validation_pool(config):
     assert result.steps == sum(e['steps'] for e in result.episodes)
 
 
+def test_collection_progress_uses_completed_attempts_and_real_steps(config):
+    runner, agent, progress = Runner(worker_count=3), Agent(), []
+    result = collect(runner, agent, config, 0, episodes_per_batch=7, progress_callback=progress.append)
+    assert progress[0] == dict(completed=0, total=7, environment_steps=0, active=3)
+    assert progress[-1] == dict(completed=7, total=7, environment_steps=result.steps, active=0)
+    assert [p['completed'] for p in progress] == sorted(p['completed'] for p in progress)
+    assert [p['environment_steps'] for p in progress] == sorted(p['environment_steps'] for p in progress)
+
+
 def test_training_releases_observations_before_validation_and_next_batch(config, tmp_path, monkeypatch):
     install_training_fakes(monkeypatch)
     original_collect, original_validation = learning.collect, learning.validation

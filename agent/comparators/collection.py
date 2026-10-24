@@ -17,7 +17,8 @@ class Collected:
     losses: dict
 
 
-def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False, episodes_per_batch=20, max_parallelism=None):
+def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False, episodes_per_batch=20,
+            max_parallelism=None, progress_callback=None):
     """Every issued command reserves exactly one real step, including WAIT.
 
     Policy freezes during each PPO batch. At the final global boundary, active
@@ -34,6 +35,11 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
     active, histories, summary = {}, {}, []
     indices, used = 0, 0
     ddqn_losses = []
+
+    def progress():
+        if progress_callback is not None:
+            progress_callback(dict(completed=len(summary), total=episodes_per_batch,
+                                   environment_steps=used, active=len(active)))
 
     def fill(lanes):
         nonlocal indices
@@ -79,6 +85,7 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
         active.pop(lane, None)
 
     fill(range(parallelism))
+    progress()
     while active and (allowance is None or used < allowance):
         lanes = sorted(active) if allowance is None else sorted(active)[:allowance-used]
         observations = [active[lane].observation for lane in lanes]
@@ -112,6 +119,7 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
                 completed.append(lane)
         if allowance is None or used < allowance:
             fill(completed)
+        progress()
     snapshots = runner._exchange({lane: ("snapshot", None) for lane in active}) if active else {}
     for lane, response in list(active.items()):
         response.metrics = snapshots[lane].metrics
@@ -120,6 +128,7 @@ def collect(runner, agent, config, start_episode, allowance=None, *, ddqn=False,
         for key in EVALUATION_WORKER_TIMING_FIELDS:
             histories[lane][key] += float(getattr(snapshots[lane], key, 0.))
         finish(lane, response, cutoff=True)
+    progress()
     if allowance is None and (len(summary) != episodes_per_batch or indices != episodes_per_batch):
         raise RuntimeError("episode batch did not finish all requested attempts")
     return Collected(total, used, indices, sorted(summary, key=lambda e: e['episode']), time.perf_counter()-started,

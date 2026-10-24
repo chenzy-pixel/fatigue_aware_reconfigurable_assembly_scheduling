@@ -36,7 +36,7 @@ def summarize(instance_id, pref, method, mode, raw, seconds, *, timing_basis):
 
 
 def evaluate_requests(config, agent, requests, method, *, runner=None, mode=None, seed=0,
-                      capture_trajectories=True):
+                      capture_trajectories=True, progress_callback=None):
     """Return request-ordered deliveries plus non-overlapping wall-clock timing.
 
     requests contains (record, preference) pairs. Each repeat owns its RNG,
@@ -51,7 +51,8 @@ def evaluate_requests(config, agent, requests, method, *, runner=None, mode=None
     if runner is None:
         with evaluation_pool(config, requests[0][0].instance, workers=workers) as pool:
             return evaluate_requests(config, agent, requests, method, runner=pool, mode=mode,
-                                     seed=seed, capture_trajectories=capture_trajectories)
+                                     seed=seed, capture_trajectories=capture_trajectories,
+                                     progress_callback=progress_callback)
     if workers > runner.worker_count:
         raise ValueError('evaluation worker pool is smaller than requested parallelism')
     if physical_identity(config) != physical_identity(runner.config):
@@ -76,7 +77,8 @@ def evaluate_requests(config, agent, requests, method, *, runner=None, mode=None
     rollouts = runner.evaluate_records(agent, records, preferences=prefs,
                                       max_parallelism=min(workers, runner.worker_count),
                                       deterministic=not sampled, unit_sampling_seeds=seeds if sampled else None,
-                                      capture_trajectories=capture_trajectories, capture_actions=True)
+                                      capture_trajectories=capture_trajectories, capture_actions=True,
+                                      progress_callback=progress_callback)
     if [r.record_index for r in rollouts] != list(range(len(records))):
         raise RuntimeError('evaluation rollouts are missing, duplicated or out of order')
     if device.type == 'cuda':

@@ -17,6 +17,7 @@ from environment.types import metrics_flow_objective
 from utils import set_seed
 from result.training_history import (LOG_VERSION, EPOCH_DEFINITION, instance_row,
                                      aggregate, export_history, save_epoch)
+from result.console_reporter import ExperimentConsoleReporter
 from .common import atomic_json, digest, method_config
 from .collection import collect
 from .dcan import DCANActorCritic, DCANAgent
@@ -82,12 +83,12 @@ def evaluate_request(config, agent, instance, pref, method, *, mode=None, seed=0
                          "environment_steps": sum(len(r['actions']) for r in raw)}, "raw": raw, "selected_repeat": selected["sampling_repeat"]}
 
 
-def validation(config, agent, dataset, indices, prefs, method, *, seed, runner=None):
+def validation(config, agent, dataset, indices, prefs, method, *, seed, runner=None, progress_callback=None):
     began = time.perf_counter()
     rows, deliveries = [], []
     requests = [(dataset[index], pref) for index in indices for pref in prefs]
     results, runtime = evaluate_requests(config, agent, requests, method, seed=seed, runner=runner,
-                                        capture_trajectories=False)
+                                        capture_trajectories=False, progress_callback=progress_callback)
     for (record, pref), result in zip(requests, results):
         deliveries.append({"summary": result["summary"], "selected_repeat": result["selected_repeat"],
                            "raw": [{k: v for k, v in sample.items() if k not in ("schedule", "reconfigurations")}
@@ -134,6 +135,7 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
             raise ValueError("completed training identity differs")
         if not (output / "best_checkpoint.pt").exists():
             raise ValueError("completed training is missing checkpoint")
+        print(f'[DONE] reuse {base.get("comparison", {}).get("arm", method)} seed={seed} | artifacts={output}', flush=True)
         return saved
     status_path = output / 'status.json'
     if status_path.exists() and json.loads(status_path.read_text(encoding='utf-8')).get('job_id') != job_id:
@@ -161,12 +163,18 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
     thresholds = sorted({max(1, int(steps*i/5)) for i in range(1, 6)}) if steps is not None else []
     used, episode, validation_index, updates, presentations = 0, 0, 0, 0, 0
     best_rank = None
+    best_episode = None
     history, validations, episode_log = [], [], []
     training_seconds = validation_seconds = validation_env_steps = 0
     started = time.perf_counter()
     pool_workers = max(workers, int(config['training'].get('validation_parallel_envs', 20)))
-    with ParallelEpisodeRunner(config=config, template=template, episode_count=episodes if episodes is not None else max(steps, batch_size), worker_count=pool_workers,
-                               diagnostic_directory=output / "workers") as runner:
+    reporter = ExperimentConsoleReporter(config, budget, method, workers, len(val_indices), len(prefs), started_at=started)
+    reporter.start_run()
+    with reporter.phase('workers', total=pool_workers, unit='workers') as progress:
+        runner = ParallelEpisodeRunner(config=config, template=template, episode_count=episodes if episodes is not None else max(steps, batch_size), worker_count=pool_workers,
+                                       diagnostic_directory=output / "workers")
+        progress(dict(completed=pool_workers))
+    with runner:
         worker_pool_startup_seconds = time.perf_counter()-started
         while (episode < episodes if episodes is not None else used < steps):
             epoch = len(history) + 1
@@ -174,8 +182,9 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
             count = min(batch_size, episodes-episode) if episodes is not None else batch_size
             if method == 'rule_ddqn' and episodes is not None:
                 agent.set_episode_progress(episode, episodes)
-            rollout = collect(runner, agent, config, episode, limit, ddqn=method == "rule_ddqn",
-                              episodes_per_batch=count, max_parallelism=workers)
+            with reporter.phase('collect', epoch=epoch, total=count) as progress:
+                rollout = collect(runner, agent, config, episode, limit, ddqn=method == "rule_ddqn",
+                                  episodes_per_batch=count, max_parallelism=workers, progress_callback=progress)
             if rollout.steps <= 0:
                 raise RuntimeError("training made no progress")
             if episodes is not None and (rollout.episodes_started != count or len(rollout.episodes) != count
@@ -186,9 +195,10 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
             losses = rollout.losses
             update_started = time.perf_counter()
             if method != "rule_ddqn" and len(rollout.buffer):
-                losses = agent.update(rollout.buffer)
-                updates += int(losses.get('optimizer_updates', 1))
-                presentations += int(losses.get('sample_presentations', len(rollout.buffer)))
+                with reporter.phase('update', epoch=epoch):
+                    losses = agent.update(rollout.buffer)
+                    updates += int(losses.get('optimizer_updates', 1))
+                    presentations += int(losses.get('sample_presentations', len(rollout.buffer)))
             update_seconds = time.perf_counter()-update_started
             # Observations are no longer needed after learning. Release them
             # before validation and before allocating the next rollout batch.
@@ -212,11 +222,16 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                             "losses": losses, "optimizer_updates": agent.updates if method == "rule_ddqn" else updates})
             if method == 'rule_ddqn':
                 history[-1]['exploration_epsilon'] = agent.exploration_epsilon
+            reporter.epoch_update(history[-1], rollout.episodes)
             # Preserve completed collection evidence even if validation fails.
             save_epoch(output, history[-1], rollout.episodes)
             due = (epoch % budget['validation_interval_epochs'] == 0 or episode == episodes) if episodes is not None else used == thresholds[validation_index]
             if due:
-                result, rank = validation(config, agent, dataset, val_indices, prefs, method, seed=seed, runner=runner)
+                with reporter.phase('val', epoch=epoch, total=len(val_indices)*len(prefs)*reporter.validation_repeats,
+                                    unit='rollouts') as progress:
+                    result, rank = validation(config, agent, dataset, val_indices, prefs, method, seed=seed,
+                                              runner=runner, progress_callback=progress)
+                console_validation = reporter.validation_row(result, episode)
                 validation_env_steps += result['summary']['validation_env_steps']
                 validation_seconds += result['summary']['validation_seconds']
                 result.update(training_steps=used, epoch=epoch, method=method, training_seed=seed,
@@ -231,14 +246,20 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                             "validation": result["summary"], "comparison_identity": identity,
                             "training_budget": budget, "episodes_started": episode,
                             "validation_env_steps": validation_env_steps, "validation_seconds": validation_seconds}
-                if result["summary"]["safe"] and (best_rank is None or rank > best_rank):
+                improved = result["summary"]["safe"] and (best_rank is None or rank > best_rank)
+                console_validation['checkpoint_event'] = 'best_initialized' if improved and best_rank is None else 'best_improved' if improved else 'best_retained'
+                if improved:
                     best_rank = rank
+                    best_episode = episode
                     agent.save(output / "best_checkpoint.pt", metadata)
                     atomic_json(output / "best_validation.json", result)
                 agent.save(output / "last_checkpoint.pt", metadata)
                 atomic_json(output / "validations.json", validations)
+                reporter.checkpoint_saved(epoch, console_validation['checkpoint_event'],
+                                          last_checkpoint=output/'last_checkpoint.pt',
+                                          best_checkpoint=output/'best_checkpoint.pt' if improved else None)
                 validation_index += 1
-                print(f"{method} seed={seed} epoch={epoch} episodes={episode}/{episodes} steps={used} validation={result['summary']}", flush=True)
+                reporter.validation(console_validation, selector_state={'best_episode': best_episode})
                 history[-1].update(validation_env_steps=validation_env_steps, validation_seconds=validation_seconds,
                                    seconds=time.perf_counter()-started)
                 save_epoch(output, history[-1], rollout.episodes)
@@ -263,4 +284,9 @@ def train_request(base, method, seed, rate, steps, dataset, val_indices, prefs, 
                "best_validation": json.loads((output/"best_validation.json").read_text(encoding="utf-8"))["summary"]}
     atomic_json(summary_path, summary)
     atomic_json(output / "status.json", {"job_id": job_id, "status": "complete"})
+    reporter.done(selector_state={'best_episode': best_episode,
+                                 'best_completion_rate': summary['best_validation'].get('worst_preference_success'),
+                                 'best_preference_balanced_quality_score': summary['best_validation'].get('quality')},
+                  run_directory=output, best_checkpoint=output/'best_checkpoint.pt', last_checkpoint=output/'last_checkpoint.pt',
+                  elapsed_seconds=summary['seconds'])
     return summary

@@ -8,7 +8,7 @@ import os
 import time
 import traceback
 from contextlib import contextmanager
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from multiprocessing.connection import Connection, wait
 from pathlib import Path
@@ -1814,6 +1814,7 @@ class ParallelEpisodeRunner:
         capture_trajectories: bool = False,
         unit_sampling_seeds: Sequence[int] | None = None,
         capture_actions: bool = False,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
     ) -> list[FixedEvaluationRollout]:
         # Reject incompatible agents before starting any evaluation bookkeeping.
         agent.assert_evaluation_config(self.config)
@@ -1822,7 +1823,8 @@ class ParallelEpisodeRunner:
                 agent, records, max_parallelism=max_parallelism,
                 deterministic=deterministic, sampling_seed=sampling_seed, preferences=preferences,
                 capture_trajectories=capture_trajectories,
-                unit_sampling_seeds=unit_sampling_seeds, capture_actions=capture_actions)
+                unit_sampling_seeds=unit_sampling_seeds, capture_actions=capture_actions,
+                progress_callback=progress_callback)
 
     def _evaluate_records(
         self,
@@ -1836,6 +1838,7 @@ class ParallelEpisodeRunner:
         capture_trajectories: bool = False,
         unit_sampling_seeds: Sequence[int] | None = None,
         capture_actions: bool = False,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
     ) -> list[FixedEvaluationRollout]:
         parallelism = (
             self.worker_count
@@ -1868,6 +1871,12 @@ class ParallelEpisodeRunner:
         generators: dict[int, torch.Generator] = {}
         next_record = 0
         worker_times: dict[int, dict[str, float]] = {}
+        environment_steps = 0
+
+        def progress():
+            if progress_callback is not None:
+                progress_callback(dict(completed=len(results), total=len(records),
+                                       environment_steps=environment_steps, active=len(active)))
 
         def fill_available(lanes: Sequence[int]) -> None:
             nonlocal next_record
@@ -1913,6 +1922,7 @@ class ParallelEpisodeRunner:
         # A completed lane immediately takes the next fixed evaluation unit.
         # Sampling state belongs to the instance/preference unit, not its lane.
         fill_available(range(parallelism))
+        progress()
         while active:
             lanes = sorted(active)
             observations = [
@@ -1987,6 +1997,7 @@ class ParallelEpisodeRunner:
                     for lane, action in zip(lanes, actions)
                 }
             )
+            environment_steps += sum(response.environment_step_count for response in step_responses.values())
             for lane in lanes:
                 decisions[lane] += 1
                 response = step_responses[lane]
@@ -2038,6 +2049,7 @@ class ParallelEpisodeRunner:
                 else:
                     states[lane] = response
             fill_available([lane for lane in range(parallelism) if lane not in active])
+            progress()
         results.sort(key=lambda value: value.record_index)
         return results
 

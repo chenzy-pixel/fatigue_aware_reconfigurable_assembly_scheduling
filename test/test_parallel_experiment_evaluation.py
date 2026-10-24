@@ -53,9 +53,15 @@ def test_serial_parallel_refill_and_validation(arm, monkeypatch):
     requests = [(r, p) for r in records for p in prefs]
     serial = [evaluate_request(c, agent, r.instance, p, method, seed=71) for r, p in requests]
     with evaluation_pool(c, records[0].instance) as pool:
-        parallel, runtime = evaluate_requests(c, agent, requests, method, runner=pool, seed=71)
+        progress = []
+        parallel, runtime = evaluate_requests(c, agent, requests, method, runner=pool, seed=71, progress_callback=progress.append)
         assert runtime['workers'] == 2
         assert runtime['trajectory_count'] == (4 if method == 'rule_ddqn' else 12)
+        assert progress[0]['completed'] == progress[0]['environment_steps'] == 0
+        assert progress[-1]['completed'] == progress[-1]['total'] == runtime['trajectory_count']
+        assert progress[-1]['active'] == 0
+        assert progress[-1]['environment_steps'] == sum(r['summary']['environment_steps'] for r in serial)
+        assert [p['completed'] for p in progress] == sorted(p['completed'] for p in progress)
         assert sum(r['summary']['search_seconds'] for r in parallel) == pytest.approx(runtime['wall_seconds'])
         for expected, actual in zip(serial, parallel):
             assert_same(expected, actual)
