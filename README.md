@@ -56,6 +56,7 @@ python -m scripts.experiment_suite --stage preflight --device cuda
 - [当前架构](docs/ARCHITECTURE.md)
 - [正式实验清单与命令](docs/experiment_suite_v1.md)
 - [Epoch与训练记录](docs/training_history.md)
+- [DCAN批处理优化与本机验证](docs/dcan_optimization_20261028.md)
 - [数学定义与证明](data/docs/README.md)
 - [工业背景](docs/research_background_cesa3r.md)
 - [清理范围与历史恢复](docs/project_cleanup.md)

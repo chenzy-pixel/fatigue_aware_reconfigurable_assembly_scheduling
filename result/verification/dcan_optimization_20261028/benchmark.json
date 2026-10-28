@@ -1,0 +1,253 @@
+{
+  "purpose": "matched_dcan_execution_probe",
+  "formal_performance_evidence": false,
+  "platform": "Windows-11-10.0.26300-SP0",
+  "torch": "2.14.1+cu132",
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "parameters": 740252,
+  "network_spec": {
+    "family": "dcan_assembly_v1",
+    "observation": {
+      "schema": 13,
+      "time_context_version": "order_chain_remaining_context_v3_1",
+      "node_names": {
+        "operation": [
+          "state_UNRELEASED",
+          "state_BLOCKED",
+          "state_READY",
+          "state_LOCKED",
+          "state_PROCESSING",
+          "state_DONE",
+          "base_processing_time_norm",
+          "sequence_norm",
+          "is_last_operation"
+        ],
+        "machine": [
+          "state_IDLE",
+          "state_PROCESSING",
+          "state_WAIT_DIS",
+          "state_DIS",
+          "state_WAIT_INS",
+          "state_INS",
+          "remaining_busy_time_norm",
+          "downtime_cost_rate_norm",
+          "current_no_module",
+          "target_no_module"
+        ],
+        "worker": [
+          "fatigue_ratio",
+          "state_IDLE",
+          "state_DIS",
+          "state_INS",
+          "remaining_busy_time_norm",
+          "load_norm",
+          "labor_cost_rate_norm"
+        ],
+        "order": [
+          "completed",
+          "age_norm",
+          "completion_ratio",
+          "remaining_operation_ratio",
+          "remaining_workload_norm",
+          "estimated_order_remaining_time_norm",
+          "projection_valid"
+        ],
+        "module": [
+          "fixed_disassembly_cost_norm",
+          "fixed_installation_cost_norm",
+          "released_remaining_operation_ratio",
+          "released_remaining_workload_norm",
+          "ready_operation_ratio",
+          "installed_machine_ratio",
+          "target_machine_ratio"
+        ]
+      },
+      "global_names": [
+        "current_time_norm",
+        "pending_reconfiguration_ratio",
+        "completed_operation_ratio",
+        "production_decision",
+        "worker_matching_deficit_norm",
+        "minimum_worker_alternative_ratio",
+        "objective_flow_log2_norm",
+        "objective_cost_log2_norm",
+        "objective_committed_workload_log2_norm",
+        "maximum_unfinished_order_remaining_norm",
+        "unprojectable_order_ratio"
+      ],
+      "wait_names": [
+        "estimated_flow_objective_delta_if_wait",
+        "estimated_cost_objective_delta_if_wait",
+        "estimated_workload_objective_delta_if_wait",
+        "wait_duration_norm",
+        "next_event_delta_norm",
+        "active_order_ratio",
+        "active_order_workload_norm",
+        "new_ready_operation_ratio",
+        "released_machine_ratio",
+        "recovering_worker_ratio",
+        "worker_recovery_gain",
+        "configuration_reuse_gain",
+        "maximum_order_remaining_after_wait_norm",
+        "maximum_order_remaining_delta_if_wait_norm"
+      ],
+      "edges": {
+        "operation|precedes|operation": [
+          "precedence"
+        ],
+        "operation|capable_on|machine": [
+          "processing_time_norm",
+          "configuration_match",
+          "earliest_start_time_norm",
+          "resource_ready_time_norm",
+          "predicted_finish_time_norm",
+          "safe_disassembly_worker_ratio",
+          "safe_installation_worker_ratio",
+          "matching_deficit_after_commit_norm",
+          "projection_valid",
+          "reconfiguration_time_norm",
+          "fixed_disassembly_cost_norm",
+          "fixed_installation_cost_norm",
+          "estimated_labor_cost_norm",
+          "estimated_downtime_cost_norm",
+          "estimated_worker_load_objective_delta_norm",
+          "estimated_order_remaining_time_norm"
+        ],
+        "operation|locked_to|machine": [
+          "stage_WAIT_DIS",
+          "stage_DIS",
+          "stage_WAIT_INS",
+          "stage_INS",
+          "stage_elapsed_time_norm"
+        ],
+        "worker|can_install|operation": [
+          "qualified"
+        ],
+        "worker|can_disassemble|machine": [
+          "qualified",
+          "disassembly_time_norm"
+        ],
+        "operation|belongs_to|order": [
+          "belongs_to_order"
+        ],
+        "operation|requires|module": [
+          "requires_module"
+        ],
+        "machine|supports|module": [
+          "currently_installed",
+          "target_installed",
+          "installation_base_time_norm",
+          "disassembly_base_time_norm",
+          "processing_speed_factor"
+        ],
+        "worker|qualified_for|module": [
+          "qualified_for_module"
+        ],
+        "machine|service_candidate|worker": [
+          "stage_dis",
+          "stage_ins",
+          "stage_duration_norm",
+          "projected_fatigue_ratio",
+          "fixed_cost_norm",
+          "incremental_labor_cost_norm",
+          "incremental_downtime_cost_norm",
+          "incremental_workload_objective_norm",
+          "estimated_order_remaining_time_norm",
+          "stage_wait_time_norm"
+        ],
+        "operation|processing_on|machine": [],
+        "machine|served_by|worker": []
+      }
+    },
+    "hidden": 128,
+    "layers": 2,
+    "heads": 4,
+    "physics": "fe7ad893d8e58e17c0463c4a2f5f0fd45323f7537281756409861b9917a3792e",
+    "source": "caf60d8da721382c79009539a9c8d9ccbc39e734"
+  },
+  "network_weights_sha256": "da50b2eacce05198dcb14f3d816eb43ab6a557cc77df28de326e6cbb3f4a0c42",
+  "inference_batch_size": 20,
+  "update_batch_size": 64,
+  "update_epochs": 2,
+  "inference_full_instances": true,
+  "update_max_orders": 2,
+  "evaluation_max_orders": 2,
+  "workers": 20,
+  "inference": {
+    "reference_dcan_v1": {
+      "seconds": [
+        0.48042470001382753,
+        0.33905399998184294,
+        0.4352751999977045
+      ],
+      "median_seconds": 0.4352751999977045
+    },
+    "packed_neighbors_v1": {
+      "seconds": [
+        0.03011970000807196,
+        0.028105800040066242,
+        0.036459799972362816
+      ],
+      "median_seconds": 0.03011970000807196
+    },
+    "speedup": 14.451511797297199
+  },
+  "update": {
+    "reference_dcan_v1": {
+      "seconds": [
+        5.695685000042431,
+        6.349977900041267,
+        5.544765400001779
+      ],
+      "median_seconds": 5.695685000042431,
+      "peak_allocated_bytes": 96587776
+    },
+    "packed_neighbors_v1": {
+      "seconds": [
+        0.15301429998362437,
+        0.20362200000090525,
+        0.22797620005439967
+      ],
+      "median_seconds": 0.20362200000090525,
+      "peak_allocated_bytes": 84743680
+    },
+    "speedup": 27.971854711264548
+  },
+  "update_loss_parity": true,
+  "evaluation": {
+    "reference_dcan_v1": {
+      "main_send_seconds": 0.045759900007396936,
+      "main_receive_seconds": 1.1726728999637999,
+      "response_tail_seconds": 0.715261300210841,
+      "policy_inference_seconds": 24.355253200163133,
+      "exchange_count": 126,
+      "policy_batch_count": 120,
+      "policy_observation_count": 1377,
+      "wall_seconds": 25.596471900003962,
+      "mean_policy_batch_size": 11.475,
+      "workers": 20,
+      "trajectory_count": 27,
+      "request_count": 9,
+      "lane_elapsed_seconds": 432.2941458997666
+    },
+    "packed_neighbors_v1": {
+      "main_send_seconds": 0.03059109952300787,
+      "main_receive_seconds": 1.0430958003271371,
+      "response_tail_seconds": 0.6079701003618538,
+      "policy_inference_seconds": 2.6569597999332473,
+      "exchange_count": 126,
+      "policy_batch_count": 120,
+      "policy_observation_count": 1377,
+      "wall_seconds": 3.748870999959763,
+      "mean_policy_batch_size": 11.475,
+      "workers": 20,
+      "trajectory_count": 27,
+      "request_count": 9,
+      "lane_elapsed_seconds": 50.797737299697474
+    },
+    "speedup": 6.827781457478449
+  },
+  "trajectory_parity": true,
+  "weights_unchanged": true
+}
