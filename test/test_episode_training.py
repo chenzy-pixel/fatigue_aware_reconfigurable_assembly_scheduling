@@ -283,6 +283,25 @@ def test_episode_budget_and_checkpoint_gate(config, tmp_path):
         training_budget(config, episodes=0)
 
 
+def test_dcan_execution_metadata_and_job_reuse_guard(config, tmp_path, monkeypatch):
+    _, _, saved = install_training_fakes(monkeypatch)
+    config = deepcopy(config)
+    config.setdefault('comparison', {})['execution_identity'] = 'refreshed-dcan'
+    output = tmp_path/'training'/'dcan'/'11'
+    summary = learning.train_request(config, 'dcan', 11, 1e-4, None, [0], [(1.,0.,0.)],
+                                     output, 'original-comparison', episodes=2, workers=2)
+    assert summary['execution_identity'] == 'refreshed-dcan'
+    checkpoint = torch.load(output/'last_checkpoint.pt', weights_only=False)
+    assert checkpoint['metadata']['execution_identity'] == 'refreshed-dcan'
+    assert checkpoint['metadata']['comparison_identity'] == 'original-comparison'
+    assert summary['episodes_started'] == 2
+    old = deepcopy(config)
+    old['comparison'].pop('execution_identity')
+    with pytest.raises(ValueError, match='completed training identity differs'):
+        learning.train_request(old, 'dcan', 11, 1e-4, None, [0], [(1.,0.,0.)],
+                               output, 'original-comparison', episodes=2, workers=2)
+
+
 def test_suite_train_dispatch_preserves_arm_seed_and_worker_selection(tmp_path, monkeypatch):
     import sys
     import scripts.experiment_suite as suite

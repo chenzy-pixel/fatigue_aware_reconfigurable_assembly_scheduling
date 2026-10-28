@@ -43,7 +43,7 @@ def holm(pvalues):
     return result
 
 
-def audit_evaluations(units, suite, config, records, identity, *, compact_units=None):
+def audit_evaluations(units, suite, config, records, identity, *, compact_units=None, execution_identities=None):
     """Validate complete coverage at delivery granularity, before aggregation."""
     methods = list(suite['arms']) + suite['rules'] + suite['search_methods'] + ['full_greedy','full_sample1']
     cases = {r.instance.instance_id:r for r in records}
@@ -57,6 +57,9 @@ def audit_evaluations(units, suite, config, records, identity, *, compact_units=
         method, task, seed, iid = (unit[k] for k in ('arm','task','seed','instance_id'))
         if unit['identity'] != identity or unit.get('status') != 'complete' or iid not in cases:
             raise ValueError('evaluation identity/status/instance differs')
+        expected_execution = (execution_identities or {}).get(method)
+        if expected_execution and unit.get('execution_identity') != expected_execution:
+            raise ValueError('evaluation execution identity differs')
         if 'content_sha256' in unit and unit['content_sha256'] != digest({k:v for k,v in unit.items() if k != 'content_sha256'}):
             raise ValueError('evaluation content hash differs')
         if task == 'frontier' and method == 'full':
@@ -299,14 +302,22 @@ def report(root, suite, identity, device='cpu'):
     from data import load_dataset_split
     from agent.comparators.learning import check_learning_checkpoint
     from result.training_history import export_training
+    from configs.experiment_reuse import arm_execution_identity, registered_execution, resolve_comparison_identity
     root = Path(root)
+    registration = registered_execution(root)
+    if registration and resolve_comparison_identity(root, registration['execution_identity']) != identity:
+        raise ValueError('report comparison identity differs from registered execution')
     from scripts.experiment_suite import check_frozen_budget
     check_frozen_budget(suite,root,identity)
     streams = validate_training_streams(root, suite)
     for arm, definition in suite['arms'].items():
         for seed in suite['seeds']:
+            config = arm_config(suite,arm,seed,device)
+            execution_identity = arm_execution_identity(root, arm)
+            if execution_identity:
+                config['comparison']['execution_identity'] = execution_identity
             check_learning_checkpoint(root/'training'/arm/str(seed)/'best_checkpoint.pt',
-                                      arm_config(suite,arm,seed,device), definition['method'],seed,identity)
+                                      config, definition['method'],seed,identity)
     c = arm_config(suite,'full',11,device)
     def read_units():
         for p in sorted((root/'evaluation').rglob('*.json')):
@@ -315,7 +326,9 @@ def report(root, suite, identity, device='cpu'):
                 raise ValueError(f'evaluation missing content hash: {p}')
             yield u
     units = []
-    rows = audit_evaluations(read_units(),suite,c,list(load_dataset_split(c,'test')),identity,compact_units=units)
+    executions = {arm:arm_execution_identity(root, arm) for arm in suite['arms']}
+    rows = audit_evaluations(read_units(),suite,c,list(load_dataset_split(c,'test')),identity,
+                             compact_units=units,execution_identities=executions)
     instances = instance_tables(rows,units)
     descriptive, seeds = descriptive_tables(instances,rows)
     stats = paired_statistics(instances,suite)
@@ -341,7 +354,8 @@ def report(root, suite, identity, device='cpu'):
     for family, methods in GROUPS.items():
         write_csv(out/f'table_{family}.csv',[r for r in descriptive if r['arm'] in ('full',*methods) and r['factor'] in ('all','scale')])
     figures(root,suite,units,instances)
-    atomic_json(out/'audit.json', {'status':'passed','identity':identity,'training_streams':streams,
+    atomic_json(out/'audit.json', {'status':'passed','identity':identity,'execution_registration':registration,
+                'training_streams':streams,
                 'training_runs':len(training),'deliveries':len(rows),'instances':len({r['instance_id'] for r in rows}),
                 'statistics_unit':'fixed_instance','training_sufficiency':'not_established',
                 'search_sufficiency':'not_established','rule_timing':'shared deterministic solve plus preference rescore'})

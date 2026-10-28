@@ -44,11 +44,17 @@ python -m scripts.benchmark_dcan --device cuda --workers 20 --repeats 3
 
 ## 运行应用
 
-同步更新后的源码，在实验机器用新输出目录重新预检，再启动所需实验。运行中的Python进程不会自动载入新的计算路径。既有训练器按`restart_incomplete_request`处理未完成请求，不支持精确断点续训；旧产物保留在原身份目录解释。
+在原项目停止旧进程，清理原实验根目录下`training/dcan`及`evaluation/<任务>/dcan`的旧DCAN结果，保留`preflight.json`、`source.zip`及其他算法产物。更新源码后，对原根目录执行兼容预检，再从第1轮启动DCAN。以当前实验根目录`result/experiment_suite_v1_parallel20`为例：
 
 ```powershell
-python -m scripts.experiment_suite --stage preflight --device cuda --output-dir result/experiments_dcan_20261028
-python -m scripts.experiment_suite --stage train --device cuda --arms dcan --seeds 11 --output-dir result/experiments_dcan_20261028 --remote-run
+python -m scripts.experiment_suite --stage preflight --device cuda --output-dir result/experiment_suite_v1_parallel20 --refresh-dcan
+python -m scripts.experiment_suite --stage train --device cuda --arms dcan --seeds 11 --output-dir result/experiment_suite_v1_parallel20 --remote-run
 ```
 
-上述训练命令只启动DCAN seed 11；全部正式矩阵仍按[实验体系](experiment_suite_v1.md)运行。源码身份改变后，套件继续拒绝混用旧身份的预检及结果。
+训练结果继续写入`result/experiment_suite_v1_parallel20/training/dcan/11`。上述命令只启动DCAN seed 11；全部正式矩阵仍按[实验体系](experiment_suite_v1.md)运行。
+
+兼容预检逐项比较原始源码快照与当前数据、配置及源码。只接纳`configs/dcan_execution_reuse_v1.json`列明的已审查版本，并执行七配置网络探针。原比较身份、原始预检及源码快照保持原样；当前执行的预检、快照和兼容记录写入`executions/<执行身份>`，`execution_reuse.json`登记当前版本。DCAN检查点、训练任务及评测缓存另外绑定当前执行身份，汇总检查这些来源；其他方法继续复用原产物。后续正常启动入口会识别该登记。
+
+运行中的Python进程不会自动载入新的计算路径。既有训练器按`restart_incomplete_request`处理未完成请求；此入口执行从头训练。兼容预检不会删除训练文件，旧DCAN结果未清理、原始快照缺失、数据/配置改变或其他源码不匹配时会停止并列出原因。
+
+同目录刷新验证：全仓库**170项回归通过**，覆盖原结果保留、已审查版本准入、配置/数据变化拒绝、DCAN任务与检查点执行身份、缓存及汇总审计。另复制上次本机真实预检建立临时验证根目录，完成七配置CUDA探针；原预检、原源码快照和代表其他方法结果的测试文件逐字节保持一致。证据见[回归记录](../result/verification/dcan_same_root_20261028/regression.xml)和[同目录验证记录](../result/verification/dcan_same_root_20261028/verification.json)。

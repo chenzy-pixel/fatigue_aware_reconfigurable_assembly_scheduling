@@ -1,0 +1,55 @@
+{
+  "version": "dcan_execution_reuse_v1",
+  "reset_arms": [
+    "dcan"
+  ],
+  "sources": {
+    "agent/comparators/dcan.py": {
+      "before": [
+        "38a526a8192fe07d3a7f626228ddc65b2fc01af2fde6bee40c62130a57c83201",
+        "ad0ccc4ebf7f19b2dbd12429965648f6e6b1aa9e006d295b6f082f6176c6fb7c",
+        "e5456914369a7d3f79815867f1633b0327ded60ec58113654ff2e0f69bb1c594",
+        "f38f18f29a3a8a7962447c8cec53da53725625085a97806387070ae8a8745bc6"
+      ],
+      "after": [
+        "e5456914369a7d3f79815867f1633b0327ded60ec58113654ff2e0f69bb1c594",
+        "f38f18f29a3a8a7962447c8cec53da53725625085a97806387070ae8a8745bc6"
+      ]
+    },
+    "agent/comparators/learning.py": {
+      "before": [
+        "1f919a563c54365935b3b497fcdf7ebbce98f6ac13f4e81516e9d41f52394dc9",
+        "6a5225a42a6942453f3aa9a00a98bb9393b99ac80d2a6a409b701ba82439a521"
+      ],
+      "after": [
+        "19d801699742f09df8e8deadfa75ad4de856011df6589d549f4e44cc321aac4f",
+        "e436683b4494f0b3bd2707a8ae90c8b1910faecb488c12cdc2eb65dcb2869ab1"
+      ]
+    },
+    "scripts/experiment_suite.py": {
+      "before": [
+        "dc7a77a9d25004198dee993a72b2f684ae0cfda02423b859a8dcaf67fed57e48",
+        "e193863d0f47f9c82d6d704ce96a3ac3a969feff31cb85ce1abebad5a717584d"
+      ],
+      "after": [
+        "448513019e1773f5acfe380b36efbcf2c308f589330bb1725d8b9adb3f6cfb96",
+        "d9c1dcb120838caeef8ec57872076da5af5db3b5539134eaf63fa14130c4f806"
+      ]
+    },
+    "configs/experiment_reuse.py": {
+      "before": [
+        null
+      ],
+      "after": [
+        "391eff04bb3cfb8107e4af3429138ff29d264a7b72a5a3b17d663679353f46f3",
+        "9bb619da034e8e5a441a20087a852ac3a5e087533578cb315ee25c221f4318d6"
+      ]
+    }
+  },
+  "report_sources": {
+    "analysis/experiment_suite.py": [
+      "149b493f826ac3cda58e6963f4583e62662295564770ed16f7b4a863db9cdb7c",
+      "a2ea7e433449940b961a23d3183384173d8d84303016e36394e0d50d47adfcc4"
+    ]
+  }
+}

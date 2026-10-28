@@ -1,0 +1,77 @@
+{
+  "purpose": "local_same_root_refresh_verification",
+  "formal_performance_evidence": false,
+  "original_preflight_source": "dcan_optimization_20261028 local preflight",
+  "comparison_identity": "a73533efb6d4f4ffddd9b49157b718735438cd8ffddbd63df096a2e6317ba6bd",
+  "execution_identity": "665ace1fe843ce5485cd74b54aecc0ef66e72d2fb2425e69a4c3ae3d34529fbc",
+  "original_files_unchanged": true,
+  "retained_result_is_fixture": true,
+  "before_sha256": {
+    "preflight.json": "03b8018b49668fd71b38220cc17f2c3024892df1317cd923ee79c9288e5b884c",
+    "source.zip": "1b7e13f0f8952cfb01545024e0e3dcd6b9fcc6f533209149dc4bb872c39a6730",
+    "training/full/11/retained_fixture.json": "989d60b2de17b9f01ef62b342514044377f59fb7e4e3232d4eafb7ae3a574a99"
+  },
+  "after_sha256": {
+    "preflight.json": "03b8018b49668fd71b38220cc17f2c3024892df1317cd923ee79c9288e5b884c",
+    "source.zip": "1b7e13f0f8952cfb01545024e0e3dcd6b9fcc6f533209149dc4bb872c39a6730",
+    "training/full/11/retained_fixture.json": "989d60b2de17b9f01ef62b342514044377f59fb7e4e3232d4eafb7ae3a574a99"
+  },
+  "probes": {
+    "full": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 977353
+    },
+    "no_graph": {
+      "finite": true,
+      "parameter_count": 732617,
+      "trainable_parameter_count": 732617
+    },
+    "no_direct": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 977353
+    },
+    "no_residual": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 890789
+    },
+    "a2c": {
+      "finite": true,
+      "parameter_count": 977353,
+      "trainable_parameter_count": 977353
+    },
+    "rule_ddqn": {
+      "finite": true,
+      "parameter_count": 96007,
+      "trainable_parameter_count": 96007
+    },
+    "dcan": {
+      "finite": true,
+      "parameter_count": 740252,
+      "trainable_parameter_count": 740252
+    }
+  },
+  "changed_sources": {
+    "agent/comparators/learning.py": {
+      "before": "6a5225a42a6942453f3aa9a00a98bb9393b99ac80d2a6a409b701ba82439a521",
+      "after": "19d801699742f09df8e8deadfa75ad4de856011df6589d549f4e44cc321aac4f"
+    },
+    "configs/experiment_reuse.py": {
+      "before": null,
+      "after": "9bb619da034e8e5a441a20087a852ac3a5e087533578cb315ee25c221f4318d6"
+    },
+    "scripts/experiment_suite.py": {
+      "before": "e193863d0f47f9c82d6d704ce96a3ac3a969feff31cb85ce1abebad5a717584d",
+      "after": "448513019e1773f5acfe380b36efbcf2c308f589330bb1725d8b9adb3f6cfb96"
+    }
+  },
+  "same_result_directory": "training/dcan/11",
+  "report_sources": {
+    "analysis/experiment_suite.py": [
+      "149b493f826ac3cda58e6963f4583e62662295564770ed16f7b4a863db9cdb7c",
+      "a2ea7e433449940b961a23d3183384173d8d84303016e36394e0d50d47adfcc4"
+    ]
+  }
+}
