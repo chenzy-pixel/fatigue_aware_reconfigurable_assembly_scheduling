@@ -55,6 +55,7 @@ python -m scripts.experiment_suite --stage preflight --device cuda
 - [实验规格与问题定义](docs/factorial27_spec.md)
 - [当前架构](docs/ARCHITECTURE.md)
 - [正式实验清单与命令](docs/experiment_suite_v1.md)
+- [补齐已训练 Full 的正式评测](docs/full_evaluation_resume.md)
 - [Epoch与训练记录](docs/training_history.md)
 - [DCAN批处理优化与本机验证](docs/dcan_optimization_20261028.md)
 - [数学定义与证明](data/docs/README.md)
