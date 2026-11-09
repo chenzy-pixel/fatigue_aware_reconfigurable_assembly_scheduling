@@ -316,12 +316,12 @@ def main():
     device = read(frozen / "experiment_identity.json")["configs"]["full"].get("device", "cuda")
     subprocess.run([sys.executable, "-u", "-c", _VERIFY_RUNTIME, identity, str(output), device,
                     json.dumps(seeds), json.dumps(arms)],
-                   cwd=frozen, check=True)
+                   cwd=frozen, check=True, stdout=sys.stdout, stderr=sys.stderr)
     command = [sys.executable, "-u", "-m", "scripts.experiment_suite", "--stage", "evaluate", "--device", device,
                "--arms", *arms, "--seeds", *[str(seed) for seed in seeds], "--task", "both",
                "--output-dir", str(output), "--remote-run"]
     print(f"Launching {_arm_label(arms)} evaluation. Results will be written under the original output/evaluation/.", flush=True)
-    subprocess.run(command, cwd=frozen, check=True)
+    subprocess.run(command, cwd=frozen, check=True, stdout=sys.stdout, stderr=sys.stderr)
 
 
 if __name__ == "__main__":
