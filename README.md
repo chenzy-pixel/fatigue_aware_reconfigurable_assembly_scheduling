@@ -18,7 +18,7 @@ python -m pytest -q
 python -m scripts.experiment_suite --stage smoke --device cpu
 ```
 
-pytest验证当前模块和小实例机制；smoke以小网络、少量完整episode覆盖七配置的采集、更新、验证、模型保存与加载，以及五规则和两搜索算法。测试与smoke输出统一进入`.cache/`，不代表正式性能结论。
+pytest验证当前模块和小实例机制；smoke以小网络、少量完整episode覆盖七配置的采集、更新、验证、模型保存与加载，以及五规则和两搜索算法。smoke输出进入`.cache/`，不代表正式性能结论。
 
 CPU 环境可使用 `python -m pip install -r requirements-cpu.txt` 安装本次发布验证所用依赖；pytest 临时文件位于 `.pytest_tmp/`。正式实验各批次的硬件和依赖版本记录在结果的 `origins.json` 中。
 

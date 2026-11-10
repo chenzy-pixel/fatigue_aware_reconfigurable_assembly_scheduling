@@ -1,0 +1,26 @@
+{
+  "status": "passed",
+  "evaluation_files": 3780,
+  "training_runs": 30,
+  "instances": 27,
+  "methods": 15,
+  "source_batches": 4,
+  "checks": [
+    "source_snapshot_hashes",
+    "original_content_hashes",
+    "identity_status",
+    "instance_metadata",
+    "delivery_matrix",
+    "quality_from_objectives",
+    "paid_and_delivery_hv",
+    "sample1_parent_reuse",
+    "compact_equivalence",
+    "training_budget_sequences",
+    "training_stream_semantics",
+    "archive_crc"
+  ],
+  "path_redaction": "Original embedded content hashes identify original artifacts; files.csv contains original and published byte hashes. Numeric evidence is unchanged.",
+  "training_sufficiency": "not_established",
+  "search_sufficiency": "not_established",
+  "model_weights": "external local files required to rerun learned evaluations"
+}

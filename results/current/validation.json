@@ -1,0 +1,146 @@
+{
+  "date": "2026-11-10",
+  "python": "3.12.5",
+  "platform": "Windows",
+  "dependencies": {
+    "torch": "2.7.1+cpu",
+    "numpy": "2.3.1",
+    "scipy": "1.18.0",
+    "matplotlib": "3.11.1"
+  },
+  "tests": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "2",
+    "tests": "207",
+    "time": "163.527",
+    "timestamp": "2026-11-10T14:07:08.905375+08:00"
+  },
+  "skips": [
+    "test_cuda_outputs_and_gradients",
+    "test_cuda_formal_minibatch_update"
+  ],
+  "smoke": {
+    "purpose": "local_interface_and_mechanism_verification",
+    "performance_evidence": false,
+    "arms": {
+      "full": {
+        "training_steps": 34,
+        "updates": 2,
+        "evaluation_candidates": 3,
+        "reload_passed": true
+      },
+      "no_graph": {
+        "training_steps": 32,
+        "updates": 2,
+        "evaluation_candidates": 3,
+        "reload_passed": true
+      },
+      "no_direct": {
+        "training_steps": 34,
+        "updates": 2,
+        "evaluation_candidates": 3,
+        "reload_passed": true
+      },
+      "no_residual": {
+        "training_steps": 34,
+        "updates": 2,
+        "evaluation_candidates": 3,
+        "reload_passed": true
+      },
+      "a2c": {
+        "training_steps": 34,
+        "updates": 1,
+        "evaluation_candidates": 3,
+        "reload_passed": true
+      },
+      "rule_ddqn": {
+        "training_steps": 12,
+        "updates": 11,
+        "evaluation_candidates": 1,
+        "reload_passed": true
+      },
+      "dcan": {
+        "training_steps": 18,
+        "updates": 2,
+        "evaluation_candidates": 3,
+        "reload_passed": true
+      }
+    },
+    "source_identity": "a9671b83de3322c42e6e2a3358fc3cd7b131d33ef8412dd307a70165ae97ec10",
+    "rules": {
+      "eft_lf": {
+        "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+        "steps": 6
+      },
+      "srw_lf": {
+        "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+        "steps": 6
+      },
+      "mc_mc": {
+        "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+        "steps": 6
+      },
+      "mwl_mwl": {
+        "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+        "steps": 6
+      },
+      "existing_heuristic": {
+        "trace": "345898960c9f3802c5c39eddb963f98a8405c33af29e42ac2ab552fcea44c292",
+        "steps": 6
+      }
+    },
+    "search": {
+      "nsga2_ls_frontier": {
+        "paid_hv": 0.9997098571687185,
+        "seconds": 0.5850300999882165
+      },
+      "nsga2_ls_independent_request": {
+        "paid_hv": 0.9997098571687185,
+        "seconds": 1.2050333000079263
+      },
+      "moead_frontier": {
+        "paid_hv": 0.9997098571687185,
+        "seconds": 0.49362560000736266
+      },
+      "moead_independent_request": {
+        "paid_hv": 0.9997098571687185,
+        "seconds": 0.9516945999930613
+      }
+    },
+    "paired_training_streams": true
+  },
+  "dataset_certificate_replay": {
+    "calibration": 54,
+    "validation": 27,
+    "test": 27,
+    "replayed": 108
+  },
+  "pdf_pages": [
+    18,
+    5,
+    5
+  ],
+  "execution_note": "Windows multiprocessing checks pass outside the restricted sandbox; CPU validation environment differs from original GPU runs.",
+  "compact_recomputation": {
+    "units": 3780,
+    "deliveries": 103950,
+    "table_byte_hashes_match_original_audit": true,
+    "table_sha256": {
+      "common_success.csv": "f83a408613110ef820f37c7836133062c98550f0cb7f95f9fd1fd4f02701afb0",
+      "paired_statistics.csv": "9cdc0c1d7909de917b997365e07717b810713d5e43c2258e1c392fad182b7504",
+      "per_instance.csv": "b5c26e64212e008526cb2c9f76eded71de0cdc6e2cbe28c9416cb53301fc0ece",
+      "seed_results.csv": "a76f0ff2d60864604de1efac49605c7a97dda708aae5d0e16200bd755771e0c8",
+      "summary.csv": "04bc5bf58ab44087bb2a12793c47327fbfafeb5d5a2bde12d600ef74051d7af7"
+    },
+    "additional_checks": [
+      "recorded_best_of_k_selection",
+      "full_coverage_and_hv_reaudit_from_compact"
+    ]
+  },
+  "clean_checkout_tests": {
+    "passed": 63,
+    "failed": 0
+  }
+}

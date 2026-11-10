@@ -1,0 +1,67 @@
+[
+  {
+    "path": "result/experiment_suite_v1",
+    "identity": "7a0fecf86bb24911cb695155f3d03399ad00ed5dcc8f5993d955d9d1bd368230",
+    "fixed_data_manifests_equal": true,
+    "physical_config_equal": true,
+    "environment_and_data_source_text_equal_after_line_ending_normalization": true,
+    "changed_python_text": []
+  },
+  {
+    "path": "result/experiment_suite_v1_dcan_optimized",
+    "identity": "bd2a64ef4d38446a231e7642be0a81581dc3c62f8fc6797637f2723b9cfb8e10",
+    "fixed_data_manifests_equal": true,
+    "physical_config_equal": true,
+    "environment_and_data_source_text_equal_after_line_ending_normalization": true,
+    "changed_python_text": [
+      "agent/comparators/__init__.py",
+      "agent/comparators/collection.py",
+      "agent/comparators/common.py",
+      "agent/comparators/dcan.py",
+      "agent/comparators/evolution.py",
+      "agent/comparators/experiment_evaluation.py",
+      "agent/comparators/learning.py",
+      "agent/comparators/parallel_evaluation.py",
+      "agent/comparators/training_budget.py",
+      "agent/ppo/network.py",
+      "agent/ppo/parallel.py",
+      "analysis/experiment_suite.py",
+      "analysis/pareto_analysis.py",
+      "configs/__init__.py",
+      "configs/config.py",
+      "configs/evaluation_sampling.py",
+      "configs/experiment_suite.py",
+      "configs/normalization.py",
+      "result/__init__.py",
+      "result/console_reporter.py",
+      "result/io.py",
+      "result/provenance.py",
+      "result/training_history.py",
+      "scripts/audit_factorial27.py",
+      "scripts/experiment_suite.py",
+      "utils.py"
+    ]
+  },
+  {
+    "path": "result/experiment_suite_v1_parallel20",
+    "identity": "f159182453a0c46db187509c84563fbc19341679413405774ff15742aa7c64b1",
+    "fixed_data_manifests_equal": true,
+    "physical_config_equal": true,
+    "environment_and_data_source_text_equal_after_line_ending_normalization": true,
+    "changed_python_text": [
+      "agent/comparators/collection.py",
+      "agent/comparators/learning.py",
+      "agent/comparators/parallel_evaluation.py",
+      "agent/ppo/parallel.py",
+      "result/console_reporter.py"
+    ]
+  },
+  {
+    "path": "result/received_20261103/experiment_suite_v1_parallel20",
+    "identity": "7a0fecf86bb24911cb695155f3d03399ad00ed5dcc8f5993d955d9d1bd368230",
+    "fixed_data_manifests_equal": true,
+    "physical_config_equal": true,
+    "environment_and_data_source_text_equal_after_line_ending_normalization": true,
+    "changed_python_text": []
+  }
+]
