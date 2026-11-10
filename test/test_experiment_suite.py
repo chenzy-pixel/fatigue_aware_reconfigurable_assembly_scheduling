@@ -311,6 +311,16 @@ def test_report_checks_reused_parent_and_trajectory_identity(config):
         audit_evaluations(units, suite, config, records, 'id')
 
 
+def test_report_checks_dcan_execution_with_shared_comparison_identity(config):
+    suite, records, units = fake_units(config)
+    suite['arms']['dcan'] = {}
+    units += [{**deepcopy(u), 'arm':'dcan', 'execution_identity':'new-dcan'} for u in units if u['arm'] == 'full']
+    audit_evaluations(units, suite, config, records, 'id', execution_identities={'dcan':'new-dcan'})
+    next(u for u in units if u['arm'] == 'dcan').pop('execution_identity')
+    with pytest.raises(ValueError, match='execution identity differs'):
+        audit_evaluations(units, suite, config, records, 'id', execution_identities={'dcan':'new-dcan'})
+
+
 def test_complete_report_pipeline_with_synthetic_results(config,tmp_path,monkeypatch):
     """Exercise CSV, statistics and every figure; these are fixture values."""
     import json

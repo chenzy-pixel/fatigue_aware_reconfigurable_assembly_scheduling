@@ -19,6 +19,8 @@ from configs.config import public_config
 from configs.experiment_suite import (DEFAULT_MANIFEST, TASKS, load_suite, arm_config,
                                      preferences, suite_identity, matrix)
 from configs.formal_preferences import formal_preferences
+from configs.experiment_reuse import (arm_execution_identity, execution_job, prepare_refresh,
+                                     publish_refresh, resolve_comparison_identity, REGISTRATION)
 from data import load_dataset_split
 from environment import AssemblySchedulingEnv
 from agent.baselines.experiment_rules import evaluate_rule
@@ -107,9 +109,7 @@ def check_preflight(root, identity):
     path = root/'preflight.json'
     if not path.exists():
         raise ValueError('run the complete same-identity preflight first')
-    value = read_json(path)
-    if value.get('status') != 'passed' or value.get('identity') != identity:
-        raise ValueError('experiment identity differs; use the original Git revision or a new output directory')
+    return resolve_comparison_identity(root, identity)
 
 
 @contextmanager
@@ -153,6 +153,8 @@ def snapshot_sources(root, suite, identity, device):
                      'configs/comparators/suite.json','configs/experiment_suite_v1.json',
                      'configs/factorial27_normalization.json'):
             zipped.write(PROJECT_ROOT/name,name)
+        from configs.experiment_reuse import MANIFEST
+        zipped.write(PROJECT_ROOT/MANIFEST, MANIFEST)
         zipped.writestr('experiment_identity.json',json.dumps(payload,ensure_ascii=False,indent=2))
     archive.with_suffix('.zip.tmp').replace(archive)
     return payload['sources']
@@ -161,11 +163,16 @@ def snapshot_sources(root, suite, identity, device):
 def load_agent(root, suite, arm, seed, identity, device, *, record=None):
     from agent.comparators.learning import check_learning_checkpoint
     c = arm_config(suite, arm, seed, device)
+    execution_identity = arm_execution_identity(root, arm)
+    if execution_identity:
+        c['comparison']['execution_identity'] = execution_identity
     method = suite['arms'][arm]['method']
     path = root/'training'/arm/str(seed)/'best_checkpoint.pt'
     summary = read_json(path.parent/'summary.json')
     if not summary.get('budget_completed') or summary['episodes_started'] != 2000 or summary['epochs'] != 100 or summary['validation_count'] != 20:
         raise ValueError('formal evaluation requires completed training')
+    if execution_identity and summary.get('execution_identity') != execution_identity:
+        raise ValueError('training summary execution identity mismatch')
     check_learning_checkpoint(path, c, method, seed, identity)
     began = time.perf_counter()
     record = record if record is not None else load_dataset_split(c, 'validation')[0]
@@ -182,7 +189,8 @@ def load_agent(root, suite, arm, seed, identity, device, *, record=None):
         agent.act(obs, env.get_action_mask(), deterministic=True)
     synchronize(c)
     return c, agent, {'checkpoint': str(path), 'load_seconds': load_seconds,
-                      'warmup_seconds': time.perf_counter()-began}
+                      'warmup_seconds': time.perf_counter()-began,
+                      **({'execution_identity':execution_identity} if execution_identity else {})}
 
 
 def train(suite, root, identity, device, arms, seeds):
@@ -190,6 +198,9 @@ def train(suite, root, identity, device, arms, seeds):
     for arm in arms:
         for seed in seeds:
             c = arm_config(suite, arm, seed, device)
+            execution_identity = arm_execution_identity(root, arm)
+            if execution_identity:
+                c['comparison']['execution_identity'] = execution_identity
             print(f'train {arm} seed={seed}', flush=True)
             train_request(c, suite['arms'][arm]['method'], seed, c['ppo']['learning_rate'],
                           dataset, list(range(27)),
@@ -200,6 +211,7 @@ def train(suite, root, identity, device, arms, seeds):
 def evaluate(suite, root, identity, device, arms, seeds, tasks):
     records = load_dataset_split(arm_config(suite, 'full', 11, device), 'test')
     for arm in arms:
+        execution_identity = arm_execution_identity(root, arm)
         for seed in seeds:
             modes = [(arm, None)] + ([('full_greedy', 'greedy'), ('full_sample1', 'sampled_single')] if arm == 'full' else [])
             pending = set()
@@ -208,7 +220,7 @@ def evaluate(suite, root, identity, device, arms, seeds, tasks):
                     saved_modes = {}
                     for label, mode in modes:
                         path = root/'evaluation'/task/label/str(seed)/f'{record.instance.instance_id}.json'
-                        job = digest([identity, task, label, seed, record.instance.instance_id, mode])
+                        job = execution_job([identity, task, label, seed, record.instance.instance_id, mode], execution_identity)
                         saved_modes[label] = cached(path, job)
                         if saved_modes[label] is None:
                             pending.add((task, label, record.instance.instance_id))
@@ -247,7 +259,7 @@ def evaluate(suite, root, identity, device, arms, seeds, tasks):
                         full_unit = None
                         for label, mode in modes:
                             path = root/'evaluation'/task/label/str(seed)/f'{record.instance.instance_id}.json'
-                            job = digest([identity, task, label, seed, record.instance.instance_id, mode])
+                            job = execution_job([identity, task, label, seed, record.instance.instance_id, mode], execution_identity)
                             if (task, label, record.instance.instance_id) not in pending:
                                 if label == 'full' and (task, 'full_sample1', record.instance.instance_id) in pending and task == 'frontier':
                                     full_unit = cached(path, job)
@@ -258,6 +270,8 @@ def evaluate(suite, root, identity, device, arms, seeds, tasks):
                                 payload = learning_unit(c, agent, record, suite['arms'][arm]['method'], preferences(c, task), seed,
                                                         mode=mode, runner=pool, parallel=task == 'frontier')
                             payload['model_timing'] = timing
+                            if execution_identity:
+                                payload['execution_identity'] = execution_identity
                             saved_value = save_unit(path, payload, identity=identity, arm=label, seed=seed, task=task, record=record, job_id=job)
                             if label == 'full':
                                 full_unit = saved_value
@@ -367,7 +381,10 @@ def main():
     p.add_argument('--task', choices=(*TASKS, 'both'), default='both')
     p.add_argument('--training-workers', type=int)
     p.add_argument('--remote-run', action='store_true')
+    p.add_argument('--refresh-dcan', action='store_true', help='register the reviewed DCAN execution in an existing experiment root')
     args = p.parse_args()
+    if args.refresh_dcan and args.stage != 'preflight':
+        p.error('--refresh-dcan is only valid for preflight')
     suite = load_suite(args.manifest)
     if args.training_workers is not None:
         if args.training_workers < 1:
@@ -387,6 +404,26 @@ def main():
     identity = suite_identity(suite, args.device)
     tasks = TASKS if args.task == 'both' else [args.task]
     if args.stage == 'preflight':
+        if args.refresh_dcan:
+            from configs.experiment_suite import identity_payload
+            with execution_lock(root):
+                if (root/REGISTRATION).exists():
+                    comparison = check_preflight(root, identity)
+                else:
+                    plan = prepare_refresh(root, identity_payload(suite, args.device))
+                    result = preflight(suite, identity, args.device)
+                    destination = root/'executions'/identity
+                    destination.mkdir(parents=True, exist_ok=True)
+                    result['source_hashes'] = snapshot_sources(destination, suite, identity, args.device)
+                    atomic_json(destination/'preflight.json', result)
+                    comparison = publish_refresh(root, plan)['comparison_identity']
+            print(json.dumps({'status':'passed', 'comparison_identity':comparison, 'execution_identity':identity,
+                              'output_dir':str(root), 'reset_arms':['dcan']}, indent=2))
+            return
+        if (root/REGISTRATION).exists():
+            comparison = check_preflight(root, identity)
+            print(json.dumps({'status':'passed', 'comparison_identity':comparison, 'execution_identity':identity}, indent=2))
+            return
         if (root/'preflight.json').exists() and read_json(root/'preflight.json').get('identity') != identity:
             p.error('experiment identity differs; use the original Git revision or a new output directory')
         result = preflight(suite, identity, args.device)
@@ -395,7 +432,7 @@ def main():
         atomic_json(root/'preflight.json', result)
         print(json.dumps({'identity':identity, 'matrix':result['matrix'], 'probes':result['probes']}, indent=2))
         return
-    check_preflight(root, identity)
+    identity = check_preflight(root, identity) or identity
     if args.stage in ('train','evaluate','rules','develop-search','search') and not args.remote_run:
         p.error('formal execution requires --remote-run')
     with execution_lock(root):

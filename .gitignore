@@ -30,3 +30,36 @@ result/migration/**/smoke*/
 
 .cache/
 result/experiments/
+
+# Runtime artifacts; result/*.py remains the source package.
+/result/*
+!/result/*.py
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.execution.lock
+*.zip
+/experiment_suite_v*/
+/outputs/
+/archive/
+/papers/
+/tmp/
+/exa-results/
+.agents/
+.codex/
+/.ct/
+/.cv/
+/.cw/
+/.cx/
+/.cy/
+/.cz/
+/.ep*/
+/.et*/
+/.lp*/
+/.ma*/
+/.pv*/
+/.px*/
+/.review*/
+/.pytest_*/

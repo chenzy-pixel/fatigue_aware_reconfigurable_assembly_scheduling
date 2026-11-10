@@ -16,3 +16,6 @@ data/manifests/v3/** -text whitespace=cr-at-eol
 configs/factorial27_normalization.json -text whitespace=cr-at-eol
 configs/factorial27_variance_normalization.json -text whitespace=cr-at-eol
 result/migration/** -text whitespace=cr-at-eol
+
+# Matplotlib-generated SVG path strings contain intentional line-end spaces.
+results/current/figures/*.svg -whitespace

@@ -2,6 +2,8 @@
 
 **疲劳感知的可重构装配调度**
 
+[研究方案 PDF](docs/research/README.md) · [本轮实验结果与复算](results/current/README.md) · [原始评测 Release](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/releases/tag/experiments-20261110)
+
 本项目研究多个模块化装配工位共享有限换型工人的多目标调度问题。机器通过更换工艺模块执行工序，工人负责模块拆卸与安装。调度同时考虑工序先后、设备兼容、人员资质及疲劳积累与恢复，优化Excess Flow、重构费用和实际劳动时间的geometric OWA(q=.5)。
 
 主方法采用偏好条件异质图PPO。当前维护七个训练配置、五种子：Full、移除图传播、移除直接特征、移除残差、A2C、Rule-DDQN、DCAN；另有五条规则、NSGA-II-LS及MOEA/D。固定数据为54例标定、27例验证、27例测试；训练在线覆盖全部27种参数组合。数据schema3、图观测schema13，全部订单在时刻0可用，疲劳安全为硬约束。
@@ -16,7 +18,9 @@ python -m pytest -q
 python -m scripts.experiment_suite --stage smoke --device cpu
 ```
 
-pytest验证当前模块和小实例机制；smoke以小网络、少量完整episode覆盖七配置的采集、更新、验证、模型保存与加载，以及五规则和两搜索算法。测试与smoke输出统一进入`.cache/`，不代表正式性能结论。
+pytest验证当前模块和小实例机制；smoke以小网络、少量完整episode覆盖七配置的采集、更新、验证、模型保存与加载，以及五规则和两搜索算法。smoke输出进入`.cache/`，不代表正式性能结论。
+
+CPU 环境可使用 `python -m pip install -r requirements-cpu.txt` 安装本次发布验证所用依赖；pytest 临时文件位于 `.pytest_tmp/`。正式实验各批次的硬件和依赖版本记录在结果的 `origins.json` 中。
 
 完整固定数据证书重放按需执行：
 
@@ -55,7 +59,9 @@ python -m scripts.experiment_suite --stage preflight --device cuda
 - [实验规格与问题定义](docs/factorial27_spec.md)
 - [当前架构](docs/ARCHITECTURE.md)
 - [正式实验清单与命令](docs/experiment_suite_v1.md)
+- [使用已训练模型完成正式评测](docs/full_evaluation_resume.md)
 - [Epoch与训练记录](docs/training_history.md)
+- [Rule-DDQN 与 DCAN 正式评测](docs/ddqn_dcan_evaluation.md)
 - [数学定义与证明](data/docs/README.md)
 - [工业背景](docs/research_background_cesa3r.md)
 - [清理范围与历史恢复](docs/project_cleanup.md)

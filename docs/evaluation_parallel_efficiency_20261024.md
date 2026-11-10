@@ -2,7 +2,7 @@
 
 2026-10-24。本轮完成代码修订和本地验证；正式35次训练及搜索由用户按新身份启动。
 
-后续实现复核修复了派生缓存校验、训练观察释放和评测池入口检查，当前预检身份及回归证据见[实现复核](evaluation_parallel_review_20261024.md)。下文保留首次吞吐探针及当时的验证记录。
+后续实现复核修复了派生缓存校验、训练观察释放和评测池入口检查，当前预检身份及回归证据见[实现复核](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/blob/9276fe6f0962fdb3b26a8f3cf4d43597f998d951/docs/evaluation_parallel_review_20261024.md)。下文保留首次吞吐探针及当时的验证记录。
 
 ## 已完成
 
@@ -22,9 +22,9 @@
 
 ## 验证证据
 
-- 全量测试：**135 passed**，覆盖七种学习配置的串行/并行轨迹、异长实例续填、1路/2路种子一致性、冻结权重、DDQN随机源不被评测消耗、共享池验证、首样本复用和训练通道上限。[JUnit](../result/verification/evaluation_parallel_20261024/tests.xml)、[控制台](../result/verification/evaluation_parallel_20261024/tests_console.txt)。
-- 在调整前沿池释放时机后，入口编排及PowerShell启动测试复核：**15 passed**；这些测试与全量集合重叠。[JUnit](../result/verification/evaluation_parallel_20261024/workflow_tests.xml)。
-- CUDA预检通过：7种配置、数据及源码快照；身份`31a46411a427f9054ef0e7875d24378a0a2b807169cd157d3c9c44ce018ac48a`。[预检结果](../result/verification/evaluation_parallel_20261024/preflight/preflight.json)。
+- 全量测试：**135 passed**，覆盖七种学习配置的串行/并行轨迹、异长实例续填、1路/2路种子一致性、冻结权重、DDQN随机源不被评测消耗、共享池验证、首样本复用和训练通道上限。[JUnit](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/blob/9276fe6f0962fdb3b26a8f3cf4d43597f998d951/result/verification/evaluation_parallel_20261024/tests.xml)、[控制台](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/blob/9276fe6f0962fdb3b26a8f3cf4d43597f998d951/result/verification/evaluation_parallel_20261024/tests_console.txt)。
+- 在调整前沿池释放时机后，入口编排及PowerShell启动测试复核：**15 passed**；这些测试与全量集合重叠。[JUnit](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/blob/9276fe6f0962fdb3b26a8f3cf4d43597f998d951/result/verification/evaluation_parallel_20261024/workflow_tests.xml)。
+- CUDA预检通过：7种配置、数据及源码快照；身份`31a46411a427f9054ef0e7875d24378a0a2b807169cd157d3c9c44ce018ac48a`。[预检结果](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/blob/9276fe6f0962fdb3b26a8f3cf4d43597f998d951/result/verification/evaluation_parallel_20261024/preflight/preflight.json)。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest test -q --basetemp=.pv24 --junitxml=result/verification/evaluation_parallel_20261024/tests.xml
@@ -43,7 +43,7 @@ Windows 11、24逻辑CPU、RTX 4060 Laptop GPU、Python 3.12.5、Torch 2.14.1+cu
 |DCAN|9 / 27|1308|32.69|33.12|0.99×|16.61|
 |Rule-DDQN|9 / 9|288|2.30|0.58|3.97×|17.32|
 
-证据：[Full](../result/verification/evaluation_parallel_20261024/benchmark_full.json)、[DCAN与DDQN](../result/verification/evaluation_parallel_20261024/benchmark_comparators.json)。复现入口：
+证据：[Full](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/blob/9276fe6f0962fdb3b26a8f3cf4d43597f998d951/result/verification/evaluation_parallel_20261024/benchmark_full.json)、[DCAN与DDQN](https://github.com/chenzy-pixel/fatigue_aware_reconfigurable_assembly_scheduling/blob/9276fe6f0962fdb3b26a8f3cf4d43597f998d951/result/verification/evaluation_parallel_20261024/benchmark_comparators.json)。复现入口：
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.benchmark_experiment_evaluation --arms full --workers 20 --max-orders 2 --output result/verification/evaluation_parallel_20261024/benchmark_full.json

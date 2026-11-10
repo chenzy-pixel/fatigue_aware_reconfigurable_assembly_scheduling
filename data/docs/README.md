@@ -47,4 +47,4 @@
 
 真实失败的终局报表Q固定为1，和奖励使用的有界状态Q需区分；PPO轨迹与GAE不执行三选一。原始样本池HV与交付HV也是不同统计量。
 
-[操作协议](../../docs/default_best_of_three.md) · [完整实验清单](../../docs/experiment_runlist.md) · [项目入口](../../README.md)
+[操作协议](../../docs/experiment_suite_v1.md) · [完整实验清单](../../docs/experiment_suite_v1.md) · [项目入口](../../README.md)

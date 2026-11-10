@@ -1,9 +1,0 @@
-{
-  "counts": {
-    "calibration": 54,
-    "validation": 27,
-    "test": 27
-  },
-  "certificates_replayed": 108,
-  "protected_verified": 3836
-}
