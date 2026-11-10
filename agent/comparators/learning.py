@@ -11,6 +11,7 @@ from agent.ppo.parallel import ParallelEpisodeRunner
 from data.models import load_instance_yaml
 from configs import project_path
 from configs.config import public_config
+from configs.experiment_reuse import execution_job
 from environment import AssemblySchedulingEnv, PreferenceVector
 from environment.workload import metrics_workload_objective
 from environment.types import metrics_flow_objective
@@ -125,8 +126,10 @@ def train_request(base, method, seed, rate, dataset, val_indices, prefs, output,
     episodes = budget['budget_amount']
     batch_size = budget['episodes_per_update']
     output = Path(output)
-    job_id = digest([identity, method, seed, rate, budget, val_indices, prefs, workers,
-                     base['training'].get('validation_parallel_envs', 20), LOG_VERSION])
+    execution_identity = base.get('comparison', {}).get('execution_identity')
+    execution_metadata = {'execution_identity': execution_identity} if execution_identity else {}
+    job_id = execution_job([identity, method, seed, rate, budget, val_indices, prefs, workers,
+                           base['training'].get('validation_parallel_envs', 20), LOG_VERSION], execution_identity)
     summary_path = output / "summary.json"
     if summary_path.exists():
         saved = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -231,6 +234,7 @@ def train_request(base, method, seed, rate, dataset, val_indices, prefs, output,
                     result['deliveries_path'] = str(raw_path.relative_to(output).as_posix())
                 validations.append(result)
                 metadata = {"algorithm": method, "job_id": job_id, "training_steps": used, "seed": seed, "epoch": epoch,
+                            **execution_metadata,
                             "validation": result["summary"], "comparison_identity": identity,
                             "training_budget": budget, "episodes_started": episode,
                             "validation_env_steps": validation_env_steps, "validation_seconds": validation_seconds}
@@ -254,6 +258,7 @@ def train_request(base, method, seed, rate, dataset, val_indices, prefs, output,
     if best_rank is None:
         raise RuntimeError("no physically safe eligible checkpoint")
     summary = {"job_id": job_id, "method": method, "seed": seed, "learning_rate": rate,
+               **execution_metadata,
                "training_budget": budget, "budget_completed": True,
                "training_steps": used, "epochs": len(history), "epoch_definition": EPOCH_DEFINITION,
                "log_schema_version": LOG_VERSION, "episodes_started": episode, "validation_count": len(validations),
@@ -284,4 +289,7 @@ def check_learning_checkpoint(path, config, method, seed, identity):
     if (meta.get('comparison_identity') != identity or meta.get('algorithm') != method
             or meta.get('seed') != seed or meta.get('training_budget') != training_budget(config)):
         raise ValueError('checkpoint training protocol/identity mismatch')
+    expected_execution = config.get('comparison', {}).get('execution_identity')
+    if expected_execution and meta.get('execution_identity') != expected_execution:
+        raise ValueError('checkpoint execution identity mismatch')
     return meta
