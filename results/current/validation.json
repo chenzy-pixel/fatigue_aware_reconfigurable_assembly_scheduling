@@ -142,5 +142,29 @@
   "clean_checkout_tests": {
     "passed": 63,
     "failed": 0
-  }
+  },
+  "github_tree_verification": {
+    "commit": "3a2009ccf86272461105ec88953e6878319c0aae",
+    "blob_count": 653,
+    "all_blob_ids_match": true,
+    "total_blob_bytes": 125958244,
+    "research_pdfs": 3,
+    "no_model_or_legacy_result_artifacts": true
+  },
+  "downloaded_release_samples": [
+    {
+      "name": "evaluation-eft_lf-frontier-001.zip",
+      "sha256": "0111fd48b2f8fe20279062fb305a6c1af861797b2ccddad264ae18abeed0b22d",
+      "bytes": 253660,
+      "download_sha256_match": true,
+      "zip_crc_passed": true
+    },
+    {
+      "name": "evaluation-no_graph-frontier-001.zip",
+      "sha256": "d84c27c2b45bb5472f012fb59ebdec9a38f9b870f0cd674c5dba6a17938e8837",
+      "bytes": 49010284,
+      "download_sha256_match": true,
+      "zip_crc_passed": true
+    }
+  ]
 }
