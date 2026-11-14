@@ -25,7 +25,7 @@ def evaluation_pool(config, template, *, workers=None):
 
 
 def summarize(instance_id, pref, method, mode, raw, seconds, *, timing_basis):
-    sampled = method != 'rule_ddqn' if mode is None else mode in ('sampled', 'sampled_single')
+    sampled = method not in ('rule_ddqn', 'dqn') if mode is None else mode in ('sampled', 'sampled_single')
     selected = min(raw, key=lambda r: (not r['success'], r['quality'] if r['success'] else 1., r['sampling_repeat']))
     return {'summary': {'instance_id': instance_id, 'preference': pref, 'method': method,
                         'delivery_protocol': 'sampled_single_v1' if mode == 'sampled_single' else 'best_of_3_v1' if sampled else 'greedy_single_v1',
@@ -58,8 +58,8 @@ def evaluate_requests(config, agent, requests, method, *, runner=None, mode=None
     if physical_identity(config) != physical_identity(runner.config):
         raise ValueError('evaluation worker pool physics differs from request config')
     agent.assert_evaluation_config(config)
-    sampled = method != 'rule_ddqn' if mode is None else mode in ('sampled', 'sampled_single')
-    if method == 'rule_ddqn' and sampled:
+    sampled = method not in ('rule_ddqn', 'dqn') if mode is None else mode in ('sampled', 'sampled_single')
+    if method in ('rule_ddqn', 'dqn') and sampled:
         raise ValueError('Rule-DDQN delivery is greedy')
     repeats = 1 if mode == 'sampled_single' else 3 if sampled else 1
     records, prefs, seeds = [], [], []

@@ -99,7 +99,7 @@ def runtime_manifest(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
             manifest["comparison"] = {key: comparison[key] for key in
                 ("version", "method", "delivery_protocol", "training_steps", "training_budget") if key in comparison}
             method = comparison.get("method")
-            if method in {"dcan", "rule_ddqn"}:
+            if method in {"dcan", "rule_ddqn", "dqn"}:
                 manifest["encoder_variant"] = "dcan_assembly_v1" if method == "dcan" else "pooled_rule_state_v1"
                 manifest["actor_head_variant"] = "learned_phase_candidate_v1" if method == "dcan" else "linear_rule_q_v1"
                 manifest["message_function"] = "conditional_dual_and_service_attention_v1" if method == "dcan" else "not_applicable"

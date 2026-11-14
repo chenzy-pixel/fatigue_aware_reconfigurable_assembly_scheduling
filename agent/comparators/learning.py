@@ -23,16 +23,17 @@ from .common import atomic_json, digest, method_config
 from .collection import collect
 from .dcan import DCANActorCritic, DCANAgent
 from .ddqn import RuleDDQN
+from .dqn import RuleDQN
 from .training_budget import training_budget
 from .a2c import A2CAgent
 from .parallel_evaluation import evaluate_requests, sampling_seed
 
 
 def build_agent(config, obs, method):
-    if method not in ("ppo", "a2c", "dcan", "rule_ddqn"):
+    if method not in ("ppo", "a2c", "dcan", "rule_ddqn", "dqn"):
         raise ValueError(f"unknown learning method: {method}")
-    if method == "rule_ddqn":
-        return RuleDDQN(obs, config)
+    if method in ("rule_ddqn", "dqn"):
+        return (RuleDQN if method == "dqn" else RuleDDQN)(obs, config)
     cls = {'ppo': PPOAgent, 'a2c': A2CAgent, 'dcan': DCANAgent}[method]
     network = build_actor_critic(obs, config["network"]) if method in ('ppo', 'a2c') else DCANActorCritic(obs, config)
     return cls(network, config["ppo"], device=config["device"])
@@ -45,7 +46,7 @@ def synchronize(config):
 
 def evaluate_request(config, agent, instance, pref, method, *, mode=None, seed=0):
     """A completed delivery includes all paid repeats and terminal validation."""
-    sampled = (method != "rule_ddqn") if mode is None else mode in ('sampled', 'sampled_single')
+    sampled = (method not in ("rule_ddqn", "dqn")) if mode is None else mode in ('sampled', 'sampled_single')
     repeats = 1 if mode == 'sampled_single' else 3 if sampled else 1
     synchronize(config)
     began = time.perf_counter()
@@ -58,7 +59,7 @@ def evaluate_request(config, agent, instance, pref, method, *, mode=None, seed=0
         actions = []
         while not (env.terminated or env.truncated):
             mask = env.get_action_mask()
-            if method == "rule_ddqn":
+            if method in ("rule_ddqn", "dqn"):
                 action = agent.act_rules([observation], [mask])[0][0]
             else:
                 action = agent.act(observation, mask, deterministic=not sampled, generator=generator)[0]
@@ -175,9 +176,9 @@ def train_request(base, method, seed, rate, dataset, val_indices, prefs, output,
         while episode < episodes:
             epoch = len(history) + 1
             count = min(batch_size, episodes-episode)
-            if method == 'rule_ddqn':
+            if method in ('rule_ddqn', 'dqn'):
                 agent.set_episode_progress(episode, episodes)
-            rollout = collect(runner, agent, config, episode, ddqn=method == "rule_ddqn",
+            rollout = collect(runner, agent, config, episode, ddqn=method in ("rule_ddqn", "dqn"),
                               episodes_per_batch=count, max_parallelism=workers,
                               instance_override=smoke_instance)
             if rollout.steps <= 0:
@@ -188,7 +189,7 @@ def train_request(base, method, seed, rate, dataset, val_indices, prefs, output,
             episode += rollout.episodes_started
             losses = rollout.losses
             update_started = time.perf_counter()
-            if method != "rule_ddqn" and len(rollout.buffer):
+            if method not in ("rule_ddqn", "dqn") and len(rollout.buffer):
                 losses = agent.update(rollout.buffer)
                 updates += int(losses.get('optimizer_updates', 1))
                 presentations += int(losses.get('sample_presentations', len(rollout.buffer)))
@@ -205,15 +206,15 @@ def train_request(base, method, seed, rate, dataset, val_indices, prefs, output,
                             "log_schema_version": LOG_VERSION, "method": method, "training_seed": seed,
                             "job_id": job_id, "training_budget": budget, "training_steps": used,
                             "steps": used, "episodes_started": episode, "batch_steps": rollout.steps,
-                            "optimizer_epochs_per_batch": 1 if method == 'a2c' else config["ppo"]["epochs"] if method != "rule_ddqn" else None,
-                            "sample_presentations": agent.sample_presentations if method == "rule_ddqn" else presentations,
+                            "optimizer_epochs_per_batch": 1 if method == 'a2c' else config["ppo"]["epochs"] if method not in ("rule_ddqn", "dqn") else None,
+                            "sample_presentations": agent.sample_presentations if method in ("rule_ddqn", "dqn") else presentations,
                             "update_seconds": update_seconds, "training_seconds": training_seconds,
                             "validation_env_steps": validation_env_steps, "validation_seconds": validation_seconds,
                             "learning_rate": rate, **aggregate(flat),
                             "seconds": time.perf_counter()-started, "collect_seconds": rollout.seconds,
                             "budget_truncations": sum(e["budget_truncated"] for e in rollout.episodes),
-                            "losses": losses, "optimizer_updates": agent.updates if method == "rule_ddqn" else updates})
-            if method == 'rule_ddqn':
+                            "losses": losses, "optimizer_updates": agent.updates if method in ("rule_ddqn", "dqn") else updates})
+            if method in ('rule_ddqn', 'dqn'):
                 history[-1]['exploration_epsilon'] = agent.exploration_epsilon
             reporter.epoch_update(history[-1], rollout.episodes)
             # Preserve completed collection evidence even if validation fails.
@@ -262,12 +263,12 @@ def train_request(base, method, seed, rate, dataset, val_indices, prefs, output,
                "training_budget": budget, "budget_completed": True,
                "training_steps": used, "epochs": len(history), "epoch_definition": EPOCH_DEFINITION,
                "log_schema_version": LOG_VERSION, "episodes_started": episode, "validation_count": len(validations),
-               "optimizer_updates": agent.updates if method == "rule_ddqn" else updates,
-               "sample_presentations": agent.sample_presentations if method == "rule_ddqn" else presentations,
+               "optimizer_updates": agent.updates if method in ("rule_ddqn", "dqn") else updates,
+               "sample_presentations": agent.sample_presentations if method in ("rule_ddqn", "dqn") else presentations,
                "seconds": time.perf_counter()-started, "training_sufficiency": "not_established",
                "training_seconds": training_seconds,
-               "parameter_count": sum(p.numel() for p in (agent.online if method == 'rule_ddqn' else agent.network).parameters()) if hasattr(agent, 'network') or hasattr(agent, 'online') else None,
-               "trainable_parameter_count": sum(p.numel() for p in (agent.online if method == 'rule_ddqn' else agent.network).parameters() if p.requires_grad) if hasattr(agent, 'network') or hasattr(agent, 'online') else None,
+               "parameter_count": sum(p.numel() for p in (agent.online if method in ('rule_ddqn', 'dqn') else agent.network).parameters()) if hasattr(agent, 'network') or hasattr(agent, 'online') else None,
+               "trainable_parameter_count": sum(p.numel() for p in (agent.online if method in ('rule_ddqn', 'dqn') else agent.network).parameters() if p.requires_grad) if hasattr(agent, 'network') or hasattr(agent, 'online') else None,
                "validation_seconds": validation_seconds, "validation_env_steps": validation_env_steps,
                "worker_pool_startup_seconds": worker_pool_startup_seconds, "worker_pool_size": pool_workers,
                "best_validation": json.loads((output/"best_validation.json").read_text(encoding="utf-8"))["summary"]}

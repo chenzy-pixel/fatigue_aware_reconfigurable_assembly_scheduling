@@ -25,9 +25,10 @@ _ARM_METHODS = {"full": "ppo", "no_graph": "ppo", "no_direct": "ppo", "no_residu
                 "rule_ddqn": "rule_ddqn", "dcan": "dcan"}
 
 
-def _selected_arms(arms):
+def _selected_arms(arms, *, training=False):
     selected = ["full"] if arms is None else list(arms)
-    if not selected or any(arm not in _ARM_METHODS for arm in selected):
+    methods = {**_ARM_METHODS, **({"a2c": "a2c"} if training else {})}
+    if not selected or any(arm not in methods for arm in selected):
         raise ValueError("Select saved model arms from: " + ", ".join(_ARM_METHODS))
     if len(set(selected)) != len(selected):
         raise ValueError("Selected model arms must be unique.")
@@ -121,8 +122,10 @@ def _reserve_file(reserved, name, expected_hash):
     reserved[key] = (canonical, expected_hash)
 
 
-def prepare(project, output, arms=None):
-    arms = _selected_arms(arms)
+def prepare(project, output, arms=None, *, training=False):
+    """Restore a frozen runtime; training may start without completed checkpoints."""
+    arms = _selected_arms(arms, training=training)
+    methods = {**_ARM_METHODS, **({"a2c": "a2c"} if training else {})}
     project, output = Path(project).resolve(), Path(output).resolve()
     pre = read(output / "preflight.json")
     if pre.get("status") != "passed":
@@ -165,8 +168,10 @@ def prepare(project, output, arms=None):
         for arm in arms:
             definition = definitions.get(arm)
             if (not isinstance(payload["configs"].get(arm), dict) or not isinstance(definition, dict)
-                    or definition.get("method") != _ARM_METHODS[arm]):
+                    or definition.get("method") != methods[arm]):
                 raise ValueError(f"Saved identity does not define the selected model arm: {arm}")
+            if training:
+                continue
             for seed in seeds:
                 run = output / "training" / arm / str(seed)
                 summary = read(run / "summary.json")

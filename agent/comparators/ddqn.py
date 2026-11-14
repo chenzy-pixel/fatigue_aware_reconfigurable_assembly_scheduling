@@ -65,11 +65,12 @@ def double_q_targets(reward, terminated, online, target, next_mask, gamma=1.):
 
 class RuleDDQN:
     requires_graph_observation = True
+    family = "rule_ddqn_v2"
 
     def __init__(self, obs, config):
         self.config, self.device = config, torch.device(config["device"])
         settings = config.get("comparison", {}).get("ddqn", {})
-        self.spec = {"family": "rule_ddqn_v2", "observation": observation_spec(obs),
+        self.spec = {"family": self.family, "observation": observation_spec(obs),
                      "physics": physical_identity(config), "rules": RULE_NAMES, "state_dim": len(pooled_state(obs)),
                      "hidden": [256, 256]}
         self.online = nn.Sequential(nn.Linear(self.spec["state_dim"], 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU(), nn.Linear(256, 7)).to(self.device)
@@ -149,7 +150,7 @@ class RuleDDQN:
         done = torch.tensor(done, device=self.device, dtype=torch.bool)
         mask = torch.as_tensor(np.stack(mask), device=self.device)
         with torch.no_grad():
-            target = double_q_targets(reward, done, self.online(following), self.target(following), mask)
+            target = self.bootstrap_targets(reward, done, following, mask)
         selected = self.online(state).gather(1, torch.tensor(action, device=self.device)[:, None]).squeeze(1)
         loss = F.smooth_l1_loss(selected, target)
         self.optimizer.zero_grad()
@@ -161,6 +162,9 @@ class RuleDDQN:
         if self.updates % self.sync_every == 0:
             self.target.load_state_dict(self.online.state_dict())
         return float(loss.detach())
+
+    def bootstrap_targets(self, reward, done, following, mask):
+        return double_q_targets(reward, done, self.online(following), self.target(following), mask)
 
     def save(self, path, metadata=None):
         from result import network_weights_sha256

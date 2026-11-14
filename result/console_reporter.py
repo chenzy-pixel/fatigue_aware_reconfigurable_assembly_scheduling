@@ -79,12 +79,12 @@ class ExperimentConsoleReporter:
 
     @property
     def validation_repeats(self):
-        return 1 if self.method == 'rule_ddqn' else 3
+        return 1 if self.method in ('rule_ddqn', 'dqn') else 3
 
     def start_run(self):
         formal = self.config['training']['formal_evaluation']
-        delivery = 'greedy_single_v1' if self.method == 'rule_ddqn' else 'best_of_3_v1'
-        decode = 'greedy' if self.method == 'rule_ddqn' else f'sampled T={float(formal["temperature"]):.1f}'
+        delivery = 'greedy_single_v1' if self.method in ('rule_ddqn', 'dqn') else 'best_of_3_v1'
+        decode = 'greedy' if self.method in ('rule_ddqn', 'dqn') else f'sampled T={float(formal["temperature"]):.1f}'
         self._block(
             SEPARATOR,
             f'[RUN] {self.run_label} | seed={self.config["seed"]} | envs={self.parallel_envs} | {self.config["device"]}',
@@ -99,11 +99,11 @@ class ExperimentConsoleReporter:
     def epoch_update(self, row, episodes):
         metrics = [{**(e.get('metrics') or {}), 'reward': e.get('reward_sum')} for e in episodes]
         adapted = {**row, **row.get('losses', {}), 'episode_end': row['episodes_started']-1}
-        if self.method != 'rule_ddqn':
+        if self.method not in ('rule_ddqn', 'dqn'):
             self.training_update(adapted, metrics)
         else:
             details = (f'        td_loss {_metric(row.get("losses", {}).get("td_loss"), 4)} '
-                       f'| epsilon {_metric(row.get("exploration_epsilon"))}' if self.method == 'rule_ddqn'
+                       f'| epsilon {_metric(row.get("exploration_epsilon"))}' if self.method in ('rule_ddqn', 'dqn')
                        else f'        p_loss {_metric(adapted.get("policy_loss"), 4)} '
                             f'| v_loss {_metric(adapted.get("value_loss"))}')
             self._block(f'[train] ep {row["episodes_started"]}/{self.total_episodes} '
@@ -116,7 +116,7 @@ class ExperimentConsoleReporter:
         raw = [r for delivery in result['deliveries'] for r in delivery['raw']]
         rows = result['rows']
         return {'episode': episode,
-                'sample_aggregation': 'greedy_single_v1' if self.method == 'rule_ddqn' else 'best_of_3_v1',
+                'sample_aggregation': 'greedy_single_v1' if self.method in ('rule_ddqn', 'dqn') else 'best_of_3_v1',
                 'completion_rate': _mean(rows, 'success'),
                 'preference_balanced_quality_score': result['summary'].get('quality'),
                 'mean_operation_progress': _mean([r['metrics'] for r in raw], 'operation_progress'),
